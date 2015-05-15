@@ -7,8 +7,6 @@ CREATE FUNCTION test_enc_setup() RETURNS void
     AS '@abs_srcdir@/regress.so', 'test_enc_setup'
     LANGUAGE C STRICT;
 SELECT FROM test_enc_setup();
-WARNING:  official invalid string for encoding "GB18030" has valid prefix of length 2
-WARNING:  trailing data changed official invalid string for encoding "GB18030" to have valid prefix of length 16
 --
 (1 row)
 
