@@ -10,3 +10,4 @@ struct AppendOnlyInsertDescData
 struct ResGroupCaps
 struct PlannerConfig
 struct ProjectionPath
+struct AppendRelInfo
