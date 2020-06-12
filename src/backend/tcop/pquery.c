@@ -1245,7 +1245,9 @@ FillPortalStore(Portal portal, bool isTopLevel)
 	SetTuplestoreDestReceiverParams(treceiver,
 									portal->holdStore,
 									portal->holdContext,
-									false);
+									false,
+									NULL,
+									NULL);
 
 	completionTag[0] = '\0';
 
