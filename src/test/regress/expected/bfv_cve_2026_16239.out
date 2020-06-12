@@ -1,0 +1,71 @@
+--
+-- CVE-2026-16239: cross-check the portal's tuple descriptor against the
+-- actual query output type.
+--
+-- Two call sites hand a tuplestore-backed DestReceiver to the executor and
+-- later read the stored tuples back out under a *previously computed*
+-- tuple descriptor, without verifying the executor's actual output tupdesc
+-- still matches:
+--
+--   1. FillPortalStore() (src/backend/tcop/pquery.c), used by
+--      PORTAL_ONE_RETURNING / PORTAL_ONE_MOD_WITH / PORTAL_UTIL_SELECT
+--      portals -- i.e. any top-level DML ... RETURNING statement, or a
+--      SELECT with a modifying CTE.
+--   2. PersistHoldablePortal() (src/backend/commands/portalcmds.c), used
+--      when a WITH HOLD cursor is persisted past COMMIT.
+--
+-- Upstream says the missing cross-check can be leveraged to disclose
+-- server memory / achieve arbitrary code execution. These tests drive
+-- both call sites through their ordinary, matching-type usage, so the
+-- added cross-check in SetTuplestoreDestReceiverParams()/
+-- tstoreStartupReceiver() runs on every fill and must not misfire.
+--
+-- (Note: GPDB rejects a data-modifying CTE inside DECLARE CURSOR, so the
+-- PORTAL_ONE_MOD_WITH case below is exercised as a plain top-level
+-- statement rather than through an explicit FETCH loop; every top-level
+-- statement still runs through a portal and reaches FillPortalStore.)
+--
+CREATE TABLE cve_2026_16239_t (a int, b text) DISTRIBUTED BY (a);
+INSERT INTO cve_2026_16239_t VALUES (1, 'one'), (2, 'two'), (3, 'three'), (4, 'four');
+-- PORTAL_ONE_RETURNING
+DELETE FROM cve_2026_16239_t WHERE a < 2 RETURNING a, b;
+ a |  b  
+---+-----
+ 1 | one
+(1 row)
+
+-- PORTAL_ONE_MOD_WITH
+WITH deleted AS (DELETE FROM cve_2026_16239_t WHERE a < 3 RETURNING a, b)
+SELECT * FROM deleted ORDER BY a;
+ a |  b  
+---+-----
+ 2 | two
+(1 row)
+
+SELECT * FROM cve_2026_16239_t ORDER BY a;
+ a |   b   
+---+-------
+ 3 | three
+ 4 | four
+(2 rows)
+
+-- WITH HOLD cursor: PersistHoldablePortal() fills the same kind of
+-- tuplestore-backed portal store when the cursor outlives its transaction.
+BEGIN;
+DECLARE cve_2026_16239_cur CURSOR WITH HOLD FOR
+	SELECT * FROM cve_2026_16239_t ORDER BY a;
+COMMIT;
+FETCH 1 FROM cve_2026_16239_cur;
+ a |   b   
+---+-------
+ 3 | three
+(1 row)
+
+FETCH ALL FROM cve_2026_16239_cur;
+ a |  b   
+---+------
+ 4 | four
+(1 row)
+
+CLOSE cve_2026_16239_cur;
+DROP TABLE cve_2026_16239_t;
