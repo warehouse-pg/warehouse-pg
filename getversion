@@ -28,6 +28,10 @@ if type git >/dev/null 2>&1 && [ -d '.git' ] ; then
 		VERSION+=+
 		VERSION+=$(git rev-parse --short HEAD)
 	fi
+# If not a git repository and VERSION file exists, use version string from file.
+elif [[ -s ./VERSION ]]; then
+	cat ./VERSION
+	exit 0
 fi
 
 FLAG="${1:-noflag}"
