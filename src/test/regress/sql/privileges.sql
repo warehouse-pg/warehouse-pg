@@ -1704,3 +1704,24 @@ CREATE SCHEMA test_non_superuser_schema AUTHORIZATION "non_superuser_schema";
 -- clean up
 DROP TABLE lock_table;
 DROP USER regress_locktable_user;
+
+-- test to check privileges of system view pg_backend_memory_contexts.
+
+-- switch to superuser
+\c -
+
+CREATE ROLE regress_readallstats;
+
+SELECT has_table_privilege('regress_readallstats','pg_backend_memory_contexts','SELECT'); -- no
+
+GRANT pg_read_all_stats TO regress_readallstats;
+
+SELECT has_table_privilege('regress_readallstats','pg_backend_memory_contexts','SELECT'); -- yes
+
+-- run query to ensure that functions within views can be executed
+SET ROLE regress_readallstats;
+SELECT COUNT(*) >= 0 AS ok FROM pg_backend_memory_contexts;
+RESET ROLE;
+
+-- clean up
+DROP ROLE regress_readallstats;
