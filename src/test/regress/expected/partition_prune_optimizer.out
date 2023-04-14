@@ -1391,6 +1391,7 @@ create table boolpart (a bool) partition by list (a);
 create table boolpart_default partition of boolpart default;
 create table boolpart_t partition of boolpart for values in ('true');
 create table boolpart_f partition of boolpart for values in ('false');
+insert into boolpart values (true), (false), (null);
 explain (costs off) select * from boolpart where a in (true, false);
                       QUERY PLAN                      
 ------------------------------------------------
@@ -1470,6 +1471,221 @@ explain (costs off) select * from boolpart where a is not unknown;
          Filter: (a IS NOT UNKNOWN)
  Optimizer: Pivotal Optimizer (GPORCA)
 (5 rows)
+
+select * from boolpart where a in (true, false);
+ a 
+---
+ f
+ t
+(2 rows)
+
+select * from boolpart where a = false;
+ a 
+---
+ f
+(1 row)
+
+select * from boolpart where not a = false;
+ a 
+---
+ t
+(1 row)
+
+select * from boolpart where a is true or a is not true;
+ a 
+---
+ f
+ t
+ 
+(3 rows)
+
+select * from boolpart where a is not true;
+ a 
+---
+ f
+ 
+(2 rows)
+
+select * from boolpart where a is not true and a is not false;
+ a 
+---
+ 
+(1 row)
+
+select * from boolpart where a is unknown;
+ a 
+---
+ 
+(1 row)
+
+select * from boolpart where a is not unknown;
+ a 
+---
+ f
+ t
+(2 rows)
+
+-- inverse boolean partitioning - a seemingly unlikely design, but we've got
+-- code for it, so we'd better test it.
+create table iboolpart (a bool) partition by list ((not a));
+create table iboolpart_default partition of iboolpart default;
+create table iboolpart_f partition of iboolpart for values in ('true');
+create table iboolpart_t partition of iboolpart for values in ('false');
+insert into iboolpart values (true), (false), (null);
+explain (costs off) select * from iboolpart where a in (true, false);
+                      QUERY PLAN                      
+------------------------------------------------------
+ Gather Motion 1:1  (slice1; segments: 1)
+   ->  Append
+         ->  Seq Scan on iboolpart_t
+               Filter: (a = ANY ('{t,f}'::boolean[]))
+         ->  Seq Scan on iboolpart_f
+               Filter: (a = ANY ('{t,f}'::boolean[]))
+         ->  Seq Scan on iboolpart_default
+               Filter: (a = ANY ('{t,f}'::boolean[]))
+ Optimizer: Postgres query optimizer
+(9 rows)
+
+explain (costs off) select * from iboolpart where a = false;
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Seq Scan on iboolpart_f
+         Filter: (NOT a)
+ Optimizer: Postgres query optimizer
+(4 rows)
+
+explain (costs off) select * from iboolpart where not a = false;
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Seq Scan on iboolpart_t
+         Filter: a
+ Optimizer: Postgres query optimizer
+(4 rows)
+
+explain (costs off) select * from iboolpart where a is true or a is not true;
+                       QUERY PLAN                       
+--------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Append
+         ->  Seq Scan on iboolpart_t
+               Filter: ((a IS TRUE) OR (a IS NOT TRUE))
+         ->  Seq Scan on iboolpart_f
+               Filter: ((a IS TRUE) OR (a IS NOT TRUE))
+         ->  Seq Scan on iboolpart_default
+               Filter: ((a IS TRUE) OR (a IS NOT TRUE))
+ Optimizer: Postgres query optimizer
+(9 rows)
+
+explain (costs off) select * from iboolpart where a is not true;
+                QUERY PLAN                 
+-------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Append
+         ->  Seq Scan on iboolpart_t
+               Filter: (a IS NOT TRUE)
+         ->  Seq Scan on iboolpart_f
+               Filter: (a IS NOT TRUE)
+         ->  Seq Scan on iboolpart_default
+               Filter: (a IS NOT TRUE)
+ Optimizer: Postgres query optimizer
+(9 rows)
+
+explain (costs off) select * from iboolpart where a is not true and a is not false;
+                          QUERY PLAN                          
+--------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Append
+         ->  Seq Scan on iboolpart_t
+               Filter: ((a IS NOT TRUE) AND (a IS NOT FALSE))
+         ->  Seq Scan on iboolpart_f
+               Filter: ((a IS NOT TRUE) AND (a IS NOT FALSE))
+         ->  Seq Scan on iboolpart_default
+               Filter: ((a IS NOT TRUE) AND (a IS NOT FALSE))
+ Optimizer: Postgres query optimizer
+(9 rows)
+
+explain (costs off) select * from iboolpart where a is unknown;
+                QUERY PLAN                 
+-------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Append
+         ->  Seq Scan on iboolpart_t
+               Filter: (a IS UNKNOWN)
+         ->  Seq Scan on iboolpart_f
+               Filter: (a IS UNKNOWN)
+         ->  Seq Scan on iboolpart_default
+               Filter: (a IS UNKNOWN)
+ Optimizer: Postgres query optimizer
+(9 rows)
+
+explain (costs off) select * from iboolpart where a is not unknown;
+                QUERY PLAN                 
+-------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Append
+         ->  Seq Scan on iboolpart_t
+               Filter: (a IS NOT UNKNOWN)
+         ->  Seq Scan on iboolpart_f
+               Filter: (a IS NOT UNKNOWN)
+         ->  Seq Scan on iboolpart_default
+               Filter: (a IS NOT UNKNOWN)
+ Optimizer: Postgres query optimizer
+(9 rows)
+
+select * from iboolpart where a in (true, false);
+ a 
+---
+ t
+ f
+(2 rows)
+
+select * from iboolpart where a = false;
+ a 
+---
+ f
+(1 row)
+
+select * from iboolpart where not a = false;
+ a 
+---
+ t
+(1 row)
+
+select * from iboolpart where a is true or a is not true;
+ a 
+---
+ t
+ f
+ 
+(3 rows)
+
+select * from iboolpart where a is not true;
+ a 
+---
+ f
+ 
+(2 rows)
+
+select * from iboolpart where a is not true and a is not false;
+ a 
+---
+ 
+(1 row)
+
+select * from iboolpart where a is unknown;
+ a 
+---
+ 
+(1 row)
+
+select * from iboolpart where a is not unknown;
+ a 
+---
+ t
+ f
+(2 rows)
 
 create table boolrangep (a bool, b bool, c int) partition by range (a,b,c);
 NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Greenplum Database data distribution key for this table.
@@ -1904,7 +2120,7 @@ explain (costs off) select * from rparted_by_int2 where a > 100000000000000;
  Optimizer: Pivotal Optimizer (GPORCA)
 (5 rows)
 
-drop table lp, coll_pruning, rlp, mc3p, mc2p, boolpart, boolrangep, rp, coll_pruning_multi, like_op_noprune, lparted_by_int2, rparted_by_int2;
+drop table lp, coll_pruning, rlp, mc3p, mc2p, boolpart, iboolpart, boolrangep, rp, coll_pruning_multi, like_op_noprune, lparted_by_int2, rparted_by_int2;
 --
 -- Test Partition pruning for HASH partitioning
 --
