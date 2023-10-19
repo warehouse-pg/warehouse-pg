@@ -724,6 +724,18 @@ pglz_decompress(const PGLZ_Header *source, char *dest)
 					len += *sp++;
 
 				/*
+				 * Check for corrupt data: if off is more than the distance
+				 * back to the buffer start, we would fetch from outside the
+				 * buffer boundaries.  As below, push dp past destend so the
+				 * error is raised after the loop.
+				 */
+				if (off > (dp - (unsigned char *) dest))
+				{
+					dp = destend + 1;
+					break;
+				}
+
+				/*
 				 * Check for output buffer overrun, to ensure we don't clobber
 				 * memory in case of corrupt input.  Note: we must advance dp
 				 * here to ensure the error is detected below the loop.  We
