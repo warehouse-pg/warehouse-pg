@@ -376,7 +376,7 @@ $node->connect_fails(
 $node->connect_fails(
 	"$common_connstr user=ssltestuser sslcert=ssl/client-revoked.crt sslkey=ssl/client-revoked_tmp.key",
 	"certificate authorization fails with revoked client cert",
-	expected_stderr => qr/SSL error: sslv3 alert certificate revoked/);
+	expected_stderr => qr|SSL error: ssl[a-z0-9/]* alert certificate revoked|);
 
 # Check that connecting with auth-option verify-full in pg_hba:
 # works, iff username matches Common Name
