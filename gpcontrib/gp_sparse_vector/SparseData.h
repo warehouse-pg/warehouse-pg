@@ -259,6 +259,11 @@ static inline int64 compword_to_int8(const char *entry)
 		case 9:
 			memcpy(&num, &entry[1], sizeof(int64));
 			break;
+
+		default:
+			ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("compword_to_int8 got an error size %d", size)));
 	}
 
 	return num;
@@ -734,7 +739,8 @@ static inline SparseData op_sdata_by_sdata(int operation,SparseData left,
 		}
 		tot_run_length += (nextpos-lastpos);
 //		printf("New_value,runlength = %f,%d\n",new_value,nextpos-lastpos);
-		if ((left_nxt==right_nxt)&&(left_nxt==(left->total_value_count))) {
+		if ((left_nxt>=(left->total_value_count)) &&
+			(right_nxt>=(right->total_value_count))) {
 //			printf("STOPPING: i,j,left_nxt,right_nxt,nextpos=%d,%d,%d,%d,%d\n",i,j,nextpos,left_nxt,right_nxt);
 			break;
 		} else if (left_nxt==right_nxt) {
