@@ -786,13 +786,12 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 	char	   *tempname;
 	char	   *diffname;
 	TupleDesc	tupdesc;
-	TupleDesc       newHeapDesc;
+	TupleDesc	newHeapDesc;
 	bool		foundUniqueIndex;
 	List	   *indexoidlist;
 	ListCell   *indexoidscan;
 	int16		relnatts;
 	Oid		   *opUsedForQual;
-	char 	   *distributed;
 
 	initStringInfo(&querybuf);
 	matviewRel = table_open(matviewOid, NoLock);
@@ -824,21 +823,17 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 	 * Note: here and below, we use "tablename.*::tablerowtype" as a hack to
 	 * keep ".*" from being expanded into multiple columns in a SELECT list.
 	 * Compare ruleutils.c's get_variable().
-	 *
-	 * Greenplum doesn't use this hack since it needs to expand and get the
-	 * distribution columns.
-	 *
 	 */
 	resetStringInfo(&querybuf);
 	appendStringInfo(&querybuf,
-					 "SELECT newdata FROM %s newdata "
-					 "WHERE newdata IS NOT NULL AND EXISTS "
-					 "(SELECT 1 FROM %s newdata2 WHERE newdata2 IS NOT NULL "
-					 "AND newdata2 OPERATOR(pg_catalog.*=) newdata "
+					 "SELECT newdata.*::%s FROM %s newdata "
+					 "WHERE newdata.* IS NOT NULL AND EXISTS "
+					 "(SELECT 1 FROM %s newdata2 WHERE newdata2.* IS NOT NULL "
+					 "AND newdata2.* OPERATOR(pg_catalog.*=) newdata.* "
 					 "AND newdata2.ctid OPERATOR(pg_catalog.<>) "
-					 "newdata.ctid and newdata2.gp_segment_id = "
-					 "newdata.gp_segment_id)",
-					 tempname, tempname);
+					 "newdata.ctid AND newdata2.gp_segment_id "
+					 "OPERATOR(pg_catalog.=) newdata.gp_segment_id)",
+					 tempname, tempname, tempname);
 	if (SPI_execute(querybuf.data, false, 1) != SPI_OK_SELECT)
 		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 	if (SPI_processed > 0)
@@ -858,18 +853,47 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 						   SPI_getvalue(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1))));
 	}
 
+	/*
+	 * Create the temporary "diff" table.
+	 *
+	 * Temporarily switch out of the SECURITY_RESTRICTED_OPERATION context,
+	 * because you cannot create temp tables in SRO context.  For extra
+	 * paranoia, add the composite type column only after switching back to
+	 * SRO context.
+	 *
+	 * Greenplum doesn't store diffs in a composite type column, instead it
+	 * creates a similar table with the same distribution for performance
+	 * considerations.
+	 */
 	SetUserIdAndSecContext(relowner,
 						   save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
-
-	/* Get distribute key of matview */
-	distributed = TextDatumGetCString(DirectFunctionCall1(pg_get_table_distributedby,
-														   ObjectIdGetDatum(tempOid)));
-
-	/* Start building the query for creating the diff table. */
 	resetStringInfo(&querybuf);
 	appendStringInfo(&querybuf,
-					 "CREATE TEMP TABLE %s AS "
-					 "SELECT mv.ctid AS tid, mv.gp_segment_id as sid, newdata.* "
+					 "CREATE TEMP TABLE %s (LIKE %s)",
+					 diffname, tempname);
+	if (SPI_exec(querybuf.data, 0) != SPI_OK_UTILITY)
+		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+	SetUserIdAndSecContext(relowner,
+						   save_sec_context | SECURITY_RESTRICTED_OPERATION);
+	resetStringInfo(&querybuf);
+	appendStringInfo(&querybuf,
+					 "ALTER TABLE %s ADD COLUMN tid pg_catalog.tid",
+					 diffname);
+	if (SPI_exec(querybuf.data, 0) != SPI_OK_UTILITY)
+		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+
+	resetStringInfo(&querybuf);
+	appendStringInfo(&querybuf,
+					 "ALTER TABLE %s ADD COLUMN sid pg_catalog.int4",
+					 diffname);
+	if (SPI_exec(querybuf.data, 0) != SPI_OK_UTILITY)
+		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+
+	/* Start building the query for populating the diff table. */
+	resetStringInfo(&querybuf);
+	appendStringInfo(&querybuf,
+					 "INSERT INTO %s "
+					 "SELECT newdata.*, mv.ctid AS tid, mv.gp_segment_id as sid "
 					 "FROM %s mv FULL JOIN %s newdata ON (",
 					 diffname, matviewname, tempname);
 
@@ -997,15 +1021,11 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 	appendStringInfoString(&querybuf,
 						   " AND newdata.* OPERATOR(pg_catalog.*=) mv.*) "
 						   "WHERE newdata.* IS NULL OR mv.* IS NULL "
-						   "ORDER BY tid "); /* GPDB: tailing space matters */
-	appendStringInfoString(&querybuf, distributed);
+						   "ORDER BY tid");
 
-	/* Create the temporary "diff" table. */
-	if (SPI_exec(querybuf.data, 0) != SPI_OK_UTILITY)
+	/* Populate the temporary "diff" table. */
+	if (SPI_exec(querybuf.data, 0) != SPI_OK_INSERT)
 		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
-
-	SetUserIdAndSecContext(relowner,
-						   save_sec_context | SECURITY_RESTRICTED_OPERATION);
 
 	/*
 	 * We have no further use for data from the "full-data" temp table, but we
@@ -1026,7 +1046,8 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 					 "DELETE FROM %s mv WHERE ctid OPERATOR(pg_catalog.=) ANY "
 					 "(SELECT diff.tid FROM %s diff "
 					 "WHERE diff.tid IS NOT NULL "
-					 "AND diff.tid = mv.ctid AND diff.sid = mv.gp_segment_id)",
+					 "AND diff.tid OPERATOR(pg_catalog.=) mv.ctid AND diff.sid "
+					 "OPERATOR(pg_catalog.=) mv.gp_segment_id)",
 					 matviewname, diffname);
 	if (SPI_exec(querybuf.data, 0) != SPI_OK_DELETE)
 		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
