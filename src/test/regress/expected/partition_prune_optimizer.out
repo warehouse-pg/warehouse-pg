@@ -1525,6 +1525,61 @@ select * from boolpart where a is not unknown;
  t
 (2 rows)
 
+-- try some other permutations with a NULL partition instead of a DEFAULT
+delete from boolpart where a is null;
+create table boolpart_null partition of boolpart for values in (null);
+NOTICE:  table has parent, setting distribution columns to match parent table
+insert into boolpart values(null);
+explain (costs off) select * from boolpart where a is not true;
+                     QUERY PLAN                     
+----------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Dynamic Seq Scan on boolpart
+         Number of partitions to scan: 2 (out of 4)
+         Filter: (a IS NOT TRUE)
+ Optimizer: Pivotal Optimizer (GPORCA)
+(5 rows)
+
+explain (costs off) select * from boolpart where a is not true and a is not false;
+                       QUERY PLAN                       
+--------------------------------------------------------
+ Gather Motion 1:1  (slice1; segments: 1)
+   ->  Dynamic Seq Scan on boolpart
+         Number of partitions to scan: 1 (out of 4)
+         Filter: ((a IS NOT TRUE) AND (a IS NOT FALSE))
+ Optimizer: Pivotal Optimizer (GPORCA)
+(5 rows)
+
+explain (costs off) select * from boolpart where a is not false;
+                     QUERY PLAN                     
+----------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Dynamic Seq Scan on boolpart
+         Number of partitions to scan: 2 (out of 4)
+         Filter: (a IS NOT FALSE)
+ Optimizer: Pivotal Optimizer (GPORCA)
+(5 rows)
+
+select * from boolpart where a is not true;
+ a 
+---
+ 
+ f
+(2 rows)
+
+select * from boolpart where a is not true and a is not false;
+ a 
+---
+ 
+(1 row)
+
+select * from boolpart where a is not false;
+ a 
+---
+ 
+ t
+(2 rows)
+
 -- inverse boolean partitioning - a seemingly unlikely design, but we've got
 -- code for it, so we'd better test it.
 create table iboolpart (a bool) partition by list ((not a));
@@ -1687,6 +1742,32 @@ select * from iboolpart where a is not unknown;
  f
 (2 rows)
 
+-- Try some other permutations with a NULL partition instead of a DEFAULT
+delete from iboolpart where a is null;
+create table iboolpart_null partition of iboolpart for values in (null);
+NOTICE:  table has parent, setting distribution columns to match parent table
+insert into iboolpart values(null);
+-- Pruning shouldn't take place for these.  Just check the result is correct
+select * from iboolpart where a is not true;
+ a 
+---
+ f
+ 
+(2 rows)
+
+select * from iboolpart where a is not true and a is not false;
+ a 
+---
+ 
+(1 row)
+
+select * from iboolpart where a is not false;
+ a 
+---
+ t
+ 
+(2 rows)
+
 create table boolrangep (a bool, b bool, c int) partition by range (a,b,c);
 NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Greenplum Database data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
@@ -1698,6 +1779,8 @@ create table boolrangep_ff1 partition of boolrangep for values from ('false', 'f
 NOTICE:  table has parent, setting distribution columns to match parent table
 create table boolrangep_ff2 partition of boolrangep for values from ('false', 'false', 50) to ('false', 'false', 100);
 NOTICE:  table has parent, setting distribution columns to match parent table
+create table boolrangep_null partition of boolrangep default;
+NOTICE:  table has parent, setting distribution columns to match parent table
 -- try a more complex case that's been known to trip up pruning in the past
 explain (costs off)  select * from boolrangep where not a and not b and c = 25;
                      QUERY PLAN                     
@@ -1707,6 +1790,36 @@ explain (costs off)  select * from boolrangep where not a and not b and c = 25;
          Filter: ((NOT a) AND (NOT b) AND (c = 25))
  Optimizer: Postgres query optimizer
 (4 rows)
+
+-- ensure we prune boolrangep_tf
+explain (costs off)  select * from boolrangep where a is not true and not b and c = 25;
+                            QUERY PLAN                            
+------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Append
+         ->  Seq Scan on boolrangep_ff1
+               Filter: ((a IS NOT TRUE) AND (NOT b) AND (c = 25))
+         ->  Seq Scan on boolrangep_ff2
+               Filter: ((a IS NOT TRUE) AND (NOT b) AND (c = 25))
+         ->  Seq Scan on boolrangep_ft
+               Filter: ((a IS NOT TRUE) AND (NOT b) AND (c = 25))
+         ->  Seq Scan on boolrangep_null
+               Filter: ((a IS NOT TRUE) AND (NOT b) AND (c = 25))
+ Optimizer: Postgres query optimizer
+(11 rows)
+
+-- ensure we prune everything apart from boolrangep_tf and boolrangep_null
+explain (costs off)  select * from boolrangep where a is not false and not b and c = 25;
+                            QUERY PLAN                             
+-------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Append
+         ->  Seq Scan on boolrangep_tf
+               Filter: ((a IS NOT FALSE) AND (NOT b) AND (c = 25))
+         ->  Seq Scan on boolrangep_null
+               Filter: ((a IS NOT FALSE) AND (NOT b) AND (c = 25))
+ Optimizer: Postgres query optimizer
+(7 rows)
 
 -- test scalar-to-array operators
 create table coercepart (a varchar) partition by list (a);
