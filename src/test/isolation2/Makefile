@@ -57,7 +57,7 @@ data:
 scan_flaky_fault_injectors:
 	$(top_builddir)/src/test/regress/scan_flaky_fault_injectors.sh
 
-pg_isolation2_regress$(X): isolation2_main.o pg_regress.o submake-libpq submake-libpgport
+pg_isolation2_regress$(X): isolation2_main.o pg_regress.o submake-libpgport submake-libpq
 	$(CC) $(CFLAGS) $(filter %.o,$^) $(libpq_pgport) $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) -o $@
 
 clean distclean:
