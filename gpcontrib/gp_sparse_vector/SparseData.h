@@ -46,7 +46,7 @@
  * Note that if the ptr is NULL, a zero size is returned
  */
 #define	int8compstoragesize(ptr) \
-	(((ptr) == NULL) ? 0 : (((*((char *)(ptr)) < 0) ? 1 : (1 + *((char *)(ptr))))) )
+	(((ptr) == NULL) ? 0 : (((*((int8 *)(ptr)) < 0) ? 1 : (1 + *((int8 *)(ptr))))) )
 
 /*------------------------------------------------------------------------------
  * SparseData holds information about a sparse array of values
@@ -211,33 +211,20 @@ static inline void add_run_to_sdata(char *run_val, int64 run_len, size_t width,
  */
 static inline void int8_to_compword(int64 num, char entry[9])
 {
-	int16_t num_2;
-	int32_t num_4;
-
 	if (num < 128) {
-		entry[0] = -(char)num;
+		int8 n = -(int8)num;
+		memcpy(&entry[0], &n, sizeof(int8));
 	} else if (num < 32768) {
+		int16 n = num;
 		entry[0] = 2;
-		num_2 = (int16_t)num;
-		entry[1] = *( char *)(&num_2)   ;
-		entry[2] = *((char *)(&num_2)+1);
+		memcpy(&entry[1], &n, sizeof(int16));
 	} else if (num < 2147483648) {
+		int32 n = num;
 		entry[0] = 4;
-		num_4 = (int32_t)num;
-		entry[1] = *( char *)(&num_4)   ;
-		entry[2] = *((char *)(&num_4)+1);
-		entry[3] = *((char *)(&num_4)+2);
-		entry[4] = *((char *)(&num_4)+3);
+		memcpy(&entry[1], &n, sizeof(int32));
 	} else {
 		entry[0] = 8;
-		entry[1] = *( char *)(&num)   ;
-		entry[2] = *((char *)(&num)+1);
-		entry[3] = *((char *)(&num)+2);
-		entry[4] = *((char *)(&num)+3);
-		entry[5] = *((char *)(&num)+4);
-		entry[6] = *((char *)(&num)+5);
-		entry[7] = *((char *)(&num)+6);
-		entry[8] = *((char *)(&num)+7);
+		memcpy(&entry[1], &num, sizeof(int64));
 	}
 }
 
@@ -248,41 +235,29 @@ static inline void int8_to_compword(int64 num, char entry[9])
 static inline int64 compword_to_int8(const char *entry)
 {
 	char size = int8compstoragesize(entry);
-	int16_t num_2;
-	char *numptr2 = (char *)(&num_2);
-	int32_t num_4;
-	char *numptr4 = (char *)(&num_4);
+	int8 num_1;
+	int16 num_2;
+	int32 num_4;
 	int64 num;
-	char *numptr8 = (char *)(&num);
 
 	switch(size) {
 		case 0: //Null entry, return a run length of 1
-			return(1);
+			num = 1;
 			break;
 		case 1:
-			num = -(entry[0]);
+			memcpy(&num_1, &entry[0], sizeof(int8));
+			num = -num_1;
 			break;
 		case 3:
-			numptr2[0] = entry[1];
-			numptr2[1] = entry[2];
+			memcpy(&num_2, &entry[1], sizeof(int16));
 			num = num_2;
 			break;
 		case 5:
-			numptr4[0] = entry[1];
-			numptr4[1] = entry[2];
-			numptr4[2] = entry[3];
-			numptr4[3] = entry[4];
+			memcpy(&num_4, &entry[1], sizeof(int32));
 			num = num_4;
 			break;
 		case 9:
-			numptr8[0] = entry[1];
-			numptr8[1] = entry[2];
-			numptr8[2] = entry[3];
-			numptr8[3] = entry[4];
-			numptr8[4] = entry[5];
-			numptr8[5] = entry[6];
-			numptr8[6] = entry[7];
-			numptr8[7] = entry[8];
+			memcpy(&num, &entry[1], sizeof(int64));
 			break;
 	}
 
