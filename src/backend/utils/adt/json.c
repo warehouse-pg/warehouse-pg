@@ -79,7 +79,9 @@ static void parse_array(JsonLexContext *lex, JsonSemAction *sem);
 static void report_parse_error(JsonParseContext ctx, JsonLexContext *lex);
 static void report_invalid_token(JsonLexContext *lex);
 static int	report_json_context(JsonLexContext *lex);
-static char *extract_mb_char(char *s);
+static char *extract_mb_char(char *s, const char *end);
+static void set_token_terminator_at_char_end(JsonLexContext *lex, char *s,
+											 char *end);
 static void composite_to_json(Datum composite, StringInfo result,
 				  bool use_line_feeds);
 static void array_dim_to_json(StringInfo result, int dim, int ndims, int *dims,
@@ -708,6 +710,7 @@ static inline void
 json_lex_string(JsonLexContext *lex)
 {
 	char	   *s;
+	char	   *const end = lex->input + lex->input_length;
 	int			len;
 	int			hi_surrogate = -1;
 
@@ -773,7 +776,7 @@ json_lex_string(JsonLexContext *lex)
 						ch = (ch * 16) + (*s - 'A') + 10;
 					else
 					{
-						lex->token_terminator = s + pg_mblen(s);
+						set_token_terminator_at_char_end(lex, s, end);
 						ereport(ERROR,
 								(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
 								 errmsg("invalid input syntax for type json"),
@@ -891,12 +894,12 @@ json_lex_string(JsonLexContext *lex)
 						break;
 					default:
 						/* Not a valid string escape, so error out. */
-						lex->token_terminator = s + pg_mblen(s);
+						set_token_terminator_at_char_end(lex, s, end);
 						ereport(ERROR,
 								(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
 								 errmsg("invalid input syntax for type json"),
 							errdetail("Escape sequence \"\\%s\" is invalid.",
-									  extract_mb_char(s)),
+									  extract_mb_char(s, end)),
 								 report_json_context(lex)));
 				}
 			}
@@ -909,12 +912,12 @@ json_lex_string(JsonLexContext *lex)
 				 * replace it with a switch statement, but testing so far has
 				 * shown it's not a performance win.
 				 */
-				lex->token_terminator = s + pg_mblen(s);
+				set_token_terminator_at_char_end(lex, s, end);
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
 						 errmsg("invalid input syntax for type json"),
 						 errdetail("Escape sequence \"\\%s\" is invalid.",
-								   extract_mb_char(s)),
+								   extract_mb_char(s, end)),
 						 report_json_context(lex)));
 			}
 
@@ -1270,15 +1273,38 @@ report_json_context(JsonLexContext *lex)
 }
 
 /*
- * Extract a single, possibly multi-byte char from the input string.
+ * Set lex->token_terminator to the end of the character beginning at s, but
+ * never past the end of the input.  The input is not necessarily
+ * null-terminated, so a truncated multibyte sequence at the end of it would
+ * otherwise leave token_terminator pointing past the allocation, and
+ * report_json_context() copies everything up to it.
+ *
+ * pg_mblen_unbounded() is deliberate here: we want the encoding's idea of the
+ * length even when it overruns, so that we can clamp it ourselves rather than
+ * raise "invalid byte sequence" in place of the JSON syntax error we are
+ * actually here to report.
+ */
+static void
+set_token_terminator_at_char_end(JsonLexContext *lex, char *s, char *end)
+{
+	char	   *term = s + pg_mblen_unbounded(s);
+
+	lex->token_terminator = (term <= end) ? term : end;
+}
+
+/*
+ * Extract a single, possibly multi-byte char from the input string, without
+ * reading past "end".
  */
 static char *
-extract_mb_char(char *s)
+extract_mb_char(char *s, const char *end)
 {
 	char	   *res;
 	int			len;
 
-	len = pg_mblen(s);
+	len = pg_mblen_unbounded(s);
+	if (s + len > end)
+		len = end - s;
 	res = palloc(len + 1);
 	memcpy(res, s, len);
 	res[len] = '\0';
