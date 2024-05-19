@@ -297,6 +297,9 @@ pg_lock_status(PG_FUNCTION_ARGS)
 		Datum		result;
 		LockInstanceData *instance;
 
+		uint32 u1, u2;
+		DistributedTransactionId gxid;
+
 		instance = &(lockData->locks[mystatus->currIdx]);
 
 		/*
@@ -422,8 +425,15 @@ pg_lock_status(PG_FUNCTION_ARGS)
 				nulls[9] = true;
 				break;
 			case LOCKTAG_DISTRIB_TRANSACTION:
-				values[6] =
-					TransactionIdGetDatum(instance->locktag.locktag_field1);
+				/*
+				 * In SET_LOCKTAG_DISTRIB_TRANSACTION(), the 64-bit gxid is split into
+				 * field1 (low bits) and field2 (high bits). Reconstruct the full gxid
+				 * here by combining those fields.
+				 */
+				u1 = instance->locktag.locktag_field1;
+				u2 = instance->locktag.locktag_field2;
+				gxid = (((DistributedTransactionId) u2) << 32) | u1;
+				values[6] = DistributedTransactionIdGetDatum(gxid);
 				nulls[1] = true;
 				nulls[2] = true;
 				nulls[3] = true;

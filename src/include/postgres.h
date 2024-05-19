@@ -449,6 +449,9 @@ static inline Datum ObjectIdGetDatum(Oid oid) { return (Datum) oid; }
 static inline TransactionId DatumGetTransactionId(Datum d) { return (TransactionId) d; } 
 static inline Datum TransactionIdGetDatum(TransactionId tid) { return (Datum) tid; } 
 
+static inline DistributedTransactionId DatumGetDistributedTransactionId(Datum d) { return (DistributedTransactionId) d; }
+static inline Datum DistributedTransactionIdGetDatum(DistributedTransactionId gxid) { return (Datum) gxid; }
+
 static inline TransactionId DatumGetMultiXactId(Datum d) { return (TransactionId) d; } 
 static inline Datum MultiXactIdGetDatum(TransactionId tid) { return (Datum) tid; } 
 

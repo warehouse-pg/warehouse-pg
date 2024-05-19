@@ -40,6 +40,12 @@ RETURNS void AS $$
   SELECT pg_sleep(4)
 $$ LANGUAGE sql;
 
+-- Helper function to assign a large gxid for testing cases where gxid exceeds UINT_MAX.
+CREATE OR REPLACE FUNCTION gp_set_next_gxid(new_gxid int8)
+	RETURNS SETOF VOID
+AS 'gp_toolkit.so', 'gp_set_next_gxid'
+	LANGUAGE C EXECUTE ON COORDINATOR;
+
 -- verify the function
 -- Data distribution is sensitive to the underlying hash algorithm, we need each
 -- segment has enough tuples for test, 10 should be enough.

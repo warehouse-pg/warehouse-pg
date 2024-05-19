@@ -3799,7 +3799,7 @@ write_syslogger_in_csv(ErrorData *edata, bool amsyslogger)
 							  &local_trans_id,
 							  &subtrans_id);
 
-		syslogger_write_int32(true, "dx", dist_trans_id, amsyslogger, true);
+		syslogger_write_uint64(true, "dx", dist_trans_id, amsyslogger, true);
 		syslogger_write_int32(true, "x", local_trans_id, amsyslogger, true);
 		syslogger_write_int32(true, "sx", subtrans_id, amsyslogger, true);
 	}

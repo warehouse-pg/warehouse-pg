@@ -26,6 +26,7 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
+#include <limits.h>
 #include "cmockery.h"
 
 #include "postgres.h"
@@ -213,6 +214,74 @@ test_reduce_simple_graph_no_deadlock(void **state)
 }
 
 /*
+ * Test if all work with huge DistributedTransactionId (uint64)
+ * Almost the same as Test case #1: test_reduce_simple_graph_no_deadlock
+ */
+static void
+test_gddCtxGetMaxVid_bigtxn(void **state)
+{
+	/* same wait relations as Test case #1, beside give them a huge DistributedTransactionId */
+	TestWaitRelation wait_relations[3] = {
+		{
+			.seg_id = 0,
+			.waiter_xid = INT_MAX + 20L,
+			.holder_xid = INT_MAX + 10L,
+			.solid_edge = true,
+			.waiter_pid = 200,
+			.holder_pid = 100,
+			.lock_methodid = DEFAULT_LOCKMETHOD,
+			.lock_mode = AccessExclusiveLock,
+			.lock_tagtype = LOCKTAG_RELATION,
+			.waiter_sessionid = 3000,
+			.holder_sessionid = 1000
+		},
+		{
+			.seg_id = 0,
+			.waiter_xid = INT_MAX + 30L,
+			.holder_xid = INT_MAX + 20L,
+			.solid_edge = true,
+			.waiter_pid = 300,
+			.holder_pid = 200,
+			.lock_methodid = DEFAULT_LOCKMETHOD,
+			.lock_mode = AccessExclusiveLock,
+			.lock_tagtype = LOCKTAG_RELATION,
+			.waiter_sessionid = 3000,
+			.holder_sessionid = 2000
+		},
+		{
+			.seg_id = 0,
+			.waiter_xid = INT_MAX + 40L,
+			.holder_xid = INT_MAX + 20L,
+			.solid_edge = true,
+			.waiter_pid = 400,
+			.holder_pid = 200,
+			.lock_methodid = DEFAULT_LOCKMETHOD,
+			.lock_mode = AccessExclusiveLock,
+			.lock_tagtype = LOCKTAG_RELATION,
+			.waiter_sessionid = 4000,
+			.holder_sessionid = 2000
+		}
+	};
+
+	GddCtx *ctx;
+	oldContext = MemoryContextSwitchTo(gddContext);
+	ctx = GddCtxNew();
+	loadTestWaitRelations(ctx, wait_relations, 3);
+
+	/* should return the biggest waiter_xid of the three */
+	DistributedTransactionId dxid = gddCtxGetMaxVid(ctx);
+	assert_true(dxid == INT_MAX + 40L);
+
+	/* There should be no deadlock and hence no vertex left. */
+	GddCtxReduce(ctx);
+	bool is_empty = GddCtxEmpty(ctx);
+	assert_true(is_empty);
+
+	MemoryContextSwitchTo(oldContext);
+	MemoryContextReset(gddContext);
+}
+
+/*
  * Test case #2: test_reduce_large_graph_pair_deadlocks
  *
  * - 100 segments
@@ -301,7 +370,6 @@ test_reduce_large_graph_pair_deadlocks(void **state)
 
 	MemoryContextSwitchTo(oldContext);
 	MemoryContextReset(gddContext);
-	pfree(wait_relations);
 
 	assert_int_equal(indeg_count, num_transactions);
 	assert_int_equal(outdeg_count, num_transactions);
@@ -472,7 +540,6 @@ test_reduce_large_graph_single_deadlock(void **state)
 
 	MemoryContextSwitchTo(oldContext);
 	MemoryContextReset(gddContext);
-	pfree(wait_relations);
 
 	assert_int_equal(indeg_count, num_transactions);
 	assert_int_equal(outdeg_count, num_transactions);
@@ -552,7 +619,6 @@ test_reduce_large_graph_no_deadlock2(void **state)
 
 	MemoryContextSwitchTo(oldContext);
 	MemoryContextReset(gddContext);
-	pfree(wait_relations);
 
 	assert_true(is_empty);
 }
@@ -563,6 +629,7 @@ main(int argc, char *argv[])
 	cmockery_parse_arguments(argc, argv);
 
 	const UnitTest tests[] = {
+		unit_test(test_gddCtxGetMaxVid_bigtxn),
 		unit_test(test_reduce_simple_graph_no_deadlock),
 		unit_test(test_reduce_large_graph_pair_deadlocks),
 		unit_test(test_reduce_large_graph_no_deadlock1),

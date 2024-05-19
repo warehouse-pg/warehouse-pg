@@ -1313,6 +1313,32 @@ syslogger_write_int32(bool test0, const char *prefix, int32 i, bool amsyslogger,
 }
 
 /*
+ * Same as syslogger_write_int32, just write uint64
+ */
+void
+syslogger_write_uint64(bool test0, const char *prefix, uint64 i, bool amsyslogger, bool append_comma)
+{
+	char buf[1024];
+	int len;
+
+	if (!test0 || i > 0)
+	{
+		len = sprintf(buf, "%s"UINT64_FORMAT, prefix, i);
+		if (amsyslogger)
+			write_syslogger_file_binary(buf, len, LOG_DESTINATION_STDERR);
+		else
+			ignore_returned_result(write(fileno(stderr), buf, len));
+	}
+	if (append_comma)
+	{
+		if (amsyslogger)
+			write_syslogger_file_binary(",", 1, LOG_DESTINATION_STDERR);
+		else
+			ignore_returned_result(write(fileno(stderr), ",", 1));
+	}
+}
+
+/*
  * setErrorDataFromSegvChunk
  *   Fill in the given error data with the chunk that contains the message
  * sent in a SEGV/BUS/ILL handler.
@@ -1483,7 +1509,7 @@ syslogger_write_errordata(PipeProtoHeader *chunkHeader, GpErrorData *errorData, 
 	syslogger_write_int32(false, errorData->fix_fields.gp_is_primary == 't'? "seg" : "mir", errorData->fix_fields.gp_segment_id,
 						  true, true); 
 	syslogger_write_int32(true, "slice", errorData->fix_fields.slice_id, true, true); 
-	syslogger_write_int32(true, "dx", errorData->fix_fields.dist_trans_id, true, true);
+	syslogger_write_uint64(true, "dx", errorData->fix_fields.dist_trans_id, true, true);
 	syslogger_write_int32(true, "x", errorData->fix_fields.local_trans_id, true, true); 
 	syslogger_write_int32(true, "sx", errorData->fix_fields.subtrans_id, true, true); 
 	
@@ -1749,7 +1775,7 @@ void syslogger_log_chunk_list(PipeProtoChunk *chunk)
         syslogger_write_int32(false, pfixed->gp_is_primary == 't'? "seg" : "mir", pfixed->gp_segment_id,
 							  true, true); 
         syslogger_write_int32(true, "slice", pfixed->slice_id, true, true); 
-        syslogger_write_int32(true, "dx", pfixed->dist_trans_id, true, true);
+        syslogger_write_uint64(true, "dx", pfixed->dist_trans_id, true, true);
         syslogger_write_int32(true, "x", pfixed->local_trans_id, true, true); 
         syslogger_write_int32(true, "sx", pfixed->subtrans_id, true, true); 
 

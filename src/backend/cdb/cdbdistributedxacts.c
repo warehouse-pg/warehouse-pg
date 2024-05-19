@@ -21,6 +21,9 @@ Datum		gp_distributed_xacts__(PG_FUNCTION_ARGS);
 PG_FUNCTION_INFO_V1(gp_distributed_xacts__);
 /*
  * pgdatabasev - produce a view of gp_distributed_xacts to include transient state
+ *
+ * Note: this function contains a bug caused by incorrect Dxid->Xid conversion.
+ * The corrected implementation is available in gp_toolkit; see gpcontrib/gp_toolkit/gxid_func.c.
  */
 Datum
 gp_distributed_xacts__(PG_FUNCTION_ARGS)
@@ -86,6 +89,14 @@ gp_distributed_xacts__(PG_FUNCTION_ARGS)
 		 */
 		MemSet(values, 0, sizeof(values));
 		MemSet(nulls, false, sizeof(nulls));
+
+		if (distributedXactStatus->gxid > UINT_MAX ||
+			distributedXactStatus->xminDistributedSnapshot > UINT_MAX)
+			ereport(ERROR,
+					(errmsg("This function/view contains a bug: "
+							"It returns incorrect result when DistributedTransactionId exceeds UINT_MAX(4294967295)"),
+					errhint("Please use gp_toolkit.gp_distributed_xacts as a replacement.")));
+
 
 		values[0] = TransactionIdGetDatum(distributedXactStatus->gxid);
 		values[1] = CStringGetTextDatum(DtxStateToString(distributedXactStatus->state));

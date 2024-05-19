@@ -22,7 +22,7 @@
 static GddGraph *gddCtxGetGraph(GddCtx *ctx, int segid);
 static GddStat *gddCtxGetGlobalStat(GddCtx *ctx, DistributedTransactionId vid);
 static void gddCtxRemoveVid(GddCtx *ctx, DistributedTransactionId vid);
-static int gddCtxGetMaxVid(GddCtx *ctx);
+static DistributedTransactionId gddCtxGetMaxVid(GddCtx *ctx);
 
 static GddStat *gddStatNew(DistributedTransactionId vid);
 static void gddStatInit(GddStat *stat, DistributedTransactionId vid);
@@ -251,7 +251,7 @@ gddCtxRemoveVid(GddCtx *ctx, DistributedTransactionId vid)
 /*
  * Get the max vert id, return 0 if no vert left at all.
  */
-static int
+static DistributedTransactionId
 gddCtxGetMaxVid(GddCtx *ctx)
 {
 	GddMapIter	graphiter;

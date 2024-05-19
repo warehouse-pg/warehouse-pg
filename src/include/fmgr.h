@@ -370,7 +370,7 @@ extern struct varlena *pg_detoast_datum_packed(struct varlena *datum);
 #define PG_RETURN_VARCHAR_P(x) PG_RETURN_POINTER(x)
 #define PG_RETURN_HEAPTUPLEHEADER(x)  return HeapTupleHeaderGetDatum(x)
 #define PG_RETURN_XID(x)	 return TransactionIdGetDatum(x)
-
+#define PG_RETURN_GXID(x)	 return DistributedTransactionIdGetDatum(x)
 
 /*-------------------------------------------------------------------------
  *		Support for detecting call convention of dynamically-loaded functions

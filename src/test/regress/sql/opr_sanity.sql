@@ -121,17 +121,6 @@ SELECT p1.oid, p1.proname
 FROM pg_proc as p1
 WHERE prolang != 13 AND probin IS NOT NULL;
 
--- Look for conflicting proc definitions (same names and input datatypes).
--- (This test should be dead code now that we have the unique index
--- pg_proc_proname_args_nsp_index, but I'll leave it in anyway.)
-
-SELECT p1.oid, p1.proname, p2.oid, p2.proname
-FROM pg_proc AS p1, pg_proc AS p2
-WHERE p1.oid != p2.oid AND
-    p1.proname = p2.proname AND
-    p1.pronargs = p2.pronargs AND
-    p1.proargtypes = p2.proargtypes;
-
 -- Considering only built-in procs (prolang = 12), look for multiple uses
 -- of the same internal function (ie, matching prosrc fields).  It's OK to
 -- have several entries with different pronames for the same internal function,

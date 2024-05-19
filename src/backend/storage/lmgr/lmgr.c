@@ -1185,6 +1185,9 @@ UnlockSharedObjectForSession(Oid classid, Oid objid, uint16 objsubid,
 void
 DescribeLockTag(StringInfo buf, const LOCKTAG *tag)
 {
+	uint32 u1, u2;
+	DistributedTransactionId gxid;
+
 	switch ((LockTagType) tag->locktag_type)
 	{
 		case LOCKTAG_RELATION:
@@ -1225,9 +1228,17 @@ DescribeLockTag(StringInfo buf, const LOCKTAG *tag)
 							 tag->locktag_field1);
 			break;
 		case LOCKTAG_DISTRIB_TRANSACTION:
+			/*
+			 * In SET_LOCKTAG_DISTRIB_TRANSACTION(), the 64-bit gxid is split into
+			 * field1 (low bits) and field2 (high bits). Reconstruct the full gxid
+			 * here by combining those fields.
+			 */
+			u1 = tag->locktag_field1;
+			u2 = tag->locktag_field2;
+			gxid = (((DistributedTransactionId) u2) << 32) | u1;
 			appendStringInfo(buf,
-							 _("distributed transaction %u"),
-							 tag->locktag_field1);
+							 _("distributed transaction "UINT64_FORMAT),
+							 gxid);
 			break;
 		case LOCKTAG_VIRTUALTRANSACTION:
 			appendStringInfo(buf,

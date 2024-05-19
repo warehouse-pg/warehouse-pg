@@ -230,8 +230,8 @@ gp_dist_wait_status(PG_FUNCTION_ARGS)
 
 		while (ctx->holder < ctx->lockData->nelements)
 		{
-			TransactionId w_dxid;
-			TransactionId h_dxid;
+			DistributedTransactionId w_dxid;
+			DistributedTransactionId h_dxid;
 			const char   *locktypename;
 			int			holder = ctx->holder++;
 			LockInstanceData	   *h_lock = &ctx->lockData->locks[holder];
@@ -260,8 +260,8 @@ gp_dist_wait_status(PG_FUNCTION_ARGS)
 			h_dxid = h_lock->distribXid;
 
 			values[0] = Int32GetDatum(GpIdentity.segindex);
-			values[1] = Int64GetDatum(w_dxid);
-			values[2] = Int64GetDatum(h_dxid);
+			values[1] = DistributedTransactionIdGetDatum(w_dxid);
+			values[2] = DistributedTransactionIdGetDatum(h_dxid);
 			values[3] = BoolGetDatum(lockIsHoldTillEndXact(w_lock));
 			values[4] = Int32GetDatum(w_lock->pid);
 			values[5] = Int32GetDatum(h_lock->pid);

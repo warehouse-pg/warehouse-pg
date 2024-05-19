@@ -24,6 +24,9 @@ Datum		gp_distributed_log(PG_FUNCTION_ARGS);
 /*
  * pgdatabasev - produce a view of gp_distributed_log that combines 
  * information from the local clog and the distributed log.
+ *
+ * Note: this function contains a bug caused by incorrect Dxid->Xid conversion.
+ * The corrected implementation is available in gp_toolkit; see gpcontrib/gp_toolkit/gxid_func.c.
  */
 Datum
 gp_distributed_log(PG_FUNCTION_ARGS)
@@ -110,6 +113,12 @@ gp_distributed_log(PG_FUNCTION_ARGS)
 			 */
 			MemSet(values, 0, sizeof(values));
 			MemSet(nulls, false, sizeof(nulls));
+
+			if (distribXid > UINT_MAX)
+				ereport(ERROR,
+						(errmsg("This function/view contains a bug: "
+								"It returns incorrect result when DistributedTransactionId exceeds UINT_MAX(4294967295)"),
+						errhint("Please use gp_toolkit.gp_distributed_log as a replacement.")));
 
 			values[0] = Int16GetDatum((int16)GpIdentity.segindex);
 			values[1] = Int16GetDatum((int16)GpIdentity.dbid);
