@@ -79,6 +79,7 @@
 #include "parser/parse_collate.h"
 #include "parser/parse_expr.h"
 #include "parser/parse_relation.h"
+#include "storage/lmgr.h"
 #include "storage/predicate.h"
 #include "storage/smgr.h"
 #include "utils/acl.h"
@@ -1509,6 +1510,13 @@ heap_create_with_catalog(const char *relname,
 	 */
 	if (!OidIsValid(relid) && Gp_role != GP_ROLE_EXECUTE)
 		relid = GetNewOid(pg_class_desc);
+
+	/*
+	 * Other sessions' catalog scans can't find this until we commit.  Hence,
+	 * it doesn't hurt to hold AccessExclusiveLock.  Do it here so callers
+	 * can't accidentally vary in their lock mode or acquisition timing.
+	 */
+	LockRelationOid(relid, AccessExclusiveLock);
 
 	/*
 	 * Determine the relation's initial permissions.

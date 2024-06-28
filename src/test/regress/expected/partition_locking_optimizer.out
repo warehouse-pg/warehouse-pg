@@ -85,25 +85,45 @@ select * from locktest_master where coalesce not like 'gp_%' and coalesce not li
  partlockt_1_prt_8 | AccessExclusiveLock | relation | master
  partlockt_1_prt_9 | AccessExclusiveLock | relation | master
  toast index       | AccessExclusiveLock | relation | master
+ toast table       | AccessExclusiveLock | relation | master
+ toast table       | AccessExclusiveLock | relation | master
+ toast table       | AccessExclusiveLock | relation | master
+ toast table       | AccessExclusiveLock | relation | master
+ toast table       | AccessExclusiveLock | relation | master
+ toast table       | AccessExclusiveLock | relation | master
+ toast table       | AccessExclusiveLock | relation | master
+ toast table       | AccessExclusiveLock | relation | master
+ toast table       | AccessExclusiveLock | relation | master
+ toast table       | AccessExclusiveLock | relation | master
  toast table       | ShareLock           | relation | master
-(12 rows)
+(22 rows)
 
 select * from locktest_segments where coalesce not like 'gp_%' and coalesce not like 'pg_%';
      coalesce      |        mode         | locktype |    node    
 -------------------+---------------------+----------+------------
- partlockt_1_prt_2 | AccessExclusiveLock | relation | n segments
- partlockt_1_prt_8 | AccessExclusiveLock | relation | n segments
- partlockt_1_prt_5 | AccessExclusiveLock | relation | n segments
- partlockt_1_prt_3 | AccessExclusiveLock | relation | n segments
- partlockt_1_prt_4 | AccessExclusiveLock | relation | n segments
- partlockt_1_prt_1 | AccessExclusiveLock | relation | n segments
- partlockt_1_prt_9 | AccessExclusiveLock | relation | n segments
  partlockt         | AccessExclusiveLock | relation | n segments
- partlockt_1_prt_6 | AccessExclusiveLock | relation | n segments
- toast table       | ShareLock           | relation | n segments
- partlockt_1_prt_7 | AccessExclusiveLock | relation | n segments
+ toast table       | AccessExclusiveLock | relation | n segments
+ partlockt_1_prt_3 | AccessExclusiveLock | relation | n segments
+ partlockt_1_prt_9 | AccessExclusiveLock | relation | n segments
  toast index       | AccessExclusiveLock | relation | n segments
-(12 rows)
+ toast table       | AccessExclusiveLock | relation | n segments
+ partlockt_1_prt_6 | AccessExclusiveLock | relation | n segments
+ toast table       | AccessExclusiveLock | relation | n segments
+ toast table       | AccessExclusiveLock | relation | n segments
+ toast table       | AccessExclusiveLock | relation | n segments
+ toast table       | AccessExclusiveLock | relation | n segments
+ toast table       | AccessExclusiveLock | relation | n segments
+ partlockt_1_prt_1 | AccessExclusiveLock | relation | n segments
+ partlockt_1_prt_4 | AccessExclusiveLock | relation | n segments
+ partlockt_1_prt_7 | AccessExclusiveLock | relation | n segments
+ partlockt_1_prt_5 | AccessExclusiveLock | relation | n segments
+ toast table       | AccessExclusiveLock | relation | n segments
+ toast table       | ShareLock           | relation | n segments
+ partlockt_1_prt_8 | AccessExclusiveLock | relation | n segments
+ toast table       | AccessExclusiveLock | relation | n segments
+ toast table       | AccessExclusiveLock | relation | n segments
+ partlockt_1_prt_2 | AccessExclusiveLock | relation | n segments
+(22 rows)
 
 commit;
 -- drop
@@ -141,24 +161,48 @@ NOTICE:  CREATE TABLE will create partition "partlockt_1_prt_3" for table "partl
 select * from locktest_master where coalesce not like 'gp_%' and coalesce not like 'pg_%';
      coalesce      |        mode         | locktype |  node  
 -------------------+---------------------+----------+--------
+ aoseg table       | AccessExclusiveLock | relation | master
+ aoseg table       | AccessExclusiveLock | relation | master
+ aoseg table       | AccessExclusiveLock | relation | master
+ aoseg table       | AccessExclusiveLock | relation | master
+ aovisimap table   | AccessExclusiveLock | relation | master
+ aovisimap table   | AccessExclusiveLock | relation | master
+ aovisimap table   | AccessExclusiveLock | relation | master
+ aovisimap table   | AccessExclusiveLock | relation | master
  partlockt         | AccessExclusiveLock | relation | master
  partlockt_1_prt_1 | AccessExclusiveLock | relation | master
  partlockt_1_prt_2 | AccessExclusiveLock | relation | master
  partlockt_1_prt_3 | AccessExclusiveLock | relation | master
  toast index       | AccessExclusiveLock | relation | master
+ toast table       | AccessExclusiveLock | relation | master
+ toast table       | AccessExclusiveLock | relation | master
+ toast table       | AccessExclusiveLock | relation | master
+ toast table       | AccessExclusiveLock | relation | master
  toast table       | ShareLock           | relation | master
-(6 rows)
+(18 rows)
 
 select * from locktest_segments where coalesce not like 'gp_%' and coalesce not like 'pg_%';
      coalesce      |        mode         | locktype |    node    
 -------------------+---------------------+----------+------------
- toast index       | AccessExclusiveLock | relation | n segments
  partlockt         | AccessExclusiveLock | relation | n segments
  partlockt_1_prt_3 | AccessExclusiveLock | relation | n segments
- toast table       | ShareLock           | relation | n segments
+ aoseg table       | AccessExclusiveLock | relation | n segments
  partlockt_1_prt_2 | AccessExclusiveLock | relation | n segments
+ aoseg table       | AccessExclusiveLock | relation | n segments
+ toast index       | AccessExclusiveLock | relation | n segments
+ toast table       | ShareLock           | relation | n segments
+ aovisimap table   | AccessExclusiveLock | relation | n segments
+ toast table       | AccessExclusiveLock | relation | n segments
+ aoseg table       | AccessExclusiveLock | relation | n segments
+ aovisimap table   | AccessExclusiveLock | relation | n segments
+ toast table       | AccessExclusiveLock | relation | n segments
+ toast table       | AccessExclusiveLock | relation | n segments
+ aovisimap table   | AccessExclusiveLock | relation | n segments
+ toast table       | AccessExclusiveLock | relation | n segments
+ aoseg table       | AccessExclusiveLock | relation | n segments
  partlockt_1_prt_1 | AccessExclusiveLock | relation | n segments
-(6 rows)
+ aovisimap table   | AccessExclusiveLock | relation | n segments
+(18 rows)
 
 commit;
 begin;
