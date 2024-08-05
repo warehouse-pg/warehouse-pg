@@ -224,6 +224,13 @@ TRUNCATE TABLE postgres_fdw_gp."GP 1";
 
 ALTER FOREIGN TABLE gp_ft1 OPTIONS ( SET mpp_execute 'coordinator' );
 
+-- test restriction on non-system foreign tables.
+SET restrict_nonsystem_relation_kind TO 'foreign-table';
+SELECT * from gp_ft1 where f1 < 1; -- ERROR
+INSERT INTO gp_ft1 (f1) VALUES (1); -- ERROR
+DELETE FROM gp_ft1 WHERE f1 = 1; -- ERROR
+RESET restrict_nonsystem_relation_kind;
+
 EXPLAIN (COSTS FALSE) INSERT INTO gp_ft1 SELECT * FROM table_dist_rand;
 INSERT INTO gp_ft1 SELECT * FROM table_dist_rand;
 SELECT * FROM postgres_fdw_gp."GP 1" ORDER BY f1;
