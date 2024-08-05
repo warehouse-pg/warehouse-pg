@@ -482,6 +482,7 @@
 		"resource_select_only",
 		"restart_after_crash",
 		"restore_command",
+		"restrict_nonsystem_relation_kind",
 		"role",
 		"runaway_detector_activation_percent",
 		"segment_size",
