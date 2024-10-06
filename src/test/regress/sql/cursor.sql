@@ -445,3 +445,31 @@ DROP TABLE cursor_initplan;
 -- -c string runs as a single query and prints only the last command's result,
 -- which would hide the UPDATE/SELECT output below.
 \! echo "DROP TABLE IF EXISTS cursor_wco_nonpart; CREATE TABLE cursor_wco_nonpart (id int, v text); INSERT INTO cursor_wco_nonpart VALUES (1, 'a'); BEGIN; DECLARE c CURSOR FOR SELECT * FROM cursor_wco_nonpart FOR UPDATE; FETCH c; UPDATE cursor_wco_nonpart SET v = 'modified' WHERE CURRENT OF c; COMMIT; SELECT id, v FROM cursor_wco_nonpart; DROP TABLE cursor_wco_nonpart;" | PGOPTIONS='-c gp_role=utility' psql -X -d regression -h "$PGHOST" -p $PGPORT
+
+--
+-- pg_cursors must not show a portal that PortalDefineQuery() hasn't been
+-- called on yet.  SPI_cursor_open() creates the portal before planning, and
+-- the planner pre-evaluates stable functions, so user code that queries
+-- pg_cursors runs while the new portal has no source text yet.  This used to
+-- crash on a NULL pointer dereference.
+--
+CREATE FUNCTION cursor_peek_pg_cursors() RETURNS int
+LANGUAGE plpgsql VOLATILE AS
+$$ BEGIN
+  RAISE NOTICE 'pg_cursors entries: %',
+    (SELECT count(*) FROM pg_cursors WHERE name = 'cursor_undefined');
+  RETURN 1;
+END $$;
+CREATE FUNCTION cursor_peek_stable() RETURNS int
+LANGUAGE sql STABLE AS
+$$ SELECT cursor_peek_pg_cursors() $$;
+BEGIN;
+DO $$
+DECLARE r refcursor := 'cursor_undefined';
+BEGIN
+  OPEN r FOR SELECT relname FROM pg_class WHERE oid::int < cursor_peek_stable();
+END $$;
+SELECT name, statement FROM pg_cursors WHERE name = 'cursor_undefined';
+ROLLBACK;
+DROP FUNCTION cursor_peek_stable();
+DROP FUNCTION cursor_peek_pg_cursors();

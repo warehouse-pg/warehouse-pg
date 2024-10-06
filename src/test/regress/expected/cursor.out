@@ -743,3 +743,36 @@ COMMIT
 (1 row)
 
 DROP TABLE
+--
+-- pg_cursors must not show a portal that PortalDefineQuery() hasn't been
+-- called on yet.  SPI_cursor_open() creates the portal before planning, and
+-- the planner pre-evaluates stable functions, so user code that queries
+-- pg_cursors runs while the new portal has no source text yet.  This used to
+-- crash on a NULL pointer dereference.
+--
+CREATE FUNCTION cursor_peek_pg_cursors() RETURNS int
+LANGUAGE plpgsql VOLATILE AS
+$$ BEGIN
+  RAISE NOTICE 'pg_cursors entries: %',
+    (SELECT count(*) FROM pg_cursors WHERE name = 'cursor_undefined');
+  RETURN 1;
+END $$;
+CREATE FUNCTION cursor_peek_stable() RETURNS int
+LANGUAGE sql STABLE AS
+$$ SELECT cursor_peek_pg_cursors() $$;
+BEGIN;
+DO $$
+DECLARE r refcursor := 'cursor_undefined';
+BEGIN
+  OPEN r FOR SELECT relname FROM pg_class WHERE oid::int < cursor_peek_stable();
+END $$;
+NOTICE:  pg_cursors entries: 0
+SELECT name, statement FROM pg_cursors WHERE name = 'cursor_undefined';
+       name       |                             statement                              
+------------------+--------------------------------------------------------------------
+ cursor_undefined | SELECT relname FROM pg_class WHERE oid::int < cursor_peek_stable()
+(1 row)
+
+ROLLBACK;
+DROP FUNCTION cursor_peek_stable();
+DROP FUNCTION cursor_peek_pg_cursors();
