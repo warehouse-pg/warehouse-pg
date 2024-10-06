@@ -445,3 +445,34 @@ LANGUAGE 'plpgsql';
 SELECT func_test_cursor();
 SELECT * FROM cursor_initplan ORDER BY a;
 DROP TABLE cursor_initplan;
+
+--
+-- pg_cursors must not show a portal that PortalDefineQuery() hasn't been
+-- called on yet.  SPI_cursor_open() creates the portal before planning, and
+-- the planner pre-evaluates stable functions, so user code that queries
+-- pg_cursors runs while the new portal has no source text yet.  This used to
+-- crash on a NULL pointer dereference.
+--
+-- WHPG: this relies on the Postgres planner pre-evaluating stable functions.
+SET optimizer = off;
+CREATE FUNCTION cursor_peek_pg_cursors() RETURNS int
+LANGUAGE plpgsql VOLATILE AS
+$$ BEGIN
+  RAISE NOTICE 'pg_cursors entries: %',
+    (SELECT count(*) FROM pg_cursors WHERE name = 'cursor_undefined');
+  RETURN 1;
+END $$;
+CREATE FUNCTION cursor_peek_stable() RETURNS int
+LANGUAGE sql STABLE AS
+$$ SELECT cursor_peek_pg_cursors() $$;
+BEGIN;
+DO $$
+DECLARE r refcursor := 'cursor_undefined';
+BEGIN
+  OPEN r FOR SELECT relname FROM pg_class WHERE oid::int < cursor_peek_stable();
+END $$;
+SELECT name, statement FROM pg_cursors WHERE name = 'cursor_undefined';
+ROLLBACK;
+DROP FUNCTION cursor_peek_stable();
+DROP FUNCTION cursor_peek_pg_cursors();
+RESET optimizer;
