@@ -19,6 +19,7 @@
 #include "executor/spi.h"
 #include "mb/pg_wchar.h"
 #include "port/atomics.h"
+#include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/geo_decls.h"
 #include "utils/rel.h"
@@ -1086,6 +1087,29 @@ test_atomic_ops(PG_FUNCTION_ARGS)
 #endif
 
 	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(get_environ);
+
+Datum
+get_environ(PG_FUNCTION_ARGS)
+{
+	extern char **environ;
+	int			nvals = 0;
+	ArrayType  *result;
+	Datum	   *env;
+
+	for (char **s = environ; *s; s++)
+		nvals++;
+
+	env = palloc(nvals * sizeof(Datum));
+
+	for (int i = 0; i < nvals; i++)
+		env[i] = CStringGetTextDatum(environ[i]);
+
+	result = construct_array(env, nvals, TEXTOID, -1, false, 'i');
+
+	PG_RETURN_POINTER(result);
 }
 
 PG_FUNCTION_INFO_V1(regress_putenv);
