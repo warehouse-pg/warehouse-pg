@@ -537,6 +537,8 @@ extern int	pg_dsplen(const char *mbstr);
 extern int	pg_encoding_mblen(int encoding, const char *mbstr);
 extern int	pg_encoding_dsplen(int encoding, const char *mbstr);
 extern int	pg_encoding_verifymb(int encoding, const char *mbstr, int len);
+extern int	pg_encoding_verifymbchar(int encoding, const char *mbstr, int len);
+extern int	pg_encoding_verifymbstr(int encoding, const char *mbstr, int len);
 extern int	pg_mule_mblen(const unsigned char *mbstr);
 extern int	pg_mic_mblen(const unsigned char *mbstr);
 extern int	pg_mbstrlen(const char *mbstr);
