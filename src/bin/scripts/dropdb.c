@@ -122,11 +122,6 @@ main(int argc, char *argv[])
 			exit(0);
 	}
 
-	initPQExpBuffer(&sql);
-
-	appendPQExpBuffer(&sql, "DROP DATABASE %s%s;",
-					  (if_exists ? "IF EXISTS " : ""), fmtId(dbname));
-
 	/* Avoid trying to drop postgres db while we are connected to it. */
 	if (maintenance_db == NULL && strcmp(dbname, "postgres") == 0)
 		maintenance_db = "template1";
@@ -139,6 +134,11 @@ main(int argc, char *argv[])
 	cparams.override_dbname = NULL;
 
 	conn = connectMaintenanceDatabase(&cparams, progname, echo);
+
+	initPQExpBuffer(&sql);
+	appendPQExpBuffer(&sql, "DROP DATABASE %s%s;",
+					  (if_exists ? "IF EXISTS " : ""),
+					  fmtIdEnc(dbname, PQclientEncoding(conn)));
 
 	if (echo)
 		printf("%s\n", sql.data);

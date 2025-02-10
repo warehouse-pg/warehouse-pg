@@ -328,7 +328,7 @@ reindex_one_database(const ConnParams *cparams,
 	else if (strcmp(type, "SCHEMA") == 0)
 		appendPQExpBufferStr(&sql, name);
 	else if (strcmp(type, "DATABASE") == 0)
-		appendPQExpBufferStr(&sql, fmtId(PQdb(conn)));
+		appendPQExpBufferStr(&sql, fmtIdEnc(PQdb(conn), PQclientEncoding(conn)));
 	appendPQExpBufferChar(&sql, ';');
 
 	if (!executeMaintenanceCommand(conn, sql.data, echo))
