@@ -5,5 +5,7 @@
 /keywords.c
 /kwlookup.c
 /lex.backup
+/encnames.c
+/wchar.c
 
 /psql

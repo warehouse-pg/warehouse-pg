@@ -23,7 +23,7 @@ LIBS := $(filter-out -lreadline -ledit -ltermcap -lncurses -lcurses -lcurl , $(L
 
 
 # the use of tempnam in pg_backup_tar.c causes a warning when using newer versions of GCC
-override CPPFLAGS := -Wno-deprecated-declarations -I$(libpq_srcdir) $(CPPFLAGS)
+override CPPFLAGS := -DFRONTEND -Wno-deprecated-declarations -I$(libpq_srcdir) $(CPPFLAGS)
 
 ifeq ($(PORTNAME),openbsd)
 override CFLAGS += -pthread
@@ -35,10 +35,21 @@ OBJS=	pg_backup_archiver.o pg_backup_db.o pg_backup_custom.o \
 
 KEYWRDOBJS = keywords.o kwlookup.o
 
+# src/backend/utils/mb
+KEYWRDOBJS += encnames.o wchar.o
+
 kwlookup.c: % : $(top_srcdir)/src/backend/parser/%
 	rm -f $@ && $(LN_S) $< .
 
 all: pg_dump pg_restore pg_dumpall
+
+# We use a few backend modules verbatim, but since we need
+# to compile with appropriate options to build a shared lib, we can't
+# use the same object files built for the backend.
+# Instead, symlink the source files in here and build our own object files.
+# When you add a file here, remember to add it in the "clean" target below.
+encnames.c wchar.c: % : $(top_srcdir)/src/backend/utils/mb/%
+	rm -f $@ && $(LN_S) $< .
 
 pg_dump: pg_dump.o common.o pg_dump_sort.o $(OBJS) $(KEYWRDOBJS) | submake-libpq submake-libpgport
 	$(CC) $(CFLAGS) pg_dump.o common.o pg_dump_sort.o $(KEYWRDOBJS) $(OBJS) $(libpq_pgport) $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) -o $@$(X)

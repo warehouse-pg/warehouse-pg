@@ -24,7 +24,7 @@ LIBS := $(filter-out -lreadline -ledit -ltermcap -lncurses -lcurses -lcurl -lssl
 
 PROGRAMS = createdb createlang createuser dropdb droplang dropuser clusterdb vacuumdb reindexdb pg_isready
 
-override CPPFLAGS := -I$(top_srcdir)/src/bin/pg_dump -I$(top_srcdir)/src/bin/psql -I$(libpq_srcdir) $(CPPFLAGS)
+override CPPFLAGS := -DFRONTEND -I$(top_srcdir)/src/bin/pg_dump -I$(top_srcdir)/src/bin/psql -I$(libpq_srcdir) $(CPPFLAGS)
 
 
 all: $(PROGRAMS)
@@ -47,6 +47,15 @@ vacuumdb: vacuumdb.o common.o dumputils.o kwlookup.o keywords.o | submake-libpq 
 reindexdb: reindexdb.o common.o dumputils.o kwlookup.o keywords.o | submake-libpq submake-libpgport
 pg_isready: pg_isready.o common.o dumputils.o kwlookup.o keywords.o | submake-libpq submake-libpgport
 
+$(PROGRAMS): encnames.o wchar.o
+
+# We use a few backend modules verbatim, but since we need
+# to compile with appropriate options to build a shared lib, we can't
+# use the same object files built for the backend.
+# Instead, symlink the source files in here and build our own object files.
+# When you add a file here, remember to add it in the "clean" target below.
+encnames.c wchar.c: % : $(top_srcdir)/src/backend/utils/mb/%
+	rm -f $@ && $(LN_S) $< .
 
 dumputils.c keywords.c: % : $(top_srcdir)/src/bin/pg_dump/%
 	rm -f $@ && $(LN_S) $< .
@@ -78,6 +87,7 @@ uninstall:
 clean distclean maintainer-clean:
 	rm -f $(addsuffix $(X), $(PROGRAMS)) $(addsuffix .o, $(PROGRAMS))
 	rm -f common.o dumputils.o kwlookup.o keywords.o print.o mbprint.o $(WIN32RES)
+	rm -f encnames.o wchar.o
 	rm -f dumputils.c print.c mbprint.c kwlookup.c keywords.c
 	rm -rf tmp_check
 

@@ -35,11 +35,21 @@ OBJS=	command.o common.o help.o input.o stringutils.o mainloop.o copy.o \
 	sql_help.o \
 	$(WIN32RES)
 
+OBJS += encnames.o wchar.o
+
 # The frontend doesn't need everything that's in LIBS, some are backend only
 LIBS := $(filter-out -lresolv -lbz2, $(LIBS))
 
 
 all: psql
+
+# We use a few backend modules verbatim, but since we need
+# to compile with appropriate options to build a shared lib, we can't
+# use the same object files built for the backend.
+# Instead, symlink the source files in here and build our own object files.
+# When you add a file here, remember to add it in the "clean" target below.
+encnames.c wchar.c: % : $(top_srcdir)/src/backend/utils/mb/%
+	rm -f $@ && $(LN_S) $< .
 
 psql: $(OBJS) | submake-libpq submake-libpgport
 	$(CC) $(CFLAGS) $(OBJS) $(libpq_pgport) $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) -o $@$(X)

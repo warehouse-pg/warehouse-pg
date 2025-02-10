@@ -14,5 +14,7 @@
 /kwlookup.c
 /mbprint.c
 /print.c
+/encnames.c
+/wchar.c
 
 /tmp_check/
