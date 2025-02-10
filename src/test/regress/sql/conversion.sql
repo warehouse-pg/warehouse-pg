@@ -1,6 +1,12 @@
 --
 -- create user defined conversion
 --
+
+CREATE FUNCTION test_enc_setup() RETURNS void
+    AS '$libdir/regress.so', 'test_enc_setup'
+    LANGUAGE C STRICT;
+SELECT FROM test_enc_setup();
+
 CREATE USER regress_conversion_user WITH NOCREATEDB NOCREATEROLE;
 SET SESSION AUTHORIZATION regress_conversion_user;
 CREATE CONVERSION myconv FOR 'LATIN1' TO 'UTF8' FROM iso8859_1_to_utf8;
