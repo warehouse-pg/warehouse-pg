@@ -15,6 +15,24 @@
 
 
 /*
+ * In today's multibyte encodings other than UTF8, this two-byte sequence
+ * ensures pg_encoding_mblen() == 2 && pg_encoding_verifymbstr() == 0.
+ *
+ * For historical reasons, several verifychar implementations opt to reject
+ * this pair specifically.  Byte pair range constraints, in encoding
+ * originator documentation, always excluded this pair.  No core conversion
+ * could translate it.  However, longstanding verifychar implementations
+ * accepted any non-NUL byte.  big5_to_euc_tw and big5_to_mic even translate
+ * pairs not valid per encoding originator documentation.  To avoid tightening
+ * core or non-core conversions in a security patch, we sought this one pair.
+ *
+ * PQescapeString() historically used spaces for BYTE1; many other values
+ * could suffice for BYTE1.
+ */
+#define NONUTF8_INVALID_BYTE0 (0x8d)
+#define NONUTF8_INVALID_BYTE1 (' ')
+
+/*
  * conversion to pg_wchar is done by "table driven."
  * to add an encoding support, define mb2wchar_with_len(), mblen(), dsplen()
  * for the particular encoding. Note that if the encoding is only
@@ -1351,6 +1369,11 @@ pg_big5_verifier(const unsigned char *s, int len)
 	if (len < l)
 		return -1;
 
+	if (l == 2 &&
+		s[0] == NONUTF8_INVALID_BYTE0 &&
+		s[1] == NONUTF8_INVALID_BYTE1)
+		return -1;
+
 	while (--l > 0)
 	{
 		if (*++s == '\0')
@@ -1371,6 +1394,11 @@ pg_gbk_verifier(const unsigned char *s, int len)
 	if (len < l)
 		return -1;
 
+	if (l == 2 &&
+		s[0] == NONUTF8_INVALID_BYTE0 &&
+		s[1] == NONUTF8_INVALID_BYTE1)
+		return -1;
+
 	while (--l > 0)
 	{
 		if (*++s == '\0')
@@ -1389,6 +1417,11 @@ pg_uhc_verifier(const unsigned char *s, int len)
 	l = mbl = pg_uhc_mblen(s);
 
 	if (len < l)
+		return -1;
+
+	if (l == 2 &&
+		s[0] == NONUTF8_INVALID_BYTE0 &&
+		s[1] == NONUTF8_INVALID_BYTE1)
 		return -1;
 
 	while (--l > 0)
@@ -1715,6 +1748,19 @@ pg_eucjp_increment(unsigned char *charptr, int length)
 
 
 /*
+ * Fills the provided buffer with two bytes such that:
+ *   pg_encoding_mblen(dst) == 2 && pg_encoding_verifymbstr(dst) == 0
+ */
+void
+pg_encoding_set_invalid(int encoding, char *dst)
+{
+	Assert(pg_encoding_max_length(encoding) > 1);
+
+	dst[0] = (encoding == PG_UTF8 ? 0xc0 : NONUTF8_INVALID_BYTE0);
+	dst[1] = NONUTF8_INVALID_BYTE1;
+}
+
+/*
  *-------------------------------------------------------------------
  * encoding info table
  * XXX must be sorted by the same order as enum pg_enc (in mb/pg_wchar.h)
@@ -1881,7 +1927,13 @@ pg_encoding_max_length(int encoding)
 {
 	Assert(PG_VALID_ENCODING(encoding));
 
-	return pg_wchar_table[encoding].maxmblen;
+	/*
+	 * Check for the encoding despite the assert, due to some mingw versions
+	 * otherwise issuing bogus warnings.
+	 */
+	return PG_VALID_ENCODING(encoding) ?
+		pg_wchar_table[encoding].maxmblen :
+		pg_wchar_table[PG_SQL_ASCII].maxmblen;
 }
 
 #ifndef FRONTEND
