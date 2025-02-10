@@ -22,7 +22,19 @@ override CPPFLAGS := -DFRONTEND -I$(libpq_srcdir) $(CPPFLAGS)
 OBJS = conditional.o mbprint.o print.o psqlscan.o recovery_gen.o \
        simple_list.o string_utils.o
 
+# src/backend/utils/mb
+OBJS += encnames.o wchar.o
+
 all: libpgfeutils.a
+
+# We use a few backend modules verbatim, but since we need
+# to compile with appropriate options to build a shared lib, we can't
+# use the same object files built for the backend.
+# Instead, symlink the source files in here and build our own object files.
+# When you add a file here, remember to add it in the "clean" target below.
+
+encnames.c wchar.c: % : $(top_srcdir)/src/backend/utils/mb/%
+	rm -f $@ && $(LN_S) $< .
 
 libpgfeutils.a: $(OBJS)
 	rm -f $@

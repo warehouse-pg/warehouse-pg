@@ -1,1 +1,3 @@
 /psqlscan.c
+/encnames.c
+/wchar.c
