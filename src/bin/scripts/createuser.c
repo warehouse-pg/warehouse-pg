@@ -262,6 +262,8 @@ main(int argc, char *argv[])
 	conn = connectDatabase("postgres", host, port, username, prompt_password,
 						   progname, echo, false);
 
+	setFmtEncoding(PQclientEncoding(conn));
+
 	initPQExpBuffer(&sql);
 
 	printfPQExpBuffer(&sql, "CREATE ROLE %s", fmtId(newuser));

@@ -36,8 +36,12 @@ extern int	quote_all_identifiers;
 extern PQExpBuffer (*getLocalPQExpBuffer) (void);
 
 extern const char *fmtId(const char *identifier);
+extern const char *fmtIdEnc(const char *identifier, int encoding);
 extern const char *fmtQualifiedId(int remoteVersion,
 			   const char *schema, const char *id);
+extern const char *fmtQualifiedIdEnc(int remoteVersion,
+			   const char *schema, const char *id, int encoding);
+extern void setFmtEncoding(int encoding);
 extern char *formatPGVersionNumber(int version_number, bool include_minor,
 					  char *buf, size_t buflen);
 extern void appendStringLiteral(PQExpBuffer buf, const char *str,

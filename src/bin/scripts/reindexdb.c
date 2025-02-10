@@ -256,7 +256,7 @@ reindex_one_database(const char *name, const char *dbname, const char *type,
 		strcmp(type, "INDEX") == 0)
 		appendQualifiedRelation(&sql, name, conn, progname, echo);
 	else if (strcmp(type, "DATABASE") == 0)
-		appendPQExpBufferStr(&sql, fmtId(PQdb(conn)));
+		appendPQExpBufferStr(&sql, fmtIdEnc(PQdb(conn), PQclientEncoding(conn)));
 	appendPQExpBufferChar(&sql, ';');
 
 	if (!executeMaintenanceCommand(conn, sql.data, echo))

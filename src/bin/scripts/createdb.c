@@ -204,6 +204,8 @@ main(int argc, char *argv[])
 	conn = connectMaintenanceDatabase(maintenance_db, host, port, username,
 									  prompt_password, progname, echo);
 
+	setFmtEncoding(PQclientEncoding(conn));
+
 	if (echo)
 		printf("%s\n", sql.data);
 	result = PQexec(conn, sql.data);

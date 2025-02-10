@@ -18,6 +18,7 @@
 
 #include "dumputils.h"
 
+#include "mb/pg_wchar.h"
 #include "parser/keywords.h"
 
 
@@ -37,6 +38,7 @@ static PQExpBuffer defaultGetLocalPQExpBuffer(void);
 /* Globals exported by this file */
 int			quote_all_identifiers = 0;
 PQExpBuffer (*getLocalPQExpBuffer) (void) = defaultGetLocalPQExpBuffer;
+static int     fmtIdEncoding = -1;
 
 /*
  * Returns a temporary PQExpBuffer, valid until the next call to the function.
@@ -66,13 +68,47 @@ defaultGetLocalPQExpBuffer(void)
 }
 
 /*
+ * Set the encoding that fmtId() and fmtQualifiedId() use.
+ *
+ * This is not safe against multiple connections having different encodings,
+ * but there is no real other way to address the need to know the encoding for
+ * fmtId()/fmtQualifiedId() input for safe escaping. Eventually we should get
+ * rid of fmtId().
+ */
+void
+setFmtEncoding(int encoding)
+{
+       fmtIdEncoding = encoding;
+}
+
+/*
+ * Return the currently configured encoding for fmtId() and fmtQualifiedId().
+ */
+static int
+getFmtEncoding(void)
+{
+       if (fmtIdEncoding != -1)
+               return fmtIdEncoding;
+
+       /*
+        * In assertion builds it seems best to fail hard if the encoding was not
+        * set, to make it easier to find places with missing calls. But in
+        * production builds that seems like a bad idea, thus we instead just
+        * default to UTF-8.
+        */
+       Assert(fmtIdEncoding != -1);
+
+       return PG_UTF8;
+}
+
+/*
  *	Quotes input string if it's not a legitimate SQL identifier as-is.
  *
- *	Note that the returned string must be used before calling fmtId again,
+ *	Note that the returned string must be used before calling fmtIdEnc again,
  *	since we re-use the same return buffer each time.
  */
 const char *
-fmtId(const char *rawid)
+fmtIdEnc(const char *rawid, int encoding)
 {
 	PQExpBuffer id_return = getLocalPQExpBuffer();
 
@@ -147,7 +183,23 @@ fmtId(const char *rawid)
 }
 
 /*
- * fmtQualifiedId - convert a qualified name to the proper format for
+ *     Quotes input string if it's not a legitimate SQL identifier as-is.
+ *
+ *     Note that the returned string must be used before calling fmtId again,
+ *     since we re-use the same return buffer each time.
+ *
+ *  NB: This assumes setFmtEncoding() previously has been called to configure
+ *  the encoding of rawid. It is preferable to use fmtIdEnc() with an
+ *  explicit encoding.
+ */
+const char *
+fmtId(const char *rawid)
+{
+       return fmtIdEnc(rawid, getFmtEncoding());
+}
+
+/*
+ * fmtQualifiedIdEnc - convert a qualified name to the proper format for
  * the source database.
  *
  * Like fmtId, use the result before calling again.
@@ -156,7 +208,7 @@ fmtId(const char *rawid)
  * use it until we're finished with calling fmtId().
  */
 const char *
-fmtQualifiedId(int remoteVersion, const char *schema, const char *id)
+fmtQualifiedIdEnc(int remoteVersion, const char *schema, const char *id, int encoding)
 {
 	PQExpBuffer id_return;
 	PQExpBuffer lcl_pqexp = createPQExpBuffer();
@@ -164,9 +216,9 @@ fmtQualifiedId(int remoteVersion, const char *schema, const char *id)
 	/* Some callers might fail to provide a schema name */
 	if (schema && *schema)
 	{
-		appendPQExpBuffer(lcl_pqexp, "%s.", fmtId(schema));
+		appendPQExpBuffer(lcl_pqexp, "%s.", fmtIdEnc(schema, encoding));
 	}
-	appendPQExpBufferStr(lcl_pqexp, fmtId(id));
+	appendPQExpBufferStr(lcl_pqexp, fmtIdEnc(id, encoding));
 
 	id_return = getLocalPQExpBuffer();
 
@@ -174,6 +226,24 @@ fmtQualifiedId(int remoteVersion, const char *schema, const char *id)
 	destroyPQExpBuffer(lcl_pqexp);
 
 	return id_return->data;
+}
+
+/*
+ * fmtQualifiedId - construct a schema-qualified name, with quoting as needed.
+ *
+ * Like fmtId, use the result before calling again.
+ *
+ * Since we call fmtId and it also uses getLocalPQExpBuffer() we cannot
+ * use that buffer until we're finished with calling fmtId().
+ *
+ * NB: This assumes setFmtEncoding() previously has been called to configure
+ * the encoding of schema/id. It is preferable to use fmtQualifiedIdEnc()
+ * with an explicit encoding.
+ */
+const char *
+fmtQualifiedId(int remoteVersion, const char *schema, const char *id)
+{
+       return fmtQualifiedIdEnc(remoteVersion, schema, id, getFmtEncoding());
 }
 
 /*
