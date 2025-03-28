@@ -800,6 +800,15 @@ TRUNCATE TABLE postgres_fdw_gp."GP 1";
 -- validate writes on coordinator (mpp_execute set to coordinator)
 -- ===================================================================
 ALTER FOREIGN TABLE gp_ft1 OPTIONS ( SET mpp_execute 'coordinator' );
+-- test restriction on non-system foreign tables.
+SET restrict_nonsystem_relation_kind TO 'foreign-table';
+SELECT * from gp_ft1 where f1 < 1; -- ERROR
+ERROR:  access to non-system foreign table is restricted
+INSERT INTO gp_ft1 (f1) VALUES (1); -- ERROR
+ERROR:  access to non-system foreign table is restricted
+DELETE FROM gp_ft1 WHERE f1 = 1; -- ERROR
+ERROR:  access to non-system foreign table is restricted
+RESET restrict_nonsystem_relation_kind;
 EXPLAIN (COSTS FALSE) INSERT INTO gp_ft1 SELECT * FROM table_dist_rand;
                    QUERY PLAN                   
 ------------------------------------------------
