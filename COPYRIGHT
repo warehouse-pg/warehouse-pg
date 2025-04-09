@@ -1,10 +1,8 @@
-Greenplum Database
-
-Copyright (c) 2004-2020 VMware, Inc. or its affiliates. All Rights Reserved.
+WarehousePG
 
 All Rights Reserved.
 
-Greenplum Database is licensed under the Apache License Version 2.0
+WarehousePG is licensed under the Apache License Version 2.0
 (see LICENSE & NOTICE) and is based on the PostgreSQL Database
 Management System.
 
@@ -34,3 +32,4 @@ INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
 AND FITNESS FOR A PARTICULAR PURPOSE.  THE SOFTWARE PROVIDED HEREUNDER IS
 ON AN "AS IS" BASIS, AND THE UNIVERSITY OF CALIFORNIA HAS NO OBLIGATIONS TO
 PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS, OR MODIFICATIONS.
+
