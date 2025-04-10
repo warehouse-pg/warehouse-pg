@@ -32,7 +32,7 @@ Following instructions are for Centos/RHEL/Fedora as example.
 The python-devel is not required here because it is provided by Anaconda.
 
 ## Download and build GPDB
-	git clone https://github.com/greenplum-db/gpdb.git
+	git clone https://github.com/warehouse-pg/warehouse-pg.git
 	cd gpdb
 	./configure --prefix=`pwd`/greenplumdb  --with-gssapi --with-pgport=5432 --with-perl --with-python --with-openssl  --with-libxml --enable-cassert --enable-debug --enable-depend
 	make install

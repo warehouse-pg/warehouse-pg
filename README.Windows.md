@@ -1,4 +1,4 @@
-# Building GPDB client tools on Windows
+# Building WarehousePG client tools on Windows
 
 We only support building 64-bit client tools on Windows using Visual Studio 2017. Building backend is not supported.
 
@@ -113,7 +113,7 @@ nmake install NODEBUG=1
 
 # Build steps
 
-Replace <path\to\gpdb> with real location of your gpdb source code. Make sure you have
+Replace <path\to\whpg> with real location of your whpg source code. Make sure you have
 also cloned the submodule at gpMgmt\bin\pythonSrc\ext.
 
 We will install client package to C:\greenplum-db-devel. If you want another location,
@@ -122,20 +122,20 @@ make sure you've replaced C:\greenplum-db-devel in the following scripts.
 
 1. Create config.pl at src/tools/msvc. If you don't build with these supports, it's ok to skip this step.
 ```
-cd <path\to\gpdb>\src\tools\msvc
+cd <path\to\whpg>\src\tools\msvc
 echo print "our \$config = {gss => 'c:/dep', openssl => 'c:/dep', zlib => 'c:/dep'};" | perl >config.pl
 ```
 
 2. Build postgres clients and scripts
 ```
-cd <path\to\gpdb>\src\tools\msvc
+cd <path\to\whpg>\src\tools\msvc
 build client
 install C:\greenplum-db-devel client
 ```
 
 3. Build gpfdist
 ```
-cd <path\to\gpdb>\src\bin\gpfdist
+cd <path\to\whpg>\src\bin\gpfdist
 cd build
 cmake -DCMAKE_PREFIX_PATH:PATH=C:\ext -DCMAKE_INSTALL_PREFIX:PATH=C:\greenplum-db-devel -G "Visual Studio 15 2017 Win64" ..
 cmake --build . --config Release --target ALL_BUILD
