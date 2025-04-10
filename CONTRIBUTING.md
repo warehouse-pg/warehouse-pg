@@ -11,6 +11,8 @@ Once you have your GitHub account, fork this repository so that you can have you
 
 ## Licensing of WarehousePG contributions
 
+If the contribution you're submitting is original work, you can assume that WarehousePG will release it as part of an overall WarehousePG release available to the downstream consumers under the Apache License, Version 2.0. However, in addition to that, WarehousePG may also decide to release it under a different license (such as PostgreSQL License to the upstream consumers that require it. A typical example here would be WarehousePG upstreaming your contribution back to PostgreSQL community (which can be done either verbatim or your contribution being upstreamed as part of the larger changeset).
+
 If the contribution you're submitting is NOT original work you have to indicate the name of the license and also make sure that it is similar in terms to the Apache License 2.0. Apache Software Foundation maintains a list of these licenses under Category A. In addition to that, you may be required to make proper attribution in the NOTICE file file similar to these examples.
 
 Finally, keep in mind that it is NEVER a good idea to remove licensing headers from the work that is not your original one. Even if you are using parts of the file that originally had a licensing header at the top you should err on the side of preserving it. As always, if you are not quite sure about the licensing implications of your contributions, feel free to reach out to us on the developer mailing list.
@@ -21,7 +23,7 @@ Your chances of getting feedback and seeing your code merged into the project gr
 
 When it comes to C and C++ parts of WarehousePG, we try to follow PostgreSQL Coding Conventions. In addition to that:
 
-For C and perl code, please run pgindent if necessary as specified in [README.whpg](/src/tools/pgindent/README.).
+For C and perl code, please run pgindent if necessary as specified in [README.whpg](/src/tools/pgindent/README.whpg).
 All Python code must pass Pylint.
 All Go code must be formatted according to gofmt.
 We recommend using `git diff --color` when reviewing your changes so that you don't have any spurious whitespace issues in the code that you submit.
