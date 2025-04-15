@@ -2416,6 +2416,11 @@ expression_tree_walker(Node *node,
 					return true;
 			}
 			break;
+		case T_String:
+			// When walking a CustomScan with a CustomScanState that's a list of strings,
+			// we eventually start looking at String and for some reason this is not
+			// included here
+			break;
 		default:
 			elog(ERROR, "unrecognized node type: %d",
 				 (int) nodeTag(node));
