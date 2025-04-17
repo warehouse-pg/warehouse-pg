@@ -604,7 +604,7 @@ AddOrUpdateCOAttributeEncodings(Oid relid, List *attr_encodings)
 	ListCell *lc;
 	ListCell *lc_filenum;
 	List *filenums = NIL;
-	bool attnumsWithEntries[MaxHeapAttributeNumber];
+	bool attnumsWithEntries[MaxHeapAttributeNumber] = { false };
 
 	check_attribute_encoding_entry_exist(relid, attnumsWithEntries);
 
