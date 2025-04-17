@@ -53,6 +53,7 @@ build.sh
 .project
 .settings/
 .vscode/
+.cache/
 GPATH
 GRTAGS
 GTAGS
