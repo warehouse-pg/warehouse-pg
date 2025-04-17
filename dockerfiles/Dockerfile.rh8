@@ -1,0 +1,165 @@
+
+# define arguments as global variables
+# ENV settings are scoped locally per build stage, by design
+ARG GLOB_MAINTAINER="ads@pgug.de"
+ARG GLOB_DESCRIPTION="Dockerfile to build Greenplum Database from source"
+ARG GLOB_IMAGE_TITLE="WarehousePG Database"
+ARG GLOB_IMAGE_DESCRIPTION="WarehousePG Database image"
+ARG GLOB_IMAGE_VERSION="HEAD"
+ARG GLOB_IMAGE_AUTHORS="bill.smith@enterprisedb.com"
+ARG GLOB_OS_NAME="RockyLinux"
+ARG GLOB_OS_VERSION="8"
+ARG GLOB_BUILD_VERSION
+ARG GLOB_WHPG_REPO_URL=https://github.com/warehouse-pg/warehouse-pg.git
+ARG GLOB_GPDB_BUILD_DIR=/opt/whpg-source
+ARG GLOB_GPDB_INSTALL_DIR_PARENT=/usr/local
+ARG GLOB_GPDB_INSTALL_DIR_NAME=gpdb
+ARG GLOB_GPDB_INSTALL_DIR=$GLOB_GPDB_INSTALL_DIR_PARENT/$GLOB_GPDB_INSTALL_DIR_NAME
+ARG GLOB_GPHOME=${GLOB_GPDB_INSTALL_DIR}
+#ARG LD_LIBRARY_PATH=$GPHOME/lib:$LD_LIBRARY_PATH
+ARG GLOB_COORDINATOR_DATA_DIRECTORY=/gpdata/coordinator/gpsne-1
+ARG GLOB_MASTER_DATA_DIRECTORY=$COORDINATOR_DATA_DIRECTORY
+
+
+
+# use Rocky Linux as base image
+FROM rockylinux:8 AS build-stage
+
+ARG GLOB_MAINTAINER
+ARG GLOB_DESCRIPTION
+ARG GLOB_IMAGE_TITLE
+ARG GLOB_IMAGE_DESCRIPTION
+ARG GLOB_IMAGE_VERSION
+ARG GLOB_IMAGE_AUTHORS
+ARG GLOB_OS_NAME
+ARG GLOB_OS_VERSION
+ARG GLOB_BUILD_VERSION
+ARG GLOB_WHPG_REPO_URL
+ARG GLOB_GPDB_BUILD_DIR
+ARG GLOB_GPDB_INSTALL_DIR_PARENT
+ARG GLOB_GPDB_INSTALL_DIR_NAME
+ARG GLOB_GPDB_INSTALL_DIR
+ARG GLOB_GPHOME
+#ARG LD_LIBRARY_PATH
+ARG GLOB_COORDINATOR_DATA_DIRECTORY
+ARG GLOB_MASTER_DATA_DIRECTORY
+
+# metadata
+LABEL maintainer=$GLOB_MAINTAINER
+LABEL description=$GLOB_DESCRIPTION
+LABEL org.opencontainers.image.title=$GLOB_IMAGE_TITLE
+LABEL org.opencontainers.image.description=$GLOB_IMAGE_DESCRIPTION
+LABEL org.opencontainers.image.version=$GLOB_BUILD_VERSION
+LABEL org.opencontainers.image.authors=$GLOB_IMAGE_AUTHORS
+
+
+
+# set environment variables
+# start with C locale here, change to US later
+ENV LANG=en_US.UTF-8
+ENV LC_ALL=en_US.UTF-8
+# configure environment for Greenplum
+ENV WHPG_REPO_URL=$GLOB_WHPG_REPO_URL
+ENV GPDB_BUILD_DIR=$GLOB_GPDB_BUILD_DIR
+ENV GPDB_INSTALL_DIR_PARENT=$GLOB_GPDB_INSTALL_DIR_PARENT
+ENV GPDB_INSTALL_DIR_NAME=$GLOB_GPDB_INSTALL_DIR_NAME
+ENV GPDB_INSTALL_DIR=$GLOB_GPDB_INSTALL_DIR
+ENV OS_NAME=$GLOB_OS_NAME
+ENV OS_VERSION=$GLOB_OS_VERSION
+ENV BUILD_VERSION=$GLOB_BUILD_VERSION
+ENV GPHOME=$GLOB_GPHOME
+#ENV LD_LIBRARY_PATH=$GPHOME/lib:$LD_LIBRARY_PATH
+ENV COORDINATOR_DATA_DIRECTORY=$GLOB_COORDINATOR_DATA_DIRECTORY
+ENV MASTER_DATA_DIRECTORY=$GLOB_MASTER_DATA_DIRECTORY
+ENV PATH=$GPHOME/bin:$PATH
+
+
+# install required packages for building Greenplum
+#RUN localectl set-locale LANG=en_US.UTF-8
+RUN dnf update -y
+RUN dnf groupinstall -y "Development Tools"
+RUN dnf install -y epel-release
+RUN dnf update -y
+RUN dnf install -y pkgconfig
+RUN dnf install -y sudo
+RUN dnf install -y passwd
+RUN dnf install -y which
+RUN dnf install -y less
+RUN dnf install -y ed
+RUN dnf install -y vim
+RUN dnf install -y wget
+RUN dnf install -y git
+RUN dnf install -y bison
+RUN dnf install -y flex
+RUN dnf install -y tar
+RUN dnf install -y libzstd-devel
+RUN dnf install -y zlib-devel
+RUN dnf install -y zip unzip
+RUN dnf install -y perl perl-core perl-Env perl-ExtUtils-Embed perl-Test-Simple
+RUN dnf install -y readline-devel
+RUN dnf install -y openssl-devel
+RUN dnf install -y pam-devel
+RUN dnf install -y libxml2-devel
+RUN dnf install -y krb5-devel
+RUN dnf install -y python3-devel python3-pytest python3-lxml python3-psutil python3-pyyaml
+RUN dnf install -y cmake cmake3
+RUN dnf install -y gcc gcc-c++
+RUN dnf install -y make
+RUN dnf install -y diffutils
+RUN dnf install -y libevent-devel
+RUN dnf install -y curl-devel libcurl-devel
+RUN dnf install -y boost-devel 
+RUN dnf install -y thrift-devel
+RUN dnf install -y xerces-c xerces-c-devel
+RUN dnf install -y java-11-openjdk java-11-openjdk-devel
+RUN dnf install -y maven
+RUN dnf install -y apr apr-devel
+RUN dnf install -y automake
+RUN dnf install -y libtool
+RUN dnf install -y autoconf
+RUN dnf install -y bzip2 bzip2-devel
+RUN dnf install -y iproute
+RUN dnf install -y rsync
+RUN dnf install -y openssh-server openssh-clients
+RUN dnf install -y iputils
+RUN dnf install -y procps
+RUN dnf install -y createrepo_c
+RUN dnf install -y glibc-langpack-en
+RUN dnf install -y initscripts
+RUN dnf install -y libuuid-devel
+RUN dnf install -y lz4 lz4-devel
+RUN dnf install -y m4
+RUN dnf install -y nc
+RUN dnf install -y net-tools
+RUN dnf install -y openldap-devel
+RUN dnf install -y pinentry
+RUN dnf install -y rpm-build rpm-sign rpmdevtools
+RUN dnf install -y util-linux-ng
+RUN dnf install -y tmux
+RUN dnf install -y screen
+#RUN dnf config-manager --set-enabled crb
+RUN dnf config-manager --set-enabled powertools
+RUN dnf install -y libyaml libyaml-devel
+RUN dnf install -y libuv-devel
+RUN dnf install -y perl-IPC-Run
+
+RUN dnf clean all
+
+ENV LANG=en_US.UTF-8
+ENV LC_ALL=en_US.UTF-8
+
+
+# add Greenplum user for building the database
+RUN groupadd gpadmin
+RUN useradd -m -d /home/gpadmin -s /bin/bash -c "Greenplum Database" -g gpadmin gpadmin
+RUN echo "gpadmin ALL=(ALL) NOPASSWD: ALL" | sudo EDITOR='tee -a' visudo
+RUN mkdir ${GPDB_BUILD_DIR} ${GPDB_INSTALL_DIR} && chown gpadmin:gpadmin ${GPDB_BUILD_DIR} ${GPDB_INSTALL_DIR}
+
+
+# Seems that the GP ABI tests are expecting to run as root.  So we won't switch to the gpadmin user as it
+# will create more work at this time. bsmith Apr 17, 2025
+# switch to gpadmin user, do not build as root
+#USER gpadmin
+
+
+
