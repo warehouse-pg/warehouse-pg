@@ -36,7 +36,7 @@ jobs:
       - name: Get Greenplum version variables
         id: vars
         run: |
-          remote_repo='https://github.com/greenplum-db/gpdb.git'
+          remote_repo='https://github.com/warehouse-pg/warehouse-pg.git'
           git ls-remote --tags --refs --sort='v:refname' $remote_repo '7.*' | grep -v '-' | tail -n 1  > baseline_version_ref
           baseline_ref=$(cat baseline_version_ref | awk '{print $1}')
           baseline_version=$(cat baseline_version_ref | awk '{print $2}')
@@ -53,15 +53,16 @@ jobs:
 
       - name: Upload symbol/type checking exception list
         if: steps.check_exception_lists.outputs.EXCEPTION_LISTS_COUNT != '0'
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: exception_lists
           path: '.abi-check/${{ steps.vars.outputs.BASELINE_VERSION }}/'
 
   abi-dump:
     needs: abi-dump-setup
-    runs-on: ubuntu-latest
-    container: gcr.io/data-gpdb-public-images/gpdb7-rocky8-build
+    runs-on: ubuntu-latest 
+    container:
+      image: ghcr.io/warehouse-pg/whpg7-rocky8-build
     strategy:
       matrix:
         name:
@@ -69,7 +70,7 @@ jobs:
           - build-latest
         include:
           - name: build-baseline
-            repo: greenplum-db/gpdb
+            repo: warehouse-pg/warehouse-pg
             ref: ${{ needs.abi-dump-setup.outputs.BASELINE_VERSION }}
           - name: build-latest
             repo: ${{ github.repository }}
@@ -119,7 +120,7 @@ jobs:
           abi-dumper -lver ${{ matrix.ref }} -skip-cxx -public-headers /usr/local/greenplum-db-devel/include/${{ needs.abi-dump-setup.outputs.ABI_HEADERS }} -o postgres-${{ matrix.ref }}.abi /usr/local/greenplum-db-devel/bin/postgres
 
       - name: Upload ABI files
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
           path: '*${{ matrix.ref }}.abi'
@@ -129,22 +130,23 @@ jobs:
       - abi-dump-setup
       - abi-dump
     runs-on: ubuntu-latest
-    container: gcr.io/data-gpdb-public-images/gpdb7-rocky8-build
+    container:
+      image: ghcr.io/warehouse-pg/whpg7-rocky8-build
     steps:
       - name: Download baseline
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: build-baseline
           path: build-baseline/
       - name: Download latest
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: build-latest
           path: build-latest/
 
       - name: Download exception lists
         if: needs.abi-dump-setup.outputs.EXCEPTION_LISTS_COUNT != '0'
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: exception_lists
           path: exception_lists/
@@ -180,7 +182,7 @@ jobs:
 
       - name: Upload ABI Comparison
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: compat-report-${{ github.sha }}
           path: compat_reports/
