@@ -30,8 +30,7 @@ jobs:
         run: |
           echo "::echo::on"
           echo "::group::Login to GitHub Container Registry"
-
-          echo ${GITHUB_TOKEN} | docker login ghcr.io --password-stdin
+          docker login ghcr.io 
 
           echo "::endgroup::"
         shell: bash
