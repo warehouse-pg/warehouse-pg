@@ -932,6 +932,8 @@ ExistValidLastrownums(Oid relid, int natts)
 
 /*
  * Determine which attnums have an entry present in pg_attribute_encoding
+ *
+ * attnum_entry_present[] should be initialized with false.
  */
 void
 check_attribute_encoding_entry_exist(Oid relid, bool *attnum_entry_present)
@@ -943,8 +945,6 @@ check_attribute_encoding_entry_exist(Oid relid, bool *attnum_entry_present)
 	bool 			isnull;
 
 	Assert(OidIsValid(relid));
-
-	MemSet(attnum_entry_present, false, sizeof(attnum_entry_present));
 
 	rel = heap_open(AttributeEncodingRelationId, AccessShareLock);
 
