@@ -70,6 +70,46 @@ select csq_t1.x, (select bar.x from csq_t1 bar where bar.x = csq_t1.x) as sum fr
 (3 rows)
 
 --
+-- Correlated subquery in the targetlist: PlaceHolderVar
+--
+drop table if exists sub_phv;
+NOTICE:  table "sub_phv" does not exist, skipping
+create table sub_phv(a int, b int) distributed by (a);
+insert into sub_phv values(1,1),(2,2);
+explain(costs off)
+select *, (select ss.y as z from sub_phv t3 limit 1) from sub_phv t1 left join
+(select a as x, 42 as y from sub_phv t2) ss on t1.b = ss.x order by 1,2;
+                                    QUERY PLAN                                     
+-----------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   Merge Key: t1.a, t1.b
+   ->  Sort
+         Sort Key: t1.a, t1.b
+         ->  Hash Left Join
+               Hash Cond: (t1.b = t2.a)
+               ->  Redistribute Motion 3:3  (slice3; segments: 3)
+                     Hash Key: t1.b
+                     ->  Seq Scan on sub_phv t1
+               ->  Hash
+                     ->  Seq Scan on sub_phv t2
+               SubPlan 1
+                 ->  Limit
+                       ->  Result
+                             ->  Materialize
+                                   ->  Broadcast Motion 3:3  (slice2; segments: 3)
+                                         ->  Seq Scan on sub_phv t3
+ Optimizer: Postgres-based planner
+(18 rows)
+
+select *, (select ss.y as z from sub_phv t3 limit 1) from sub_phv t1 left join 
+(select a as x, 42 as y from sub_phv t2) ss on t1.b = ss.x order by 1,2;
+ a | b | x | y  | z  
+---+---+---+----+----
+ 1 | 1 | 1 | 42 | 42
+ 2 | 2 | 2 | 42 | 42
+(2 rows)
+
+--
 -- CSQs with partitioned tables
 --
 drop table if exists csq_t1;
