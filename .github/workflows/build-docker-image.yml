@@ -44,6 +44,6 @@ jobs:
       - name: Docker Build
         run: |
           cd src/dockerfiles
-          IMAGE_NAME=ghcr.io/warehouse-pg/public/whpg7-rocky8-build
+          IMAGE_NAME=ghcr.io/warehouse-pg/whpg7-rocky8-build
           docker build -t $IMAGE_NAME --file Dockerfile.rh8 .
           docker push $IMAGE_NAME
