@@ -1021,3 +1021,27 @@ SELECT objid::regtype, refobjid::regtype FROM pg_depend
 
 -- Alter it back to ao_column so that we test the upgrade path
 ALTER TABLE at_array_type_co_to_heap SET ACCESS METHOD ao_column;
+
+-- Alter a very wide table from HEAP to CO
+CREATE OR REPLACE FUNCTION create_very_wide_table(num_columns INTEGER, column_prefix TEXT, data_type TEXT)
+RETURNS VOID AS $$
+DECLARE
+    sql_statement TEXT := 'CREATE TABLE very_wide_table (';
+    i INTEGER;
+BEGIN
+    FOR i IN 1..num_columns LOOP
+        sql_statement := sql_statement || quote_ident(column_prefix || i) || ' ' || data_type;
+        IF i < num_columns THEN
+            sql_statement := sql_statement || ', ';
+        END IF;
+    END LOOP;
+    sql_statement := sql_statement || ');';
+
+    EXECUTE sql_statement;
+    RAISE NOTICE 'Table "very_wide_table" created with % columns.', num_columns;
+END;
+$$ LANGUAGE plpgsql;
+
+SELECT create_very_wide_table(1594, 'col_', 'TEXT');
+
+ALTER TABLE very_wide_table SET ACCESS METHOD ao_column WITH (compresstype=zstd);
