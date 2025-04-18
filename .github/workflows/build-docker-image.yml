@@ -31,7 +31,6 @@ jobs:
           echo "::echo::on"
           echo "::group::Login to GitHub Container Registry"
 
-#          echo ${GITHUB_TOKEN} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
           echo ${GITHUB_TOKEN} | docker login ghcr.io --password-stdin
 
           echo "::endgroup::"
