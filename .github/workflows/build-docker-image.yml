@@ -1,0 +1,45 @@
+name: Build Docker Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: Reason to run this build
+        required: false
+        type: string
+
+run-name: ${{ inputs.reason || github.event.head_commit.message || github.workflow }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+      
+    steps:
+      - name: Checkout source repo
+        uses: actions/checkout@v3
+        with:
+          repository: ${{ github.repository }}
+          path: src
+
+      - name: Login to GitHub Container Registry
+        run: |
+          echo "::group::Login to GitHub Container Registry"
+          echo ${GITHUB_TOKEN} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          echo "::endgroup::"
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker Build
+        run: |
+          cd src/dockerfiles
+          IMAGE_NAME=ghcr.io/warehouse-pg/whpg7-rocky8-build
+          docker build -t $IMAGE_NAME --file Dockerfile.rh8 .
+          docker push $IMAGE_NAME
