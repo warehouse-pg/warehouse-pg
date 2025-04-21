@@ -1,4 +1,4 @@
-name: Greenplum ABI Tests
+name: WarehousePG ABI Tests
 
 on:
   workflow_dispatch:
@@ -33,10 +33,10 @@ jobs:
       - name: Fetch source
         uses: actions/checkout@v3
 
-      - name: Get Greenplum version variables
+      - name: Get WarehousePG version variables
         id: vars
         run: |
-          remote_repo='https://github.com/greenplum-db/gpdb.git'
+          remote_repo='https://github.com/warehouse-pg/warehouse-pg.git'
           git ls-remote --tags --refs --sort='v:refname' $remote_repo '6.*' | tail -n 1  > baseline_version_ref
           baseline_ref=$(cat baseline_version_ref | awk '{print $1}')
           baseline_version=$(cat baseline_version_ref | awk '{print $2}')
@@ -53,7 +53,7 @@ jobs:
 
       - name: Upload symbol/type checking exception list
         if: steps.check_exception_lists.outputs.EXCEPTION_LISTS_COUNT != '0'
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: exception_lists
           path: '.abi-check/${{ steps.vars.outputs.BASELINE_VERSION }}/'
@@ -61,7 +61,8 @@ jobs:
   abi-dump:
     needs: abi-dump-setup
     runs-on: ubuntu-latest
-    container: gcr.io/data-gpdb-public-images/gpdb6-rocky8-build
+    container:
+      image: ghcr.io/warehouse-pg/whpg7-rocky8-build
     strategy:
       matrix:
         name:
@@ -69,7 +70,7 @@ jobs:
           - build-latest
         include:
           - name: build-baseline
-            repo: greenplum-db/gpdb
+            repo: warehouse-pg/warehouse-pg
             ref: ${{ needs.abi-dump-setup.outputs.BASELINE_VERSION }}
           - name: build-latest
             repo: ${{ github.repository }}
@@ -85,12 +86,11 @@ jobs:
           cp uctags-2023.07.05-linux-x86_64/bin/* /usr/bin/
           which ctags
 
-      - name: Download Greenplum source code
+      - name: Download WarehousePG source code
         uses: actions/checkout@v3
         with:
           repository: ${{ matrix.repo }}
           ref: ${{ matrix.ref }}
-          submodules: recursive
           fetch-depth: 0 # Specify '0' to fetch all history for all branches and tags.
           path: gpdb_src
 
@@ -99,15 +99,21 @@ jobs:
           yum install -y epel-release
           yum install -y abi-dumper
 
-      - name: Build Greenplum
+      - name: Build WarehousePG
         run: |
-          ## TODO: Since abi-dumper requires debug info and it's hard to inject CFLAGS via the script for
-          ## releasing Greenplum, we have to manually configure it here. Probably we can improve it in future.
-          export PATH=/opt/python-3.9.13/bin:/opt/python-2.7.18/bin:$PATH
+          yum install -y python2-devel
+          [ ! -f /usr/bin/python ] && alternatives --set python /usr/bin/python2
+
           pushd gpdb_src
+          ## Actually we should build a xerces-c with C++98 and link it instead
+          ## of the system package, but for ABI comparison, simply go other way.
+          sed --in-place=.bk --expression="s/98/11/" src/backend/gporca/libgpos/src/common/Makefile src/backend/gporca/gporca.mk src/backend/gpopt/gpopt.mk
+
+          ## TODO: Since abi-dumper requires debug info and it's hard to inject CFLAGS via the script for
+          ## releasing WarehousePG, we have to manually configure it here. Probably we can improve it in future.
           CC='gcc -m64' \
           CFLAGS='-Og -g3 -Wno-maybe-uninitialized' LDFLAGS='-Wl,--enable-new-dtags -Wl,--export-dynamic' \
-          ./configure --with-quicklz --disable-gpperfmon --with-gssapi --enable-mapreduce --enable-orafce --enable-ic-proxy \
+          ./configure --disable-gpperfmon --with-gssapi --enable-mapreduce --enable-orafce --enable-ic-proxy \
                       --enable-orca --with-libxml --with-pythonsrc-ext --with-uuid=e2fs --with-pgport=5432 --enable-tap-tests \
                       --enable-debug-extensions --with-perl --with-python --with-openssl --with-pam --with-ldap --with-includes="" \
                       --with-libraries="" --disable-rpath \
@@ -120,7 +126,7 @@ jobs:
           abi-dumper -lver ${{ matrix.ref }} -skip-cxx -public-headers /usr/local/greenplum-db-devel/include/${{ needs.abi-dump-setup.outputs.ABI_HEADERS }} -o postgres-${{ matrix.ref }}.abi /usr/local/greenplum-db-devel/bin/postgres
 
       - name: Upload ABI files
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
           path: '*${{ matrix.ref }}.abi'
@@ -130,22 +136,23 @@ jobs:
       - abi-dump-setup
       - abi-dump
     runs-on: ubuntu-latest
-    container: gcr.io/data-gpdb-public-images/gpdb6-rocky8-build
+    container:
+      image: ghcr.io/warehouse-pg/whpg7-rocky8-build
     steps:
       - name: Download baseline
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: build-baseline
           path: build-baseline/
       - name: Download latest
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: build-latest
           path: build-latest/
 
       - name: Download exception lists
         if: needs.abi-dump-setup.outputs.EXCEPTION_LISTS_COUNT != '0'
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: exception_lists
           path: exception_lists/
@@ -181,7 +188,7 @@ jobs:
 
       - name: Upload ABI Comparison
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: compat-report-${{ github.sha }}
           path: compat_reports/
