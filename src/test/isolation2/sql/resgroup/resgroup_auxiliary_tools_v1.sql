@@ -163,7 +163,7 @@ $$ LANGUAGE plpython3u;
     sql = "create resource group " + grp + " with (" + "cpuset='" + line + "')"
 
     # plpy SPI will always start a transaction, but res group cannot be created in a transaction.
-    ret = subprocess.run(['psql', 'postgres', '-c' , '{}'.format(sql)], capture_output=True)
+    ret = subprocess.run(['psql', 'postgres', '-c' , '{}'.format(sql)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if ret.returncode != 0:
         plpy.error('failed to create resource group.\n {} \n {}'.format(ret.stdout, ret.stderr))
 
@@ -261,11 +261,11 @@ $$ LANGUAGE plpython3u;
 
     def get_result(host):
         stdout = subprocess.run(["ssh", "{}".format(host), "ps -ef | grep postgres | grep con{} | grep -v grep | awk '{{print $2}}'".format(session_id)],
-                                capture_output=True, check=True).stdout
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True).stdout
         session_pids = stdout.splitlines()
 
         path = "/sys/fs/cgroup/cpu/gpdb/{}/cgroup.procs".format(groupid)
-        stdout = subprocess.run(["ssh", "{}".format(host), "cat {}".format(path)], capture_output=True, check=True).stdout
+        stdout = subprocess.run(["ssh", "{}".format(host), "cat {}".format(path)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True).stdout
         cgroups_pids = stdout.splitlines()
 
         return set(session_pids).issubset(set(cgroups_pids))
