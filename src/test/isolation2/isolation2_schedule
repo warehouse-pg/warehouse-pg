@@ -248,6 +248,7 @@ test: segwalrep/twophase_tolerance_with_mirror_promotion
 test: segwalrep/checkpoint_remove_xlog
 test: segwalrep/restartpoint_remove_xlog
 test: segwalrep/checkpoint_with_prepare
+test: segwalrep/startup_rename_prepared_xlog
 test: segwalrep/failover_with_many_records
 test: segwalrep/dtm_recovery_on_standby
 test: segwalrep/commit_blocking_on_standby
