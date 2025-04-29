@@ -7967,6 +7967,64 @@ StartupXLOG(void)
 								   true);
 	}
 
+	/*
+	 * Preallocate additional log files, if wanted.
+	 */
+	PreallocXlogFiles(EndOfLog);
+
+	/*
+	 * Okay, we're officially UP.
+	 */
+	InRecovery = false;
+
+	/* start the archive_timeout timer running */
+	XLogCtl->lastSegSwitchTime = (pg_time_t) time(NULL);
+
+	/* also initialize latestCompletedXid, to nextXid - 1 */
+	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+	ShmemVariableCache->latestCompletedXid = ShmemVariableCache->nextXid;
+	TransactionIdRetreat(ShmemVariableCache->latestCompletedXid);
+	elog(LOG, "latest completed transaction id is %u and next transaction id is %u",
+		ShmemVariableCache->latestCompletedXid,
+		ShmemVariableCache->nextXid);
+	LWLockRelease(ProcArrayLock);
+
+	/*
+	 * Start up the commit log and subtrans, if not already done for hot
+	 * standby.
+	 */
+	if (standbyState == STANDBY_DISABLED)
+	{
+		StartupCLOG();
+		StartupSUBTRANS(oldestActiveXID);
+		DistributedLog_Startup(oldestActiveXID,
+							   ShmemVariableCache->nextXid);
+	}
+
+	/*
+	 * Perform end of recovery actions for any SLRUs that need it.
+	 */
+	TrimCLOG();
+	TrimMultiXact();
+
+	/* Reload shared-memory state for prepared transactions */
+	RecoverPreparedTransactions();
+
+	/* Shut down xlogreader */
+	if (readFile >= 0)
+	{
+		close(readFile);
+		readFile = -1;
+	}
+	XLogReaderFree(xlogreader);
+
+	/*
+	 * If any of the critical GUCs have changed, log them before we allow
+	 * backends to write WAL.
+	 */
+	LocalSetXLogInsertAllowed();
+	XLogReportParameters();
+
 	if (ArchiveRecoveryRequested)
 	{
 		/*
@@ -8044,16 +8102,6 @@ StartupXLOG(void)
 	}
 
 	/*
-	 * Preallocate additional log files, if wanted.
-	 */
-	PreallocXlogFiles(EndOfLog);
-
-	/*
-	 * Okay, we're officially UP.
-	 */
-	InRecovery = false;
-
-	/*
 	 * If we are a standby with contentid -1 and undergoing promotion,
 	 * update ourselves as the new master in catalog.  This does not
 	 * apply to a mirror (standby of a GPDB segment) because it is
@@ -8068,39 +8116,6 @@ StartupXLOG(void)
 	UpdateControlFile();
 	LWLockRelease(ControlFileLock);
 
-	/* start the archive_timeout timer running */
-	XLogCtl->lastSegSwitchTime = (pg_time_t) time(NULL);
-
-	/* also initialize latestCompletedXid, to nextXid - 1 */
-	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
-	ShmemVariableCache->latestCompletedXid = ShmemVariableCache->nextXid;
-	TransactionIdRetreat(ShmemVariableCache->latestCompletedXid);
-	elog(LOG, "latest completed transaction id is %u and next transaction id is %u",
-		ShmemVariableCache->latestCompletedXid,
-		ShmemVariableCache->nextXid);
-	LWLockRelease(ProcArrayLock);
-
-	/*
-	 * Start up the commit log and subtrans, if not already done for hot
-	 * standby.
-	 */
-	if (standbyState == STANDBY_DISABLED)
-	{
-		StartupCLOG();
-		StartupSUBTRANS(oldestActiveXID);
-		DistributedLog_Startup(oldestActiveXID,
-							   ShmemVariableCache->nextXid);
-	}
-
-	/*
-	 * Perform end of recovery actions for any SLRUs that need it.
-	 */
-	TrimCLOG();
-	TrimMultiXact();
-
-	/* Reload shared-memory state for prepared transactions */
-	RecoverPreparedTransactions();
-
 	ereport(LOG, (errmsg("database system is ready")));
 
 	/*
@@ -8109,21 +8124,6 @@ StartupXLOG(void)
 	 */
 	if (standbyState != STANDBY_DISABLED)
 		ShutdownRecoveryTransactionEnvironment();
-
-	/* Shut down xlogreader */
-	if (readFile >= 0)
-	{
-		close(readFile);
-		readFile = -1;
-	}
-	XLogReaderFree(xlogreader);
-
-	/*
-	 * If any of the critical GUCs have changed, log them before we allow
-	 * backends to write WAL.
-	 */
-	LocalSetXLogInsertAllowed();
-	XLogReportParameters();
 
 	/*
 	 * All done.  Allow backends to write WAL.  (Although the bool flag is
