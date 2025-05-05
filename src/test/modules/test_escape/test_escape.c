@@ -376,8 +376,18 @@ static pe_test_vector pe_test_vectors[] =
 	 * Testcases that are not null terminated for the specified input length.
 	 * That's interesting to verify that escape functions don't read beyond
 	 * the intended input length.
+	 *
+	 * One interesting special case is GB18030, which has the odd behaviour
+	 * needing to read beyond the first byte to determine the length of a
+	 * multi-byte character.
 	 */
 	TV_LEN("gbk", "\x80", 1),
+	TV_LEN("GB18030", "\x80", 1),
+	TV_LEN("GB18030", "\x80\0", 2),
+	TV_LEN("GB18030", "\x80\x30", 2),
+	TV_LEN("GB18030", "\x80\x30\0", 3),
+	TV_LEN("GB18030", "\x80\x30\x30", 3),
+	TV_LEN("GB18030", "\x80\x30\x30\0", 4),
 	TV_LEN("UTF-8", "\xC3\xb6  ", 1),
 	TV_LEN("UTF-8", "\xC3\xb6  ", 2),
 };
@@ -456,6 +466,51 @@ encoding_conflicts_ascii(int encoding)
 	if (encoding > PG_ENCODING_BE_LAST)
 		return true;
 	return false;
+}
+
+
+/*
+ * Confirm escaping doesn't read past the end of an allocation.  Consider the
+ * result of malloc(4096), in the absence of freelist entries satisfying the
+ * allocation.  On OpenBSD, reading one byte past the end of that object
+ * yields SIGSEGV.
+ *
+ * Run this test before the program's other tests, so freelists are minimal.
+ * len=4096 didn't SIGSEGV, likely due to free() calls in libpq.  len=8192
+ * did.  Use 128 KiB, to somewhat insulate the outcome from distant new free()
+ * calls and libc changes.
+ */
+static void
+test_gb18030_page_multiple(pe_test_config *tc)
+{
+	PQExpBuffer testname;
+	PQExpBuffer details;
+	size_t		input_len = 0x20000;
+	char	   *input;
+
+	/* prepare input */
+	input = pg_malloc(input_len);
+	memset(input, '-', input_len - 1);
+	input[input_len - 1] = 0xfe;
+
+	/* name to describe the test */
+	testname = createPQExpBuffer();
+	appendPQExpBuffer(testname, ">repeat(%c, %zu)", input[0], input_len - 1);
+	escapify(testname, input + input_len - 1, 1);
+	appendPQExpBuffer(testname, "< - GB18030 - PQescapeLiteral");
+
+	/* this test has no details to print */
+	details = createPQExpBuffer();
+
+	/* test itself */
+	PQsetClientEncoding(tc->conn, "GB18030");
+	report_result(tc, PQescapeLiteral(tc->conn, input, input_len) == NULL,
+				  testname, details,
+				  "input validity vs escape success", "ok");
+
+	destroyPQExpBuffer(details);
+	destroyPQExpBuffer(testname);
+	pg_free(input);
 }
 
 static const char *
@@ -861,6 +916,8 @@ main(int argc, char *argv[])
 				PQerrorMessage(tc.conn));
 		exit(1);
 	}
+
+	test_gb18030_page_multiple(&tc);
 
 	for (int i = 0; i < lengthof(pe_test_vectors); i++)
 	{
