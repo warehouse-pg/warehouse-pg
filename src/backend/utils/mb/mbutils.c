@@ -1014,7 +1014,7 @@ pg_mbcliplen(const char *mbstr, int len, int limit)
 }
 
 /*
- * pg_mbcliplen with specified encoding
+ * pg_mbcliplen with specified encoding; string must be valid in encoding
  */
 int
 pg_encoding_mbcliplen(int encoding, const char *mbstr,
