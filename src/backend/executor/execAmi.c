@@ -805,6 +805,9 @@ ExecSquelchNode(PlanState *node)
 			 */
 			ExecShutdownForeignScan((ForeignScanState *) node);
 			break;
+		case T_CustomScanState:
+			ExecShutdownCustomScan((CustomScanState*) node);
+			break;
 		case T_DynamicForeignScanState:
 			/* TODO: Add logic to shutdown the dynamic foreign scan for cases of parallel
 			 * execution (currently unsupported in Orca)
