@@ -19,6 +19,7 @@
 #include "libpq-int.h"
 
 #include <ctype.h>
+#include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
 
@@ -8051,7 +8052,7 @@ open_program_pipes(char *command, bool forwrite)
 		errno = save_errno;
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_RESOURCES),
-				 errmsg("can not start command: %s", command)));
+				 errmsg("can not start command \"%s\", %s", command, strerror(save_errno))));
 	}
 
 	return program_pipes;
@@ -8079,6 +8080,9 @@ close_program_pipes(CopyState cstate, bool ifThrow)
 	}
 	
 	ret = pclose_with_stderr(cstate->program_pipes->pid, cstate->program_pipes->pipes, &sinfo);
+
+	pfree(cstate->program_pipes);
+	cstate->program_pipes = NULL;
 
 	if (ret == 0 || !ifThrow)
 	{
