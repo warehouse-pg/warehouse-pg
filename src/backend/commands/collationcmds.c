@@ -67,6 +67,7 @@ DefineCollation(ParseState *pstate, List *names, List *parameters, bool if_not_e
 	DefElem    *providerEl = NULL;
 	DefElem    *deterministicEl = NULL;
 	DefElem    *versionEl = NULL;
+	DefElem    *commentEl = NULL;
 	char	   *collcollate = NULL;
 	char	   *collctype = NULL;
 	char	   *collproviderstr = NULL;
@@ -74,6 +75,7 @@ DefineCollation(ParseState *pstate, List *names, List *parameters, bool if_not_e
 	int			collencoding = 0;
 	char		collprovider = 0;
 	char	   *collversion = NULL;
+	char	   *collcomment = NULL;
 	Oid			newoid;
 	ObjectAddress address;
 
@@ -103,6 +105,8 @@ DefineCollation(ParseState *pstate, List *names, List *parameters, bool if_not_e
 			defelp = &deterministicEl;
 		else if (strcmp(defel->defname, "version") == 0)
 			defelp = &versionEl;
+		else if (strcmp(defel->defname, "comment") == 0)
+			defelp = &commentEl;
 		else
 		{
 			ereport(ERROR,
@@ -167,6 +171,9 @@ DefineCollation(ParseState *pstate, List *names, List *parameters, bool if_not_e
 
 	if (providerEl)
 		collproviderstr = defGetString(providerEl);
+
+	if (commentEl)
+		collcomment = defGetString(commentEl);
 
 	if (deterministicEl)
 		collisdeterministic = defGetBoolean(deterministicEl);
@@ -264,6 +271,9 @@ DefineCollation(ParseState *pstate, List *names, List *parameters, bool if_not_e
 	CommandCounterIncrement();
 	if (!lc_collate_is_c(newoid) || !lc_ctype_is_c(newoid))
 		(void) pg_newlocale_from_collation(newoid);
+
+	if (collcomment)
+		CreateComments(newoid, CollationRelationId, 0, collcomment);
 
 	ObjectAddressSet(address, CollationRelationId, newoid);
 
@@ -501,7 +511,7 @@ cmpaliases(const void *a, const void *b)
  * @param provider:	"icu" or "libc", NULL means decided by callee (DefineCollation in QE, default "libc")
  */
 static void
-DispatchCollationCreate(char *alias, char *locale, Oid nspid, char* provider)
+DispatchCollationCreate(char *alias, char *locale, Oid nspid, char* provider, char* comment)
 {
 	Assert(Gp_role == GP_ROLE_DISPATCH);
 
@@ -516,6 +526,10 @@ DispatchCollationCreate(char *alias, char *locale, Oid nspid, char* provider)
 	if (provider)
 	{
 		parameters = lappend(parameters, makeDefElem("provider", (Node*) makeString(provider), -1));
+	}
+	if (comment)
+	{
+		parameters = lappend(parameters, makeDefElem("comment", (Node*) makeString(comment), -1));
 	}
 
 	DefineStmt * stmt = makeNode(DefineStmt);
@@ -707,7 +721,7 @@ pg_import_system_collations(PG_FUNCTION_ARGS)
 									 true, true);
 			if (OidIsValid(collid))
 			{
-				DispatchCollationCreate(localebuf, localebuf, nspid, "libc");
+				DispatchCollationCreate(localebuf, localebuf, nspid, "libc", NULL);
 				ncreated++;
 
 				/* Must do CCI between inserts to handle duplicates correctly */
@@ -769,7 +783,7 @@ pg_import_system_collations(PG_FUNCTION_ARGS)
 									 true, true);
 			if (OidIsValid(collid))
 			{
-				DispatchCollationCreate(alias, locale, nspid, "libc");
+				DispatchCollationCreate(alias, locale, nspid, "libc", NULL);
 				ncreated++;
 
 				CommandCounterIncrement();
@@ -805,7 +819,7 @@ pg_import_system_collations(PG_FUNCTION_ARGS)
 		{
 			const char *name;
 			char	   *langtag;
-			char	   *icucomment;
+			char	   *icucomment = NULL;
 			const char *collcollate;
 			char	   *collname;
 			Oid			collid;
@@ -834,12 +848,13 @@ pg_import_system_collations(PG_FUNCTION_ARGS)
 									 true, true);
 			if (OidIsValid(collid))
 			{
-				DispatchCollationCreate(collname, unconstify(char*, collcollate), nspid, "icu");
+				icucomment = get_icu_locale_comment(name);
+
+				DispatchCollationCreate(collname, unconstify(char *, collcollate), nspid, "icu", icucomment);
 				ncreated++;
 
 				CommandCounterIncrement();
 
-				icucomment = get_icu_locale_comment(name);
 				if (icucomment)
 					CreateComments(collid, CollationRelationId, 0,
 								   icucomment);
