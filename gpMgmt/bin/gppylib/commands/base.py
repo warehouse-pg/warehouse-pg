@@ -648,7 +648,7 @@ class CommandNotFoundException(Exception):
         return "Could not locate command: '%s' in this set of paths: %s" % (self.cmd, repr(self.paths))
 
 
-def findCmdInPath(cmd, missing_ok=False):
+def findCmdInPath(cmd):
     # ---------------command path--------------------
     CMDPATH = ['/usr/kerberos/bin', '/usr/sfw/bin', '/opt/sfw/bin', '/usr/local/bin', '/bin',
                '/usr/bin', '/sbin', '/usr/sbin', '/usr/ucb', '/sw/bin', '/opt/Navisphere/bin']
@@ -668,11 +668,7 @@ def findCmdInPath(cmd, missing_ok=False):
                 CMD_CACHE[cmd] = f
                 return f
 
-        # missing_ok is just suppressing the critical log message. This function
-        # still raises an exception and leaves the client to decide whether to
-        # consume the error.
-        if not missing_ok:
-            logger.critical('Command %s not found' % cmd)
+        logger.critical('Command %s not found' % cmd)
         search_path = CMDPATH[:]
         raise CommandNotFoundException(cmd, search_path)
     else:

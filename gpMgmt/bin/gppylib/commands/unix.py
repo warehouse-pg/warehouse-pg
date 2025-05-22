@@ -634,15 +634,6 @@ class Rsync(Command):
             raise ExecutionError("non-zero rc: %d" % self.results.rc, self)
 
 
-class RsyncFromFileList(Command):
-    def __init__(self, name, sync_list_file, local_base_dir, remote_basedir, dstHost=None, ctxt=LOCAL,
-                 remoteHost=None):
-        cmdStr = findCmdInPath('rsync') + " "
-        cmdStr += "--files-from=" + sync_list_file  + " " + local_base_dir + "/ "
-        if dstHost:
-            cmdStr += canonicalize(dstHost) + ":" + remote_basedir + "/"
-        Command.__init__(self, name, cmdStr, ctxt, remoteHost)
-
 # -------------create tar------------------
 class CreateTar(Command):
     def __init__(self, name, srcDirectory, dstTarFile, ctxt=LOCAL, remoteHost=None):

@@ -105,7 +105,7 @@ To enable PostGIS support, install the Greenplum PostGIS extension package into 
 Install Greenplum PostGIS extension package with the `gppkg` utility. For example, this command installs the package for RHEL 7.
 
 ```
-gppkg install postgis-3.3.2+pivotal.1.build.1-gp7-rhel8-x86_64.gppkg
+gppkg -i postgis-3.3.2+pivotal.1.build.1-gp7-rhel8-x86_64.gppkg
 ```
 
 After installing the package, source the `greenplum_path.sh` file and restart Greenplum Database. This command restarts Greenplum Database.
@@ -248,7 +248,7 @@ Depending on the extensions you enabled for PostGIS, drop support for the extens
 After PostGIS support has been removed from all databases in the Greenplum Database system, you can remove the PostGIS extension package. For example, this `gppkg` command removes the PostGIS extension package.
 
 ```
-gppkg remove postgis-3.3.2+pivotal.1
+gppkg -r postgis-3.3.2+pivotal.1
 ```
 
 After removing the package, ensure that these lines for PostGIS Raster support are removed from the `greenplum_path.sh` file.

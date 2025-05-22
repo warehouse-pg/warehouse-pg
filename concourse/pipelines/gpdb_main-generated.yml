@@ -206,6 +206,7 @@ groups:
   - gate_cli_start
   - cli_cross_subnet
   - gpmovemirrors_rocky8
+  - gppkg_rocky8
   - analyzedb_rocky8
   - gpreload_rocky8
   - gpinitsystem_rocky8
@@ -285,6 +286,7 @@ groups:
   - gate_cli_start
   - cli_cross_subnet
   - gpmovemirrors_rocky8
+  - gppkg_rocky8
   - analyzedb_rocky8
   - gpreload_rocky8
   - gpinitsystem_rocky8
@@ -1483,6 +1485,60 @@ jobs:
           params:
             BEHAVE_FLAGS: --tags=gpmovemirrors --tags=~concourse_cluster,demo_cluster
             
+- name: gppkg_rocky8
+  plan:
+  - in_parallel:
+      steps:
+      - get: gpdb_src
+        params:
+          submodules:
+            - gpMgmt/bin/pythonSrc/ext
+        passed: [gate_cli_start]
+      - get: gpdb7-rocky8-test
+  - in_parallel:
+      steps:
+      - do:
+        - get: gpdb_binary
+          resource: bin_gpdb
+          passed: [gate_cli_start]
+          trigger: true
+        - get: ccp_src
+        - get: terraform.d
+          params:
+            unpack: true
+        - put: terraform
+          params:
+            <<: *ccp_default_params
+            vars:
+              <<: *ccp_default_vars
+              instance_type: n1-standard-2
+              
+        - task: gen_cluster
+          file: ccp_src/ci/tasks/gen_cluster.yml
+          params:
+            <<: *ccp_gen_cluster_default_params
+        - task: gpinitsystem
+          file: ccp_src/ci/tasks/gpinitsystem.yml
+        - task: gppkg_concourse_cluster_tests
+          file: gpdb_src/concourse/tasks/run_behave_on_ccp_cluster.yml
+          image: gpdb7-rocky8-test
+          params:
+            BEHAVE_FLAGS: --tags=gppkg --tags=concourse_cluster
+            
+          on_success:
+            <<: *ccp_destroy
+          ensure:
+            <<: *set_failed
+      - do:
+        - get: bin_gpdb
+          passed: [gate_cli_start]
+          trigger: true
+        - task: gppkg_demo_cluster_tests
+          file: gpdb_src/concourse/tasks/behave_gpdb.yml
+          image: gpdb7-rocky8-test
+          params:
+            BEHAVE_FLAGS: --tags=gppkg --tags=~concourse_cluster,demo_cluster
+            
 - name: analyzedb_rocky8
   plan:
   - in_parallel:
@@ -2482,6 +2538,7 @@ jobs:
           passed:
             - cli_cross_subnet
             - gpmovemirrors_rocky8
+            - gppkg_rocky8
             - analyzedb_rocky8
             - gpreload_rocky8
             - gpinitsystem_rocky8
@@ -2507,6 +2564,7 @@ jobs:
           passed:
             - cli_cross_subnet
             - gpmovemirrors_rocky8
+            - gppkg_rocky8
             - analyzedb_rocky8
             - gpreload_rocky8
             - gpinitsystem_rocky8
