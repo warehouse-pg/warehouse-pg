@@ -807,7 +807,7 @@ Feature: gpcheckcat tests
         And the user runs "psql hashops_db -f test/behave/mgmt_utils/steps/data/gpcheckcat/create_non_legacy_hashops_tables.sql"
         Then psql should return a return code of 0
         When the user runs "gpcheckcat -R mix_distribution_policy hashops_db "
-        And gpcheckcat should print "Found both type tables that use legacy or modern hashops as their distribution policy in one database." to stdout
+        And gpcheckcat should print "Found two types of tables within one database, some use legacy hashops, and others use modern hashops as their distribution policies." to stdout
         And gpcheckcat should print "Please run the gpcheckcat.distpolicy.sql file to list the tables." to stdout
         And gpcheckcat should return a return code of 3
         And the user runs "dropdb hashops_db"
@@ -891,7 +891,7 @@ Feature: gpcheckcat tests
         And the user runs "psql hashops_db2 -f test/behave/mgmt_utils/steps/data/gpcheckcat/create_non_legacy_hashops_tables.sql"
         Then psql should return a return code of 0
         When the user runs "gpcheckcat -A -R mix_distribution_policy"
-        And gpcheckcat should print "Found both type tables that use legacy or modern hashops as their distribution policy in one database." to stdout
+        And gpcheckcat should print "Found two types of tables within one database, some use legacy hashops, and others use modern hashops as their distribution policies." to stdout
         And gpcheckcat should print "Please run the gpcheckcat.distpolicy.sql file to list the tables." to stdout
         And gpcheckcat should return a return code of 3
         Then gpcheckcat should print "Completed 1 test(s) on database 'hashops_db'" to logfile with latest timestamp

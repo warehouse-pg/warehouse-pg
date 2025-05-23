@@ -2093,8 +2093,8 @@ where
             logger.warning('Unable to generate verify file for {}'.format(filename))
 
 
-# Check if there are both type tables that use legacy or modern opclass as
-# their distribution policy in one database
+# Check if there are two types of tables within one database, some use legacy
+# hashops, and others use modern hashops as their distribution policies.
 def checkMixDistPolicy():
 
     qry = '''
@@ -2153,8 +2153,8 @@ def checkMixDistPolicy():
                     #if this condition is true then we have mix distribution policy
                     setError(ERROR_NOREPAIR)
                     myprint(
-                        '[ERROR]: Found both type tables that use legacy or modern hashops'
-                        ' as their distribution policy in one database.\n'
+                        '[ERROR]: Found two types of tables within one database, some use legacy hashops, '
+                        'and others use modern hashops as their distribution policies.\n'
                         'Please run the gpcheckcat.distpolicy.sql file to list the tables.'
                     )
                 else:
