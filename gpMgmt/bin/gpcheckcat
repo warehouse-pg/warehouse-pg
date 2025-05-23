@@ -1432,8 +1432,8 @@ class checkAOSegVpinfoThread(execThread):
     def run(self):
         aoseg_query = """
            SELECT a.relname, a.relid, a.segrelid, cl.relname, a.relnatts
-           FROM (SELECT p.relid, p.segrelid, c.relname, c.relnatts FROM pg_appendonly p LEFT JOIN pg_class c ON p.relid = c.oid LEFT JOIN pg_am a ON (a.oid = c.relam) 
-           WHERE a.amname = 'ao_column') a 
+           FROM (SELECT p.relid, p.segrelid, c.relname, c.relnatts FROM pg_appendonly p LEFT JOIN pg_class c ON p.relid = c.oid LEFT JOIN pg_am a ON (a.oid = c.relam)
+           WHERE a.amname = 'ao_column') a
            LEFT JOIN pg_class cl ON a.segrelid = cl.oid;
         """
 
@@ -2050,7 +2050,7 @@ def generateDistPolicyQueryFile():
      where
          policytype = 'p'
          and distclass :: oid[] && oid_array;
-  
+
  -- all tables that don't use any legacy policy:
  with legacy_opclass_oids(oid_array) as (
    select
@@ -2093,10 +2093,10 @@ where
             logger.warning('Unable to generate verify file for {}'.format(filename))
 
 
-# Test to check if there are tables that use both legacy opclass/non legacy opclass
-# in distribution policy
-def checkMixDistPolicy() :
- 
+# Check if there are two types of tables within one database, some use legacy
+# hashops, and others use modern hashops as their distribution policies.
+def checkMixDistPolicy():
+
     qry = '''
         with legacy_opclass_oids(oid_array) as (
         select
@@ -2122,7 +2122,7 @@ def checkMixDistPolicy() :
        ),
        all_hash_ops(dc) as (
         select
-          distinct unnest(distclass :: oid[]) 
+          distinct unnest(distclass :: oid[])
         from
           gp_distribution_policy
         )
@@ -2150,15 +2150,16 @@ def checkMixDistPolicy() :
 
                 if n_legacy_dist_class > 0 and n_total_dist_class > n_legacy_dist_class :
                     generateDistPolicyQueryFile()
-                    #if this condition is true then we have mix distribution Policy
+                    #if this condition is true then we have mix distribution policy
+                    setError(ERROR_NOREPAIR)
                     myprint(
-                        '[ERROR]: Found tables created using both legacy and non legacy hashops'
-                        ' in distribution policy.'
+                        '[ERROR]: Found two types of tables within one database, some use legacy hashops, '
+                        'and others use modern hashops as their distribution policies.\n'
                         'Please run the gpcheckcat.distpolicy.sql file to list the tables.'
                     )
                 else:
                     if (n_legacy_dist_class == 0 or n_legacy_dist_class == n_total_dist_class):
-                    #if this condition is true then we dont have mix distribution policy
+                        #if this condition is true then we don't have mix distribution policy
                         gp_use_legacy_hashops = fetch_guc_value("gp_use_legacy_hashops")
                         printDistPolicyMsg(gp_use_legacy_hashops,
                                          n_legacy_dist_class,
@@ -2176,6 +2177,7 @@ def printDistPolicyMsg(gp_use_legacy_hashops,n_legacy_dist_class, n_total_dist_c
     GV.checkStatus = True
 
     if n_total_dist_class - n_legacy_dist_class > 0  and gp_use_legacy_hashops == "on":
+        setError(ERROR_NOREPAIR)
         myprint(
             '[ERROR]: GUC gp_use_legacy_hashops is on.'
             ' all newly created tables will use legacy hash ops by default for hash distributed table, '
@@ -2188,6 +2190,7 @@ def printDistPolicyMsg(gp_use_legacy_hashops,n_legacy_dist_class, n_total_dist_c
         GV.checkStatus = True
 
     elif n_legacy_dist_class > 0 and gp_use_legacy_hashops == "off" :
+        setError(ERROR_NOREPAIR)
         myprint(
             '[ERROR]: GUC gp_use_legacy_hashops is off.'
             ' all newly created tables will use non legacy hash ops by default for hash distributed table, '
