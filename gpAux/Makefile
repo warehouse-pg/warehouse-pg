@@ -491,6 +491,7 @@ SET_VERSION_SCRIPTS = \
 	lib/python/gppylib/programs/clsHostCacheLookup.py \
 	lib/python/gppylib/programs/clsRecoverSegment.py \
 	lib/python/gppylib/programs/clsSystemState.py \
+	lib/python/gppylib/programs/gppkg.py \
 	lib/python/gppylib/programs/kill.py \
 	lib/python/gppylib/mainUtils.py \
 	$(NULL)

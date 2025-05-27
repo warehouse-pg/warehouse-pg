@@ -84,6 +84,7 @@ omit =
     */site-packages/*
     */bin/behave
     */python/subprocess32.py
+    */gppkg_migrate/*
     */bin/pythonSrc/ext/*
 EOF
 
