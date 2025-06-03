@@ -2870,6 +2870,7 @@ fetch_single_dqa_info(PlannerInfo *root,
 	{
 		arg_sortcl = (SortGroupClause *) lfirst(lc);
 		arg_tle = get_sortgroupref_tle(arg_sortcl->tleSortGroupRef, aggref->args);
+		bool needed = true;
 
 		/* Now find this expression in the sub-path's target list */
 		idx = 0;
@@ -2898,13 +2899,16 @@ fetch_single_dqa_info(PlannerInfo *root,
 		{
 			foreach (lcc, ctx->groupClause)
 			{
-				SortGroupClause *ctx_sortcl = (SortGroupClause *)lfirst(lcc);
+				SortGroupClause *ctx_sortcl = (SortGroupClause *) lfirst(lcc);
 
-				if (!equal(ctx_sortcl, sortcl))
+				if (equal(ctx_sortcl, sortcl))
 				{
-					info->dqa_group_clause = lappend(info->dqa_group_clause, sortcl);
+					needed = false;
+					break;
 				}
 			}
+			if (needed)
+				info->dqa_group_clause = lappend(info->dqa_group_clause, sortcl);
 		}
 
 		dqa_group_exprs = lappend(dqa_group_exprs, arg_tle->expr);
