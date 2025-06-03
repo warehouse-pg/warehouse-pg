@@ -271,3 +271,7 @@ select * from ctas_from_legacy where col=1;
 select * from ctas_explicit_legacy where col=1;
 select * from ctas_from_nonlegacy where col=1;
 select * from ctas_explicit_nonlegacy where col=1;
+
+-- start_ignore
+drop schema if exists gpdist_legacy_opclasses cascade;
+-- end_ignore
