@@ -227,9 +227,11 @@ clauselist_selectivity_simple(PlannerInfo *root,
 	int pos = 0;
 	int i = 0;
 
-	// if the PlannerInfo was created from Orca, we don't care about the selectivity/costing
-	// here and some of the necessary fields may not be populated (eg: glob). Instead return
-	// the default selectivity
+	/*
+	 *if the PlannerInfo was created from Orca, we don't care about the selectivity/costing
+	 * here and some of the necessary fields may not be populated (eg: glob). Instead return
+	 * the default selectivity
+	 */
 	if (root->is_from_orca)
 	{
 		return s1;
@@ -451,14 +453,7 @@ clauselist_selectivity_simple(PlannerInfo *root,
 	}
 
 	pfree(rgsel);
-	/* 
-	 * For Anti Semi Join, selectivity is determined by the fraction of 
-	 * tuples that do no match 
-	 */
-	if (JOIN_ANTI == jointype || JOIN_LASJ_NOTIN == jointype)
-	{
-		s1 = (1 - s1);
-	}
+
 	return s1;
 }
 
