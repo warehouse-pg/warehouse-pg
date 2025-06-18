@@ -525,13 +525,12 @@ DirectDispatchUpdateContentIdsFromPlan(PlannerInfo *root, Plan *plan)
 			/* no change to dispatchInfo */
 			break;
 		case T_ForeignScan:
+		case T_CustomScan:
 			DisableTargetedDispatch(&dispatchInfo); /* not sure about
 													 * foreign tables ...
 													 * so disable */
 			break;
 		case T_SplitUpdate:
-			break;
-		case T_CustomScan:
 			break;
 		default:
 			elog(ERROR, "unknown plan node %d", nodeTag(plan));
