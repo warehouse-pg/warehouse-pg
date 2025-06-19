@@ -849,10 +849,10 @@ digestControlFile(ControlFileData *ControlFile, char *src, size_t size)
  * the overall amount of IO noticeably.
  *
  * gpdb: We assume that all files are synchronized before rewinding and thus we
- * just need to synchronize those affected files. This is a resonable
+ * just need to synchronize those affected files. This is a reasonable
  * assumption for gpdb since we've ensured that the db state is clean shutdown
  * in pg_rewind by running single mode postgres if needed and also we do not
- * copy an unsynchronized dababase without sync as the target base.
+ * copy an unsynchronized database without sync as the target base.
  */
 static void
 syncTargetDirectory(void)
@@ -877,6 +877,8 @@ syncTargetDirectory(void)
 			fsync_fname(entry->path, false);
 		else
 		{
+			char parentpath[MAXPGPATH];
+
 			switch (entry->action)
 			{
 				case FILE_ACTION_COPY:
@@ -892,11 +894,40 @@ syncTargetDirectory(void)
 				case FILE_ACTION_REMOVE:
 					/*
 					 * Fsync the parent directory if we either create or delete
-					 * files/directories in the parent directory. The parent
-					 * directory might be missing as expected, so fsync it could
-					 * fail but we ignore that error.
+					 * files/directories in the parent directory. Ensure we fsync
+					 * the same parent directory only once and ignore if it is
+					 * missing as expected.
 					 */
-					fsync_parent_path(entry->path);
+					strlcpy(parentpath, entry->path, MAXPGPATH);
+					get_parent_directory(parentpath);
+
+					/*
+					 * get_parent_directory() returns an empty string if the input argument is
+					 * just a file name (see comments in path.c), so handle that as being the
+					 * current directory.
+					 */
+					if (strlen(parentpath) == 0)
+						strlcpy(parentpath, ".", MAXPGPATH);
+
+					/* skip if parentpath is missing as expected */
+					if (access(parentpath, F_OK) != 0)
+						break;
+
+					/*
+					 * fsync the same parent directory only once
+					 *
+					 * filemap->array is sorted by path, so we can check if the
+					 * parent directory is the same as the last one we fsynced.
+					 */
+					static char *last_fsynced_parent = NULL;
+					if (!last_fsynced_parent || strcmp(last_fsynced_parent, parentpath) != 0)
+					{
+						if (last_fsynced_parent)
+							pg_free(last_fsynced_parent);
+
+						if (fsync_fname(parentpath, true) == 0)
+							last_fsynced_parent = pg_strdup(parentpath);
+					}
 					break;
 
 				case FILE_ACTION_NONE:
