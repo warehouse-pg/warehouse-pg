@@ -4670,6 +4670,16 @@ create trigger xtrig
 ERROR:  Triggers for statements are not yet supported
 update bar1 set a = a + 1;
 /* End test case for bug #16242 */
+/* Test case for bug #18970 */
+create table attbl(a int);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+create table atref(b attbl check ((b).a is not null));
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause, and no column type is suitable for a distribution key. Creating a NULL policy entry.
+alter table attbl alter column a type numeric;  -- someday this should work
+ERROR:  cannot alter table "attbl" because column "atref.b" uses its row type
+drop table attbl, atref;
+/* End test case for bug #18970 */
 -- Test that ALTER TABLE rewrite preserves a clustered index
 -- for normal indexes and indexes on constraints.
 create table alttype_cluster (a int);
