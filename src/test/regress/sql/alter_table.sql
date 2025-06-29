@@ -1871,3 +1871,12 @@ SELECT reloptions FROM pg_class WHERE relname = 'ao_reloptions_t2';
 SET allow_system_table_mods = off;
 DROP TABLE ao_reloptions_t1;
 DROP TABLE ao_reloptions_t2;
+
+/* Test case for bug #18970 */
+
+create table attbl(a int);
+create table atref(b attbl check ((b).a is not null));
+alter table attbl alter column a type numeric;  -- someday this should work
+drop table attbl, atref;
+
+/* End test case for bug #18970 */
