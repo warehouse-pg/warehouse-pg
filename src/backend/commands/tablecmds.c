@@ -12015,6 +12015,14 @@ ATPostAlterTypeCleanup(List **wqueue, AlteredTableInfo *tab, LOCKMODE lockmode)
 			errhint("DROP the index first, and recreate it after the ALTER")));
 
 		relid = IndexGetRelation(oldId, false);
+
+		/*
+		 * As above, make sure we have lock on the index's table if it's not
+		 * the same table.
+		 */
+		if (relid != tab->relid)
+			LockRelationOid(relid, AccessExclusiveLock);
+
 		ATPostAlterTypeParse(oldId, relid, InvalidOid,
 							 (char *) lfirst(def_item),
 							 wqueue, lockmode, tab->rewrite);
