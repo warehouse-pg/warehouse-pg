@@ -4678,6 +4678,10 @@ create table atref(b attbl check ((b).a is not null));
 NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause, and no column type is suitable for a distribution key. Creating a NULL policy entry.
 alter table attbl alter column a type numeric;  -- someday this should work
 ERROR:  cannot alter table "attbl" because column "atref.b" uses its row type
+alter table atref drop constraint atref_b_check;
+create index atref_idx on atref (((b).a));
+alter table attbl alter column a type numeric;  -- someday this should work
+ERROR:  cannot alter table "attbl" because column "atref.b" uses its row type
 drop table attbl, atref;
 /* End test case for bug #18970 */
 -- Test that ALTER TABLE rewrite preserves a clustered index
