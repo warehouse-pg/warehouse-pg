@@ -461,3 +461,29 @@ UNION ALL
   SELECT 'sleep', 1 where pg_sleep(1) is not null
 UNION ALL
   SELECT 'c', j FROM cte;
+
+-- Executor used to fail merging two sorted subplans containing a share input scan node
+CREATE TABLE merge_share_input_tests (a INT, b INT, c INT, d INT, e INT, f INT);
+INSERT INTO merge_share_input_tests SELECT generate_series(1,10000);
+
+ANALYZE merge_share_input_tests;
+
+-- Assert than plan uses Merge Append strategy, and has Share Input Scan node.
+-- Also we are not actaully interested in output so discard it using SELECT EXISTS() hack
+EXPLAIN (COSTS OFF, TIMING OFF, BUFFERS OFF)
+SELECT EXISTS(
+	with inp as MATERIALIZED (select * from  merge_share_input_tests ) select a,b,c, count(distinct d), count(distinct e), count(distinct f) from inp group by 1,2,3
+	UNION ALL
+	select a,b,c, count(distinct d), count(distinct e), count(distinct f) from merge_share_input_tests group by 1,2,3
+	ORDER BY 1
+);
+
+-- Check execution is ok
+SELECT EXISTS(
+	with inp as MATERIALIZED (select * from  merge_share_input_tests ) select a,b,c, count(distinct d), count(distinct e), count(distinct f) from inp group by 1,2,3
+	UNION ALL
+	select a,b,c, count(distinct d), count(distinct e), count(distinct f) from merge_share_input_tests group by 1,2,3
+	ORDER BY 1
+);
+
+DROP TABLE merge_share_input_tests;

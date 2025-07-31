@@ -2355,3 +2355,50 @@ UNION ALL
  c      | 1
 (7 rows)
 
+-- Executor used to fail merging two sorted subplans containing a share input scan node
+CREATE TABLE merge_share_input_tests (a INT, b INT, c INT, d INT, e INT, f INT);
+INSERT INTO merge_share_input_tests SELECT generate_series(1,10000);
+ANALYZE merge_share_input_tests;
+-- Assert than plan uses Merge Append strategy, and has Share Input Scan node.
+-- Also we are not actaully interested in output so discard it using SELECT EXISTS() hack
+EXPLAIN (COSTS OFF, TIMING OFF, BUFFERS OFF)
+SELECT EXISTS(
+	with inp as MATERIALIZED (select * from  merge_share_input_tests ) select a,b,c, count(distinct d), count(distinct e), count(distinct f) from inp group by 1,2,3
+	UNION ALL
+	select a,b,c, count(distinct d), count(distinct e), count(distinct f) from merge_share_input_tests group by 1,2,3
+	ORDER BY 1
+);
+                                                         QUERY PLAN                                                          
+-----------------------------------------------------------------------------------------------------------------------------
+ Result
+   InitPlan 1 (returns $0)  (slice1)
+     ->  Gather Motion 3:1  (slice2; segments: 3)
+           ->  Merge Append
+                 Sort Key: share0_ref1.a
+                 ->  GroupAggregate
+                       Group Key: share0_ref1.a, share0_ref1.b, share0_ref1.c
+                       ->  Sort
+                             Sort Key: share0_ref1.a, share0_ref1.b, share0_ref1.c
+                             ->  Shared Scan (share slice:id 2:0)
+                                   ->  Seq Scan on merge_share_input_tests
+                 ->  GroupAggregate
+                       Group Key: merge_share_input_tests_1.a, merge_share_input_tests_1.b, merge_share_input_tests_1.c
+                       ->  Sort
+                             Sort Key: merge_share_input_tests_1.a, merge_share_input_tests_1.b, merge_share_input_tests_1.c
+                             ->  Seq Scan on merge_share_input_tests merge_share_input_tests_1
+ Optimizer: Postgres-based planner
+(17 rows)
+
+-- Check execution is ok
+SELECT EXISTS(
+	with inp as MATERIALIZED (select * from  merge_share_input_tests ) select a,b,c, count(distinct d), count(distinct e), count(distinct f) from inp group by 1,2,3
+	UNION ALL
+	select a,b,c, count(distinct d), count(distinct e), count(distinct f) from merge_share_input_tests group by 1,2,3
+	ORDER BY 1
+);
+ exists 
+--------
+ t
+(1 row)
+
+DROP TABLE merge_share_input_tests;
