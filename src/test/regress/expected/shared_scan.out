@@ -284,3 +284,56 @@ select gp_inject_fault('inject_many_fds_for_shareinputscan', 'reset', dbid) from
 (1 row)
 
 \! rm -rf /tmp/_gpdb_fault_inject_tmp_dir/
+-- Test a reproducer which used to fail an assertion while merging two sorted
+-- subplans containing a share input scan node
+CREATE TABLE merge_append_test (
+    grouping_col_1    VARCHAR(64)   ENCODING (compresstype=zstd, blocksize=32768, compresslevel=3),
+    grouping_col_2    VARCHAR(1020) ENCODING (compresstype=zstd, blocksize=32768, compresslevel=3),
+    grouping_col_3    TEXT          ENCODING (compresstype=zstd, blocksize=32768, compresslevel=3),
+    grouping_col_4    DATE          ENCODING (compresstype=zstd, blocksize=32768, compresslevel=3),
+    metric_col_1      TEXT          ENCODING (compresstype=zstd, blocksize=32768, compresslevel=3),
+    metric_col_2      TEXT          ENCODING (compresstype=zstd, blocksize=32768, compresslevel=3),
+    metric_col_3      TEXT          ENCODING (compresstype=zstd, blocksize=32768, compresslevel=3),
+    metric_col_4      TEXT          ENCODING (compresstype=zstd, blocksize=32768, compresslevel=3),
+    metric_col_5      TEXT          ENCODING (compresstype=zstd, blocksize=32768, compresslevel=3)
+)
+WITH (appendonly='true', compresstype=zstd, compresslevel='3', orientation='column')
+DISTRIBUTED BY (grouping_col_1);
+SELECT
+    grouping_col_4,
+    grouping_col_2,
+    grouping_col_3,
+    COUNT(DISTINCT metric_col_1),
+    COUNT(DISTINCT metric_col_2),
+    COUNT(DISTINCT metric_col_2) / COUNT(DISTINCT metric_col_1),
+    COUNT(DISTINCT metric_col_4),
+    COUNT(DISTINCT metric_col_4) * 1.0 / COUNT(DISTINCT metric_col_2),
+    COUNT(DISTINCT metric_col_3),
+    COUNT(DISTINCT metric_col_3) * 1.0 / COUNT(DISTINCT metric_col_2),
+    COUNT(DISTINCT metric_col_5),
+    COUNT(DISTINCT metric_col_5) * 1.0 / COUNT(DISTINCT metric_col_2),
+    COUNT(DISTINCT metric_col_5) * 1.0 / COUNT(DISTINCT metric_col_1)
+FROM merge_append_test
+GROUP BY 1, 2, 3
+UNION ALL
+SELECT
+    NULL::DATE AS grouping_col_4,
+    grouping_col_2,
+    grouping_col_3,
+    NULL,
+    NULL,
+    NULL,
+    COUNT(DISTINCT metric_col_4),
+    1.0,
+    NULL,
+    1.0,
+    NULL,
+    1.0,
+    COUNT(DISTINCT metric_col_5) * 1.0
+FROM merge_append_test
+GROUP BY 1, 2, 3
+ORDER BY 1;
+ grouping_col_4 | grouping_col_2 | grouping_col_3 | count | count | ?column? | count | ?column? | count | ?column? | count | ?column? | ?column? 
+----------------+----------------+----------------+-------+-------+----------+-------+----------+-------+----------+-------+----------+----------
+(0 rows)
+

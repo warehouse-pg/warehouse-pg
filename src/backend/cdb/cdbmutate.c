@@ -1801,6 +1801,14 @@ shareinput_walker(SHAREINPUT_MUTATOR f, Node *node, PlannerInfo *root)
 			foreach(cell, app->appendplans)
 				shareinput_walker(f, (Node *) lfirst(cell), root);
 		}
+		else if (IsA(node, MergeAppend))
+		{
+			ListCell   *cell;
+			MergeAppend *app = (MergeAppend *) node;
+
+			foreach(cell, app->mergeplans)
+				shareinput_walker(f, (Node *) lfirst(cell), root);
+		}
 		else if (IsA(node, ModifyTable))
 		{
 			ListCell   *cell;
