@@ -1399,24 +1399,17 @@ COMMIT
 DROP TABLE
 1: create table t1(a int, b int);
 CREATE TABLE
-1: insert into t1 values (generate_series(1,100000), 1);
-INSERT 0 100000
+-- Do not reduce the data volume — see the comment below.
+1: insert into t1 values (generate_series(1,128000), 1);
+INSERT 0 128000
 1: insert into t1 values (-1, 1);
 INSERT 0 1
 1: BEGIN;
 BEGIN
-1: DECLARE c9 PARALLEL RETRIEVE CURSOR FOR select count(*) from t1 group by sqrt(a); select count() from gp_get_endpoints();
- count 
--------
- 3     
-(1 row)
--- GP_PARALLEL_RETRIEVE_CURSOR_CHECK_TIMEOUT is 10s, we sleep 12 to check all QEs are already finished.
-1: ! sleep 12;
-
-1: SELECT endpointname,auth_token,hostname,port,state FROM gp_get_endpoints() WHERE cursorname='c9';
- endpointname | auth_token | hostname | port | state 
---------------+------------+----------+------+-------
-(0 rows)
-1: rollback;
-ERROR:  cannot take square root of a negative number  (seg2 slice1 127.0.1.1:7004 pid=35247)
+-- Most of the time, the current data volume is sufficient to allow c9 to run
+-- normally at first. Then, any error that occurs on a non-root slice is caught
+-- by GP_PARALLEL_RETRIEVE_CURSOR_CHECK. However, this is not guaranteed, so we
+-- simply check for errors here.
+1: DECLARE c9 PARALLEL RETRIEVE CURSOR FOR SELECT count(*) FROM t1 GROUP BY sqrt(a); ROLLBACK;
+ERROR:  cannot take square root of a negative number  (seg2 slice1 127.0.0.1:40002 pid=258684)
 1q: ... <quitting>

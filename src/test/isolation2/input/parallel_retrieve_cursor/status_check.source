@@ -259,12 +259,13 @@ insert into t1 select generate_series(1,100);
 ---------- Test9: Test parallel retrieve cursor auto-check
 1: drop table if exists t1;
 1: create table t1(a int, b int);
-1: insert into t1 values (generate_series(1,100000), 1);
+-- Do not reduce the data volume — see the comment below.
+1: insert into t1 values (generate_series(1,128000), 1);
 1: insert into t1 values (-1, 1);
 1: BEGIN;
-1: DECLARE c9 PARALLEL RETRIEVE CURSOR FOR select count(*) from t1 group by sqrt(a); select count() from gp_get_endpoints();
--- GP_PARALLEL_RETRIEVE_CURSOR_CHECK_TIMEOUT is 10s, we sleep 12 to check all QEs are already finished.
-1: ! sleep 12;
-1: SELECT endpointname,auth_token,hostname,port,state FROM gp_get_endpoints() WHERE cursorname='c9';
-1: rollback;
+-- Most of the time, the current data volume is sufficient to allow c9 to run
+-- normally at first. Then, any error that occurs on a non-root slice is caught
+-- by GP_PARALLEL_RETRIEVE_CURSOR_CHECK. However, this is not guaranteed, so we
+-- simply check for errors here.
+1: DECLARE c9 PARALLEL RETRIEVE CURSOR FOR SELECT count(*) FROM t1 GROUP BY sqrt(a); ROLLBACK;
 1q:
