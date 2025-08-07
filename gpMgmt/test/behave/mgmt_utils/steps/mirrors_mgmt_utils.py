@@ -958,8 +958,8 @@ def impl(context):
 
     hosts_list = GpArray.initFromCatalog(dbconn.DbURL()).getHostList()
     for host in hosts_list:
-        run_cmd('ssh %s mkdir -p %s' % (pipes.quote(host),  "/tmp/gpmovemirrors_disk"))
-        run_cmd('ssh %s %s ' %(pipes.quote(host), cmdStr))
+        run_cmd('ssh %s mkdir -p %s' % (shlex.quote(host),  "/tmp/gpmovemirrors_disk"))
+        run_cmd('ssh %s %s ' %(shlex.quote(host), cmdStr))
 
     context.mirror_context.working_directory.append("/tmp/gpmovemirrors_disk")
     context.umount_required = True
@@ -969,6 +969,6 @@ def impl(context):
     cmdStr = "sudo umount /tmp/gpmovemirrors_disk"
     hosts_list = GpArray.initFromCatalog(dbconn.DbURL()).getHostList()
     for host in hosts_list:
-        run_cmd('ssh %s %s ' % (pipes.quote(host), cmdStr))
-        run_cmd('ssh %s rm -rf %s' % (pipes.quote(host), "/tmp/gpmovemirrors_disk"))
+        run_cmd('ssh %s %s ' % (shlex.quote(host), cmdStr))
+        run_cmd('ssh %s rm -rf %s' % (shlex.quote(host), "/tmp/gpmovemirrors_disk"))
 

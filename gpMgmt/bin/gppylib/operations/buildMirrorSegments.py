@@ -1,6 +1,6 @@
 from contextlib import closing
 import os
-import pipes
+import shlex
 import signal
 import time
 import re
@@ -531,13 +531,13 @@ class GpMirrorListToBuild:
 
                 cmd_str = (
                     "set -o pipefail; touch -a {0}; tail -3 {0} | sed -n -e '/:Syncing.*dbid/p; /error:/p; /total/p' | tr '\\r' '\\n' | tail -1"
-                    .format(pipes.quote(progressFile))
+                    .format(shlex.quote(progressFile))
                 )
             else:
                 # For full and incremental recovery, simply tail the last line.
                 cmd_str = (
                     "set -o pipefail; touch -a {0}; tail -1 {0} | tr '\\r' '\\n' | tail -1"
-                    .format(pipes.quote(progressFile))
+                    .format(shlex.quote(progressFile))
                 )
 
             progress_command = GpMirrorListToBuild.ProgressCommand(
@@ -551,7 +551,7 @@ class GpMirrorListToBuild:
         return None
 
     def _get_remove_cmd(self, remove_file, target_host):
-        return base.Command("remove file", "find {} -name {} -delete".format(gplog.get_logger_dir(), pipes.quote(remove_file)), ctxt=base.REMOTE, remoteHost=target_host)
+        return base.Command("remove file", "find {} -name {} -delete".format(gplog.get_logger_dir(), shlex.quote(remove_file)), ctxt=base.REMOTE, remoteHost=target_host)
 
     def __runWaitAndCheckWorkerPoolForErrorsAndClear(self, cmds, suppressErrorCheck=False, progressCmds=[]):
         for cmd in cmds:

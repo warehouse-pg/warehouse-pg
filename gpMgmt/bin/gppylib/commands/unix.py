@@ -13,7 +13,7 @@ import shlex
 import socket
 import signal
 import uuid
-import pipes
+import shlex
 import re
 from pkg_resources import parse_version
 
@@ -613,7 +613,7 @@ class Rsync(Command):
         # Combines output streams, uses 'sed' to find lines with 'kB/s' or 'MB/s' and appends ':%s' as suffix to the end
         # of each line and redirects it to progress_file
         if progress_file:
-            cmd_tokens.append('2>&1 | tr "\\r" "\\n" |sed -E "/[0-9]+%/ s/$/ :{0}/" > {1}' .format(name, pipes.quote(progress_file)))
+            cmd_tokens.append('2>&1 | tr "\\r" "\\n" |sed -E "/[0-9]+%/ s/$/ :{0}/" > {1}' .format(name, shlex.quote(progress_file)))
 
         cmdStr = ' '.join(cmd_tokens)
         cmdStr = "set -o pipefail; {}".format(cmdStr)
