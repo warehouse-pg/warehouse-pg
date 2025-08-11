@@ -63,6 +63,9 @@ extern void makeAlterConfigCommand(PGconn *conn, const char *configitem,
 								   const char *type2, const char *name2,
 								   PQExpBuffer buf);
 
+extern char *generate_restrict_key(void);
+extern bool valid_restrict_key(const char *restrict_key);
+
 /* GPDB additions */
 extern char *escape_backslashes(const char *src, bool quotes_too);
 extern char *escape_fmtopts_string(const char *src);

@@ -906,10 +906,12 @@ select \if false \\ (bogus \else \\ 42 \endif \\ forty_two;
 	\echo arg1 arg2 arg3 arg4 arg5 \echo arg1 \encoding arg1 \errverbose
 	\g arg1 \gx arg1 \gexec \h \html \i arg1 \ir arg1 \l arg1 \lo arg1 arg2
 	\o arg1 \p \password arg1 \prompt arg1 arg2 \pset arg1 arg2 \q
-	\reset \s arg1 \set arg1 arg2 arg3 arg4 arg5 arg6 arg7 \setenv arg1 arg2
+	\reset \restrict test \s arg1 \set arg1 arg2 arg3 arg4 arg5 arg6 arg7
+	\setenv arg1 arg2
 	\sf whole_line
 	\sv whole_line
-	\t arg1 \T arg1 \timing arg1 \unset arg1 \w arg1 \watch arg1 \x arg1
+	\t arg1 \T arg1 \timing arg1 \unrestrict not_valid \unset arg1 \w arg1
+	\watch arg1 \x arg1
 	-- \else here is eaten as part of OT_FILEPIPE argument
 	\w |/no/such/file \else
 	-- \endif here is eaten as part of whole-line argument
