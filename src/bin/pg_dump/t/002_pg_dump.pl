@@ -1,6 +1,7 @@
 use strict;
 use warnings;
 
+use IPC::Run ();
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
@@ -1544,6 +1545,27 @@ my %tests = (
 			pg_dumpall_globals       => 1,
 			pg_dumpall_globals_clean => 1,
 		},
+	},
+
+	'newline of role or table name in comment' => {
+		create_sql => qq{CREATE ROLE regress_newline;
+						 ALTER ROLE regress_newline SET enable_seqscan = off;
+						 ALTER ROLE regress_newline
+							RENAME TO "regress_newline\nattack";
+
+						 -- meet getPartitioningInfo() "unsafe" condition
+						 CREATE TYPE pp_colors AS
+							ENUM ('green', 'blue', 'black');
+						 CREATE TABLE pp_enumpart (a pp_colors)
+							PARTITION BY HASH (a);
+						 CREATE TABLE pp_enumpart1 PARTITION OF pp_enumpart
+							FOR VALUES WITH (MODULUS 2, REMAINDER 0);
+						 CREATE TABLE pp_enumpart2 PARTITION OF pp_enumpart
+							FOR VALUES WITH (MODULUS 2, REMAINDER 1);
+						 ALTER TABLE pp_enumpart
+							RENAME TO "pp_enumpart\nattack";},
+		regexp => qr/\n--[^\n]*\nattack/s,
+		like => {},
 	},
 
 	'CREATE ACCESS METHOD gist2' => {
@@ -3959,7 +3981,8 @@ $node->psql('postgres', 'create database regress_pg_dump_test;');
 
 # Start with number of command_fails_like()*2 tests below (each
 # command_fails_like is actually 2 tests)
-my $num_tests = 12;
+# the pg_dumpall newline regression check below adds 3 tests (ok/like/unlike)
+my $num_tests = 15;
 
 foreach my $run (sort keys %pgdump_runs)
 {
@@ -4025,6 +4048,21 @@ foreach my $run (sort keys %pgdump_runs)
 	}
 }
 plan tests => $num_tests;
+
+#########################################
+# pg_dumpall: newline in database name
+
+$node->safe_psql('postgres', qq{CREATE DATABASE "regress_\nattack"});
+
+my (@cmd, $stdout, $stderr);
+@cmd = ('pg_dumpall', '--port', $port, '--exclude-database=postgres');
+my $result = IPC::Run::run \@cmd, '>' => \$stdout, '2>' => \$stderr;
+ok(!$result, 'newline in dbname: exit code not 0');
+like($stderr, qr/shell command argument contains a newline/,
+	'newline in dbname: stderr matches');
+unlike($stdout, qr/^attack/m, 'newline in dbname: no comment escape');
+
+$node->safe_psql('postgres', qq{DROP DATABASE "regress_\nattack"});
 
 #########################################
 # Set up schemas, tables, etc, to be dumped.
