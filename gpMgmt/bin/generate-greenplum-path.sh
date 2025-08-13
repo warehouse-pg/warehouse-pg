@@ -27,7 +27,6 @@ fi
 EOF
 
 cat <<"EOF"
-PYTHONPATH="${GPHOME}/lib/python"
 PATH="${GPHOME}/bin:${PATH}"
 LD_LIBRARY_PATH="${GPHOME}/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
@@ -37,7 +36,6 @@ fi
 
 export GPHOME
 export PATH
-export PYTHONPATH
 export LD_LIBRARY_PATH
 export OPENSSL_CONF
 

@@ -23,14 +23,12 @@ else
 fi
 
 PATH=${GPHOME_CLIENTS}/bin:${PATH}
-PYTHONPATH=${GPHOME_CLIENTS}/bin/ext:${PYTHONPATH}
 
 # Export GPHOME_LOADERS for GPDB5 compatible
 GPHOME_LOADERS=${GPHOME_CLIENTS}
 export GPHOME_CLIENTS
 export GPHOME_LOADERS
 export PATH
-export PYTHONPATH
 
 # Mac OSX uses a different library path variable
 if [ xDarwin = x`uname -s` ]; then

@@ -12,11 +12,12 @@ SUBDIRS += ifaddrs
 
 $(recurse)
 
-PROGRAMS= analyzedb gpactivatestandby gpaddmirrors gpcheckcat gpcheckperf \
+PY_PROGRAMS = analyzedb gpactivatestandby gpaddmirrors gpcheckcat gpcheckperf \
 	gpcheckresgroupimpl gpconfig gpdeletesystem gpexpand gpinitstandby \
-	gpinitsystem gpload gpload.py gplogfilter gpmovemirrors \
+	gpload.py gplogfilter gpmovemirrors \
 	gprecoverseg gpreload gpsync gpsd gpssh gpssh-exkeys gpstart \
 	gpstate gpstop minirepro gpmemwatcher gpmemreport gpcheckresgroupv2impl
+PROGRAMS = gpinitsystem gpload
 
 installdirs:
 	$(MKDIR_P) '$(DESTDIR)$(bindir)/lib'
@@ -25,6 +26,13 @@ installprograms: installdirs
 	for file in $(PROGRAMS); do \
 		$(INSTALL_SCRIPT) $$file '$(DESTDIR)$(bindir)/'$$file ; \
 		$(PERL) $(top_builddir)/putversion '$(DESTDIR)$(bindir)/'$$file ; \
+	done
+	# Put the python executables next to the gppylib, so they can find it.
+	for file in $(PY_PROGRAMS); do \
+		$(INSTALL_SCRIPT) $$file '$(DESTDIR)$(libdir)/python/'$$file ; \
+		$(PERL) $(top_builddir)/putversion '$(DESTDIR)$(libdir)/python/'$$file ; \
+		cd $(DESTDIR)$(bindir)/ && $(LN_S) ../lib/python/$$file . ; \
+		cd $(CURDIR) ; \
 	done
 	# Symlink gpcheckcat from bin to bin/lib to maintain backward compatibility
 	if [ ! -L $(DESTDIR)$(bindir)/lib/gpcheckcat  ]; then \
@@ -35,6 +43,10 @@ installprograms: installdirs
 uninstall:
 	for file in $(PROGRAMS); do \
 		rm -f '$(DESTDIR)$(bindir)/'$$file ; \
+	done
+	for file in $(PY_PROGRAMS); do \
+		rm -f '$(DESTDIR)$(bindir)/'$$file ; \
+		rm -f '$(DESTDIR)$(libdir)/python/'$$file ; \
 	done
 	rm -f '$(DESTDIR)$(bindir)/gpload.bat'
 

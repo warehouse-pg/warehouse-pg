@@ -639,6 +639,19 @@ class SQLCommand(Command):
         if self.cancel_conn:
             self.cancel_conn.cancel()
 
+
+class PyCommand(Command):
+    """
+    Call python interpreter to execute statements through Command interface.
+    """
+
+    def __init__(self, name, py_stmt, ctxt=LOCAL, remoteHost=None):
+        cmd = 'cd "${GPHOME}/lib/python" && ' + \
+                "python3 -c '{stmt}'".format(stmt=py_stmt)
+        Command.__init__(self, name, cmdStr=cmd,
+                         ctxt=ctxt, remoteHost=remoteHost)
+
+
 class CommandNotFoundException(Exception):
     def __init__(self, cmd, paths):
         self.cmd = cmd

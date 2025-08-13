@@ -31,7 +31,7 @@ if [ ${#GPPATH[@]} -eq 0 ];then
 fi
 
 #GP_UNIQUE_COMMAND is used to identify the binary directory
-GP_UNIQUE_COMMAND=gpstart
+GP_UNIQUE_COMMAND=gpinitsystem
 
 
 findCmdInPath() {

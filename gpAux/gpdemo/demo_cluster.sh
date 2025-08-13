@@ -232,7 +232,7 @@ cat <<-EOF
 
 EOF
 
-GPPATH=`find -H $GPHOME -name gpstart| tail -1`
+GPPATH=`find -H $GPHOME -name gpinitsystem | tail -1`
 RETVAL=$?
 
 if [ "$RETVAL" -ne 0 ]; then

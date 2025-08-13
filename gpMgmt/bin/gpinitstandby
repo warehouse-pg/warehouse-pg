@@ -424,14 +424,15 @@ def create_standby(options):
                                    standby.datadir,
                                    standby.port)
         except Exception as ex:
-            raise GpInitStandbyException('failed to start standby')
+            raise GpInitStandbyException('failed to start standby. '
+                                         + str(ex))
 
     except Exception as ex:
         # Something went wrong.  Based on the current state, we can rollback
         # the operation.
-        logger.error('Failed to create standby')
+        logger.error('Failed to create standby ' + str(ex))
         if g_init_standby_state != INIT_STANDBY_STATE_NOT_STARTED:
-            logger.warn('Trying to rollback changes that have been made...')
+            logger.warning('Trying to rollback changes that have been made...')
 
         if g_init_standby_state == INIT_STANDBY_STATE_UPDATE_CATALOG:
 

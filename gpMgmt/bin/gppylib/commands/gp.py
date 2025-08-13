@@ -30,6 +30,7 @@ logger = get_default_logger()
 
 #TODO:  need a better way of managing environment variables.
 GPHOME=os.environ.get('GPHOME')
+GPHOME_PYLIB=GPHOME+"/lib/python"
 
 #Default timeout for segment start
 SEGMENT_TIMEOUT_DEFAULT=600
@@ -1400,13 +1401,14 @@ def start_standbycoordinator(host, datadir, port, era=None,
     logger.info("Starting standby coordinator")
 
     logger.info("Checking if standby coordinator is running on host: %s  in directory: %s" % (host,datadir))
-    cmd = Command("recovery_startup",
-                  ("python3 -c "
-                   "'from gppylib.commands.gp import recovery_startup; "
-                   """recovery_startup("{0}", "{1}")'""").format(
-                       datadir, port),
-                  ctxt=REMOTE, remoteHost=host)
+    stmt = (
+        "from gppylib.commands.gp import recovery_startup; "
+        + """recovery_startup("{0}", "{1}")""".format(datadir, port)
+    )
+    cmd = PyCommand(name="recovery_startup", py_stmt=stmt,
+                    ctxt=REMOTE, remoteHost=host)
     cmd.run()
+
     res = cmd.get_results().stderr
 
     if res:
@@ -1434,11 +1436,12 @@ def start_standbycoordinator(host, datadir, port, era=None,
         # the first few cycles, which we have seen when trying wrapper
         # shell script.
         pid = getPostmasterPID(host, datadir)
-        cmd = Command("get pids",
-                      ("python3 -c "
-                       "'from gppylib.commands import unix; "
-                       "print(unix.getDescendentProcesses({0}))'".format(pid)),
-                      ctxt=REMOTE, remoteHost=host)
+        stmt = (
+            "from gppylib.commands import unix;"
+            + "print(unix.getDescendentProcesses({0}))".format(pid)
+        )
+
+        cmd = PyCommand("get pids", py_stmt=stmt, ctxt=REMOTE, remoteHost=host)
         cmd.run()
         logger.debug(str(cmd))
         result = cmd.get_results()
@@ -1633,10 +1636,13 @@ def get_local_db_mode(coordinator_data_dir):
 ######
 def read_postmaster_pidfile(datadir, host=None):
     if host:
-        cmdStr ="""python3 -c 'from {module} import {func}; print({func}("{args}"))'""".format(module=sys.modules[__name__].__name__,
-                                                                                             func='read_postmaster_pidfile',
-                                                                                             args=datadir)
-        cmd = Command(name='run this method remotely', cmdStr=cmdStr, ctxt=REMOTE, remoteHost=host)
+        stmt = (
+            "from gppylib.commands.gp import read_postmaster_pidfile; "
+            + """print(read_postmaster_pidfile("{args}"))""".format(args=datadir)
+        )
+        cmd = PyCommand(
+            name="run this method remotely", py_stmt=stmt, ctxt=REMOTE, remoteHost=host
+        )
         cmd.run(validateAfter=True)
         return int(cmd.get_results().stdout.strip())
     pid=0

@@ -6,14 +6,10 @@ On most distributions, python will compiled with the same gcc and g++ verion ava
 The command `python -VV` will show the compiler used to compile the version of python being used.
 A `make` in from gpMgmt will install the proper libraries provided a gcc and gcc-c++ are present.
 
-To run any of these python scripts, necessary libraries must be installed, and PYTHONPATH must be modified to use the libraries in this path.
+Avoid relying on the `PYTHONPATH` in the script:
 
-```
-PYTHONPATH="\$GPHOME/lib/python:${PYTHONPATH}"
-```
-
-This will be set automatically with a `source $GPHOME/greenplum_path.sh`
-
+- For python executables, put it in `lib/python` next to `gppylib` and make symbolic links in `bin` or `sbin`.
+- For remote python statement execution, create a `PyCommand` object.
 
 ## Python Version
 

@@ -164,21 +164,6 @@ PLy_initialize(void)
 		ereport(FATAL,
 				(errmsg("multiple Python libraries are present in session"),
 				 errdetail("Only one Python major version can be used in one session.")));
-#if PY_MAJOR_VERSION >= 3
-	/* PYTHONPATH and PYTHONHOME has been set to GPDB's python2.7 in Postmaster when
-	 * gpstart. So for plpython3u, we need to unset PYTHONPATH and PYTHONHOME.
-	 * if user set PYTHONPATH then we set it in the env
-	 */
-	if (plpython3_path && *plpython3_path)
-	{
-		setenv("PYTHONPATH", plpython3_path, 1);
-	}
-	else
-	{
-		unsetenv("PYTHONPATH");
-	}
-	unsetenv("PYTHONHOME");
-#endif
 	/* The rest should only be done once per session */
 	if (inited)
 		return;

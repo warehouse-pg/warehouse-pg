@@ -8,7 +8,7 @@ from gppylib.mainUtils import addStandardLoggingAndHelpOptions
 from collections import defaultdict
 from gppylib import gplog
 from gppylib.commands import unix, gp
-from gppylib.commands.base import REMOTE, WorkerPool, Command
+from gppylib.commands.base import REMOTE, WorkerPool, PyCommand
 from gppylib.mainUtils import ExceptionNoStackTraceNeeded
 from gppylib.operations import Operation
 
@@ -31,12 +31,17 @@ def create_standby_pg_hba_entries(standby_host, is_hba_hostnames=False):
         standby_pg_hba_info.append('host\tall\t%s\t%s\ttrust\n' % (current_user, address))
     return standby_pg_hba_info
 
-def cleanup_pg_hba_backup(data_dirs_list):
+def cleanup_pg_hba_backup(data_dirs_list, json_input=False):
     """
     cleanup the backup of pg_hba.config created on segments
     """
+    if json_input:
+        data_dirs = json.loads(data_dirs_list)
+    else:
+        data_dirs = data_dirs_list
+
     try:
-        for data_dir in data_dirs_list:
+        for data_dir in data_dirs:
             backup_file = os.path.join(data_dir, PG_HBA_BACKUP)
             if os.path.exists(backup_file):
                 os.remove(backup_file)
@@ -65,11 +70,22 @@ def cleanup_pg_hba_backup_on_segment(gparr, unreachable_hosts=[]):
             if host in unreachable_hosts:
                 continue
             json_data_dirs_list = json.dumps(data_dirs_list)
-            cmdStr = "$GPHOME/lib/python/gppylib/operations/initstandby.py -d '%s' -D" % json_data_dirs_list
-            cmd = Command('Cleanup the pg_hba.conf backups on remote hosts', cmdStr=cmdStr , ctxt=REMOTE, remoteHost=host)
+            stmt = (
+                "from gppylib.operations.initstandby import cleanup_pg_hba_backup;"
+                + 'cleanup_pg_hba_backup("""{0}""", json_input=True)'.format(
+                    json_data_dirs_list
+                )
+            )
+            cmd = PyCommand(
+                "Cleanup the pg_hba.conf backups on remote hosts",
+                py_stmt=stmt,
+                ctxt=REMOTE,
+                remoteHost=host,
+            )
             pool.addCommand(cmd)
 
         pool.join()
+        pool.check_results()
 
         for item in pool.getCompletedItems():
             result = item.get_results()
@@ -82,8 +98,13 @@ def cleanup_pg_hba_backup_on_segment(gparr, unreachable_hosts=[]):
         pool.joinWorkers()
         pool = None
 
-def restore_pg_hba(data_dirs_list):
-    for data_dir in data_dirs_list:
+def restore_pg_hba(data_dirs_list, json_input=False):
+    if json_input:
+        data_dirs = json.loads(data_dirs_list)
+    else:
+        data_dirs = data_dirs_list
+
+    for data_dir in data_dirs:
         logger.info('Restoring pg_hba.conf for %s' % data_dir)
         os.system('mv %s/%s %s/pg_hba.conf' % (data_dir, PG_HBA_BACKUP, data_dir))
 
@@ -104,11 +125,20 @@ def restore_pg_hba_on_segment(gparr):
     try:
         for host, data_dirs_list in list(host_to_seg_map.items()):
             json_data_dirs_list = json.dumps(data_dirs_list)
-            cmdStr = "$GPHOME/lib/python/gppylib/operations/initstandby.py -d '%s' -r" % json_data_dirs_list
-            cmd = Command('Restore the pg_hba.conf on remote hosts', cmdStr=cmdStr , ctxt=REMOTE, remoteHost=host)
+            stmt = (
+                "from gppylib.operations.initstandby import restore_pg_hba;"
+                + 'restore_pg_hba("""{0}""", json_input=True)'.format(json_data_dirs_list)
+            )
+            cmd = PyCommand(
+                "Restore the pg_hba.conf on remote hosts",
+                py_stmt=stmt,
+                ctxt=REMOTE,
+                remoteHost=host,
+            )
             pool.addCommand(cmd)
 
         pool.join()
+        pool.check_results()
 
         for item in pool.getCompletedItems():
             result = item.get_results()
@@ -168,6 +198,9 @@ def create_parser():
 
     return parser
 
+
+# NOTE: The 'main' is not called by management utilities. If it is not used by
+# manual maintenance, then remove it.
 if __name__ == '__main__':
     parser = create_parser()
     (options, args) = parser.parse_args()
