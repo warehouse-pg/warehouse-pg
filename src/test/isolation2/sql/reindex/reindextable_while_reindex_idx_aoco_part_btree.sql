@@ -16,7 +16,7 @@ DELETE FROM reindex_crtab_part_aoco_btree  WHERE id < 128;
     where relname like 'reindex_crtab_part_aoco_btree%_idx');
 1: BEGIN;
 1: LOCK reindex_crtab_part_aoco_btree IN ACCESS EXCLUSIVE MODE;
-2&: REINDEX TABLE  reindex_crtab_part_aoco_btree;
+2&: REINDEX TABLE reindex_crtab_part_aoco_btree_1_prt_de_fault;
 3: BEGIN;
 3&: reindex index reindex_crtab_part_aoco_btree_1_prt_de_fault_id_idx;
 1: COMMIT;
