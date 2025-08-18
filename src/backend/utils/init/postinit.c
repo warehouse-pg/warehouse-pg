@@ -1282,17 +1282,19 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 		pgstat_bestart();
 
 	/* 
-     * MPP package setup 
-     *
-     * Primary function is to establish connections to the qExecs.
-     * This is SKIPPED when the database is in bootstrap mode or 
-     * Is not UnderPostmaster.
-     */
-    if (!bootstrap && IsUnderPostmaster)
-    {
+	 * MPP package setup
+	 *
+	 * Primary function is to establish connections to the qExecs.
+	 * This is SKIPPED when the database is in bootstrap mode or 
+	 * Is not UnderPostmaster.
+	 *
+	 * Skip motion layer IPC setup for parallel workers.
+	 */
+	if (!bootstrap && IsUnderPostmaster && !InitializingParallelWorker)
+	{
 		cdb_setup();
 		on_proc_exit( cdb_cleanup, 0 );
-    }
+	}
 
     /* 
      * MPP SharedSnapshot Setup

@@ -42,6 +42,8 @@
 #include "utils/relmapper.h"
 #include "utils/snapmgr.h"
 #include "utils/typcache.h"
+#include "cdb/cdbvars.h"
+#include "cdb/cdbutil.h"
 
 
 /*
@@ -87,6 +89,8 @@ typedef struct FixedParallelState
 	Oid			temp_namespace_id;
 	Oid			temp_toast_namespace_id;
 	int			sec_context;
+	int			session_id;
+	int			num_segments;
 	bool 		authenticated_user_is_superuser;
 	bool 		session_user_is_superuser;
 	bool 		role_is_superuser;
@@ -331,6 +335,11 @@ InitializeParallelDSM(ParallelContext *pcxt)
 	fps->serializable_xact_handle = ShareSerializableXact();
 	SpinLockInit(&fps->mutex);
 	fps->last_xlog_end = 0;
+	if (Gp_role == GP_ROLE_EXECUTE)
+	{
+		fps->session_id = gp_session_id;
+		fps->num_segments = numsegmentsFromQD;
+	}
 	shm_toc_insert(pcxt->toc, PARALLEL_KEY_FIXED, fps);
 
 	/* We can skip the rest of this if we're not budgeting for any workers. */
@@ -1292,6 +1301,11 @@ ParallelWorkerMain(Datum main_arg)
 	ParallelLeaderBackendId = fps->parallel_leader_backend_id;
 	on_shmem_exit(ParallelWorkerShutdown, (Datum) 0);
 
+	/* Pass gp_session_id and numsegmentsFromQD to parallel background workers */
+	Gp_role = GP_ROLE_EXECUTE;
+	gp_session_id = fps->session_id;
+	numsegmentsFromQD = fps->num_segments;
+
 	/*
 	 * Now we can find and attach to the error queue provided for us.  That's
 	 * good, because until we do that, any errors that happen here will not be
@@ -1391,6 +1405,11 @@ ParallelWorkerMain(Datum main_arg)
 	gucspace = shm_toc_lookup(toc, PARALLEL_KEY_GUC, false);
 	RestoreGUCState(gucspace);
 	CommitTransactionCommand();
+
+	/*
+	 * Parallel background workers are forked by writer QE, they behave as reader QEs.
+	 */
+	Gp_is_writer = false;
 
 	/* Crank up a transaction state appropriate to a parallel worker. */
 	tstatespace = shm_toc_lookup(toc, PARALLEL_KEY_TRANSACTION_STATE, false);
