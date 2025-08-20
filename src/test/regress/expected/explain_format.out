@@ -41,6 +41,9 @@ begin
         -- Ignore text-mode "Planning:" line because whether it's output
         -- varies depending on the system state
         CONTINUE WHEN (ln = 'Planning:');
+        -- Ignore text-mode "Extra Text:" line because whether it's output
+        -- varies depending on the system state
+        CONTINUE WHEN (ln ~ 'Extra Text:');
         return next ln;
     end loop;
 end;
@@ -677,11 +680,9 @@ Gather Motion N:N  (sliceN; segments: N)  (cost=N.N..N.N rows=N width=N) (actual
   ->  HashAggregate  (cost=N.N..N.N rows=N width=N) (actual time=N.N..N.N rows=N loops=N)
         Group Key: a
         Planned Partitions: N
-        Extra Text: (segN)   hash table(s): N; N groups total in N batches, N spill partitions; disk usage: NKB; chain length N.N avg, N max; using N of N buckets; total N expansions.
 
         ->  HashAggregate  (cost=N.N..N.N rows=N width=N) (actual time=N.N..N.N rows=N loops=N)
               Group Key: a, b
-              Extra Text: (segN)   hash table(s): N; chain length N.N avg, N max; using N of N buckets; total N expansions.
 
               ->  Seq Scan on test_src_tbl  (cost=N.N..N.N rows=N width=N) (actual time=N.N..N.N rows=N loops=N)
 Optimizer: Postgres-based planner
@@ -691,7 +692,7 @@ Planning Time: N.N ms
 Memory used:  NkB
 Memory wanted:  NkB
 Execution Time: N.N ms
-(18 rows)
+(16 rows)
 -- Hashagg with grouping sets
 CREATE TABLE test_hashagg_groupingsets AS
 SELECT a, avg(b) AS b FROM test_src_tbl GROUP BY grouping sets ((a), (b));
@@ -704,7 +705,6 @@ Gather Motion N:N  (sliceN; segments: N)  (cost=N.N..N.N rows=N width=N) (actual
   ->  Finalize HashAggregate  (cost=N.N..N.N rows=N width=N) (actual time=N.N..N.N rows=N loops=N)
         Group Key: a, b, (GROUPINGSET_ID())
         Planned Partitions: N
-        Extra Text: (segN)   hash table(s): N; N groups total in N batches, N spill partitions; disk usage: NKB; chain length N.N avg, N max; using N of N buckets; total N expansions.
 
         ->  Redistribute Motion N:N  (sliceN; segments: N)  (cost=N.N..N.N rows=N width=N) (actual time=N.N..N.N rows=N loops=N)
               Hash Key: a, b, (GROUPINGSET_ID())
@@ -712,7 +712,6 @@ Gather Motion N:N  (sliceN; segments: N)  (cost=N.N..N.N rows=N width=N) (actual
                     Hash Key: a
                     Hash Key: b
                     Planned Partitions: N
-                    Extra Text: (segN)   hash table(s): N; N groups total in N batches, N spill partitions; disk usage: NKB; chain length N.N avg, N max; using N of N buckets; total N expansions.
 
                     ->  Seq Scan on test_src_tbl  (cost=N.N..N.N rows=N width=N) (actual time=N.N..N.N rows=N loops=N)
 Optimizer: Postgres-based planner
@@ -723,7 +722,7 @@ Planning Time: N.N ms
 Memory used:  NkB
 Memory wanted:  NkB
 Execution Time: N.N ms
-(23 rows)
+(21 rows)
 RESET optimizer_enable_hashagg;
 RESET statement_mem;
 -- Check EXPLAIN format output with BUFFERS enabled

@@ -44,6 +44,9 @@ begin
         -- Ignore text-mode "Planning:" line because whether it's output
         -- varies depending on the system state
         CONTINUE WHEN (ln = 'Planning:');
+        -- Ignore text-mode "Extra Text:" line because whether it's output
+        -- varies depending on the system state
+        CONTINUE WHEN (ln ~ 'Extra Text:');
         return next ln;
     end loop;
 end;
