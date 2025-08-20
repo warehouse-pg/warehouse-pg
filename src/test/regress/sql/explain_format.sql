@@ -161,12 +161,7 @@ select explain_filter('EXPLAIN ANALYZE SELECT a, COUNT(DISTINCT b) AS b FROM tes
 CREATE TABLE test_hashagg_groupingsets AS
 SELECT a, avg(b) AS b FROM test_src_tbl GROUP BY grouping sets ((a), (b));
 -- The planner generates multiple hash tables but ORCA uses Shared Scan.
-WITH query_plan (et) AS
-(
-	SELECT explain_filter(
-		'EXPLAIN ANALYZE SELECT a, avg(b) AS b FROM test_src_tbl GROUP BY grouping sets ((a), (b));')
-)
-SELECT BTRIM(et) as explain_info FROM query_plan WHERE et like '%Extra Text%' limit 2;
+select explain_filter('EXPLAIN ANALYZE SELECT a, avg(b) AS b FROM test_src_tbl GROUP BY grouping sets ((a), (b));');
 
 RESET optimizer_enable_hashagg;
 RESET statement_mem;

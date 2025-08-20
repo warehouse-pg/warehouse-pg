@@ -641,16 +641,36 @@ CREATE TABLE test_hashagg_groupingsets AS
 SELECT a, avg(b) AS b FROM test_src_tbl GROUP BY grouping sets ((a), (b));
 NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause. Creating a NULL policy entry.
 -- The planner generates multiple hash tables but ORCA uses Shared Scan.
-WITH query_plan (et) AS
-(
-	SELECT explain_filter(
-		'EXPLAIN ANALYZE SELECT a, avg(b) AS b FROM test_src_tbl GROUP BY grouping sets ((a), (b));')
-)
-SELECT BTRIM(et) as explain_info FROM query_plan WHERE et like '%Extra Text%' limit 2;
-explain_info
-Extra Text: (segN)   hash table(s): N; N groups total in N batches, N spill partitions; disk usage: NKB; chain length N.N avg, N max; using N of N buckets; total N expansions.
-Extra Text: (segN)   hash table(s): N; N groups total in N batches, N spill partitions; disk usage: NKB; chain length N.N avg, N max; using N of N buckets; total N expansions.
-(2 rows)
+select explain_filter('EXPLAIN ANALYZE SELECT a, avg(b) AS b FROM test_src_tbl GROUP BY grouping sets ((a), (b));');
+explain_filter
+Gather Motion N:N  (sliceN; segments: N)  (cost=N.N..N.N rows=N width=N) (actual time=N.N..N.N rows=N loops=N)
+  ->  Sequence  (cost=N.N..N.N rows=N width=N) (actual time=N.N..N.N rows=N loops=N)
+        ->  Shared Scan (share slice:id N:N)  (cost=N.N..N.N rows=N width=N) (actual time=N.N..N.N rows=N loops=N)
+              ->  Seq Scan on test_src_tbl  (cost=N.N..N.N rows=N width=N) (actual time=N.N..N.N rows=N loops=N)
+        ->  Append  (cost=N.N..N.N rows=N width=N) (actual time=N.N..N.N rows=N loops=N)
+              ->  HashAggregate  (cost=N.N..N.N rows=N width=N) (actual time=N.N..N.N rows=N loops=N)
+                    Group Key: share0_ref2.b
+                    Extra Text: (segN)   hash table(s): N; N groups total in N batches, N spill partitions; disk usage: NKB; chain length N.N avg, N max; using N of N buckets; total N expansions.
+
+                    ->  Redistribute Motion N:N  (sliceN; segments: N)  (cost=N.N..N.N rows=N width=N) (actual time=N.N..N.N rows=N loops=N)
+                          Hash Key: share0_ref2.b
+                          ->  Result  (cost=N.N..N.N rows=N width=N) (actual time=N.N..N.N rows=N loops=N)
+                                ->  Shared Scan (share slice:id N:N)  (cost=N.N..N.N rows=N width=N) (actual time=N.N..N.N rows=N loops=N)
+              ->  HashAggregate  (cost=N.N..N.N rows=N width=N) (actual time=N.N..N.N rows=N loops=N)
+                    Group Key: share0_ref3.a
+                    Planned Partitions: N
+                    Extra Text: (segN)   hash table(s): N; N groups total in N batches, N spill partitions; disk usage: NKB; chain length N.N avg, N max; using N of N buckets; total N expansions.
+
+                    ->  Shared Scan (share slice:id N:N)  (cost=N.N..N.N rows=N width=N) (actual time=N.N..N.N rows=N loops=N)
+Optimizer: GPORCA
+Planning Time: N.N ms
+  (sliceN)    Executor memory: NK bytes.
+* (sliceN)    Executor memory: NK bytes avg x N workers, NK bytes max (segN).  Work_mem: NK bytes max, NK bytes wanted.
+  (sliceN)    Executor memory: NK bytes avg x N workers, NK bytes max (segN).
+Memory used:  NkB
+Memory wanted:  NkB
+Execution Time: N.N ms
+(27 rows)
 RESET optimizer_enable_hashagg;
 RESET statement_mem;
 -- Check EXPLAIN format output with BUFFERS enabled
