@@ -1521,3 +1521,40 @@ reset optimizer;
 drop table outer_foo;
 drop table inner_bar;
 drop table t;
+
+-- Test subplan relids problem wrapped by PlaceHolderVar
+drop table if exists foo;
+drop table if exists bar;
+drop table if exists buz;
+
+create table foo(a int, b int);
+create table bar(c int, d int);
+create table buz(i int, j int);
+
+explain select * from foo
+where EXISTS (
+    select * from bar where
+        case when EXISTS (select foo.a from buz where bar.d is NULL)
+        then 0 else 1 end
+        = bar.c
+);
+
+drop table foo;
+drop table bar;
+drop table buz;
+
+-- Using different data type
+create table foo (a varchar(30));
+create table bar (c varchar(20));
+create table buz (i varchar(20), j varchar(20));
+
+explain select c
+from bar
+left join buz on bar.c = (
+	case when buz.j in (select a from foo) 
+	then buz.j ELSE '' END );
+
+-- Clear
+drop table foo;
+drop table bar;
+drop table buz;

@@ -572,7 +572,21 @@ make_placeholders_for_subplans_in_expr_mutator(Node *expr, void *context)
 	}
 
 	if (placeholder_needed)
-		return (Node *) make_placeholder_expr(cxt->root, (Expr *) expr, cxt->phrels);
+	{
+		/*
+		 * At this stage, the SubPlan has already been generated. Because the SubPlan can
+		 * include SubLink references to external parameters, it is necessary to determine
+		 * the precise evaluation location of the PlaceHolderVar. Doing so allows the
+		 * equivalence class machinery (EQClass) to handle and propagate equivalence
+		 * classes correctly.
+		 */
+		Relids rels_in_subplan = pull_varnos_new(cxt->root, (Node *) expr);
+		if (!bms_is_empty(rels_in_subplan) && bms_is_subset(rels_in_subplan, cxt->phrels))
+			return (Node *) make_placeholder_expr(cxt->root, (Expr *) expr, rels_in_subplan);
+		else
+			return (Node *) make_placeholder_expr(cxt->root, (Expr *) expr, cxt->phrels);
+
+	}
 	else
 		return expression_tree_mutator(expr, make_placeholders_for_subplans_in_expr_mutator, context);
 }
