@@ -119,8 +119,12 @@ REGRESS = \
 	plpython_subtransaction \
 	plpython_transaction \
 	plpython_gpdb \
-	plpython3_path_guc \
-	plpython_drop
+
+ifeq ($(python_majorversion),3)
+REGRESS += plpython3_path_guc
+endif
+
+REGRESS += plpython_drop
 
 REGRESS_PLPYTHON3_MANGLE := $(REGRESS)
 

@@ -229,7 +229,7 @@ select gp_inject_fault('start_prepare', 'reset', dbid) from gp_segment_configura
  Success:
 (1 row)
 
-DO LANGUAGE plpython3u $$
+DO LANGUAGE plpythonu $$
 # this insert will fail during commit:
 plpy.execute("INSERT INTO testfk VALUES (0)")
 plpy.execute("select gp_inject_fault('start_prepare', 'error', dbid) from gp_segment_configuration where role = 'p' and status = 'u' and content = 0")
