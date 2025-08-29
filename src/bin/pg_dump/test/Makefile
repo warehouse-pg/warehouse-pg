@@ -4,7 +4,7 @@ include $(top_builddir)/src/Makefile.global
 
 TARGETS=dumputils
 
-override CPPFLAGS+= -I$(top_srcdir)/src/interfaces/libpq 
+override CPPFLAGS+= -DFRONTEND -I$(top_srcdir)/src/interfaces/libpq
 
 include $(top_builddir)/src/Makefile.mock
 
@@ -13,5 +13,5 @@ LIBS := $(filter-out -lresolv, $(LIBS))
 # This program isn't interactive, so doesn't need these
 LIBS := $(filter-out -lreadline -ledit -ltermcap -lncurses -lcurses -lcurl -lssl -lcrypto, $(LIBS))
 
-dumputils.t: dumputils_test.o $(CMOCKERY_OBJS) ../keywords.o ../kwlookup.o
+dumputils.t: dumputils_test.o $(CMOCKERY_OBJS) ../keywords.o ../kwlookup.o ../encnames.o ../wchar.o
 	$(CC) $^ $(libpq_pgport) $(LDFLAGS) $(LIBS) $(libpq) -o $@
