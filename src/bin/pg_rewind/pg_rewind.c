@@ -869,6 +869,8 @@ syncTargetDirectory(void)
 		exit(1);
 	}
 
+	char *last_fsynced_parent = NULL;
+
 	for (i = 0; i < filemap->narray; i++)
 	{
 		entry = filemap->array[i];
@@ -919,14 +921,15 @@ syncTargetDirectory(void)
 					 * filemap->array is sorted by path, so we can check if the
 					 * parent directory is the same as the last one we fsynced.
 					 */
-					static char *last_fsynced_parent = NULL;
 					if (!last_fsynced_parent || strcmp(last_fsynced_parent, parentpath) != 0)
 					{
-						if (last_fsynced_parent)
-							pg_free(last_fsynced_parent);
-
 						if (fsync_fname(parentpath, true) == 0)
+						{
+							if (last_fsynced_parent)
+								pg_free(last_fsynced_parent);
+
 							last_fsynced_parent = pg_strdup(parentpath);
+						}
 					}
 					break;
 
