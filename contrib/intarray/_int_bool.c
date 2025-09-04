@@ -8,8 +8,6 @@
 
 #include "_int.h"
 
-#include "miscadmin.h"
-
 PG_FUNCTION_INFO_V1(bqarr_in);
 PG_FUNCTION_INFO_V1(bqarr_out);
 PG_FUNCTION_INFO_V1(boolop);
