@@ -825,7 +825,7 @@ XLogCompressBackupBlock(char *page, uint16 hole_offset, uint16 hole_length,
 #ifdef USE_ZSTD
 	static ZSTD_CCtx  *cxt = NULL;      /* ZSTD compression context */
 	int32		orig_len = BLCKSZ - hole_length;
-	int32		len;
+	int32		len = -1;
 	int32		extra_bytes = 0;
 	char	   *source;
 	PGAlignedBlock tmp;
@@ -861,8 +861,7 @@ XLogCompressBackupBlock(char *page, uint16 hole_offset, uint16 hole_length,
 							COMPRESS_LEVEL);
 
 	if (ZSTD_isError(len))
-		elog(ERROR, "compression failed: %s uncompressed len %d",
-			 ZSTD_getErrorName(len), orig_len);
+		len = -1; /* failure */
 
 	/*
 	 * We recheck the actual size even if ZSTD reports success and
