@@ -30,6 +30,7 @@
 #include "replication/origin.h"
 #include "storage/bufmgr.h"
 #include "storage/proc.h"
+#include "utils/faultinjector.h"
 #include "utils/memutils.h"
 #include "pg_trace.h"
 
@@ -859,6 +860,11 @@ XLogCompressBackupBlock(char *page, uint16 hole_offset, uint16 hole_length,
 							dest, BLCKSZ,
 							source, orig_len,
 							COMPRESS_LEVEL);
+
+#ifdef FAULT_INJECTOR
+	if (SIMPLE_FAULT_INJECTOR("xlog_compression_fail") == FaultInjectorTypeSkip)
+		len = -1;
+#endif
 
 	if (ZSTD_isError(len))
 		len = -1; /* failure */

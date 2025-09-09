@@ -297,6 +297,7 @@ test: ao_checksum_corruption AOCO_Compression AORO_Compression table_statistics
 test: session_reset
 # below test(s) inject faults so each of them need to be in a separate group
 test: fts_error
+test: wal_compression
 
 test: psql_gp_commands pg_resetwal dropdb_check_shared_buffer_cache gp_upgrade_cornercases
 
