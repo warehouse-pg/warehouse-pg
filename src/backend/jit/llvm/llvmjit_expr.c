@@ -1981,7 +1981,7 @@ llvm_compile_expr(ExprState *state)
 					/* Copy aggstate->group_id to the result */
 					v_group_id_p = l_ptr_const(&aggstate->group_id,
 											  l_ptr(TypeSizeT));
-					v_group_id = l_load(b, LLVMInt32Type(), v_group_id_p, "v_group_id");
+					v_group_id = l_load(b, LLVMInt32TypeInContext(lc), v_group_id_p, "v_group_id");
 
 					/* and store result */
 					LLVMBuildStore(b, v_group_id, v_resvaluep);
@@ -2000,7 +2000,7 @@ llvm_compile_expr(ExprState *state)
 					/* Copy aggstate->gset_id to the result */
 					v_gset_id_p = l_ptr_const(&aggstate->gset_id,
 											  l_ptr(TypeSizeT));
-					v_gset_id = l_load(b, LLVMInt32Type(), v_gset_id_p, "v_gset_id");
+					v_gset_id = l_load(b, LLVMInt32TypeInContext(lc), v_gset_id_p, "v_gset_id");
 
 					/* and store result */
 					LLVMBuildStore(b, v_gset_id, v_resvaluep);
@@ -2019,7 +2019,7 @@ llvm_compile_expr(ExprState *state)
 					/* Copy tsstate->currentExprId to the result */
 					v_currentExprId_p = l_ptr_const(&tsstate->currentExprId,
 											  l_ptr(TypeSizeT));
-					v_currentExprId = l_load(b, LLVMInt32Type(), v_currentExprId_p, "v_currentExprId");
+					v_currentExprId = l_load(b, LLVMInt32TypeInContext(lc), v_currentExprId_p, "v_currentExprId");
 
 					/* and store result */
 					LLVMBuildStore(b, v_currentExprId, v_resvaluep);
@@ -2038,8 +2038,8 @@ llvm_compile_expr(ExprState *state)
 
 					/* Fetch and increment rowcounter */
 					v_rowcounter_p = l_ptr_const(rowcounter_p,
-												 l_ptr(LLVMInt64Type()));
-					v_rowcounter = l_load(b, LLVMInt64Type(), v_rowcounter_p, "v_rowcounter");
+												 l_ptr(LLVMInt64TypeInContext(lc)));
+					v_rowcounter = l_load(b, LLVMInt64TypeInContext(lc), v_rowcounter_p, "v_rowcounter");
 					v_rowcounter_new = LLVMBuildAdd(b, v_rowcounter, l_int64_const(lc, 1), "v_rowcounter_new");
 
 					/* Store the new value back */
