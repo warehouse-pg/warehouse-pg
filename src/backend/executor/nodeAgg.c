@@ -3657,6 +3657,8 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 	{
 		/* Allocate string buffer. */
 		aggstate->ss.ps.cdbexplainbuf = makeStringInfo();
+
+		/* Request a callback at end of query. */
 		aggstate->ss.ps.cdbexplainfun = ExecAggExplainEnd;
 	}
 
@@ -5262,8 +5264,8 @@ ReuseHashTable(AggState *node)
  * ExecAggExplainEnd
  *      Called before ExecutorEnd to finish EXPLAIN ANALYZE reporting.
  *
- * Check cdbexplain_depositStatsToNode(), Greenplum only saves extra
- * message text for the most interesting winning qExecs.
+ * Check cdbexplain_depositStatsToNode(), it only saves extra extra text for
+ * the most interesting winning qExecs.
  */
 static void
 ExecAggExplainEnd(PlanState *planstate, struct StringInfoData *buf)
