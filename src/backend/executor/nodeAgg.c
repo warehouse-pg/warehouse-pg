@@ -489,7 +489,7 @@ static int	find_compatible_pertrans(AggState *aggstate, Aggref *newagg,
 
 static void ExecEagerFreeAgg(AggState *node);
 
-void agg_hash_explain_extra_message(AggState *aggstate);
+static void ExecAggExplainEnd(PlanState *planstate, struct StringInfoData *buf);
 
 /*
  * Select the current grouping set; affects current_set and
@@ -2336,13 +2336,6 @@ ExecAgg(PlanState *pstate)
 			return result;
 	}
 
-	/* Save statistics into the cdbexplainbuf for EXPLAIN ANALYZE */
-	if (node->ss.ps.instrument &&
-			(node->ss.ps.instrument)->need_cdb &&
-			(node->phase->aggstrategy == AGG_HASHED ||
-			node->phase->aggstrategy == AGG_MIXED))
-		agg_hash_explain_extra_message(node);
-
 	return NULL;
 }
 
@@ -3657,14 +3650,15 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 	ExecInitResultTupleSlotTL(&aggstate->ss.ps, &TTSOpsVirtual);
 	ExecAssignProjectionInfo(&aggstate->ss.ps, NULL);
 
-    /*
-     * CDB: Offer extra info for EXPLAIN ANALYZE.
-     */
-    if (estate->es_instrument && (estate->es_instrument & INSTRUMENT_CDB))
-    {
-        /* Allocate string buffer. */
-        aggstate->ss.ps.cdbexplainbuf = makeStringInfo();
-    }
+	/*
+	 * CDB: Offer extra info for EXPLAIN ANALYZE.
+	 */
+	if (estate->es_instrument && (estate->es_instrument & INSTRUMENT_CDB))
+	{
+		/* Allocate string buffer. */
+		aggstate->ss.ps.cdbexplainbuf = makeStringInfo();
+		aggstate->ss.ps.cdbexplainfun = ExecAggExplainEnd;
+	}
 
 	/*
 	 * initialize child expressions
@@ -5265,16 +5259,22 @@ ReuseHashTable(AggState *node)
 }
 
 /*
- * Save statistics into the cdbexplainbuf for EXPLAIN ANALYZE
+ * ExecAggExplainEnd
+ *      Called before ExecutorEnd to finish EXPLAIN ANALYZE reporting.
+ *
+ * Check cdbexplain_depositStatsToNode(), Greenplum only saves extra
+ * message text for the most interesting winning qExecs.
  */
-void
-agg_hash_explain_extra_message(AggState *aggstate)
+static void
+ExecAggExplainEnd(PlanState *planstate, struct StringInfoData *buf)
 {
-	/*
-	 * Check cdbexplain_depositStatsToNode(), Greenplum only saves extra
-	 * message text for the most interesting winning qExecs.
-	 */
-	StringInfo hbuf = aggstate->ss.ps.cdbexplainbuf;
+	AggState   *aggstate = castNode(AggState, planstate);
+
+	if (!aggstate->ss.ps.instrument
+		|| !(aggstate->ss.ps.instrument)->need_cdb
+		|| (aggstate->phase->aggstrategy != AGG_HASHED && aggstate->phase->aggstrategy != AGG_MIXED))
+		return;
+
 	uint64	sum_num_expansions = 0;
 	uint64	sum_output_groups = 0;
 	uint64	sum_spill_parts = 0;
@@ -5284,9 +5284,9 @@ agg_hash_explain_extra_message(AggState *aggstate)
 	uint64	sum_bucket_used = 0;
 	uint64	sum_bucket_total = 0;
 
-	Assert(hbuf);
+	Assert(buf);
 
-	appendStringInfo(hbuf, "hash table(s): %d", aggstate->num_hashes);
+	appendStringInfo(buf, "hash table(s): %d", aggstate->num_hashes);
 
 	/* Scan all perhashs and collect statistic info */
 	for (int setno = 0; setno < aggstate->num_hashes; setno++)
@@ -5315,7 +5315,7 @@ agg_hash_explain_extra_message(AggState *aggstate)
 
 	if (aggstate->hash_ever_spilled)
 	{
-		appendStringInfo(hbuf,
+		appendStringInfo(buf,
 			"; " UINT64_FORMAT " groups total in %d batches, " UINT64_FORMAT
 			" spill partitions; disk usage: " INT64_FORMAT "KB",
 			sum_output_groups,
@@ -5326,10 +5326,10 @@ agg_hash_explain_extra_message(AggState *aggstate)
 
 	if (sum_chain_count > 0)
 	{
-		appendStringInfo(hbuf,
+		appendStringInfo(buf,
 				"; chain length %.1f avg, %d max;"
 				" using " INT64_FORMAT " of " INT64_FORMAT " buckets;"
-				" total " INT64_FORMAT " expansions.\n",
+				" total " INT64_FORMAT " expansions.",
 				(double)sum_chain_length_total / sum_chain_count,
 				chain_length_max,
 				sum_bucket_used,

@@ -680,10 +680,8 @@ Gather Motion N:N  (sliceN; segments: N)  (cost=N.N..N.N rows=N width=N) (actual
   ->  HashAggregate  (cost=N.N..N.N rows=N width=N) (actual time=N.N..N.N rows=N loops=N)
         Group Key: a
         Planned Partitions: N
-
         ->  HashAggregate  (cost=N.N..N.N rows=N width=N) (actual time=N.N..N.N rows=N loops=N)
               Group Key: a, b
-
               ->  Seq Scan on test_src_tbl  (cost=N.N..N.N rows=N width=N) (actual time=N.N..N.N rows=N loops=N)
 Optimizer: Postgres-based planner
 Planning Time: N.N ms
@@ -692,7 +690,7 @@ Planning Time: N.N ms
 Memory used:  NkB
 Memory wanted:  NkB
 Execution Time: N.N ms
-(16 rows)
+(14 rows)
 -- Hashagg with grouping sets
 CREATE TABLE test_hashagg_groupingsets AS
 SELECT a, avg(b) AS b FROM test_src_tbl GROUP BY grouping sets ((a), (b));
@@ -705,14 +703,12 @@ Gather Motion N:N  (sliceN; segments: N)  (cost=N.N..N.N rows=N width=N) (actual
   ->  Finalize HashAggregate  (cost=N.N..N.N rows=N width=N) (actual time=N.N..N.N rows=N loops=N)
         Group Key: a, b, (GROUPINGSET_ID())
         Planned Partitions: N
-
         ->  Redistribute Motion N:N  (sliceN; segments: N)  (cost=N.N..N.N rows=N width=N) (actual time=N.N..N.N rows=N loops=N)
               Hash Key: a, b, (GROUPINGSET_ID())
               ->  Partial HashAggregate  (cost=N.N..N.N rows=N width=N) (actual time=N.N..N.N rows=N loops=N)
                     Hash Key: a
                     Hash Key: b
                     Planned Partitions: N
-
                     ->  Seq Scan on test_src_tbl  (cost=N.N..N.N rows=N width=N) (actual time=N.N..N.N rows=N loops=N)
 Optimizer: Postgres-based planner
 Planning Time: N.N ms
@@ -722,7 +718,7 @@ Planning Time: N.N ms
 Memory used:  NkB
 Memory wanted:  NkB
 Execution Time: N.N ms
-(21 rows)
+(19 rows)
 RESET optimizer_enable_hashagg;
 RESET statement_mem;
 -- Check EXPLAIN format output with BUFFERS enabled

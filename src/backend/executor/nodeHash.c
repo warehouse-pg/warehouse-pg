@@ -2529,7 +2529,7 @@ ExecHashTableExplainEnd(PlanState *planstate, struct StringInfoData *buf)
 		appendStringInfo(buf,
 						 "Work file set: %u files (%u compressed), "
 						 "avg file size %lu, "
-						 "compression buffer size %lu bytes \n",
+						 "compression buffer size %lu bytes.\n",
 						 hashtable->workset_num_files,
 						 hashtable->workset_num_files_compressed,
 						 hashtable->workset_avg_file_size,
