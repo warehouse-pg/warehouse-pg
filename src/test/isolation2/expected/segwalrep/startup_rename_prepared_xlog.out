@@ -1,125 +1,190 @@
--- Test a bug where the last XLOG segment is renamed to .partial before prepared
--- transactions contained in it are recovered. This would result in segfault at
--- RecoverPreparedTransactions. The failure is well described in PG hackers:
--- https://www.postgresql.org/message-id/743b9b45a2d4013bd90b6a5cba8d6faeb717ee34.camel%40cybertec.at
--- However, in GP due to an older version of PG this error is masked by always caching
--- the last opened xlog segment in XLogRead(). To actually trigger the failure we need to
--- create unfinished prepared transactions in TWO different xlog segments.
+-- ## Bug Description ##
+-- This test targets a bug where a primary segment, during crash recovery, renames the last
+-- WAL (XLOG) segment to end with a '.partial' suffix *before* recovering the prepared
+-- transactions contained within it. This premature renaming can lead to a segfault when the
+-- recovery process (specifically, `RecoverPreparedTransactions`) attempts to read from the
+-- no-longer-existing WAL file. This scenario is described in detail on the PostgreSQL hackers
+-- mailing list: https://www.postgresql.org/message-id/743b9b45a2d4013bd90b6a5cba8d6faeb717ee34.camel%40cybertec.at
+--
+-- ## Greenplum/WarehousePG-Specific Challenge ##
+-- In the version of PostgreSQL that WarehousePG is based on, this bug is masked by an internal
+-- caching mechanism for the last opened WAL segment. To reliably trigger the bug, we must
+-- create a more complex scenario: creating unfinished prepared transactions across TWO
+-- different WAL segments. The final prepared transaction must reside in the very last
+-- WAL segment that will be renamed to '.partial' upon failover.
+--
+-- ## Test Strategy ##
+-- 1. **Setup**: Configure the cluster to enable `archive_mode`, which is a prerequisite for
+--    the WAL segment renaming behavior. Also, increase gang creation retry settings to make
+--    the test more robust against timing issues during segment recovery.
+-- 2. **Create First Prepared TX**: Inject a fault to suspend a 2PC transaction after the PREPARE
+--    phase, creating an "in-doubt" prepared transaction.
+-- 3. **Switch WAL**: Manually switch the WAL file. This isolates the first transaction's
+--    PREPARE record in a now-closed WAL segment.
+-- 4. **Create Second Prepared TX**: Create another "in-doubt" prepared transaction. Its
+--    PREPARE record will be in the new, current, and *last* WAL segment.
+-- 5. **Trigger Failover**: Crash the primary segment to initiate a failover. The mirror will be
+--    promoted and begin recovery. This is the critical moment where the bug could manifest.
+-- 6. **Verification**: After the new primary is up, verify that it did not crash and that both
+--    prepared transactions were successfully recovered and can be committed.
+-- 7. **Cleanup**: Restore the cluster to its original state.
+
 
 include: helpers/server_helpers.sql;
 CREATE
 
--- Allow extra time for mirror promotion to complete recovery to avoid
--- gprecoverseg BEGIN failures due to gang creation failure as some primaries
--- are not up. Setting these increase the number of retries in gang creation in
--- case segment is in recovery. Approximately we want to wait 30 seconds.
+-- =================================================================
+-- STEP 1: Test Environment Setup
+-- =================================================================
+
+-- Increase retry counts for gang creation. This prevents test failures on busy systems
+-- where mirror promotion might take longer, by allowing the coordinator to wait longer for
+-- segments to become fully ready after recovery.
 !\retcode gpconfig -c gp_gang_creation_retry_count -v 120 --skipvalidation --masteronly;
 (exited with code 0)
 !\retcode gpconfig -c gp_gang_creation_retry_timer -v 1000 --skipvalidation --masteronly;
 (exited with code 0)
 
--- The last xlog segment is renamed to .partial only when archive mode is on
+-- The '.partial' renaming of the last WAL segment only occurs when archive_mode is enabled.
 !\retcode gpconfig -c archive_mode -v on;
 (exited with code 0)
 !\retcode gpconfig -c archive_command -v '/bin/true';
 (exited with code 0)
+
+-- Restart the cluster to apply the configuration changes.
 !\retcode gpstop -rai;
 (exited with code 0)
 
-1: create extension if not exists gp_inject_fault;
+1: CREATE EXTENSION IF NOT EXISTS gp_inject_fault;
 CREATE
-1: create table t_rename1 (a int);
+1: CREATE TABLE t_rename1 (a INT);
 CREATE
-1: create table t_rename2 (a int);
+1: CREATE TABLE t_rename2 (a INT);
 CREATE
 
--- generate an orphaned prepare transaction in first segment
-1: select gp_inject_fault('dtm_broadcast_prepare', 'suspend', dbid) from gp_segment_configuration where role = 'p' and content = -1;
+
+-- =================================================================
+-- STEP 2: Create Two In-Doubt Transactions in Separate WAL Segments
+-- =================================================================
+
+-- Create the first orphaned prepared transaction in the CURRENT WAL segment.
+-- We suspend the transaction right after the coordinator broadcasts PREPARE.
+1: SELECT gp_inject_fault('dtm_broadcast_prepare', 'suspend', dbid) FROM gp_segment_configuration WHERE role = 'p' AND content = -1;
  gp_inject_fault 
 -----------------
  Success:        
 (1 row)
--- assume (2), (1) are on different segments and one tuple is on the first segment.
--- the test finally double-check that.
-2&: insert into t_rename1 values(2),(1);  <waiting ...>
-1: select gp_wait_until_triggered_fault('dtm_broadcast_prepare', 1, dbid) from gp_segment_configuration where role = 'p' and content = -1;
+
+-- Assume (2), (1) are on different segments and one tuple is on the first segment.
+-- The test will double-check that.
+2&: INSERT INTO t_rename1 VALUES (2), (1);  <waiting ...>
+
+-- Wait for the fault to be triggered on the coordinator, ensuring the transaction is now in the
+-- "prepared" state on the segments.
+1: SELECT gp_wait_until_triggered_fault('dtm_broadcast_prepare', 1, dbid) FROM gp_segment_configuration WHERE role = 'p' AND content = -1;
  gp_wait_until_triggered_fault 
 -------------------------------
  Success:                      
 (1 row)
 
--- start another xlog segment (will be renamed to .partial on failover)
-GP_IGNORE:-- start_ignore
-GP_IGNORE:0U: select pg_switch_xlog();
-GP_IGNORE: pg_switch_xlog 
-GP_IGNORE:----------------
-GP_IGNORE: 0/C0B05E0      
-GP_IGNORE:(1 row)
-GP_IGNORE:-- end_ignore
+-- This is the CRITICAL step to expose the bug. We force a WAL switch.
+-- Now, the PREPARE record for the first transaction is in a completed, non-last WAL segment.
+-- The next transaction's PREPARE record will be in a new WAL segment.
+-- start_ignore
+0U: SELECT pg_switch_xlog();
+ pg_switch_xlog 
+----------------
+ 0/C0AFE60      
+(1 row)
+-- end_ignore
 
--- inject another fault and prepare transaction in the new xlog segment
-1: select gp_inject_fault('dtm_broadcast_prepare', 'reset', dbid) from gp_segment_configuration where role = 'p' and content = -1;
+-- Now, create a second orphaned prepared transaction in the NEW (and currently LAST) WAL segment.
+1: SELECT gp_inject_fault('dtm_broadcast_prepare', 'reset', dbid) FROM gp_segment_configuration WHERE role = 'p' AND content = -1;
  gp_inject_fault 
 -----------------
  Success:        
 (1 row)
-1: select gp_inject_fault('dtm_broadcast_prepare', 'suspend', dbid) from gp_segment_configuration where role = 'p' and content = -1;
+1: SELECT gp_inject_fault('dtm_broadcast_prepare', 'suspend', dbid) FROM gp_segment_configuration WHERE role = 'p' AND content = -1;
  gp_inject_fault 
 -----------------
  Success:        
 (1 row)
--- assume (4), (3) are on different segments and one tuple is on the first segment.
--- the test finally double-check that.
-3&: insert into t_rename2 values(2),(1);  <waiting ...>
-1: select gp_wait_until_triggered_fault('dtm_broadcast_prepare', 1, dbid) from gp_segment_configuration where role = 'p' and content = -1;
+
+-- This INSERT will also be suspended, with its PREPARE record in the last WAL segment.
+3&: INSERT INTO t_rename2 VALUES (2), (1);  <waiting ...>
+
+-- Wait for the second fault to be triggered.
+1: SELECT gp_wait_until_triggered_fault('dtm_broadcast_prepare', 1, dbid) FROM gp_segment_configuration WHERE role = 'p' AND content = -1;
  gp_wait_until_triggered_fault 
 -------------------------------
  Success:                      
 (1 row)
 
--- shutdown primary and make sure the segment is down
--1U: select pg_ctl((SELECT datadir from gp_segment_configuration c where c.role='p' and c.content=0), 'stop', 'immediate');
+
+-- =================================================================
+-- STEP 3: Trigger Segment Failover and Recovery
+-- =================================================================
+
+-- Shutdown the primary segment for content 0 using an immediate shutdown.
+-- This forces the mirror to perform crash recovery from WAL.
+-1U: SELECT pg_ctl((SELECT datadir FROM gp_segment_configuration c WHERE c.role='p' AND c.content=0), 'stop', 'immediate');
  pg_ctl 
 --------
  OK     
 (1 row)
-1: select gp_request_fts_probe_scan();
+
+-- Request the Fault Tolerance Server (FTS) to scan for the downed segment.
+1: SELECT gp_request_fts_probe_scan();
  gp_request_fts_probe_scan 
 ---------------------------
  t                         
 (1 row)
-1: select role, preferred_role from gp_segment_configuration where content = 0 order by role;
+
+-- Verify that the mirror has been promoted to the new primary.
+-- The new primary will now be in recovery mode, reading the WAL files. If the bug exists,
+-- it will crash at this stage while trying to recover the second prepared transaction.
+1: SELECT role, preferred_role FROM gp_segment_configuration WHERE content = 0 ORDER BY role;
  role | preferred_role 
 ------+----------------
  m    | p              
  p    | m              
 (2 rows)
 
--- double confirm that promote succeeds.
--- also double confirm that
---  1. tuples (2) and (1) are located on two segments (thus we are testing 2pc with prepared transaction).
---  2. there are tuples on the first segment (we have been testing on the first segment).
-1: insert into t_rename1 values(2),(1);
+
+-- =================================================================
+-- STEP 4: Verification
+-- =================================================================
+
+-- Double-check that the original transaction was indeed a 2PC transaction by verifying
+-- that its data is distributed across at least two segments.
+-- This also implicitly confirms that the new primary is responsive, and the
+-- shutdown then recovered segment 0 has data.
+1: INSERT INTO t_rename1 VALUES (2), (1);
 INSERT 2
-1: select gp_segment_id, * from t_rename1 order by a;
+1: SELECT gp_segment_id, a FROM t_rename1 ORDER BY a;
  gp_segment_id | a 
 ---------------+---
  1             | 1 
  0             | 2 
 (2 rows)
 
-1: select gp_inject_fault('dtm_broadcast_prepare', 'reset', dbid) from gp_segment_configuration where role = 'p' and content = -1;
+-- Reset the fault, allowing the coordinator to send the COMMIT PREPARED command for the
+-- two orphaned transactions.
+1: SELECT gp_inject_fault('dtm_broadcast_prepare', 'reset', dbid) FROM gp_segment_configuration WHERE role = 'p' AND content = -1;
  gp_inject_fault 
 -----------------
  Success:        
 (1 row)
+
+-- Wait for the background sessions to complete their commits.
 2<:  <... completed>
 INSERT 2
 3<:  <... completed>
 INSERT 2
 
--- confirm the "orphaned" prepared trnasaction commits finally.
-1: select * from t_rename1 order by a;
+-- Confirm that the data from both transactions is now visible, meaning the prepared
+-- transactions were successfully recovered and subsequently committed.
+1: SELECT * FROM t_rename1 ORDER BY a;
  a 
 ---
  1 
@@ -127,42 +192,48 @@ INSERT 2
  2 
  2 
 (4 rows)
-1: select * from t_rename2 order by a;
+1: SELECT * FROM t_rename2 ORDER BY a;
  a 
 ---
  1 
  2 
 (2 rows)
 
--- recovery the nodes
+
+-- =================================================================
+-- STEP 5: Cluster Restoration and Cleanup
+-- =================================================================
+
+-- Recover the failed segment (which will become the new mirror).
 !\retcode gprecoverseg -a;
 (exited with code 0)
-1: select wait_until_segment_synchronized(0);
+1: SELECT wait_until_segment_synchronized(0);
  wait_until_segment_synchronized 
 ---------------------------------
  OK                              
 (1 row)
 
+-- Rebalance the cluster to return the original primary to its preferred role.
 !\retcode gprecoverseg -ar;
 (exited with code 0)
-1: select wait_until_segment_synchronized(0);
+1: SELECT wait_until_segment_synchronized(0);
  wait_until_segment_synchronized 
 ---------------------------------
  OK                              
 (1 row)
 
--- verify the first segment is recovered to the original state.
-1: select role, preferred_role from gp_segment_configuration where content = 0 order by role;
+-- Verify the segment roles are back to their original state.
+1: SELECT role, preferred_role FROM gp_segment_configuration WHERE content = 0 ORDER BY role;
  role | preferred_role 
 ------+----------------
  m    | m              
  p    | p              
 (2 rows)
 
--- cleanup
-1: drop table t_rename1;
+-- Final cleanup.
+1: DROP TABLE t_rename1;
 DROP
-1: drop table t_rename2;
+1: DROP TABLE t_rename2;
 DROP
 !\retcode gpconfig -r gp_gang_creation_retry_count --skipvalidation;
 (exited with code 0)
