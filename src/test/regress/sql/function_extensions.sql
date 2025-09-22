@@ -343,3 +343,30 @@ SELECT count(*) FROM t6_function_scan;
 DROP TABLE IF EXISTS t7_function_scan;
 CREATE TABLE t7_function_scan AS SELECT * FROM  get_country() UNION ALL SELECT 100/(1+ 1* random())::int, 'cc'::text;
 SELECT count(*) FROM t7_function_scan;
+
+-- Test initplan function referring the outer query.
+-- The query below previously led to a SIGSEGV.
+-- start_matchsubs
+-- m/ \(subselect\.c:.*\)/
+-- s/ \(subselect\.c:.*\)//
+-- end_matchsubs
+
+-- start_ignore
+drop table if exists test_table;
+drop function if exists test_function(param_in text);
+-- end_ignore
+
+create table test_table(a text);
+
+create function test_function(param_in text) returns
+table (param_out text) as
+$function$
+select param_in;
+$function$
+language sql execute on initplan;
+
+create table tnew as
+select * from test_table l join test_function(l.a) r on l.a = r.param_out;
+
+drop function test_function(param_in text);
+drop table test_table;
