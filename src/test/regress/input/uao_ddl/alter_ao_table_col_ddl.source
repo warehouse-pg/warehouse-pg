@@ -78,3 +78,39 @@ select relfrozenxid from gp_dist_random('pg_class') c, pg_namespace n where
        and n.nspname = 'alter_ao_table_col_ddl_@amname@';
 
 COMMIT;
+
+-- Test VACUUM after the abortion of adding a column and inserting data, mainly test pg_attribute_encoding could
+-- handle this.
+CREATE TABLE IF NOT EXISTS uao_add_column_abortion (
+	id int,
+	name text
+)
+DISTRIBUTED BY (id);
+
+BEGIN;
+ALTER TABLE uao_add_column_abortion ADD COLUMN country text;
+INSERT INTO uao_add_column_abortion VALUES (1, 'abc', 'def'), (2, 'abc', 'def');
+ABORT;
+
+-- should work well
+VACUUM uao_add_column_abortion;
+
+-- test subtransaction
+BEGIN;
+ALTER TABLE uao_add_column_abortion ADD COLUMN country text;
+INSERT INTO uao_add_column_abortion VALUES (1, 'Mike', 'London'), (2, 'Jimmy', 'Seattle');
+SAVEPOINT sub;
+ALTER TABLE uao_add_column_abortion DROP COLUMN country;
+SELECT * FROM uao_add_column_abortion;
+TRUNCATE TABLE uao_add_column_abortion;
+ROLLBACK TO sub;
+SELECT * FROM uao_add_column_abortion;
+ABORT;
+
+SELECT * FROM uao_add_column_abortion;
+
+-- should work well
+VACUUM uao_add_column_abortion;
+
+-- clean
+DROP TABLE uao_add_column_abortion;
