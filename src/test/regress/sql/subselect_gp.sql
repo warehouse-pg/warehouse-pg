@@ -1558,3 +1558,118 @@ left join buz on bar.c = (
 drop table foo;
 drop table bar;
 drop table buz;
+
+-- Test the correctness of EXPR SubLink pull up, the tests ensure that we select
+-- the correct join type (LEFT/INNER) or add proper COALESCE node for expression.
+drop table if exists foo, bar;
+create table foo (a int, b int);
+create table bar (x int, y int);
+
+set gp_enable_multiphase_agg = off;
+
+insert into foo select i,i+1 from generate_series(1,20) i;
+insert into bar select i%6+1,i+2 from generate_series(1,20) i;
+
+-- Non-strict aggregate functions, such as COUNT(*), the subquery must be rewritten
+-- using a LEFT JOIN combined with COALESCE() to ensure that NULL cases are properly handled.
+explain (costs off)
+select count(*) from foo where a > (select count(*) from bar where foo.a = bar.x);
+select count(*) from foo where a > (select count(*) from bar where foo.a = bar.x);
+
+explain (costs off)
+select count(*) from foo where a > (select (count(*) + 10) * 2 from bar where foo.a = bar.x);
+select count(*) from foo where a > (select (count(*) + 10) * 2 from bar where foo.a = bar.x);
+
+-- should not pull up it
+explain (costs off)
+select count(*) from foo where a > (select (count(*) + foo.b) * 2 from bar where foo.a = bar.x);
+select count(*) from foo where a > (select (count(*) + foo.b) * 2 from bar where foo.a = bar.x);
+
+-- Test regr_count
+explain (costs off)
+select count(*) from foo where a > (select regr_count(x, y) from bar where foo.a = bar.x);
+select count(*) from foo where a > (select regr_count(x, y) from bar where foo.a = bar.x);
+
+explain (costs off)
+select count(*) from foo where a > (select (regr_count(x, y) + 10) * 2 from bar where foo.a = bar.x);
+select count(*) from foo where a > (select (regr_count(x, y) + 10) * 2 from bar where foo.a = bar.x);
+
+-- should not pull up it
+explain (costs off)
+select count(*) from foo where a > (select (regr_count(x, y) + foo.b) * 2 from bar where foo.a = bar.x);
+select count(*) from foo where a > (select (regr_count(x, y) + foo.b) * 2 from bar where foo.a = bar.x);
+
+-- max(), avg(), sum().. such normal strict aggregate function will use INNER JOIN
+explain (costs off)
+select count(*) from foo where a > (select max(x)  from bar where foo.a = bar.x);
+select count(*) from foo where a > (select max(x)  from bar where foo.a = bar.x);
+
+explain (costs off)
+select count(*) from foo where a > (select max(x + 3) / 2  from bar where foo.a = bar.x);
+select count(*) from foo where a > (select max(x + 3) / 2  from bar where foo.a = bar.x);
+
+-- agg with filter should not be pulled-up
+explain (costs off)
+select count(*) from foo where a > (select count(*) filter(where x < y + 10) from bar where foo.a = bar.x);
+select count(*) from foo where a > (select count(*) filter(where x < y + 10) from bar where foo.a = bar.x);
+
+-- tests for ordered set agg
+-- when the functions' aggfinalextra is false, we can use INNER JOIN
+explain (costs off)
+select count(*) from foo where a + 5 > (select percentile_cont(0.5) within group(order by x) from bar where foo.a = bar.x);
+select count(*) from foo where a + 5 > (select percentile_cont(0.5) within group(order by x) from bar where foo.a = bar.x);
+
+-- but for aggfinalextra is true, we do nothing
+explain (costs off)
+select count(*) from foo where a + 5 > (select percentile_disc(0.5) within group(order by x) from bar where foo.a = bar.x);
+select count(*) from foo where a + 5 > (select percentile_disc(0.5) within group(order by x) from bar where foo.a = bar.x);
+
+-- test for string agg
+explain (costs off)
+select count(*) from foo where a::text = (select string_agg(x::text, ',') from bar where foo.a = bar.x);
+select count(*) from foo where a::text = (select string_agg(x::text, ',') from bar where foo.a = bar.x);
+
+-- tests for User Defined Aggregate (UDA)
+create or replace function pair_add(state bigint, x int, y int)
+returns bigint as $$
+    select coalesce(state, 0) + coalesce(x, 0) + coalesce(y, 0);
+$$ language sql immutable;
+
+create aggregate sum_pair(int, int) (
+    sfunc = pair_add,
+    stype = bigint,
+    initcond = '0'
+);
+
+explain (costs off)
+select count(*) from foo where a > (select sum_pair(x, y) from bar where foo.a = bar.x);
+select count(*) from foo where a > (select sum_pair(x, y) from bar where foo.a = bar.x);
+
+-- tests for user defined operator
+-- make sure that a valid join plan (either inner or left) is generated
+create function special_gt (a int, b int) returns boolean as $$
+select
+    case
+        when b is null
+            then true else a > b
+        end;
+$$
+language sql;
+
+create operator >>>
+(
+  function = special_gt,
+  leftarg = int,
+  rightarg = int
+);
+
+explain (costs off)
+select count(*) from foo where a >>> (select count(*)::int from bar where foo.a = bar.x);
+select count(*) from foo where a >>> (select count(*)::int from bar where foo.a = bar.x);
+
+explain (costs off)
+select count(*) from foo where a >>> (select max(y)::int from bar where foo.a = bar.x);
+select count(*) from foo where a >>> (select max(y)::int from bar where foo.a = bar.x);
+
+drop table foo;
+drop table bar;

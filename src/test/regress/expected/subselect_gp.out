@@ -706,21 +706,19 @@ insert into csq_pullup values ('def',3, 1, 'abc');
 -- text, text
 --
 explain select * from csq_pullup t0 where 1= (select count(*) from csq_pullup t1 where t0.t=t1.t);
-                                        QUERY PLAN                                         
--------------------------------------------------------------------------------------------
- Gather Motion 3:1  (slice1; segments: 3)  (cost=1.06..2.11 rows=4 width=19)
-   ->  Hash Join  (cost=1.06..2.11 rows=2 width=19)
-         Hash Cond: t0.t = "Expr_SUBQUERY".csq_c0
-         ->  Seq Scan on csq_pullup t0  (cost=0.00..1.01 rows=1 width=19)
-         ->  Hash  (cost=1.04..1.04 rows=1 width=32)
-               ->  Subquery Scan on "Expr_SUBQUERY"  (cost=1.02..1.04 rows=1 width=32)
-                     ->  HashAggregate  (cost=1.02..1.03 rows=1 width=40)
-                           Filter: count(*) = 1
-                           Group By: t1.t
-                           ->  Seq Scan on csq_pullup t1  (cost=0.00..1.01 rows=1 width=4)
- Settings:  optimizer_segments=3
- Optimizer status: Postgres query optimizer
-(12 rows)
+                                     QUERY PLAN                                      
+-------------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)  (cost=1.05..2.12 rows=3 width=17)
+   ->  Hash Left Join  (cost=1.05..2.07 rows=1 width=17)
+         Hash Cond: (t0.t = t1.t)
+         Filter: (1 = COALESCE((count(*)), '0'::bigint))
+         ->  Seq Scan on csq_pullup t0  (cost=0.00..1.01 rows=1 width=17)
+         ->  Hash  (cost=1.03..1.03 rows=1 width=12)
+               ->  HashAggregate  (cost=1.01..1.02 rows=1 width=12)
+                     Group Key: t1.t
+                     ->  Seq Scan on csq_pullup t1  (cost=0.00..1.01 rows=1 width=4)
+ Optimizer: Postgres-based planner
+(10 rows)
 
 select * from csq_pullup t0 where 1= (select count(*) from csq_pullup t1 where t0.t=t1.t);
   t  | n | i |  v  
@@ -734,22 +732,21 @@ select * from csq_pullup t0 where 1= (select count(*) from csq_pullup t1 where t
 -- text, varchar
 --
 explain select * from csq_pullup t0 where 1= (select count(*) from csq_pullup t1 where t0.t=t1.v);
-                                                   QUERY PLAN                                                    
------------------------------------------------------------------------------------------------------------------
- Gather Motion 3:1  (slice2; segments: 3)  (cost=1.06..2.11 rows=4 width=17)
-   ->  Hash Join  (cost=1.06..2.11 rows=2 width=17)
-         Hash Cond: (t0.t = "Expr_SUBQUERY".csq_c0)
+                                                QUERY PLAN                                                 
+-----------------------------------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)  (cost=1.07..2.14 rows=3 width=17)
+   ->  Hash Left Join  (cost=1.07..2.09 rows=1 width=17)
+         Hash Cond: (t0.t = ((t1.v)::text))
+         Filter: (1 = COALESCE((count(*)), '0'::bigint))
          ->  Seq Scan on csq_pullup t0  (cost=0.00..1.01 rows=1 width=17)
-         ->  Hash  (cost=1.05..1.05 rows=1 width=32)
-               ->  Subquery Scan on "Expr_SUBQUERY"  (cost=1.03..1.05 rows=1 width=32)
-                     ->  HashAggregate  (cost=1.03..1.04 rows=1 width=40)
-                           Group Key: ((t1.v)::text)
-                           Filter: (1 = count(*))
-                           ->  Redistribute Motion 3:3  (slice1; segments: 3)  (cost=0.00..1.03 rows=1 width=32)
-                                 Hash Key: ((t1.v)::text)
-                                 ->  Seq Scan on csq_pullup t1  (cost=0.00..1.01 rows=1 width=32)
- Optimizer: Postgres query optimizer
-(13 rows)
+         ->  Hash  (cost=1.05..1.05 rows=1 width=40)
+               ->  HashAggregate  (cost=1.03..1.04 rows=1 width=40)
+                     Group Key: ((t1.v)::text)
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)  (cost=0.00..1.03 rows=1 width=32)
+                           Hash Key: ((t1.v)::text)
+                           ->  Seq Scan on csq_pullup t1  (cost=0.00..1.01 rows=1 width=32)
+ Optimizer: Postgres-based planner
+(12 rows)
 
 select * from csq_pullup t0 where 1= (select count(*) from csq_pullup t1 where t0.t=t1.v);
   t  | n | i |  v  
@@ -763,22 +760,22 @@ select * from csq_pullup t0 where 1= (select count(*) from csq_pullup t1 where t
 -- numeric, numeric
 --
 explain select * from csq_pullup t0 where 1= (select count(*) from csq_pullup t1 where t0.n=t1.n);
-                                                      QUERY PLAN                                                      
-----------------------------------------------------------------------------------------------------------------------
- Gather Motion 3:1  (slice3; segments: 3)  (cost=1.13..2.17 rows=4 width=17)
-   ->  Hash Join  (cost=1.13..2.17 rows=2 width=17)
-         Hash Cond: (t0.n = "Expr_SUBQUERY".csq_c0)
-         ->  Seq Scan on csq_pullup t0  (cost=0.00..1.01 rows=1 width=17)
-         ->  Hash  (cost=1.09..1.09 rows=1 width=5)
-               ->  Broadcast Motion 3:3  (slice2; segments: 3)  (cost=1.03..1.09 rows=1 width=5)
-                     ->  Subquery Scan on "Expr_SUBQUERY"  (cost=1.03..1.05 rows=1 width=5)
-                           ->  HashAggregate  (cost=1.03..1.04 rows=1 width=13)
-                                 Group Key: t1.n
-                                 Filter: (1 = count(*))
-                                 ->  Redistribute Motion 3:3  (slice1; segments: 3)  (cost=0.00..1.03 rows=1 width=5)
-                                       Hash Key: t1.n
-                                       ->  Seq Scan on csq_pullup t1  (cost=0.00..1.01 rows=1 width=5)
- Optimizer: Postgres query optimizer
+                                                QUERY PLAN                                                
+----------------------------------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)  (cost=1.07..2.16 rows=3 width=17)
+   ->  Hash Left Join  (cost=1.07..2.11 rows=1 width=17)
+         Hash Cond: (t0.n = t1.n)
+         Filter: (1 = COALESCE((count(*)), '0'::bigint))
+         ->  Redistribute Motion 3:3  (slice2; segments: 3)  (cost=0.00..1.03 rows=1 width=17)
+               Hash Key: t0.n
+               ->  Seq Scan on csq_pullup t0  (cost=0.00..1.01 rows=1 width=17)
+         ->  Hash  (cost=1.05..1.05 rows=1 width=13)
+               ->  HashAggregate  (cost=1.03..1.04 rows=1 width=13)
+                     Group Key: t1.n
+                     ->  Redistribute Motion 3:3  (slice3; segments: 3)  (cost=0.00..1.03 rows=1 width=5)
+                           Hash Key: t1.n
+                           ->  Seq Scan on csq_pullup t1  (cost=0.00..1.01 rows=1 width=5)
+ Optimizer: Postgres-based planner
 (14 rows)
 
 select * from csq_pullup t0 where 1= (select count(*) from csq_pullup t1 where t0.n=t1.n);
@@ -793,24 +790,23 @@ select * from csq_pullup t0 where 1= (select count(*) from csq_pullup t1 where t
 -- function(numeric), function(numeric)
 --
 explain select * from csq_pullup t0 where 1= (select count(*) from csq_pullup t1 where t0.n + 1=t1.n + 1);
-                                                   QUERY PLAN                                                    
------------------------------------------------------------------------------------------------------------------
- Gather Motion 3:1  (slice3; segments: 3)  (cost=1.07..2.13 rows=4 width=17)
-   ->  Hash Join  (cost=1.07..2.13 rows=2 width=17)
-         Hash Cond: ((t0.n + '1'::numeric) = "Expr_SUBQUERY".csq_c0)
-         ->  Redistribute Motion 3:3  (slice1; segments: 3)  (cost=0.00..1.03 rows=1 width=17)
+                                                QUERY PLAN                                                 
+-----------------------------------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)  (cost=1.07..2.16 rows=3 width=17)
+   ->  Hash Left Join  (cost=1.07..2.12 rows=1 width=17)
+         Hash Cond: ((t0.n + '1'::numeric) = ((t1.n + '1'::numeric)))
+         Filter: (1 = COALESCE((count(*)), '0'::bigint))
+         ->  Redistribute Motion 3:3  (slice2; segments: 3)  (cost=0.00..1.03 rows=1 width=17)
                Hash Key: (t0.n + '1'::numeric)
                ->  Seq Scan on csq_pullup t0  (cost=0.00..1.01 rows=1 width=17)
-         ->  Hash  (cost=1.05..1.05 rows=1 width=32)
-               ->  Subquery Scan on "Expr_SUBQUERY"  (cost=1.03..1.05 rows=1 width=32)
-                     ->  HashAggregate  (cost=1.03..1.04 rows=1 width=40)
-                           Group Key: ((t1.n + '1'::numeric))
-                           Filter: (1 = count(*))
-                           ->  Redistribute Motion 3:3  (slice2; segments: 3)  (cost=0.00..1.03 rows=1 width=32)
-                                 Hash Key: ((t1.n + '1'::numeric))
-                                 ->  Seq Scan on csq_pullup t1  (cost=0.00..1.01 rows=1 width=32)
- Optimizer: Postgres query optimizer
-(15 rows)
+         ->  Hash  (cost=1.06..1.06 rows=1 width=40)
+               ->  HashAggregate  (cost=1.04..1.05 rows=1 width=40)
+                     Group Key: ((t1.n + '1'::numeric))
+                     ->  Redistribute Motion 3:3  (slice3; segments: 3)  (cost=0.00..1.03 rows=1 width=32)
+                           Hash Key: ((t1.n + '1'::numeric))
+                           ->  Seq Scan on csq_pullup t1  (cost=0.00..1.01 rows=1 width=32)
+ Optimizer: Postgres-based planner
+(14 rows)
 
 select * from csq_pullup t0 where 1= (select count(*) from csq_pullup t1 where t0.n + 1=t1.n + 1);
   t  | n | i |  v  
@@ -824,24 +820,23 @@ select * from csq_pullup t0 where 1= (select count(*) from csq_pullup t1 where t
 -- function(numeric), function(int)
 --
 explain select * from csq_pullup t0 where 1= (select count(*) from csq_pullup t1 where t0.n + 1=t1.i + 1);
-                                                   QUERY PLAN                                                    
------------------------------------------------------------------------------------------------------------------
- Gather Motion 3:1  (slice3; segments: 3)  (cost=1.07..2.14 rows=4 width=17)
-   ->  Hash Join  (cost=1.07..2.14 rows=2 width=17)
-         Hash Cond: ((t0.n + '1'::numeric) = "Expr_SUBQUERY".csq_c0)
-         ->  Redistribute Motion 3:3  (slice1; segments: 3)  (cost=0.00..1.03 rows=1 width=17)
+                                                QUERY PLAN                                                 
+-----------------------------------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)  (cost=1.08..2.17 rows=3 width=17)
+   ->  Hash Left Join  (cost=1.08..2.12 rows=1 width=17)
+         Hash Cond: ((t0.n + '1'::numeric) = (((t1.i + 1))::numeric))
+         Filter: (1 = COALESCE((count(*)), '0'::bigint))
+         ->  Redistribute Motion 3:3  (slice2; segments: 3)  (cost=0.00..1.03 rows=1 width=17)
                Hash Key: (t0.n + '1'::numeric)
                ->  Seq Scan on csq_pullup t0  (cost=0.00..1.01 rows=1 width=17)
-         ->  Hash  (cost=1.06..1.06 rows=1 width=32)
-               ->  Subquery Scan on "Expr_SUBQUERY"  (cost=1.03..1.06 rows=1 width=32)
-                     ->  HashAggregate  (cost=1.03..1.05 rows=1 width=40)
-                           Group Key: (((t1.i + 1))::numeric)
-                           Filter: (1 = count(*))
-                           ->  Redistribute Motion 3:3  (slice2; segments: 3)  (cost=0.00..1.03 rows=1 width=32)
-                                 Hash Key: (((t1.i + 1))::numeric)
-                                 ->  Seq Scan on csq_pullup t1  (cost=0.00..1.01 rows=1 width=32)
- Optimizer: Postgres query optimizer
-(15 rows)
+         ->  Hash  (cost=1.06..1.06 rows=1 width=40)
+               ->  HashAggregate  (cost=1.04..1.05 rows=1 width=40)
+                     Group Key: (((t1.i + 1))::numeric)
+                     ->  Redistribute Motion 3:3  (slice3; segments: 3)  (cost=0.00..1.03 rows=1 width=32)
+                           Hash Key: (((t1.i + 1))::numeric)
+                           ->  Seq Scan on csq_pullup t1  (cost=0.00..1.01 rows=1 width=32)
+ Optimizer: Postgres-based planner
+(14 rows)
 
 select * from csq_pullup t0 where 1= (select count(*) from csq_pullup t1 where t0.n + 1=t1.i + 1);
   t  | n | i |  v  
@@ -3155,8 +3150,8 @@ select * from issue_12656 where (i, j) in (select distinct on (i) i, j from issu
 
 explain (costs off, verbose)
 select * from issue_12656 where (i, j) in (select distinct on (i) i, j from issue_12656 order by i, j desc);
-                                          QUERY PLAN                                          
-----------------------------------------------------------------------------------------------
+                                               QUERY PLAN                                                
+---------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    Output: issue_12656.i, issue_12656.j
    ->  Hash Join
@@ -3306,8 +3301,8 @@ with cte(table_oid, size) as
 select pc.relname, ts.size
 from pg_class pc, cte ts
 where pc.oid = ts.table_oid;
-                                                   QUERY PLAN                                                   
-----------------------------------------------------------------------------------------------------------------
+                                                                                                  QUERY PLAN                                                                                                   
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    Output: pc.relname, (sum((pg_relation_size((pg_class.oid)::regclass, 'main'::text))))
    ->  Nested Loop
@@ -3348,8 +3343,8 @@ with cte(table_oid, size) as
 select pc.relname, ts.size
 from pg_class pc, cte ts
 where pc.oid = ts.table_oid;
-                                                   QUERY PLAN                                                   
-----------------------------------------------------------------------------------------------------------------
+                                                                                                                   QUERY PLAN                                                                                                                    
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    Output: pc.relname, (sum((pg_relation_size((pg_class.oid)::regclass, 'main'::text))))
    ->  Nested Loop
@@ -3397,20 +3392,19 @@ explain select t.* from sublink_outer_table t join (select y ,10*avg(x) s from s
 (10 rows)
 
 explain select * from sublink_outer_table T where a > (select 10*avg(x) from sublink_inner_table R where T.b=R.y);
-                                                QUERY PLAN                                                
-----------------------------------------------------------------------------------------------------------
+                                             QUERY PLAN                                             
+----------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)  (cost=436.00..1310.77 rows=28700 width=8)
    ->  Hash Join  (cost=436.00..928.11 rows=9567 width=8)
-         Hash Cond: (t.b = "Expr_SUBQUERY".csq_c0)
-         Join Filter: ((t.a)::numeric > "Expr_SUBQUERY".csq_c1)
+         Hash Cond: (t.b = r.y)
+         Join Filter: ((t.a)::numeric > (('10'::numeric * avg(r.x))))
          ->  Seq Scan on sublink_outer_table t  (cost=0.00..321.00 rows=28700 width=8)
          ->  Hash  (cost=431.83..431.83 rows=333 width=40)
-               ->  Subquery Scan on "Expr_SUBQUERY"  (cost=423.50..431.83 rows=333 width=40)
-                     ->  HashAggregate  (cost=423.50..428.50 rows=333 width=40)
-                           Group Key: r.y
-                           ->  Seq Scan on sublink_inner_table r  (cost=0.00..293.67 rows=25967 width=12)
- Optimizer: Postgres query optimizer
-(11 rows)
+               ->  HashAggregate  (cost=423.50..428.50 rows=333 width=40)
+                     Group Key: r.y
+                     ->  Seq Scan on sublink_inner_table r  (cost=0.00..293.67 rows=25967 width=12)
+ Optimizer: Postgres-based planner
+(10 rows)
 
 set enable_hashagg to off;
 explain select t.* from sublink_outer_table t join (select y ,10*avg(x) s from sublink_inner_table group by y) RR on RR.y = t.b and t.a > rr.s;
@@ -3431,22 +3425,21 @@ explain select t.* from sublink_outer_table t join (select y ,10*avg(x) s from s
 (12 rows)
 
 explain select * from sublink_outer_table T where a > (select 10*avg(x) from sublink_inner_table R where T.b=R.y);
-                                                   QUERY PLAN                                                   
-----------------------------------------------------------------------------------------------------------------
+                                                QUERY PLAN                                                
+----------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)  (cost=2404.84..3279.62 rows=28700 width=8)
    ->  Hash Join  (cost=2404.84..2896.95 rows=9567 width=8)
-         Hash Cond: (t.b = "Expr_SUBQUERY".csq_c0)
-         Join Filter: ((t.a)::numeric > "Expr_SUBQUERY".csq_c1)
+         Hash Cond: (t.b = r.y)
+         Join Filter: ((t.a)::numeric > (('10'::numeric * avg(r.x))))
          ->  Seq Scan on sublink_outer_table t  (cost=0.00..321.00 rows=28700 width=8)
          ->  Hash  (cost=2400.67..2400.67 rows=333 width=40)
-               ->  Subquery Scan on "Expr_SUBQUERY"  (cost=2197.59..2400.67 rows=333 width=40)
-                     ->  GroupAggregate  (cost=2197.59..2397.34 rows=333 width=40)
-                           Group Key: r.y
-                           ->  Sort  (cost=2197.59..2262.51 rows=25967 width=12)
-                                 Sort Key: r.y
-                                 ->  Seq Scan on sublink_inner_table r  (cost=0.00..293.67 rows=25967 width=12)
- Optimizer: Postgres query optimizer
-(13 rows)
+               ->  GroupAggregate  (cost=2197.59..2397.34 rows=333 width=40)
+                     Group Key: r.y
+                     ->  Sort  (cost=2197.59..2262.51 rows=25967 width=12)
+                           Sort Key: r.y
+                           ->  Seq Scan on sublink_inner_table r  (cost=0.00..293.67 rows=25967 width=12)
+ Optimizer: Postgres-based planner
+(12 rows)
 
 drop table sublink_outer_table;
 drop table sublink_inner_table;
@@ -4164,3 +4157,409 @@ left join buz on bar.c = (
 drop table foo;
 drop table bar;
 drop table buz;
+-- Test the correctness of EXPR SubLink pull up, the tests ensure that we select
+-- the correct join type (LEFT/INNER) or add proper COALESCE node for expression.
+drop table if exists foo, bar;
+NOTICE:  table "foo" does not exist, skipping
+NOTICE:  table "bar" does not exist, skipping
+create table foo (a int, b int);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+create table bar (x int, y int);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'x' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+set gp_enable_multiphase_agg = off;
+insert into foo select i,i+1 from generate_series(1,20) i;
+insert into bar select i%6+1,i+2 from generate_series(1,20) i;
+-- Non-strict aggregate functions, such as COUNT(*), the subquery must be rewritten
+-- using a LEFT JOIN combined with COALESCE() to ensure that NULL cases are properly handled.
+explain (costs off)
+select count(*) from foo where a > (select count(*) from bar where foo.a = bar.x);
+                            QUERY PLAN                             
+-------------------------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Hash Left Join
+               Hash Cond: (foo.a = bar.x)
+               Filter: (foo.a > COALESCE((count(*)), '0'::bigint))
+               ->  Seq Scan on foo
+               ->  Hash
+                     ->  HashAggregate
+                           Group Key: bar.x
+                           ->  Seq Scan on bar
+ Optimizer: Postgres-based planner
+(11 rows)
+
+select count(*) from foo where a > (select count(*) from bar where foo.a = bar.x);
+ count 
+-------
+    17
+(1 row)
+
+explain (costs off)
+select count(*) from foo where a > (select (count(*) + 10) * 2 from bar where foo.a = bar.x);
+                                   QUERY PLAN                                    
+---------------------------------------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Hash Left Join
+               Hash Cond: (foo.a = bar.x)
+               Filter: (foo.a > COALESCE((((count(*) + 10) * 2)), '20'::bigint))
+               ->  Seq Scan on foo
+               ->  Hash
+                     ->  HashAggregate
+                           Group Key: bar.x
+                           ->  Seq Scan on bar
+ Optimizer: Postgres-based planner
+(11 rows)
+
+select count(*) from foo where a > (select (count(*) + 10) * 2 from bar where foo.a = bar.x);
+ count 
+-------
+     0
+(1 row)
+
+-- should not pull up it
+explain (costs off)
+select count(*) from foo where a > (select (count(*) + foo.b) * 2 from bar where foo.a = bar.x);
+                                    QUERY PLAN                                     
+-----------------------------------------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Seq Scan on foo
+               Filter: (a > (SubPlan 1))
+               SubPlan 1
+                 ->  Aggregate
+                       ->  Result
+                             Filter: (foo.a = bar.x)
+                             ->  Materialize
+                                   ->  Broadcast Motion 3:3  (slice2; segments: 3)
+                                         ->  Seq Scan on bar
+ Optimizer: Postgres-based planner
+(12 rows)
+
+select count(*) from foo where a > (select (count(*) + foo.b) * 2 from bar where foo.a = bar.x);
+ count 
+-------
+     0
+(1 row)
+
+-- Test regr_count
+explain (costs off)
+select count(*) from foo where a > (select regr_count(x, y) from bar where foo.a = bar.x);
+                                                        QUERY PLAN                                                         
+---------------------------------------------------------------------------------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Hash Left Join
+               Hash Cond: (foo.a = bar.x)
+               Filter: (foo.a > COALESCE((regr_count((bar.x)::double precision, (bar.y)::double precision)), '0'::bigint))
+               ->  Seq Scan on foo
+               ->  Hash
+                     ->  HashAggregate
+                           Group Key: bar.x
+                           ->  Seq Scan on bar
+ Optimizer: Postgres-based planner
+(11 rows)
+
+select count(*) from foo where a > (select regr_count(x, y) from bar where foo.a = bar.x);
+ count 
+-------
+    17
+(1 row)
+
+explain (costs off)
+select count(*) from foo where a > (select (regr_count(x, y) + 10) * 2 from bar where foo.a = bar.x);
+                                                               QUERY PLAN                                                                
+-----------------------------------------------------------------------------------------------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Hash Left Join
+               Hash Cond: (foo.a = bar.x)
+               Filter: (foo.a > COALESCE((((regr_count((bar.x)::double precision, (bar.y)::double precision) + 10) * 2)), '20'::bigint))
+               ->  Seq Scan on foo
+               ->  Hash
+                     ->  HashAggregate
+                           Group Key: bar.x
+                           ->  Seq Scan on bar
+ Optimizer: Postgres-based planner
+(11 rows)
+
+select count(*) from foo where a > (select (regr_count(x, y) + 10) * 2 from bar where foo.a = bar.x);
+ count 
+-------
+     0
+(1 row)
+
+-- should not pull up it
+explain (costs off)
+select count(*) from foo where a > (select (regr_count(x, y) + foo.b) * 2 from bar where foo.a = bar.x);
+                                    QUERY PLAN                                     
+-----------------------------------------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Seq Scan on foo
+               Filter: (a > (SubPlan 1))
+               SubPlan 1
+                 ->  Aggregate
+                       ->  Result
+                             Filter: (foo.a = bar.x)
+                             ->  Materialize
+                                   ->  Broadcast Motion 3:3  (slice2; segments: 3)
+                                         ->  Seq Scan on bar
+ Optimizer: Postgres-based planner
+(12 rows)
+
+select count(*) from foo where a > (select (regr_count(x, y) + foo.b) * 2 from bar where foo.a = bar.x);
+ count 
+-------
+     0
+(1 row)
+
+-- max(), avg(), sum().. such normal strict aggregate function will use INNER JOIN
+explain (costs off)
+select count(*) from foo where a > (select max(x)  from bar where foo.a = bar.x);
+                       QUERY PLAN                       
+--------------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Hash Join
+               Hash Cond: (foo.a = bar.x)
+               Join Filter: (foo.a > (max(bar.x)))
+               ->  Seq Scan on foo
+               ->  Hash
+                     ->  HashAggregate
+                           Group Key: bar.x
+                           Filter: (bar.x > max(bar.x))
+                           ->  Seq Scan on bar
+ Optimizer: Postgres-based planner
+(12 rows)
+
+select count(*) from foo where a > (select max(x)  from bar where foo.a = bar.x);
+ count 
+-------
+     0
+(1 row)
+
+explain (costs off)
+select count(*) from foo where a > (select max(x + 3) / 2  from bar where foo.a = bar.x);
+                             QUERY PLAN                             
+--------------------------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Hash Join
+               Hash Cond: (foo.a = bar.x)
+               Join Filter: (foo.a > ((max((bar.x + 3)) / 2)))
+               ->  Seq Scan on foo
+               ->  Hash
+                     ->  HashAggregate
+                           Group Key: bar.x
+                           Filter: (bar.x > (max((bar.x + 3)) / 2))
+                           ->  Seq Scan on bar
+ Optimizer: Postgres-based planner
+(12 rows)
+
+select count(*) from foo where a > (select max(x + 3) / 2  from bar where foo.a = bar.x);
+ count 
+-------
+     3
+(1 row)
+
+-- agg with filter should not be pulled-up
+explain (costs off)
+select count(*) from foo where a > (select count(*) filter(where x < y + 10) from bar where foo.a = bar.x);
+                                    QUERY PLAN                                     
+-----------------------------------------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Seq Scan on foo
+               Filter: (a > (SubPlan 1))
+               SubPlan 1
+                 ->  Aggregate
+                       ->  Result
+                             Filter: (foo.a = bar.x)
+                             ->  Materialize
+                                   ->  Broadcast Motion 3:3  (slice2; segments: 3)
+                                         ->  Seq Scan on bar
+ Optimizer: Postgres-based planner
+(12 rows)
+
+select count(*) from foo where a > (select count(*) filter(where x < y + 10) from bar where foo.a = bar.x);
+ count 
+-------
+    17
+(1 row)
+
+-- tests for ordered set agg
+-- when the functions' aggfinalextra is false, we can use INNER JOIN
+explain (costs off)
+select count(*) from foo where a + 5 > (select percentile_cont(0.5) within group(order by x) from bar where foo.a = bar.x);
+                                                                          QUERY PLAN                                                                           
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Hash Join
+               Hash Cond: (foo.a = bar.x)
+               Join Filter: (((foo.a + 5))::double precision > (percentile_cont('0.5'::double precision) WITHIN GROUP (ORDER BY ((bar.x)::double precision))))
+               ->  Seq Scan on foo
+               ->  Hash
+                     ->  GroupAggregate
+                           Group Key: bar.x
+                           ->  Sort
+                                 Sort Key: bar.x
+                                 ->  Seq Scan on bar
+ Optimizer: Postgres-based planner
+(13 rows)
+
+select count(*) from foo where a + 5 > (select percentile_cont(0.5) within group(order by x) from bar where foo.a = bar.x);
+ count 
+-------
+     6
+(1 row)
+
+-- but for aggfinalextra is true, we do nothing
+explain (costs off)
+select count(*) from foo where a + 5 > (select percentile_disc(0.5) within group(order by x) from bar where foo.a = bar.x);
+                                    QUERY PLAN                                     
+-----------------------------------------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Seq Scan on foo
+               Filter: ((a + 5) > (SubPlan 1))
+               SubPlan 1
+                 ->  Aggregate
+                       ->  Result
+                             Filter: (foo.a = bar.x)
+                             ->  Materialize
+                                   ->  Broadcast Motion 3:3  (slice2; segments: 3)
+                                         ->  Seq Scan on bar
+ Optimizer: Postgres-based planner
+(12 rows)
+
+select count(*) from foo where a + 5 > (select percentile_disc(0.5) within group(order by x) from bar where foo.a = bar.x);
+ count 
+-------
+     6
+(1 row)
+
+-- test for string agg
+explain (costs off)
+select count(*) from foo where a::text = (select string_agg(x::text, ',') from bar where foo.a = bar.x);
+                                               QUERY PLAN                                                
+---------------------------------------------------------------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Hash Join
+               Hash Cond: ((foo.a = bar.x) AND ((foo.a)::text = (string_agg((bar.x)::text, ','::text))))
+               ->  Seq Scan on foo
+               ->  Hash
+                     ->  HashAggregate
+                           Group Key: bar.x
+                           ->  Seq Scan on bar
+ Optimizer: Postgres-based planner
+(10 rows)
+
+select count(*) from foo where a::text = (select string_agg(x::text, ',') from bar where foo.a = bar.x);
+ count 
+-------
+     0
+(1 row)
+
+-- tests for User Defined Aggregate (UDA)
+create or replace function pair_add(state bigint, x int, y int)
+returns bigint as $$
+    select coalesce(state, 0) + coalesce(x, 0) + coalesce(y, 0);
+$$ language sql immutable;
+create aggregate sum_pair(int, int) (
+    sfunc = pair_add,
+    stype = bigint,
+    initcond = '0'
+);
+explain (costs off)
+select count(*) from foo where a > (select sum_pair(x, y) from bar where foo.a = bar.x);
+                                    QUERY PLAN                                     
+-----------------------------------------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Seq Scan on foo
+               Filter: (a > (SubPlan 1))
+               SubPlan 1
+                 ->  Aggregate
+                       ->  Result
+                             Filter: (foo.a = bar.x)
+                             ->  Materialize
+                                   ->  Broadcast Motion 3:3  (slice2; segments: 3)
+                                         ->  Seq Scan on bar
+ Optimizer: Postgres-based planner
+(12 rows)
+
+select count(*) from foo where a > (select sum_pair(x, y) from bar where foo.a = bar.x);
+ count 
+-------
+    14
+(1 row)
+
+-- tests for user defined operator
+-- make sure that a valid join plan (either inner or left) is generated
+create function special_gt (a int, b int) returns boolean as $$
+select
+    case
+        when b is null
+            then true else a > b
+        end;
+$$
+language sql;
+create operator >>>
+(
+  function = special_gt,
+  leftarg = int,
+  rightarg = int
+);
+explain (costs off)
+select count(*) from foo where a >>> (select count(*)::int from bar where foo.a = bar.x);
+                                                     QUERY PLAN                                                     
+--------------------------------------------------------------------------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Hash Left Join
+               Hash Cond: (foo.a = bar.x)
+               Filter: CASE WHEN (((count(*))::integer) IS NULL) THEN true ELSE (foo.a > ((count(*))::integer)) END
+               ->  Seq Scan on foo
+               ->  Hash
+                     ->  HashAggregate
+                           Group Key: bar.x
+                           ->  Seq Scan on bar
+ Optimizer: Postgres-based planner
+(11 rows)
+
+select count(*) from foo where a >>> (select count(*)::int from bar where foo.a = bar.x);
+ count 
+-------
+    17
+(1 row)
+
+explain (costs off)
+select count(*) from foo where a >>> (select max(y)::int from bar where foo.a = bar.x);
+                                            QUERY PLAN                                            
+--------------------------------------------------------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Hash Left Join
+               Hash Cond: (foo.a = bar.x)
+               Filter: CASE WHEN ((max(bar.y)) IS NULL) THEN true ELSE (foo.a > (max(bar.y))) END
+               ->  Seq Scan on foo
+               ->  Hash
+                     ->  HashAggregate
+                           Group Key: bar.x
+                           ->  Seq Scan on bar
+ Optimizer: Postgres-based planner
+(11 rows)
+
+select count(*) from foo where a >>> (select max(y)::int from bar where foo.a = bar.x);
+ count 
+-------
+    14
+(1 row)
+
+drop table foo;
+drop table bar;

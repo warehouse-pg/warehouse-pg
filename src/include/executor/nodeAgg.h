@@ -351,4 +351,6 @@ extern Datum aggregate_dummy(PG_FUNCTION_ARGS);
 extern void ExecSquelchAgg(AggState *aggstate);
 extern bool ReuseHashTable(AggState *node);
 
+extern Node *calculate_agg_value_for_empty_input(Aggref *aggref);
+
 #endif							/* NODEAGG_H */

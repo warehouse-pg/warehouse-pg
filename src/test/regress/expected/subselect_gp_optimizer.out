@@ -3468,20 +3468,19 @@ explain select t.* from sublink_outer_table t join (select y ,10*avg(x) s from s
 (10 rows)
 
 explain select * from sublink_outer_table T where a > (select 10*avg(x) from sublink_inner_table R where T.b=R.y);
-                                                QUERY PLAN                                                
-----------------------------------------------------------------------------------------------------------
+                                             QUERY PLAN                                             
+----------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)  (cost=436.00..1310.77 rows=28700 width=8)
    ->  Hash Join  (cost=436.00..928.11 rows=9567 width=8)
-         Hash Cond: (t.b = "Expr_SUBQUERY".csq_c0)
-         Join Filter: ((t.a)::numeric > "Expr_SUBQUERY".csq_c1)
+         Hash Cond: (t.b = r.y)
+         Join Filter: ((t.a)::numeric > (('10'::numeric * avg(r.x))))
          ->  Seq Scan on sublink_outer_table t  (cost=0.00..321.00 rows=28700 width=8)
          ->  Hash  (cost=431.83..431.83 rows=333 width=40)
-               ->  Subquery Scan on "Expr_SUBQUERY"  (cost=423.50..431.83 rows=333 width=40)
-                     ->  HashAggregate  (cost=423.50..428.50 rows=333 width=40)
-                           Group Key: r.y
-                           ->  Seq Scan on sublink_inner_table r  (cost=0.00..293.67 rows=25967 width=12)
- Optimizer: Postgres query optimizer
-(11 rows)
+               ->  HashAggregate  (cost=423.50..428.50 rows=333 width=40)
+                     Group Key: r.y
+                     ->  Seq Scan on sublink_inner_table r  (cost=0.00..293.67 rows=25967 width=12)
+ Optimizer: Postgres-based planner
+(10 rows)
 
 set enable_hashagg to off;
 explain select t.* from sublink_outer_table t join (select y ,10*avg(x) s from sublink_inner_table group by y) RR on RR.y = t.b and t.a > rr.s;
@@ -3502,22 +3501,21 @@ explain select t.* from sublink_outer_table t join (select y ,10*avg(x) s from s
 (12 rows)
 
 explain select * from sublink_outer_table T where a > (select 10*avg(x) from sublink_inner_table R where T.b=R.y);
-                                                   QUERY PLAN                                                   
-----------------------------------------------------------------------------------------------------------------
+                                                QUERY PLAN                                                
+----------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)  (cost=2404.84..3279.62 rows=28700 width=8)
    ->  Hash Join  (cost=2404.84..2896.95 rows=9567 width=8)
-         Hash Cond: (t.b = "Expr_SUBQUERY".csq_c0)
-         Join Filter: ((t.a)::numeric > "Expr_SUBQUERY".csq_c1)
+         Hash Cond: (t.b = r.y)
+         Join Filter: ((t.a)::numeric > (('10'::numeric * avg(r.x))))
          ->  Seq Scan on sublink_outer_table t  (cost=0.00..321.00 rows=28700 width=8)
          ->  Hash  (cost=2400.67..2400.67 rows=333 width=40)
-               ->  Subquery Scan on "Expr_SUBQUERY"  (cost=2197.59..2400.67 rows=333 width=40)
-                     ->  GroupAggregate  (cost=2197.59..2397.34 rows=333 width=40)
-                           Group Key: r.y
-                           ->  Sort  (cost=2197.59..2262.51 rows=25967 width=12)
-                                 Sort Key: r.y
-                                 ->  Seq Scan on sublink_inner_table r  (cost=0.00..293.67 rows=25967 width=12)
- Optimizer: Postgres query optimizer
-(13 rows)
+               ->  GroupAggregate  (cost=2197.59..2397.34 rows=333 width=40)
+                     Group Key: r.y
+                     ->  Sort  (cost=2197.59..2262.51 rows=25967 width=12)
+                           Sort Key: r.y
+                           ->  Seq Scan on sublink_inner_table r  (cost=0.00..293.67 rows=25967 width=12)
+ Optimizer: Postgres-based planner
+(12 rows)
 
 drop table sublink_outer_table;
 drop table sublink_inner_table;
@@ -4251,3 +4249,431 @@ left join buz on bar.c = (
 drop table foo;
 drop table bar;
 drop table buz;
+-- Test the correctness of EXPR SubLink pull up, the tests ensure that we select
+-- the correct join type (LEFT/INNER) or add proper COALESCE node for expression.
+drop table if exists foo, bar;
+NOTICE:  table "foo" does not exist, skipping
+NOTICE:  table "bar" does not exist, skipping
+create table foo (a int, b int);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+create table bar (x int, y int);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'x' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+set gp_enable_multiphase_agg = off;
+insert into foo select i,i+1 from generate_series(1,20) i;
+insert into bar select i%6+1,i+2 from generate_series(1,20) i;
+-- Non-strict aggregate functions, such as COUNT(*), the subquery must be rewritten
+-- using a LEFT JOIN combined with COALESCE() to ensure that NULL cases are properly handled.
+explain (costs off)
+select count(*) from foo where a > (select count(*) from bar where foo.a = bar.x);
+                            QUERY PLAN                            
+------------------------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Result
+               Filter: (foo.a > COALESCE((count()), '0'::bigint))
+               ->  Hash Left Join
+                     Hash Cond: (foo.a = bar.x)
+                     ->  Seq Scan on foo
+                     ->  Hash
+                           ->  GroupAggregate
+                                 Group Key: bar.x
+                                 ->  Sort
+                                       Sort Key: bar.x
+                                       ->  Seq Scan on bar
+ Optimizer: GPORCA
+(14 rows)
+
+select count(*) from foo where a > (select count(*) from bar where foo.a = bar.x);
+ count 
+-------
+    17
+(1 row)
+
+explain (costs off)
+select count(*) from foo where a > (select (count(*) + 10) * 2 from bar where foo.a = bar.x);
+                                   QUERY PLAN                                    
+---------------------------------------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Result
+               Filter: (foo.a > (((COALESCE((count()), '0'::bigint) + 10) * 2)))
+               ->  Hash Left Join
+                     Hash Cond: (foo.a = bar.x)
+                     ->  Seq Scan on foo
+                     ->  Hash
+                           ->  GroupAggregate
+                                 Group Key: bar.x
+                                 ->  Sort
+                                       Sort Key: bar.x
+                                       ->  Seq Scan on bar
+ Optimizer: GPORCA
+(14 rows)
+
+select count(*) from foo where a > (select (count(*) + 10) * 2 from bar where foo.a = bar.x);
+ count 
+-------
+     0
+(1 row)
+
+-- should not pull up it
+explain (costs off)
+select count(*) from foo where a > (select (count(*) + foo.b) * 2 from bar where foo.a = bar.x);
+                                    QUERY PLAN                                     
+-----------------------------------------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Result
+               Filter: (foo.a > (SubPlan 1))
+               ->  Seq Scan on foo
+               SubPlan 1
+                 ->  Aggregate
+                       ->  Result
+                             Filter: (foo.a = bar.x)
+                             ->  Materialize
+                                   ->  Broadcast Motion 3:3  (slice2; segments: 3)
+                                         ->  Seq Scan on bar
+ Optimizer: GPORCA
+(13 rows)
+
+select count(*) from foo where a > (select (count(*) + foo.b) * 2 from bar where foo.a = bar.x);
+ count 
+-------
+     0
+(1 row)
+
+-- Test regr_count
+explain (costs off)
+select count(*) from foo where a > (select regr_count(x, y) from bar where foo.a = bar.x);
+                                               QUERY PLAN                                                
+---------------------------------------------------------------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Hash Join
+               Hash Cond: (bar.x = foo.a)
+               Join Filter: (foo.a > (regr_count((bar.x)::double precision, (bar.y)::double precision)))
+               ->  GroupAggregate
+                     Group Key: bar.x
+                     ->  Sort
+                           Sort Key: bar.x
+                           ->  Seq Scan on bar
+               ->  Hash
+                     ->  Seq Scan on foo
+ Optimizer: GPORCA
+(13 rows)
+
+select count(*) from foo where a > (select regr_count(x, y) from bar where foo.a = bar.x);
+ count 
+-------
+     3
+(1 row)
+
+explain (costs off)
+select count(*) from foo where a > (select (regr_count(x, y) + 10) * 2 from bar where foo.a = bar.x);
+                                                      QUERY PLAN                                                      
+----------------------------------------------------------------------------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Hash Join
+               Hash Cond: (bar.x = foo.a)
+               Join Filter: (foo.a > (((regr_count((bar.x)::double precision, (bar.y)::double precision) + 10) * 2)))
+               ->  GroupAggregate
+                     Group Key: bar.x
+                     ->  Sort
+                           Sort Key: bar.x
+                           ->  Seq Scan on bar
+               ->  Hash
+                     ->  Seq Scan on foo
+ Optimizer: GPORCA
+(13 rows)
+
+select count(*) from foo where a > (select (regr_count(x, y) + 10) * 2 from bar where foo.a = bar.x);
+ count 
+-------
+     0
+(1 row)
+
+-- should not pull up it
+explain (costs off)
+select count(*) from foo where a > (select (regr_count(x, y) + foo.b) * 2 from bar where foo.a = bar.x);
+                                QUERY PLAN                                
+--------------------------------------------------------------------------
+ Aggregate
+   ->  Result
+         Filter: (foo.a > (SubPlan 1))
+         ->  Gather Motion 3:1  (slice1; segments: 3)
+               ->  Seq Scan on foo
+         SubPlan 1
+           ->  Aggregate
+                 ->  Result
+                       Filter: (foo.a = bar.x)
+                       ->  Materialize
+                             ->  Gather Motion 3:1  (slice2; segments: 3)
+                                   ->  Seq Scan on bar
+ Optimizer: GPORCA
+(13 rows)
+
+select count(*) from foo where a > (select (regr_count(x, y) + foo.b) * 2 from bar where foo.a = bar.x);
+ count 
+-------
+     0
+(1 row)
+
+-- max(), avg(), sum().. such normal strict aggregate function will use INNER JOIN
+explain (costs off)
+select count(*) from foo where a > (select max(x)  from bar where foo.a = bar.x);
+                    QUERY PLAN                     
+---------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Hash Join
+               Hash Cond: (bar.x = foo.a)
+               Join Filter: (foo.a > (max(bar.x)))
+               ->  GroupAggregate
+                     Group Key: bar.x
+                     ->  Sort
+                           Sort Key: bar.x
+                           ->  Seq Scan on bar
+               ->  Hash
+                     ->  Seq Scan on foo
+ Optimizer: GPORCA
+(13 rows)
+
+select count(*) from foo where a > (select max(x)  from bar where foo.a = bar.x);
+ count 
+-------
+     0
+(1 row)
+
+explain (costs off)
+select count(*) from foo where a > (select max(x + 3) / 2  from bar where foo.a = bar.x);
+                          QUERY PLAN                           
+---------------------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Hash Join
+               Hash Cond: (bar.x = foo.a)
+               Join Filter: (foo.a > ((max((bar.x + 3)) / 2)))
+               ->  GroupAggregate
+                     Group Key: bar.x
+                     ->  Sort
+                           Sort Key: bar.x
+                           ->  Seq Scan on bar
+               ->  Hash
+                     ->  Seq Scan on foo
+ Optimizer: GPORCA
+(13 rows)
+
+select count(*) from foo where a > (select max(x + 3) / 2  from bar where foo.a = bar.x);
+ count 
+-------
+     3
+(1 row)
+
+-- agg with filter should not be pulled-up
+explain (costs off)
+select count(*) from foo where a > (select count(*) filter(where x < y + 10) from bar where foo.a = bar.x);
+                                    QUERY PLAN                                     
+-----------------------------------------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Seq Scan on foo
+               Filter: (a > (SubPlan 1))
+               SubPlan 1
+                 ->  Aggregate
+                       ->  Result
+                             Filter: (foo.a = bar.x)
+                             ->  Materialize
+                                   ->  Broadcast Motion 3:3  (slice2; segments: 3)
+                                         ->  Seq Scan on bar
+ Optimizer: Postgres-based planner
+(12 rows)
+
+select count(*) from foo where a > (select count(*) filter(where x < y + 10) from bar where foo.a = bar.x);
+ count 
+-------
+    17
+(1 row)
+
+-- tests for ordered set agg
+-- when the functions' aggfinalextra is false, we can use INNER JOIN
+explain (costs off)
+select count(*) from foo where a + 5 > (select percentile_cont(0.5) within group(order by x) from bar where foo.a = bar.x);
+                                                                          QUERY PLAN                                                                           
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Hash Join
+               Hash Cond: (foo.a = bar.x)
+               Join Filter: (((foo.a + 5))::double precision > (percentile_cont('0.5'::double precision) WITHIN GROUP (ORDER BY ((bar.x)::double precision))))
+               ->  Seq Scan on foo
+               ->  Hash
+                     ->  GroupAggregate
+                           Group Key: bar.x
+                           ->  Sort
+                                 Sort Key: bar.x
+                                 ->  Seq Scan on bar
+ Optimizer: Postgres-based planner
+(13 rows)
+
+select count(*) from foo where a + 5 > (select percentile_cont(0.5) within group(order by x) from bar where foo.a = bar.x);
+ count 
+-------
+     6
+(1 row)
+
+-- but for aggfinalextra is true, we do nothing
+explain (costs off)
+select count(*) from foo where a + 5 > (select percentile_disc(0.5) within group(order by x) from bar where foo.a = bar.x);
+                                    QUERY PLAN                                     
+-----------------------------------------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Seq Scan on foo
+               Filter: ((a + 5) > (SubPlan 1))
+               SubPlan 1
+                 ->  Aggregate
+                       ->  Result
+                             Filter: (foo.a = bar.x)
+                             ->  Materialize
+                                   ->  Broadcast Motion 3:3  (slice2; segments: 3)
+                                         ->  Seq Scan on bar
+ Optimizer: Postgres-based planner
+(12 rows)
+
+select count(*) from foo where a + 5 > (select percentile_disc(0.5) within group(order by x) from bar where foo.a = bar.x);
+ count 
+-------
+     6
+(1 row)
+
+-- test for string agg
+explain (costs off)
+select count(*) from foo where a::text = (select string_agg(x::text, ',') from bar where foo.a = bar.x);
+                                               QUERY PLAN                                                
+---------------------------------------------------------------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Hash Join
+               Hash Cond: (((string_agg((bar.x)::text, ','::text)) = (foo.a)::text) AND (bar.x = foo.a))
+               ->  GroupAggregate
+                     Group Key: bar.x
+                     ->  Sort
+                           Sort Key: bar.x
+                           ->  Seq Scan on bar
+               ->  Hash
+                     ->  Seq Scan on foo
+ Optimizer: GPORCA
+(12 rows)
+
+select count(*) from foo where a::text = (select string_agg(x::text, ',') from bar where foo.a = bar.x);
+ count 
+-------
+     0
+(1 row)
+
+-- tests for User Defined Aggregate (UDA)
+create or replace function pair_add(state bigint, x int, y int)
+returns bigint as $$
+    select coalesce(state, 0) + coalesce(x, 0) + coalesce(y, 0);
+$$ language sql immutable;
+create aggregate sum_pair(int, int) (
+    sfunc = pair_add,
+    stype = bigint,
+    initcond = '0'
+);
+explain (costs off)
+select count(*) from foo where a > (select sum_pair(x, y) from bar where foo.a = bar.x);
+                          QUERY PLAN                           
+---------------------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Hash Join
+               Hash Cond: (bar.x = foo.a)
+               Join Filter: (foo.a > (sum_pair(bar.x, bar.y)))
+               ->  GroupAggregate
+                     Group Key: bar.x
+                     ->  Sort
+                           Sort Key: bar.x
+                           ->  Seq Scan on bar
+               ->  Hash
+                     ->  Seq Scan on foo
+ Optimizer: GPORCA
+(13 rows)
+
+select count(*) from foo where a > (select sum_pair(x, y) from bar where foo.a = bar.x);
+ count 
+-------
+     0
+(1 row)
+
+-- tests for user defined operator
+-- make sure that a valid join plan (either inner or left) is generated
+create function special_gt (a int, b int) returns boolean as $$
+select
+    case
+        when b is null
+            then true else a > b
+        end;
+$$
+language sql;
+create operator >>>
+(
+  function = special_gt,
+  leftarg = int,
+  rightarg = int
+);
+explain (costs off)
+select count(*) from foo where a >>> (select count(*)::int from bar where foo.a = bar.x);
+                                 QUERY PLAN                                 
+----------------------------------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Result
+               Filter: (foo.a >>> (int4(COALESCE((count()), '0'::bigint))))
+               ->  Hash Left Join
+                     Hash Cond: (foo.a = bar.x)
+                     ->  Seq Scan on foo
+                     ->  Hash
+                           ->  GroupAggregate
+                                 Group Key: bar.x
+                                 ->  Sort
+                                       Sort Key: bar.x
+                                       ->  Seq Scan on bar
+ Optimizer: GPORCA
+(14 rows)
+
+select count(*) from foo where a >>> (select count(*)::int from bar where foo.a = bar.x);
+ count 
+-------
+    17
+(1 row)
+
+explain (costs off)
+select count(*) from foo where a >>> (select max(y)::int from bar where foo.a = bar.x);
+                     QUERY PLAN                      
+-----------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Hash Join
+               Hash Cond: (bar.x = foo.a)
+               Join Filter: (foo.a >>> (max(bar.y)))
+               ->  GroupAggregate
+                     Group Key: bar.x
+                     ->  Sort
+                           Sort Key: bar.x
+                           ->  Seq Scan on bar
+               ->  Hash
+                     ->  Seq Scan on foo
+ Optimizer: GPORCA
+(13 rows)
+
+select count(*) from foo where a >>> (select max(y)::int from bar where foo.a = bar.x);
+ count 
+-------
+     0
+(1 row)
+
+drop table foo;
+drop table bar;

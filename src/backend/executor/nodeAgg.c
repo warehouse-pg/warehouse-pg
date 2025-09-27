@@ -5339,3 +5339,156 @@ ExecAggExplainEnd(PlanState *planstate, struct StringInfoData *buf)
 				sum_num_expansions);
 	}
 }
+
+/*
+ * Warehouse-PG specific code.
+ *
+ * Helper routine for the Postgres planner’s expr-sublink pull-up. It evaluates
+ * Aggref nodes during planning to obtain results in the case of empty input, this
+ * is used to indicate what zero value the COALESCE node should use.
+ *
+ * The implementation mirrors the executor framework and reuses its variable
+ * names for consistency (see ExecInitAgg(), ExecAgg(), ExecEndAgg()).
+ *
+ * The procedure steps are as follows:
+ *   1. Retrieve the aggregate function info from the pg_aggregate catalog.
+ *   2. Get agginitval and call the transition function (transfn) for the input.
+ *   3. If there's finalization function (finalfn), invoke it.
+ *
+ * On success, returns a node of type Const; otherwise, returns null or throw an
+ * error for unsupported aggregates, such user-defined aggregates.
+ */
+Node *
+calculate_agg_value_for_empty_input(Aggref *aggref)
+{
+	HeapTuple	aggTuple;
+	Form_pg_aggregate aggform;
+	Oid     	finalfn_oid;
+	Oid			aggtranstype;
+	Datum		textInitVal;
+	Datum		initValue;
+
+	/* whether initial value of the transition state is NULL or not */
+	bool		initValueIsNull;
+	int16		typLen;
+	bool		typByVal;
+	Node       *result = NULL;
+
+	/* Filter or Variadic aggregates or user-defined aggregates are not supported */
+	if (aggref->aggfilter || aggref->aggvariadic || aggref->aggfnoid > FirstNormalObjectId)
+		elog(ERROR, "Un supportted agg with filter, variadic arguments, or user-defined aggregates");
+
+	/* Fetch the pg_aggregate row */
+	aggTuple = SearchSysCache1(AGGFNOID,
+							   ObjectIdGetDatum(aggref->aggfnoid));
+	if (!HeapTupleIsValid(aggTuple))
+		elog(ERROR, "cache lookup failed for aggregate %u",
+			 aggref->aggfnoid);
+	aggform = (Form_pg_aggregate) GETSTRUCT(aggTuple);
+
+	/*
+	 * For aggregates with aggfinalextra = true, aggfinalfn expects extra
+	 * arguments derived from sorted input (e.g., percentile_disc()).
+	 * Behavior with no input varies: some return NULL (mode(),
+	 * percent_rank()), while others yield non-null values like 1
+	 * (rank(), dense_rank()).
+	 *
+	 * Managing these cases is tricky because the correct outcome depends
+	 * on the specific aggregate, so we let it be SubPlan in planner stage.
+	 */
+	if (aggform->aggfinalextra)
+	{
+		ReleaseSysCache(aggTuple);
+		return NULL;
+	}
+
+	/* same as ExecInitAgg() */
+	aggtranstype = aggform->aggtranstype;
+	finalfn_oid = aggform->aggfinalfn;
+	textInitVal = SysCacheGetAttr(AGGFNOID, aggTuple,
+								  Anum_pg_aggregate_agginitval,
+								  &initValueIsNull);
+	if (initValueIsNull)
+		initValue = (Datum) 0;
+	else
+		initValue = GetAggInitVal(textInitVal, aggtranstype);
+
+	if (!OidIsValid(finalfn_oid))
+	{
+		/* if there is no final function, we just return initvalue. */
+		get_typlenbyval(aggtranstype, &typLen, &typByVal);
+		result = (Node *) makeConst(aggtranstype,
+									exprTypmod((Node *) aggref),
+									aggref->aggcollid,
+									typLen,
+									initValue, initValueIsNull,
+									typByVal);
+	}
+	else if (AGGKIND_IS_ORDERED_SET(aggref->aggkind))
+	{
+		/*
+		 * ordered-set agg including hypothetical case like rank()
+		 * and percentile_cont() do not set the aggfinalextra flag,
+		 * return NULL when there is no input.
+		 */
+		result = (Node *) makeNullConst(aggref->aggtype,
+				exprTypmod((Node *) aggref),
+				aggref->aggcollid);
+	}
+	else
+	{
+		/* Handle non-ordered set aggregates with final function */
+		FmgrInfo	finalfn;
+		LOCAL_FCINFO(fcinfo, FUNC_MAX_ARGS);
+
+		Assert(list_length(aggref->aggdirectargs) == 0);
+		fmgr_info(finalfn_oid, &finalfn);
+
+		/* Initialize fake AggState to call agg functions */
+		AggState aggstate = {0};
+		Node *node = (Node *)&aggstate;
+		node->type = T_AggState;
+
+		InitFunctionCallInfoData(*fcinfo, &finalfn, 1,
+								 aggref->aggcollid, (Node *)&aggstate, NULL);
+		if (fcinfo->flinfo->fn_strict && initValueIsNull)
+		{
+			/*
+			 * If the final function is strict and the initial value is null,
+			 * we return a null constant of the aggregate's return type.
+			 */
+			result = (Node *) makeNullConst(aggref->aggtype,
+											exprTypmod((Node *) aggref),
+											aggref->aggcollid);
+		}
+		else
+		{
+			/*
+			 * Otherwise, we call the final function to compute the result.
+			 * We use the initValue as an argument and make it read-only.
+			 */
+			Datum resultVal;
+			bool resultIsNull;
+
+			get_typlenbyval(aggtranstype, &typLen, &typByVal);
+			fcinfo->args[0].value =
+				MakeExpandedObjectReadOnly(initValue,
+										   initValueIsNull,
+										   typLen);
+			fcinfo->args[0].isnull = initValueIsNull;
+			resultVal = FunctionCallInvoke(fcinfo);
+			resultIsNull = fcinfo->isnull;
+			get_typlenbyval(aggref->aggtype, &typLen, &typByVal);
+			result = (Node *) makeConst(aggref->aggtype,
+										exprTypmod((Node *) aggref),
+										aggref->aggcollid,
+										typLen,
+										resultVal, resultIsNull,
+										typByVal);
+		}
+	}
+
+	ReleaseSysCache(aggTuple);
+
+	return result;
+}

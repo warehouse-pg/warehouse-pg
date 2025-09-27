@@ -748,8 +748,10 @@ pull_up_sublinks_qual_recurse(PlannerInfo *root, Node *node,
 				if (j)
 				{
 					/* Yes, insert the new join node into the join tree */
+					FromExpr *from = makeFromExpr(list_make1(j), node);
 					j->larg = *jtlink1;
-					*jtlink1 = (Node *) j;
+					*jtlink1 = (Node *) from;
+					node = NULL;
 				}
 				return node;
 			}

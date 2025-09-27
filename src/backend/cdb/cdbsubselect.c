@@ -34,6 +34,7 @@
 #include "cdb/cdbsubselect.h"	/* me */
 #include "lib/stringinfo.h"
 #include "cdb/cdbpullup.h"
+#include "executor/nodeAgg.h"
 
 static int	add_expr_subquery_rte(Query *parse, Query *subselect);
 
@@ -42,6 +43,8 @@ static JoinExpr *make_join_expr(Node *larg, int r_rtindex, int join_type);
 static Node *make_lasj_quals(PlannerInfo *root, SubLink *sublink, int subquery_indx);
 
 static Node *add_null_match_clause(Node *clause);
+
+static Node *cdb_pre_process_expr_sublink_tle(Expr *expr);
 
 typedef struct NonNullableVarsContext
 {
@@ -71,7 +74,16 @@ typedef struct ConvertSubqueryToJoinContext
 	Node	   *innerQual;		/* Qual to leave behind in subquery */
 	List	   *targetList;		/* targetlist for subquery */
 	List	   *groupClause;	/* grouping clause for subquery */
+	Const      *aggValEmptyInput;	/* aggregate calculate result when empty input */
 } ConvertSubqueryToJoinContext;
+
+
+typedef struct ExprSubLinkAggContext
+{
+	bool	   safePullup;         /* is safe to pull up the expr sublink */
+} ExprSubLinkAggContext;
+
+static Node *cdb_pre_process_expr_sublink_agg(Node *node, ExprSubLinkAggContext *context);
 
 static void ProcessSubqueryToJoin(Query *subselect, ConvertSubqueryToJoinContext *context);
 static void ProcessSubqueryToJoin_walker(Node *jtree, ConvertSubqueryToJoinContext *context);
@@ -103,6 +115,7 @@ InitConvertSubqueryToJoinContext(ConvertSubqueryToJoinContext *ctx)
 	ctx->innerQual = NULL;
 	ctx->groupClause = NIL;
 	ctx->targetList = NIL;
+	ctx->aggValEmptyInput = NULL;
 }
 
 /**
@@ -122,26 +135,21 @@ IsCorrelatedOpExpr(OpExpr *opexp, Expr **innerExpr)
 	e1 = (Expr *) list_nth(opexp->args, 0);
 	e2 = (Expr *) list_nth(opexp->args, 1);
 
-	/*
-	 * One of the vars must be outer, and other must be inner.
-	 */
-	if (contain_vars_of_level((Node *) e1, 1) &&
-			!contain_vars_of_level((Node *) e1, 0) &&
-			contain_vars_of_level((Node *) e2, 0) &&
-			!contain_vars_of_level((Node *) e2, 1))
-	{
-		*innerExpr = (Expr *) copyObject(e2);
+	bool e1_has_level0 = contain_vars_of_level((Node *) e1, 0);
+	bool e1_has_level1 = contain_vars_of_level((Node *) e1, 1);
+	bool e2_has_level0 = contain_vars_of_level((Node *) e2, 0);
+	bool e2_has_level1 = contain_vars_of_level((Node *) e2, 1);
 
+	/* One of the vars must be outer, and other must be inner. */
+	if (e1_has_level0 && !e1_has_level1 && !e2_has_level0 && e2_has_level1)
+	{
+		*innerExpr = (Expr *) copyObject(e1);
 		return true;
 	}
 
-	if (contain_vars_of_level((Node *) e1, 0) &&
-			!contain_vars_of_level((Node *) e1, 1) &&
-			contain_vars_of_level((Node *) e2, 1) &&
-			!contain_vars_of_level((Node *) e2, 0))
+	if (!e1_has_level0 && e1_has_level1 && e2_has_level0 && !e2_has_level1)
 	{
-		*innerExpr = (Expr *) copyObject(e1);
-
+		*innerExpr = (Expr *) copyObject(e2);
 		return true;
 	}
 
@@ -517,6 +525,8 @@ safe_to_convert_EXPR(SubLink *sublink, ConvertSubqueryToJoinContext *ctx1)
 	Assert(ctx1);
 
 	Query	   *subselect = (Query *) sublink->subselect;
+	Expr       *sublink_tle_expr;
+	Node       *agg_calculated_result;
 
 	if (subselect->jointree->fromlist == NULL)
 		return false;
@@ -576,6 +586,40 @@ safe_to_convert_EXPR(SubLink *sublink, ConvertSubqueryToJoinContext *ctx1)
 	if (list_length(subselect->targetList) != 1)
 		return false;
 
+	sublink_tle_expr = linitial_node(TargetEntry, subselect->targetList)->expr;
+
+	/*
+	 * Different types of aggregate functions behave differently when pulling up EXPR
+	 * SubLink into JOIN:
+	 *
+	 * - Strict aggregate functions (functions that return NULL when the input is NULL) — such
+	 * as MAX(), SUM(), AVG(), PERCENTILE_CONT(), RANK(), etc. — can be safely pulled up and
+	 * rewritten using an INNER JOIN, since they will naturally return NULL if the join condition
+	 * fails to match.
+	 *
+	 * - Non-strict aggregate functions, such as COUNT(*), are different: even when the input is NULL,
+	 * they return a non-NULL value (typically 0, empty string '', or something else). To preserve semantic
+	 * correctness when pulling these up, the subquery must be rewritten using a LEFT JOIN combined with
+	 * COALESCE() to ensure that NULL cases are properly handled.
+	 *
+	 * For example: SELECT * FROM foo WHERE a > (SELECT count(*) FROM bar WHERE foo.a = bar.x) should be
+	 * rewritten to:
+	 *			   SELECT * FROM foo LEFT JOIN (SELECT bar.x, count(*) as c FROM bar GROUP BY bar.x) sub
+	 *			   ON foo.a = sub.x WHERE foo.a > COALESCE(sub.c, 0);
+	 *
+	 * When using a LEFT JOIN, unmatched rows from the right-hand side are filled with NULLs. Because of this,
+	 * we must apply COALESCE() to post-process the NULL values introduced by the join in order to restore the
+	 * original default output of the aggregate function — typically a zero-like value. Therefore, to correctly
+	 * apply COALESCE(), we must first understand what value the aggregate function returns when its input is
+	 * entirely NULL. This "default value" varies by function, we use cdb_pre_process_expr_sublink_tle() to get
+	 * this result.
+	 */
+	agg_calculated_result = cdb_pre_process_expr_sublink_tle(sublink_tle_expr);
+	if (agg_calculated_result == NULL || !IsA(agg_calculated_result, Const))
+		return false;
+	else if (!((Const *) agg_calculated_result)->constisnull)
+		ctx1->aggValEmptyInput = (Const *) agg_calculated_result;
+
 
 	/**
 	 * Walk the quals of the subquery to do a more fine grained check as to whether this subquery
@@ -614,6 +658,7 @@ convert_EXPR_to_join(PlannerInfo *root, OpExpr *opexp)
 	if (safe_to_convert_EXPR(sublink, &ctx1))
 	{
 		Query	   *subselect = (Query *) copyObject(sublink->subselect);
+		bool		sublinkTestexprIsStrict = op_strict(opexp->opno);
 
 		Assert(IsA(subselect, Query));
 
@@ -649,7 +694,8 @@ convert_EXPR_to_join(PlannerInfo *root, OpExpr *opexp)
 		/**
 		 * Construct the join expression involving the new pulled up subselect.
 		 */
-		JoinExpr   *join_expr = make_join_expr(NULL, rteIndex, JOIN_INNER);
+		JoinType    join_type = (ctx1.aggValEmptyInput == NULL && sublinkTestexprIsStrict) ? JOIN_INNER : JOIN_LEFT;
+		JoinExpr   *join_expr = make_join_expr(NULL, rteIndex, join_type);
 		Node	   *joinQual = ctx1.joinQual;
 
 		/**
@@ -672,7 +718,16 @@ convert_EXPR_to_join(PlannerInfo *root, OpExpr *opexp)
 											 exprCollation((Node *) subselectAggTLE->expr),
 											 0);
 
-		list_nth_replace(opexp->args, 1, aggVar);
+		if (join_type == JOIN_INNER || (!sublinkTestexprIsStrict && join_type == JOIN_LEFT))
+			list_nth_replace(opexp->args, 1, aggVar);
+		else
+		{
+			CoalesceExpr *ce = makeNode(CoalesceExpr);
+			ce->coalescetype = ctx1.aggValEmptyInput->consttype;
+			ce->coalescecollid = ctx1.aggValEmptyInput->constcollid;
+			ce->args = list_make2(aggVar, ctx1.aggValEmptyInput);
+			list_nth_replace(opexp->args, 1, ce);
+		}
 
 		return join_expr;
 	}
@@ -1654,4 +1709,114 @@ cdb_map_to_base_var(Var *var, List *rtable)
 		return NULL;
 
 	return var;
+}
+
+
+static Node *
+cdb_pre_process_expr_sublink_tle(Expr *expr)
+{
+	Node				 *replaced_expr;
+	Node				 *val;
+	Expr				 *temp_expr;
+	ExprSubLinkAggContext context;
+
+	context.safePullup = true;
+
+	temp_expr = copyObject(expr);
+
+	/*
+	 * In cdb_pre_process_expr_sublink_agg(), we use expression_tree_mutator() instead of
+	 * expression_tree_walker() to traverse the expr node. The purpose is to replace the
+	 * original Aggref node with a Const node, so that eval_const_expressions() can be used
+	 * to evaluate the constant expression.
+	 *
+	 * For example, consider the query:
+	 *
+	 * SELECT * FROM foo WHERE a > (SELECT (count(*) + 5) * 3 FROM bar WHERE foo.a = bar.x);
+	 *
+	 * The expr in this case is an expression containing an Aggref: (count(*) + 5) * 3. We first
+	 * recursively enter the Aggref node and use calculate_agg_value_for_empty_input() to compute
+	 * the default zero value of count(*) at runtime, generating a Const node to replace the Aggref
+	 * node. Then, the expression (0 + 5) * 3 is evaluated, and the final COALESCE() default value
+	 * is obtained.
+	 *
+	 * EXPLAIN (COSTS OFF)
+	 * SELECT * FROM foo WHERE a > (SELECT (count(*) + 5) * 3 FROM bar WHERE foo.a = bar.x);
+	 *								QUERY PLAN
+	 * --------------------------------------------------------------------------
+	 * Gather Motion 3:1  (slice1; segments: 3)
+	 *	->  Hash Left Join
+	 *		Hash Cond: (foo.a = bar.x)
+	 *		Filter: (foo.a > COALESCE((((count(*) + 5) * 3)), '15'::bigint))
+	 *		->  Seq Scan on foo
+	 *		->  Hash
+	 *			->  HashAggregate
+	 *				Group Key: bar.x
+	 *				->  Seq Scan on bar
+	 * Optimizer: Postgres-based planner
+	 *
+	 * Please note the second argument of COALESCE(), which is 15—this is exactly the result of evaluating
+	 * the expression (0 + 5) * 3.
+	 */
+	replaced_expr = cdb_pre_process_expr_sublink_agg((Node *)temp_expr, &context);
+
+	if (!context.safePullup)
+		return NULL;
+
+	val = eval_const_expressions(NULL, replaced_expr);
+	return val;
+
+}
+
+/*
+ * cdb_pre_process_expr_sublink_agg
+ *
+ * This function evaluate all the Aggrefs with the aggregate function's
+ * default output for an empty input, the result is used for the COALESCE node
+ * to determine what default value is should be.
+ *
+ * If the Aggref node has an aggfilter, aggvariadic, or is a user-defined aggregate,
+ * the function decides to skip the pull-up process and sets the context->safePullup
+ * to false. In these cases, it avoids further sublink pull-up attempts.
+ *
+ * For valid Aggref nodes, the function attempts to calculate the aggregate value when
+ * no input is present. If successful, it returns the calculated result. Otherwise,
+ * we will give up further sublink pull-up attempts.
+ */
+static Node *
+cdb_pre_process_expr_sublink_agg(Node *node, ExprSubLinkAggContext *context)
+{
+	if (node == NULL || context->safePullup == false)
+		return NULL;
+
+	if (IsA(node, Aggref))
+	{
+		Aggref *aggref = (Aggref *) node;
+		Node   *result;
+
+		/*
+		 * FILTER expression, variadic aggre and user-defined aggregates
+		 * are complicated to eval results during the plan stage. For
+		 * simplicity, we don't handle the these cases' expr sublink-pullup.
+		 */
+		if (aggref->aggfilter || aggref->aggvariadic ||
+				aggref->aggfnoid > FirstNormalObjectId)
+		{
+			context->safePullup = false;
+			return NULL;
+		}
+
+		result = calculate_agg_value_for_empty_input((Aggref *) node);
+		if (result == NULL)
+		{
+			context->safePullup = false;
+			return NULL;
+		}
+		else
+			return result;
+	}
+
+	return expression_tree_mutator(node,
+								   cdb_pre_process_expr_sublink_agg,
+								   context);
 }
