@@ -233,7 +233,12 @@ GetComboCommandId(CommandId cmin, CommandId cmax)
 	ComboCidEntry entry;
 	bool		found;
 
-	if (Gp_role == GP_ROLE_EXECUTE && !Gp_is_writer)
+	/*
+	 * Entrydb and QE reader will report ERROR here.
+	 * Parallel workers can get combo cid from dynamic shared memory segment
+	 * by function RestoreComboCIDState.
+	 */
+	if (Gp_role == GP_ROLE_EXECUTE && !Gp_is_writer && !MyProc->lockGroupLeader)
 	{
 		if (IS_QUERY_DISPATCHER())
 			elog(ERROR, "EntryReader qExec tried to allocate a Combo Command Id");
@@ -241,7 +246,10 @@ GetComboCommandId(CommandId cmin, CommandId cmax)
 			elog(ERROR, "Reader qExec tried to allocate a Combo Command Id");
 	}
 
-	/* We're either GP_ROLE_DISPATCH, GP_ROLE_UTILITY, or a QE-writer */
+	/*
+	 * We're either GP_ROLE_DISPATCH, GP_ROLE_UTILITY, or a QE-writer,
+	 * or a parallel worker.
+	 */
 
 	/*
 	 * Create the hash table and array the first time we need to use combo
@@ -310,10 +318,12 @@ GetComboCommandId(CommandId cmin, CommandId cmax)
 
 	/*
 	 * If we're the QE writer or the dispatcher, share the new combo CID with
-	 * readers. (In utility mode, no need to share.)
+	 * readers. (In utility mode or parallel worker, no need to share.)
 	 */
-	if (Gp_role != GP_ROLE_UTILITY)
+	if (Gp_role == GP_ROLE_DISPATCH || (Gp_role == GP_ROLE_EXECUTE && Gp_is_writer))
+	{
 		dumpSharedComboCommandIds();
+	}
 
 	return combocid;
 }

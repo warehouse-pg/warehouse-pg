@@ -1304,6 +1304,7 @@ ParallelWorkerMain(Datum main_arg)
 	/* Pass gp_session_id and numsegmentsFromQD to parallel background workers */
 	Gp_role = GP_ROLE_EXECUTE;
 	gp_session_id = fps->session_id;
+	MyProc->mppSessionId = gp_session_id;
 	numsegmentsFromQD = fps->num_segments;
 
 	/*
