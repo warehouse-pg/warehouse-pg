@@ -206,8 +206,8 @@ static void create_col_bind(MemTupleBindingCols *colbind, bool islarge, TupleDes
 	/* alloc null save entries.  Zero it */
 	colbind->null_saves = (short *) palloc0(sizeof(short) * null_save_entries);
 
-	/* alloc bindings, no need to zero because we will fill them out  */
-	colbind->bindings = (MemTupleAttrBinding *) palloc(sizeof(MemTupleAttrBinding) * expected_natts);
+	/* alloc bindings, and zero it  */
+	colbind->bindings = (MemTupleAttrBinding *) palloc0(sizeof(MemTupleAttrBinding) * expected_natts);
 	
 	/*
 	 * The length of each binding is determined according to the alignment
@@ -383,7 +383,7 @@ static void create_col_bind(MemTupleBindingCols *colbind, bool islarge, TupleDes
  */
 MemTupleBinding *create_memtuple_binding(TupleDesc tupdesc, int expected_natts) 
 {
-	MemTupleBinding *pbind = (MemTupleBinding *) palloc(sizeof(MemTupleBinding));
+	MemTupleBinding *pbind = (MemTupleBinding *) palloc0(sizeof(MemTupleBinding));
 	int			i;
 
 	pbind->tupdesc = tupdesc;

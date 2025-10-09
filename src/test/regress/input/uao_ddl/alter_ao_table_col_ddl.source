@@ -114,3 +114,17 @@ VACUUM uao_add_column_abortion;
 
 -- clean
 DROP TABLE uao_add_column_abortion;
+
+-- @Description select from zero column AO/AOCS table
+--
+
+-- DROP COLUMN to zero column.
+CREATE TABLE uao_drop_col_to_zero__@amname@(a int);
+INSERT INTO uao_drop_col_to_zero__@amname@ SELECT * FROM generate_series(1,10);
+ALTER TABLE uao_drop_col_to_zero__@amname@ DROP COLUMN a;
+SELECT relnatts FROM pg_class WHERE relname = 'uao_drop_col_to_zero__@amname@';
+SELECT count(*) FROM uao_drop_col_to_zero__@amname@;
+CREATE TABLE uao_drop_col_to_zero_ctas__@amname@ USING ao_row AS SELECT * FROM uao_drop_col_to_zero__@amname@;
+SELECT count(*) FROM uao_drop_col_to_zero_ctas__@amname@;
+DROP TABLE uao_drop_col_to_zero__@amname@;
+DROP TABLE uao_drop_col_to_zero_ctas__@amname@;

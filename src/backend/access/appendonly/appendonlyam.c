@@ -826,9 +826,10 @@ AppendOnlyExecutorReadBlock_BindingInit(AppendOnlyExecutorReadBlock *executorRea
 	int largestAttnum = executorReadBlock->curLargestAttnum;
 	MemoryContext oldContext;
 
-	/* for any row to be read, there's at least one column data in the row */
-	Assert(largestAttnum > 0);
 	Assert(executorReadBlock->attnum_to_rownum != NULL);
+
+	if (slot->tts_tupleDescriptor->natts == 0)
+		return;
 
 	/* Find the number of attributes that are not missing in the row. */
 	while (largestAttnum < slot->tts_tupleDescriptor->natts && 
@@ -889,15 +890,15 @@ AppendOnlyExecutorReadBlock_ProcessTuple(AppendOnlyExecutorReadBlock *executorRe
 	Assert (slot);
 
 	AppendOnlyExecutorReadBlock_BindingInit(executorReadBlock, slot, rowNum);
+	
+	ExecClearTuple(slot);
 
-	{
-		Assert(executorReadBlock->mt_bind);
-
-		ExecClearTuple(slot);
+	if (executorReadBlock->mt_bind)
 		memtuple_deform(tuple, executorReadBlock->mt_bind, slot->tts_values, slot->tts_isnull);
-		slot->tts_tid = fake_ctid;
-		ExecStoreVirtualTuple(slot);
-	}
+	else
+		Assert(slot->tts_tupleDescriptor->natts == 0);
+	slot->tts_tid = fake_ctid;
+	ExecStoreVirtualTuple(slot);
 
 	/* skip visibility test, all tuples are visible */
 
