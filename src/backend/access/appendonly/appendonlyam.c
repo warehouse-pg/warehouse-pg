@@ -895,8 +895,7 @@ AppendOnlyExecutorReadBlock_ProcessTuple(AppendOnlyExecutorReadBlock *executorRe
 
 	if (executorReadBlock->mt_bind)
 		memtuple_deform(tuple, executorReadBlock->mt_bind, slot->tts_values, slot->tts_isnull);
-	else
-		Assert(slot->tts_tupleDescriptor->natts == 0);
+
 	slot->tts_tid = fake_ctid;
 	ExecStoreVirtualTuple(slot);
 
