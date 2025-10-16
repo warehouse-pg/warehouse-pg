@@ -32,6 +32,7 @@ all:
 	$(MAKE) -C contrib/tsm_system_time all
 	$(MAKE) -C contrib/pg_buffercache all
 	$(MAKE) -C contrib/intarray all
+	$(MAKE) -C contrib/unaccent all
 
 ifeq ($(with_openssl), yes)
 	$(MAKE) -C contrib/sslinfo all
@@ -82,6 +83,7 @@ install:
 	$(MAKE) -C contrib/isn $@
 	$(MAKE) -C contrib/pg_buffercache $@
 	$(MAKE) -C contrib/intarray $@
+	$(MAKE) -C contrib/unaccent $@
 
 ifeq ($(with_openssl), yes)
 	$(MAKE) -C contrib/sslinfo $@
@@ -189,6 +191,7 @@ ICW_TARGETS += contrib/extprotocol contrib/dblink contrib/pg_trgm
 ICW_TARGETS += contrib/indexscan contrib/hstore contrib/ltree contrib/pgcrypto contrib/isn
 ICW_TARGETS += contrib/pg_buffercache
 ICW_TARGETS += contrib/intarray
+ICW_TARGETS += contrib/unaccent
 # sslinfo depends on openssl
 ifeq ($(with_openssl), yes)
 ICW_TARGETS += contrib/sslinfo
