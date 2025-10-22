@@ -253,20 +253,9 @@ typedef struct SerializedSnapshotData
 	CommandId	curcid;
 	TimestampTz whenTaken;
 	XLogRecPtr	lsn;
-
-	/* For DistributedSnapshotWithLocalMapping */
-	bool		haveDistribSnapshot;
-	DistributedTransactionId ds_xminAllDistributedSnapshots;
-	DistributedSnapshotId	ds_distribSnapshotId;
-	DistributedTransactionId ds_xmin;
-	DistributedTransactionId ds_xmax;
-	int32 ds_count;						/* the size of inProgressXidArray */
-
-	TransactionId ds_minCachedLocalXid;
-	TransactionId ds_maxCachedLocalXid;
-	int32 ds_localXidsCount;			/* the size of inProgressMappedLocalXids */
+	bool 		haveDistribSnapshot;
+	DistributedSnapshot ds;
 } SerializedSnapshotData;
-
 
 Size
 SnapMgrShmemSize(void)
@@ -2313,18 +2302,12 @@ EstimateSnapshotSpace(Snapshot snap)
 	/* for distributed transaction snapshot */
 	if (snap->haveDistribSnapshot)
 	{
-		const DistributedSnapshotWithLocalMapping *dw = &snap->distribSnapshotWithLocalMapping;
-		const DistributedSnapshot *ds = &dw->ds;
+		const DistributedSnapshot *ds = &snap->distribSnapshotWithLocalMapping.ds;
 
 		/* DistributedSnapshot.inProgressXidArray */
 		if (ds->count > 0)
 			size = add_size(size,
 							mul_size(ds->count, sizeof(DistributedTransactionId)));
-
-		/* DistributedSnapshotWithLocalMapping.inProgressMappedLocalXids */
-		if (dw->currentLocalXidsCount > 0)
-			size = add_size(size,
-							mul_size(dw->currentLocalXidsCount, sizeof(TransactionId)));
 	}
 
 	return size;
@@ -2352,6 +2335,7 @@ SerializeSnapshot(Snapshot snapshot, char *start_address)
 	serialized_snapshot.curcid = snapshot->curcid;
 	serialized_snapshot.whenTaken = snapshot->whenTaken;
 	serialized_snapshot.lsn = snapshot->lsn;
+	serialized_snapshot.haveDistribSnapshot = snapshot->haveDistribSnapshot;
 
 	/*
 	 * Ignore the SubXID array if it has overflowed, unless the snapshot was
@@ -2362,37 +2346,25 @@ SerializeSnapshot(Snapshot snapshot, char *start_address)
 		serialized_snapshot.subxcnt = 0;
 
 	/* For distributed transaction snapshot */
-	serialized_snapshot.haveDistribSnapshot = snapshot->haveDistribSnapshot;
 	if (snapshot->haveDistribSnapshot)
 	{
 		const DistributedSnapshotWithLocalMapping *dw =
 			&snapshot->distribSnapshotWithLocalMapping;
 		const DistributedSnapshot *ds = &dw->ds;
 
-		serialized_snapshot.ds_xminAllDistributedSnapshots = ds->xminAllDistributedSnapshots;
-		serialized_snapshot.ds_distribSnapshotId = ds->distribSnapshotId;
-		serialized_snapshot.ds_xmin = ds->xmin;
-		serialized_snapshot.ds_xmax = ds->xmax;
-		serialized_snapshot.ds_count = ds->count;
-
-		serialized_snapshot.ds_minCachedLocalXid = dw->minCachedLocalXid;
-		serialized_snapshot.ds_maxCachedLocalXid = dw->maxCachedLocalXid;
-		serialized_snapshot.ds_localXidsCount = dw->currentLocalXidsCount;
-
-		Assert((ds->count == 0) || (ds->inProgressXidArray != NULL));
-		Assert((dw->currentLocalXidsCount == 0) || (dw->inProgressMappedLocalXids != NULL));
+		serialized_snapshot.ds.xminAllDistributedSnapshots = ds->xminAllDistributedSnapshots;
+		serialized_snapshot.ds.distribSnapshotId = ds->distribSnapshotId;
+		serialized_snapshot.ds.xmin = ds->xmin;
+		serialized_snapshot.ds.xmax = ds->xmax;
+		serialized_snapshot.ds.count = ds->count;
 	}
 	else
 	{
-		serialized_snapshot.ds_xminAllDistributedSnapshots = InvalidDistributedTransactionId;
-		serialized_snapshot.ds_distribSnapshotId = 0;
-		serialized_snapshot.ds_xmin = InvalidDistributedTransactionId;
-		serialized_snapshot.ds_xmax = InvalidDistributedTransactionId;
-		serialized_snapshot.ds_count = 0;
-
-		serialized_snapshot.ds_minCachedLocalXid = InvalidTransactionId;
-		serialized_snapshot.ds_maxCachedLocalXid = InvalidTransactionId;
-		serialized_snapshot.ds_localXidsCount = 0;
+		serialized_snapshot.ds.xminAllDistributedSnapshots = InvalidDistributedTransactionId;
+		serialized_snapshot.ds.distribSnapshotId = 0;
+		serialized_snapshot.ds.xmin = InvalidDistributedTransactionId;
+		serialized_snapshot.ds.xmax = InvalidDistributedTransactionId;
+		serialized_snapshot.ds.count = 0;
 	}
 
 	/* Copy struct to possibly-unaligned buffer */
@@ -2420,25 +2392,10 @@ SerializeSnapshot(Snapshot snapshot, char *start_address)
 	}
 
 	/* Copy distributed transaction snapshot */
-	if (serialized_snapshot.haveDistribSnapshot)
+	if (serialized_snapshot.haveDistribSnapshot && serialized_snapshot.ds.count > 0)
 	{
-		if (serialized_snapshot.ds_count > 0)
-		{
-			const DistributedTransactionId *inprog =
-				snapshot->distribSnapshotWithLocalMapping.ds.inProgressXidArray;
-			memcpy(ptr, inprog,
-				   serialized_snapshot.ds_count * sizeof(DistributedTransactionId));
-			ptr += serialized_snapshot.ds_count * sizeof(DistributedTransactionId);
-		}
-
-		if (serialized_snapshot.ds_localXidsCount > 0)
-		{
-			const TransactionId *mapped =
-				snapshot->distribSnapshotWithLocalMapping.inProgressMappedLocalXids;
-			memcpy(ptr, mapped,
-				   serialized_snapshot.ds_localXidsCount * sizeof(TransactionId));
-			ptr += serialized_snapshot.ds_localXidsCount * sizeof(TransactionId);
-		}
+		memcpy(ptr, snapshot->distribSnapshotWithLocalMapping.ds.inProgressXidArray,
+				serialized_snapshot.ds.count * sizeof(DistributedTransactionId));
 	}
 }
 
@@ -2469,8 +2426,7 @@ RestoreSnapshot(char *start_address)
 
 	if (serialized_snapshot.haveDistribSnapshot)
 	{
-		size += serialized_snapshot.ds_count * sizeof(DistributedTransactionId);
-		size += serialized_snapshot.ds_localXidsCount * sizeof(TransactionId);
+		size += serialized_snapshot.ds.count * sizeof(DistributedTransactionId);
 	}
 
 	/* Copy all required fields */
@@ -2513,18 +2469,13 @@ RestoreSnapshot(char *start_address)
 	snapshot->haveDistribSnapshot = serialized_snapshot.haveDistribSnapshot;
 	if (snapshot->haveDistribSnapshot)
 	{
-		DistributedSnapshotWithLocalMapping *dw = &snapshot->distribSnapshotWithLocalMapping;
-		DistributedSnapshot *ds = &dw->ds;
+		DistributedSnapshot *ds = &snapshot->distribSnapshotWithLocalMapping.ds;
 
-		ds->xminAllDistributedSnapshots = serialized_snapshot.ds_xminAllDistributedSnapshots;
-		ds->distribSnapshotId = serialized_snapshot.ds_distribSnapshotId;
-		ds->xmin = serialized_snapshot.ds_xmin;
-		ds->xmax = serialized_snapshot.ds_xmax;
-		ds->count = serialized_snapshot.ds_count;
-
-		dw->minCachedLocalXid = serialized_snapshot.ds_minCachedLocalXid;
-		dw->maxCachedLocalXid = serialized_snapshot.ds_maxCachedLocalXid;
-		dw->currentLocalXidsCount = serialized_snapshot.ds_localXidsCount;
+		ds->xminAllDistributedSnapshots = serialized_snapshot.ds.xminAllDistributedSnapshots;
+		ds->distribSnapshotId = serialized_snapshot.ds.distribSnapshotId;
+		ds->xmin = serialized_snapshot.ds.xmin;
+		ds->xmax = serialized_snapshot.ds.xmax;
+		ds->count = serialized_snapshot.ds.count;
 
 		/* ds.inProgressXidArray */
 		if (ds->count > 0)
@@ -2532,23 +2483,11 @@ RestoreSnapshot(char *start_address)
 			ds->inProgressXidArray = (DistributedTransactionId *) out_ptr;
 			memcpy(ds->inProgressXidArray, in_ptr,
 				   ds->count * sizeof(DistributedTransactionId));
-			in_ptr += ds->count * sizeof(DistributedTransactionId);
-			out_ptr += ds->count * sizeof(DistributedTransactionId);
 		}
 		else
-			ds->inProgressXidArray = NULL;
-
-		/* dw.inProgressMappedLocalXids */
-		if (dw->currentLocalXidsCount > 0)
 		{
-			dw->inProgressMappedLocalXids = (TransactionId *) out_ptr;
-			memcpy(dw->inProgressMappedLocalXids, in_ptr,
-				   dw->currentLocalXidsCount * sizeof(TransactionId));
-			in_ptr += dw->currentLocalXidsCount * sizeof(TransactionId);
-			out_ptr += dw->currentLocalXidsCount * sizeof(TransactionId);
+			ds->inProgressXidArray = NULL;
 		}
-		else
-			dw->inProgressMappedLocalXids = NULL;
 	}
 	else
 	{

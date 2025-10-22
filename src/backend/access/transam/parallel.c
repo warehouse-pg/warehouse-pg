@@ -76,6 +76,8 @@
 #define PARALLEL_KEY_REINDEX_STATE			UINT64CONST(0xFFFFFFFFFFFF000B)
 #define PARALLEL_KEY_RELMAPPER_STATE		UINT64CONST(0xFFFFFFFFFFFF000C)
 #define PARALLEL_KEY_UNCOMMITTEDENUMS		UINT64CONST(0xFFFFFFFFFFFF000D)
+/* CDB: for DtxContextInfo */
+#define PARALLEL_KEY_DTX_CONTEXT_INFO		UINT64CONST(0xFFFFFFFFFFFF000E)
 
 /* Fixed-size parallel state. */
 typedef struct FixedParallelState
@@ -208,6 +210,7 @@ InitializeParallelDSM(ParallelContext *pcxt)
 	Size		combocidlen = 0;
 	Size		tsnaplen = 0;
 	Size		asnaplen = 0;
+	Size		dtxlen = 0;
 	Size		tstatelen = 0;
 	Size		reindexlen = 0;
 	Size		relmapperlen = 0;
@@ -270,8 +273,12 @@ InitializeParallelDSM(ParallelContext *pcxt)
 		shm_toc_estimate_chunk(&pcxt->estimator, relmapperlen);
 		uncommittedenumslen = EstimateUncommittedEnumsSpace();
 		shm_toc_estimate_chunk(&pcxt->estimator, uncommittedenumslen);
+		/* CDB: estimate the size of DtxContextInfo */
+		dtxlen = (Size) DtxContextInfo_SerializeSize(&QEDtxContextInfo);
+		shm_toc_estimate_chunk(&pcxt->estimator, sizeof(uint32) + dtxlen);
+
 		/* If you add more chunks here, you probably need to add keys. */
-		shm_toc_estimate_keys(&pcxt->estimator, 10);
+		shm_toc_estimate_keys(&pcxt->estimator, 11);
 
 		/* Estimate space need for error queues. */
 		StaticAssertStmt(BUFFERALIGN(PARALLEL_ERROR_QUEUE_SIZE) ==
@@ -351,6 +358,7 @@ InitializeParallelDSM(ParallelContext *pcxt)
 		char	   *tsnapspace;
 		char	   *asnapspace;
 		char	   *tstatespace;
+		char	   *dtxspace;
 		char	   *reindexspace;
 		char	   *relmapperspace;
 		char	   *error_queue_space;
@@ -420,6 +428,12 @@ InitializeParallelDSM(ParallelContext *pcxt)
 		SerializeUncommittedEnums(uncommittedenumsspace, uncommittedenumslen);
 		shm_toc_insert(pcxt->toc, PARALLEL_KEY_UNCOMMITTEDENUMS,
 					   uncommittedenumsspace);
+
+		/* Serialize DtxContextInfo */
+		dtxspace = shm_toc_allocate(pcxt->toc, sizeof(uint32) + dtxlen);
+		*((uint32 *) dtxspace) = (uint32) dtxlen;
+		DtxContextInfo_Serialize(dtxspace + sizeof(uint32), &QEDtxContextInfo);
+		shm_toc_insert(pcxt->toc, PARALLEL_KEY_DTX_CONTEXT_INFO, dtxspace);
 
 		/* Allocate space for worker information. */
 		pcxt->worker = palloc0(sizeof(ParallelWorkerInfo) * pcxt->nworkers);
@@ -1251,6 +1265,7 @@ ParallelWorkerMain(Datum main_arg)
 	char	   *reindexspace;
 	char	   *relmapperspace;
 	char	   *uncommittedenumsspace;
+	char	   *dtxspace;
 	StringInfoData msgbuf;
 	char	   *session_dsm_handle_space;
 	Snapshot	tsnapshot;
@@ -1477,6 +1492,21 @@ ParallelWorkerMain(Datum main_arg)
 	uncommittedenumsspace = shm_toc_lookup(toc, PARALLEL_KEY_UNCOMMITTEDENUMS,
 										   false);
 	RestoreUncommittedEnums(uncommittedenumsspace);
+
+	/* CDB: Restore QEDtxContextInfo */
+	dtxspace = shm_toc_lookup(toc, PARALLEL_KEY_DTX_CONTEXT_INFO, false);
+	uint32 dtx_len  = *((uint32 *) dtxspace);
+	DtxContextInfo_Deserialize(dtxspace + sizeof(uint32), (int) dtx_len, &QEDtxContextInfo);
+
+	/* CDB: set DistributedTransactionContext */
+	if (QEDtxContextInfo.haveDistributedSnapshot)
+	{
+		Assert(!Gp_is_writer);
+		if (IS_QUERY_DISPATCHER())
+			setDistributedTransactionContext(DTX_CONTEXT_QE_ENTRY_DB_SINGLETON);
+		else
+			setDistributedTransactionContext(DTX_CONTEXT_QE_READER);
+	}
 
 	/* Attach to the leader's serializable transaction, if SERIALIZABLE. */
 	AttachSerializableXact(fps->serializable_xact_handle);
