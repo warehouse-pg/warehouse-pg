@@ -2424,8 +2424,10 @@ RestoreSnapshot(char *start_address)
 		+ serialized_snapshot.xcnt * sizeof(TransactionId)
 		+ serialized_snapshot.subxcnt * sizeof(TransactionId);
 
-	if (serialized_snapshot.haveDistribSnapshot)
+	if (serialized_snapshot.haveDistribSnapshot &&
+		serialized_snapshot.ds.count > 0)
 	{
+		size = MAXALIGN(size);
 		size += serialized_snapshot.ds.count * sizeof(DistributedTransactionId);
 	}
 
@@ -2480,7 +2482,7 @@ RestoreSnapshot(char *start_address)
 		/* ds.inProgressXidArray */
 		if (ds->count > 0)
 		{
-			ds->inProgressXidArray = (DistributedTransactionId *) out_ptr;
+			ds->inProgressXidArray = (DistributedTransactionId *) MAXALIGN(out_ptr);
 			memcpy(ds->inProgressXidArray, in_ptr,
 				   ds->count * sizeof(DistributedTransactionId));
 		}

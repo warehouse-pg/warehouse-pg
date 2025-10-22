@@ -377,6 +377,12 @@ InitializeParallelDSM(ParallelContext *pcxt)
 		SerializeGUCState(guc_len, gucspace);
 		shm_toc_insert(pcxt->toc, PARALLEL_KEY_GUC, gucspace);
 
+		/* CDB: Serialize DtxContextInfo */
+		dtxspace = shm_toc_allocate(pcxt->toc, sizeof(uint32) + dtxlen);
+		*((uint32 *) dtxspace) = (uint32) dtxlen;
+		DtxContextInfo_Serialize(dtxspace + sizeof(uint32), &QEDtxContextInfo);
+		shm_toc_insert(pcxt->toc, PARALLEL_KEY_DTX_CONTEXT_INFO, dtxspace);
+
 		/* Serialize combo CID state. */
 		combocidspace = shm_toc_allocate(pcxt->toc, combocidlen);
 		SerializeComboCIDState(combocidlen, combocidspace);
@@ -428,12 +434,6 @@ InitializeParallelDSM(ParallelContext *pcxt)
 		SerializeUncommittedEnums(uncommittedenumsspace, uncommittedenumslen);
 		shm_toc_insert(pcxt->toc, PARALLEL_KEY_UNCOMMITTEDENUMS,
 					   uncommittedenumsspace);
-
-		/* Serialize DtxContextInfo */
-		dtxspace = shm_toc_allocate(pcxt->toc, sizeof(uint32) + dtxlen);
-		*((uint32 *) dtxspace) = (uint32) dtxlen;
-		DtxContextInfo_Serialize(dtxspace + sizeof(uint32), &QEDtxContextInfo);
-		shm_toc_insert(pcxt->toc, PARALLEL_KEY_DTX_CONTEXT_INFO, dtxspace);
 
 		/* Allocate space for worker information. */
 		pcxt->worker = palloc0(sizeof(ParallelWorkerInfo) * pcxt->nworkers);
@@ -1440,6 +1440,20 @@ ParallelWorkerMain(Datum main_arg)
 		shm_toc_lookup(toc, PARALLEL_KEY_SESSION_DSM, false);
 	AttachSession(*(dsm_handle *) session_dsm_handle_space);
 
+	/* CDB: Restore QEDtxContextInfo */
+	dtxspace = shm_toc_lookup(toc, PARALLEL_KEY_DTX_CONTEXT_INFO, false);
+	uint32 dtx_len  = *((uint32 *) dtxspace);
+	DtxContextInfo_Deserialize(dtxspace + sizeof(uint32), (int) dtx_len, &QEDtxContextInfo);
+
+	/* CDB: Set DistributedTransactionContext */
+	if (QEDtxContextInfo.haveDistributedSnapshot)
+	{
+		if (IS_QUERY_DISPATCHER())
+			setDistributedTransactionContext(DTX_CONTEXT_QE_ENTRY_DB_SINGLETON);
+		else
+			setDistributedTransactionContext(DTX_CONTEXT_QE_READER);
+	}
+
 	/*
 	 * If the transaction isolation level is REPEATABLE READ or SERIALIZABLE,
 	 * the leader has serialized the transaction snapshot and we must restore
@@ -1492,21 +1506,6 @@ ParallelWorkerMain(Datum main_arg)
 	uncommittedenumsspace = shm_toc_lookup(toc, PARALLEL_KEY_UNCOMMITTEDENUMS,
 										   false);
 	RestoreUncommittedEnums(uncommittedenumsspace);
-
-	/* CDB: Restore QEDtxContextInfo */
-	dtxspace = shm_toc_lookup(toc, PARALLEL_KEY_DTX_CONTEXT_INFO, false);
-	uint32 dtx_len  = *((uint32 *) dtxspace);
-	DtxContextInfo_Deserialize(dtxspace + sizeof(uint32), (int) dtx_len, &QEDtxContextInfo);
-
-	/* CDB: set DistributedTransactionContext */
-	if (QEDtxContextInfo.haveDistributedSnapshot)
-	{
-		Assert(!Gp_is_writer);
-		if (IS_QUERY_DISPATCHER())
-			setDistributedTransactionContext(DTX_CONTEXT_QE_ENTRY_DB_SINGLETON);
-		else
-			setDistributedTransactionContext(DTX_CONTEXT_QE_READER);
-	}
 
 	/* Attach to the leader's serializable transaction, if SERIALIZABLE. */
 	AttachSerializableXact(fps->serializable_xact_handle);
