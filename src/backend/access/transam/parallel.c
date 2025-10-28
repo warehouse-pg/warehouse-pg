@@ -1442,7 +1442,7 @@ ParallelWorkerMain(Datum main_arg)
 
 	/* CDB: Restore QEDtxContextInfo */
 	dtxspace = shm_toc_lookup(toc, PARALLEL_KEY_DTX_CONTEXT_INFO, false);
-	uint32 dtx_len  = *((uint32 *) dtxspace);
+	uint32 dtx_len = *((uint32 *) dtxspace);
 	DtxContextInfo_Deserialize(dtxspace + sizeof(uint32), (int) dtx_len, &QEDtxContextInfo);
 
 	/* CDB: Set DistributedTransactionContext */

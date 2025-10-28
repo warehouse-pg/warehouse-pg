@@ -237,6 +237,18 @@ static void FreeSnapshot(Snapshot snapshot);
 static void SnapshotResetXmin(void);
 
 /*
+ * Distributed Snapshot fields to be serialized.
+ */
+typedef struct SerializedDistributedSnapshotData
+{
+	DistributedTransactionId xminAllDistributedSnapshots;
+	DistributedSnapshotId distribSnapshotId;
+	DistributedTransactionId xmin;
+	DistributedTransactionId xmax;
+	int32 count;
+} SerializedDistributedSnapshotData;
+
+/*
  * Snapshot fields to be serialized.
  *
  * Only these fields need to be sent to the cooperating backend; the
@@ -254,7 +266,7 @@ typedef struct SerializedSnapshotData
 	TimestampTz whenTaken;
 	XLogRecPtr	lsn;
 	bool 		haveDistribSnapshot;
-	DistributedSnapshot ds;
+	SerializedDistributedSnapshotData ds;
 } SerializedSnapshotData;
 
 Size
@@ -2299,15 +2311,16 @@ EstimateSnapshotSpace(Snapshot snap)
 		size = add_size(size,
 						mul_size(snap->subxcnt, sizeof(TransactionId)));
 
-	/* for distributed transaction snapshot */
+	/* For distributed transaction snapshot */
 	if (snap->haveDistribSnapshot)
 	{
 		const DistributedSnapshot *ds = &snap->distribSnapshotWithLocalMapping.ds;
-
-		/* DistributedSnapshot.inProgressXidArray */
 		if (ds->count > 0)
+		{
+			size = MAXALIGN(size);
 			size = add_size(size,
 							mul_size(ds->count, sizeof(DistributedTransactionId)));
+		}
 	}
 
 	return size;
@@ -2337,21 +2350,10 @@ SerializeSnapshot(Snapshot snapshot, char *start_address)
 	serialized_snapshot.lsn = snapshot->lsn;
 	serialized_snapshot.haveDistribSnapshot = snapshot->haveDistribSnapshot;
 
-	/*
-	 * Ignore the SubXID array if it has overflowed, unless the snapshot was
-	 * taken during recovery - in that case, top-level XIDs are in subxip as
-	 * well, and we mustn't lose them.
-	 */
-	if (serialized_snapshot.suboverflowed && !snapshot->takenDuringRecovery)
-		serialized_snapshot.subxcnt = 0;
-
 	/* For distributed transaction snapshot */
 	if (snapshot->haveDistribSnapshot)
 	{
-		const DistributedSnapshotWithLocalMapping *dw =
-			&snapshot->distribSnapshotWithLocalMapping;
-		const DistributedSnapshot *ds = &dw->ds;
-
+		const DistributedSnapshot *ds = &snapshot->distribSnapshotWithLocalMapping.ds;
 		serialized_snapshot.ds.xminAllDistributedSnapshots = ds->xminAllDistributedSnapshots;
 		serialized_snapshot.ds.distribSnapshotId = ds->distribSnapshotId;
 		serialized_snapshot.ds.xmin = ds->xmin;
@@ -2367,18 +2369,24 @@ SerializeSnapshot(Snapshot snapshot, char *start_address)
 		serialized_snapshot.ds.count = 0;
 	}
 
+	/*
+	 * Ignore the SubXID array if it has overflowed, unless the snapshot was
+	 * taken during recovery - in that case, top-level XIDs are in subxip as
+	 * well, and we mustn't lose them.
+	 */
+	if (serialized_snapshot.suboverflowed && !snapshot->takenDuringRecovery)
+		serialized_snapshot.subxcnt = 0;
+
 	/* Copy struct to possibly-unaligned buffer */
 	memcpy(start_address,
 		   &serialized_snapshot, sizeof(SerializedSnapshotData));
 
-	char *ptr = start_address + sizeof(SerializedSnapshotData);
-
 	/* Copy XID array */
 	if (snapshot->xcnt > 0)
-	{
-		memcpy((TransactionId *) (ptr), snapshot->xip, snapshot->xcnt * sizeof(TransactionId));
-		ptr += snapshot->xcnt * sizeof(TransactionId);
-	}
+		memcpy((TransactionId *) (start_address +
+								  sizeof(SerializedSnapshotData)),
+			   snapshot->xip, snapshot->xcnt * sizeof(TransactionId));
+
 	/*
 	 * Copy SubXID array. Don't bother to copy it if it had overflowed,
 	 * though, because it's not used anywhere in that case. Except if it's a
@@ -2387,15 +2395,23 @@ SerializeSnapshot(Snapshot snapshot, char *start_address)
 	 */
 	if (serialized_snapshot.subxcnt > 0)
 	{
-		memcpy(ptr, snapshot->subxip, serialized_snapshot.subxcnt * sizeof(TransactionId));
-		ptr += serialized_snapshot.subxcnt * sizeof(TransactionId);
+		Size		subxipoff = sizeof(SerializedSnapshotData) +
+		snapshot->xcnt * sizeof(TransactionId);
+
+		memcpy((TransactionId *) (start_address + subxipoff),
+			   snapshot->subxip, snapshot->subxcnt * sizeof(TransactionId));
 	}
 
-	/* Copy distributed transaction snapshot */
-	if (serialized_snapshot.haveDistribSnapshot && serialized_snapshot.ds.count > 0)
+	/* Copy inProgressXidArray in distributed snapshot */
+	if (snapshot->haveDistribSnapshot && serialized_snapshot.ds.count > 0)
 	{
-		memcpy(ptr, snapshot->distribSnapshotWithLocalMapping.ds.inProgressXidArray,
-				serialized_snapshot.ds.count * sizeof(DistributedTransactionId));
+		char *dst = (char *) MAXALIGN((uintptr_t)(start_address +
+					sizeof(SerializedSnapshotData) +
+					snapshot->xcnt * sizeof(TransactionId) +
+					serialized_snapshot.subxcnt * sizeof(TransactionId)));
+		memcpy(dst,
+			   snapshot->distribSnapshotWithLocalMapping.ds.inProgressXidArray,
+			   serialized_snapshot.ds.count * sizeof(DistributedTransactionId));
 	}
 }
 
@@ -2424,8 +2440,8 @@ RestoreSnapshot(char *start_address)
 		+ serialized_snapshot.xcnt * sizeof(TransactionId)
 		+ serialized_snapshot.subxcnt * sizeof(TransactionId);
 
-	if (serialized_snapshot.haveDistribSnapshot &&
-		serialized_snapshot.ds.count > 0)
+	/* If distributed snapshot exists, add space for inProgressXidArray */
+	if (serialized_snapshot.haveDistribSnapshot && serialized_snapshot.ds.count > 0)
 	{
 		size = MAXALIGN(size);
 		size += serialized_snapshot.ds.count * sizeof(DistributedTransactionId);
@@ -2446,28 +2462,24 @@ RestoreSnapshot(char *start_address)
 	snapshot->whenTaken = serialized_snapshot.whenTaken;
 	snapshot->lsn = serialized_snapshot.lsn;
 
-	char *in_ptr = start_address + sizeof(SerializedSnapshotData);
-	char *out_ptr = (char *) (snapshot + 1);
-
 	/* Copy XIDs, if present. */
 	if (serialized_snapshot.xcnt > 0)
 	{
-		snapshot->xip = (TransactionId *) out_ptr;
-		memcpy(snapshot->xip, in_ptr, serialized_snapshot.xcnt * sizeof(TransactionId));
-		in_ptr += serialized_snapshot.xcnt * sizeof(TransactionId);
-		out_ptr += serialized_snapshot.xcnt * sizeof(TransactionId);
+		snapshot->xip = (TransactionId *) (snapshot + 1);
+		memcpy(snapshot->xip, serialized_xids,
+			   serialized_snapshot.xcnt * sizeof(TransactionId));
 	}
 
 	/* Copy SubXIDs, if present. */
 	if (serialized_snapshot.subxcnt > 0)
 	{
-		snapshot->subxip = (TransactionId *) out_ptr;
-		memcpy(snapshot->subxip, in_ptr, serialized_snapshot.subxcnt * sizeof(TransactionId));
-		in_ptr += serialized_snapshot.subxcnt * sizeof(TransactionId);
-		out_ptr += serialized_snapshot.subxcnt * sizeof(TransactionId);
+		snapshot->subxip = ((TransactionId *) (snapshot + 1)) +
+			serialized_snapshot.xcnt;
+		memcpy(snapshot->subxip, serialized_xids + serialized_snapshot.xcnt,
+			   serialized_snapshot.subxcnt * sizeof(TransactionId));
 	}
 
-	/* Copy distributed transaction snapshot */
+	/* Copy distributed snapshot fields if exists */
 	snapshot->haveDistribSnapshot = serialized_snapshot.haveDistribSnapshot;
 	if (snapshot->haveDistribSnapshot)
 	{
@@ -2479,11 +2491,19 @@ RestoreSnapshot(char *start_address)
 		ds->xmax = serialized_snapshot.ds.xmax;
 		ds->count = serialized_snapshot.ds.count;
 
-		/* ds.inProgressXidArray */
 		if (ds->count > 0)
 		{
-			ds->inProgressXidArray = (DistributedTransactionId *) MAXALIGN(out_ptr);
-			memcpy(ds->inProgressXidArray, in_ptr,
+			const char *xidArray = (const char *) MAXALIGN((uintptr_t)(start_address +
+									sizeof(SerializedSnapshotData) +
+									serialized_snapshot.xcnt * sizeof(TransactionId) +
+									serialized_snapshot.subxcnt * sizeof(TransactionId)));
+
+			ds->inProgressXidArray = (DistributedTransactionId *) (char *) MAXALIGN(
+				(uintptr_t)((char *)(snapshot + 1) +
+				serialized_snapshot.xcnt * sizeof(TransactionId) +
+				serialized_snapshot.subxcnt * sizeof(TransactionId)));
+
+			memcpy(ds->inProgressXidArray, xidArray,
 				   ds->count * sizeof(DistributedTransactionId));
 		}
 		else
