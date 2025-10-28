@@ -116,6 +116,7 @@
 #include "utils/dynahash.h"
 
 #include "utils/faultinjector.h"
+#include "utils/memdebug.h"
 
 
 /* sort-type codes for sort__start probes */
@@ -2031,7 +2032,7 @@ tuplesort_gettuple_common(Tuplesortstate *state, bool forward,
 	 * No output if we are told to finish execution.
 	 *
 	 * Note that the sort operation might (or might not) have been interrupted by
-	 * QueryFinishPending previously (see the code of checking 
+	 * QueryFinishPending previously (see the code of checking
 	 * QueryFinishPending), so there might not be valid tuples to be returned for
 	 * now. Return false to indicate "no more tuples" anyway.
 	 */
@@ -3141,6 +3142,13 @@ dumptuples(Tuplesortstate *state, bool alltuples)
 #endif
 
 	/*
+	 * Don't run into this for the in-memory data again, if the following
+	 * WRITETUP() has already been skipped.
+	 */
+	if (QueryFinishPending)
+		return;
+
+	/*
 	 * Sort all tuples accumulated within the allowed amount of memory for
 	 * this run using quicksort
 	 */
@@ -3172,6 +3180,18 @@ dumptuples(Tuplesortstate *state, bool alltuples)
 
 		if (QueryFinishPending)
 		{
+			/*
+			 * The whole sort should be skipped if QueryFinishPending, but
+			 * problematic code paths went into this function and sorted the
+			 * in-memory data again.
+			 *
+			 * Wipe the SortTuple structure in debug builds to make the bug
+			 * reproducible.
+			 */
+#ifdef CLOBBER_FREED_MEMORY
+			wipe_mem(state->memtuples, state->memtupsize * sizeof(SortTuple));
+#endif
+
 			break;
 		}
 		WRITETUP(state, state->tp_tapenum[state->destTape],
