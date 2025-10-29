@@ -235,8 +235,12 @@ GetComboCommandId(CommandId cmin, CommandId cmax)
 
 	/*
 	 * Entrydb and QE reader will report ERROR here.
+	 * Dispatcher and Writer QE dump combo cid into shared memory by dumpSharedComboCommandIds(),
+	 * Entrydb and QE reader load combo cid by loadSharedComboCommandIds().
+	 *
+	 * Before parallel workers are created, combo cid are serialize by SerializeComboCIDState(),
 	 * Parallel workers can get combo cid from dynamic shared memory segment
-	 * by function RestoreComboCIDState.
+	 * by RestoreComboCIDState(), so that parallel workers can share combo cid with their leader.
 	 */
 	if (Gp_role == GP_ROLE_EXECUTE && !Gp_is_writer && !MyProc->lockGroupLeader)
 	{
@@ -318,7 +322,7 @@ GetComboCommandId(CommandId cmin, CommandId cmax)
 
 	/*
 	 * If we're the QE writer or the dispatcher, share the new combo CID with
-	 * readers. (In utility mode or parallel worker, no need to share.)
+	 * readers. (In utility mode, no need to share.)
 	 */
 	if (Gp_role == GP_ROLE_DISPATCH || (Gp_role == GP_ROLE_EXECUTE && Gp_is_writer))
 	{

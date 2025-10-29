@@ -1316,11 +1316,15 @@ ParallelWorkerMain(Datum main_arg)
 	ParallelLeaderBackendId = fps->parallel_leader_backend_id;
 	on_shmem_exit(ParallelWorkerShutdown, (Datum) 0);
 
-	/* Pass gp_session_id and numsegmentsFromQD to parallel background workers */
+	/*
+	 * CDB: set Gp_role, gp_session_id, numsegmentsFromQD for
+	 * parallel background workers.
+	 */
 	Gp_role = GP_ROLE_EXECUTE;
 	gp_session_id = fps->session_id;
-	MyProc->mppSessionId = gp_session_id;
 	numsegmentsFromQD = fps->num_segments;
+	MyProc->mppSessionId = gp_session_id;
+	MyProc->mppIsWriter = false;
 
 	/*
 	 * Now we can find and attach to the error queue provided for us.  That's
@@ -1422,9 +1426,7 @@ ParallelWorkerMain(Datum main_arg)
 	RestoreGUCState(gucspace);
 	CommitTransactionCommand();
 
-	/*
-	 * Parallel background workers are forked by writer QE, they behave as reader QEs.
-	 */
+	/* CDB: Parallel workers behave as Reader QEs. */
 	Gp_is_writer = false;
 
 	/* Crank up a transaction state appropriate to a parallel worker. */

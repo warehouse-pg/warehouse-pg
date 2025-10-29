@@ -2311,10 +2311,10 @@ EstimateSnapshotSpace(Snapshot snap)
 		size = add_size(size,
 						mul_size(snap->subxcnt, sizeof(TransactionId)));
 
-	/* For distributed transaction snapshot */
+	/* Allocate for inProgressXidArray in DistributedSnapshot */
 	if (snap->haveDistribSnapshot)
 	{
-		const DistributedSnapshot *ds = &snap->distribSnapshotWithLocalMapping.ds;
+		DistributedSnapshot *ds = &snap->distribSnapshotWithLocalMapping.ds;
 		if (ds->count > 0)
 		{
 			size = MAXALIGN(size);
@@ -2350,10 +2350,10 @@ SerializeSnapshot(Snapshot snapshot, char *start_address)
 	serialized_snapshot.lsn = snapshot->lsn;
 	serialized_snapshot.haveDistribSnapshot = snapshot->haveDistribSnapshot;
 
-	/* For distributed transaction snapshot */
+	/* Copy distributed transaction snapshot if exists */
 	if (snapshot->haveDistribSnapshot)
 	{
-		const DistributedSnapshot *ds = &snapshot->distribSnapshotWithLocalMapping.ds;
+		DistributedSnapshot *ds = &snapshot->distribSnapshotWithLocalMapping.ds;
 		serialized_snapshot.ds.xminAllDistributedSnapshots = ds->xminAllDistributedSnapshots;
 		serialized_snapshot.ds.distribSnapshotId = ds->distribSnapshotId;
 		serialized_snapshot.ds.xmin = ds->xmin;
@@ -2405,11 +2405,11 @@ SerializeSnapshot(Snapshot snapshot, char *start_address)
 	/* Copy inProgressXidArray in distributed snapshot */
 	if (snapshot->haveDistribSnapshot && serialized_snapshot.ds.count > 0)
 	{
-		char *dst = (char *) MAXALIGN((uintptr_t)(start_address +
-					sizeof(SerializedSnapshotData) +
-					snapshot->xcnt * sizeof(TransactionId) +
-					serialized_snapshot.subxcnt * sizeof(TransactionId)));
-		memcpy(dst,
+		char *xidoff = (char *) MAXALIGN((uintptr_t)(start_address +
+						sizeof(SerializedSnapshotData) +
+						snapshot->xcnt * sizeof(TransactionId) +
+						serialized_snapshot.subxcnt * sizeof(TransactionId)));
+		memcpy(xidoff,
 			   snapshot->distribSnapshotWithLocalMapping.ds.inProgressXidArray,
 			   serialized_snapshot.ds.count * sizeof(DistributedTransactionId));
 	}
@@ -2493,17 +2493,17 @@ RestoreSnapshot(char *start_address)
 
 		if (ds->count > 0)
 		{
-			const char *xidArray = (const char *) MAXALIGN((uintptr_t)(start_address +
-									sizeof(SerializedSnapshotData) +
-									serialized_snapshot.xcnt * sizeof(TransactionId) +
-									serialized_snapshot.subxcnt * sizeof(TransactionId)));
+			char *xidoff = (char *)MAXALIGN((uintptr_t)(start_address +
+														sizeof(SerializedSnapshotData) +
+														serialized_snapshot.xcnt * sizeof(TransactionId) +
+														serialized_snapshot.subxcnt * sizeof(TransactionId)));
 
 			ds->inProgressXidArray = (DistributedTransactionId *) (char *) MAXALIGN(
-				(uintptr_t)((char *)(snapshot + 1) +
-				serialized_snapshot.xcnt * sizeof(TransactionId) +
-				serialized_snapshot.subxcnt * sizeof(TransactionId)));
+									 (uintptr_t)((char *)(snapshot + 1) +
+									 serialized_snapshot.xcnt * sizeof(TransactionId) +
+									 serialized_snapshot.subxcnt * sizeof(TransactionId)));
 
-			memcpy(ds->inProgressXidArray, xidArray,
+			memcpy(ds->inProgressXidArray, xidoff,
 				   ds->count * sizeof(DistributedTransactionId));
 		}
 		else
