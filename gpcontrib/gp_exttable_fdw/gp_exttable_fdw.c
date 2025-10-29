@@ -327,7 +327,7 @@ Datum pg_exttable(PG_FUNCTION_ARGS)
 		 * options. Since our document not contains the OPTION clause, so we
 		 * assume no external table options in used for now.  Except
 		 * gpextprotocol.c.
-		 * 
+		 *
 		 * Besides, we need to provide extra information about error_log_persisitent here.
 		 */
 		if IS_LOG_ERRORS_PERSISTENTLY(extentry->logerrors)
@@ -343,12 +343,12 @@ Datum pg_exttable(PG_FUNCTION_ARGS)
 
 		/* rejectlimit */
 		values[7] = Int32GetDatum(extentry->rejectlimit);
-		if (values[7] == -1)
+		if (values[7] == Int32GetDatum(-1))
 			nulls[7] = true;
 
 		/* rejectlimittype */
 		values[8] = CharGetDatum(extentry->rejectlimittype);
-		if (values[8] == -1)
+		if (values[8] == CharGetDatum(-1))
 			nulls[8] = true;
 
 		/* logerrors */
@@ -360,7 +360,7 @@ Datum pg_exttable(PG_FUNCTION_ARGS)
 		{
 			values[9] = BoolGetDatum(false);
 		}
-		
+
 		/* encoding */
 		values[10] = Int32GetDatum(extentry->encoding);
 
