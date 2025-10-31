@@ -616,7 +616,7 @@ transformAOStdRdOptions(StdRdOptions *opts, Datum withOpts, bool hasStorage)
 				if (opts->compresstype[0])
 				{
 					if (gp_quicklz_fallback && pg_strcasecmp(opts->compresstype, "quicklz") == 0)
-					{						
+					{
 #ifdef USE_ZSTD
 						compresstype = "zstd";
 #else
@@ -722,7 +722,7 @@ transformAOStdRdOptions(StdRdOptions *opts, Datum withOpts, bool hasStorage)
 		PointerGetDatum(NULL);
 }
 
-/* 
+/*
  * Check if the given reloption string has default value.
  */
 static bool
@@ -767,7 +767,7 @@ reloption_is_default(const char *optstr, int optlen)
 										 ANALYZE_DEFAULT_HLL ? "true" : "false");
 	}
 	if (defaultopt != NULL)
-		res = strlen(defaultopt) == optlen && 
+		res = strlen(defaultopt) == optlen &&
 				pg_strncasecmp(optstr, defaultopt, optlen) == 0;
 	else
 		res = false;
@@ -776,11 +776,11 @@ reloption_is_default(const char *optstr, int optlen)
 	return res;
 }
 
-/* 
+/*
  * Check if two string arrays of reloptions are the same.
  *
- * Note that this will not handle the case where the option doesn't contain 
- * the '=' sign in it, e.g. "checksum" vs. "checksum=true". But it seems 
+ * Note that this will not handle the case where the option doesn't contain
+ * the '=' sign in it, e.g. "checksum" vs. "checksum=true". But it seems
  * that at this point we should always have both options as "x=y" anyways.
  */
 bool
@@ -823,7 +823,7 @@ relOptionsEquals(Datum oldOptions, Datum newOptions)
 			int	oldopt_len = VARSIZE(opts1[j]) - VARHDRSZ;
 
 			/* Not the same option. */
-			if (oldopt_len <= keylen || 
+			if (oldopt_len <= keylen ||
 					pg_strncasecmp(oldopt_str, newopt_str, keylen) != 0)
 				continue;
 
@@ -838,8 +838,8 @@ relOptionsEquals(Datum oldOptions, Datum newOptions)
 				break;
 		}
 
-		/* 
-		 * If key not found, then it must've changed unless it's a default value 
+		/*
+		 * If key not found, then it must've changed unless it's a default value
 		 * that doesn't appear in the old reloptions.
 		 */
 		if (j == noldoptions && !reloption_is_default(newopt_str, newopt_len))
@@ -859,9 +859,9 @@ validate_and_adjust_options(StdRdOptions *result,
 	relopt_value *complevel_opt;
 	relopt_value *checksum_opt;
 
-	/* 
-	 * Firstly, for AO/CO tables, if anything is not set in the options but has 
-	 * been specified by gp_default_storage_options before, use them. 
+	/*
+	 * Firstly, for AO/CO tables, if anything is not set in the options but has
+	 * been specified by gp_default_storage_options before, use them.
 	 */
 	if (ao_storage_opts &&
 		KIND_IS_APPENDOPTIMIZED(kind))
@@ -914,7 +914,7 @@ validate_and_adjust_options(StdRdOptions *result,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("usage of parameter \"compresstype\" in a non relation object is not supported")));
 
-		if (!compresstype_is_valid(comptype_opt->values.string_val))
+		if (!compresstype_is_valid(comptype_opt->values.string_val) && validate)
 			ereport(ERROR,
 					(errcode(ERRCODE_UNDEFINED_OBJECT),
 					 errmsg("unknown compresstype \"%s\"",
@@ -1059,7 +1059,7 @@ validate_and_adjust_options(StdRdOptions *result,
 /*
  * validateOrientationRelOptions
  *
- *		Checks validity of orientation-specific reloption rules, currently only one. 
+ *		Checks validity of orientation-specific reloption rules, currently only one.
  * 		Other appendonly-specific rules should've been done in default_reloptions().
  */
 void
@@ -1138,7 +1138,7 @@ bool
 is_storage_encoding_directive(char *name)
 {
 	/* names we expect to see in ENCODING clauses */
-	static char *storage_directive_names[] = {"compresstype", 
+	static char *storage_directive_names[] = {"compresstype",
 						"compresslevel",
 						"blocksize"};
 
@@ -1294,11 +1294,11 @@ default_column_encoding_clause(Relation rel)
 		compresstype = NameStr(compresstype_nd);
 	}
 
-	compresstype = compresstype && compresstype[0] ? pstrdup(compresstype) : 
+	compresstype = compresstype && compresstype[0] ? pstrdup(compresstype) :
 					(ao_opts->compresstype[0] ? pstrdup(ao_opts->compresstype) : "none");
 	e1 = makeDefElem("compresstype", (Node *) makeString(pstrdup(compresstype)), -1);
 
-	blocksize = appendonly ? blocksize : 
+	blocksize = appendonly ? blocksize :
 					(ao_opts->blocksize != 0 ? ao_opts->blocksize : AO_DEFAULT_BLOCKSIZE);
 	e2 = makeDefElem("blocksize", (Node *) makeInteger(blocksize), -1);
 
@@ -1526,7 +1526,7 @@ transformStorageEncodingClause(List *aocoColumnEncoding, bool validate)
 					 errmsg("\"%s\" is not a column specific option",
 							SOPT_CHECKSUM)));
 		}
-		/* 
+		/*
 		 * For compresstype, the value must be modified from the value passed
 		 * into the encoding clause if gp_quicklz_fallback is enabled and "quicklz"
 		 * is specified. The value will instead fallback to "zstd" if available, else
@@ -1614,7 +1614,7 @@ find_crsd(const char *column, List *stenc)
  * Normally if any ENCODING clause was given for a non-AO/CO table,
  * we should report an error. However, exception exists in DefineRelation()
  * where we allow that to happen, so we pass in errorOnEncodingClause to
- * indicate whether we should report this error. 
+ * indicate whether we should report this error.
  *
  * This function is called for RELKIND_PARTITIONED_TABLE as well even if we
  * don't store entries in pg_attribute_encoding for rootpartition. The reason
@@ -1628,7 +1628,7 @@ find_crsd(const char *column, List *stenc)
  * and then need to add defaults only for remaining columns.
  *
  * NOTE: This is *not* performed during the parse analysis phase, like
- * most transformation, but only later in DefineRelation() or ATExecAddColumn(). 
+ * most transformation, but only later in DefineRelation() or ATExecAddColumn().
  * This needs access to possible inherited columns, so it can only be done after
  * expanding them.
  */

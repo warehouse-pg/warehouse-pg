@@ -230,3 +230,17 @@ SELECT reloptions FROM pg_class WHERE oid = 'reloptions_test_idx3'::regclass;
  {fillfactor=40}
 (1 row)
 
+-- DROP TABLE with invalid reloptions
+CREATE TABLE ao_reloptions_t1 (c1 INT) USING ao_row WITH (compresstype=zstd);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'c1' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+SET allow_system_table_mods = on;
+UPDATE pg_class SET reloptions = '{foo=bar,compresstype=zzzz}' WHERE relname = 'ao_reloptions_t1';
+SELECT reloptions FROM pg_class WHERE relname = 'ao_reloptions_t1';
+         reloptions          
+-----------------------------
+ {foo=bar,compresstype=zzzz}
+(1 row)
+
+SET allow_system_table_mods = on;
+DROP TABLE ao_reloptions_t1;

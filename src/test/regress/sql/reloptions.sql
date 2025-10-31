@@ -130,3 +130,11 @@ SELECT reloptions FROM pg_class WHERE oid = 'reloptions_test_idx'::regclass;
 CREATE INDEX reloptions_test_idx3 ON reloptions_test (s);
 ALTER INDEX reloptions_test_idx3 SET (fillfactor=40);
 SELECT reloptions FROM pg_class WHERE oid = 'reloptions_test_idx3'::regclass;
+
+-- DROP TABLE with invalid reloptions
+CREATE TABLE ao_reloptions_t1 (c1 INT) USING ao_row WITH (compresstype=zstd);
+SET allow_system_table_mods = on;
+UPDATE pg_class SET reloptions = '{foo=bar,compresstype=zzzz}' WHERE relname = 'ao_reloptions_t1';
+SELECT reloptions FROM pg_class WHERE relname = 'ao_reloptions_t1';
+SET allow_system_table_mods = on;
+DROP TABLE ao_reloptions_t1;
