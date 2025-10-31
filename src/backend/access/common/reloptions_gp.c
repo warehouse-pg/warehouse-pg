@@ -851,7 +851,7 @@ validate_and_adjust_options(StdRdOptions *result,
 	appendonly_opt = get_option_set(options, num_options, SOPT_APPENDONLY);
 	if (appendonly_opt != NULL)
 	{
-		if (!KIND_IS_RELATION(kind))
+		if (!KIND_IS_RELATION(kind) && validate)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("usage of parameter \"appendonly\" in a non relation object is not supported")));
@@ -905,7 +905,7 @@ validate_and_adjust_options(StdRdOptions *result,
 					 errmsg("invalid option \"compresstype\" for base relation"),
 					 errhint("\"compresstype\" is only valid for Append Only relations, create an AO relation to use \"compresstype\".")));
 
-		if (!compresstype_is_valid(comptype_opt->values.string_val))
+		if (!compresstype_is_valid(comptype_opt->values.string_val) && validate)
 			ereport(ERROR,
 					(errcode(ERRCODE_UNDEFINED_OBJECT),
 					 errmsg("unknown compresstype \"%s\"",
@@ -964,10 +964,11 @@ validate_and_adjust_options(StdRdOptions *result,
 			(pg_strcasecmp(result->compresstype, "zlib") == 0))
 		{
 #ifndef HAVE_LIBZ
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("zlib compression is not supported by this build"),
-					 errhint("Compile without --without-zlib to use zlib compression.")));
+			if (validate)
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("zlib compression is not supported by this build"),
+						 errhint("Compile without --without-zlib to use zlib compression.")));
 #endif
 			if (result->compresslevel > 9)
 			{
@@ -985,10 +986,11 @@ validate_and_adjust_options(StdRdOptions *result,
 			(pg_strcasecmp(result->compresstype, "zstd") == 0))
 		{
 #ifndef HAVE_LIBZSTD
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("Zstandard library is not supported by this build"),
-					 errhint("Compile with --with-zstd to use Zstandard compression.")));
+			if (validate)
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("Zstandard library is not supported by this build"),
+						 errhint("Compile with --with-zstd to use Zstandard compression.")));
 #endif
 			if (result->compresslevel > 19)
 			{
@@ -1006,10 +1008,11 @@ validate_and_adjust_options(StdRdOptions *result,
 			(pg_strcasecmp(result->compresstype, "quicklz") == 0))
 		{
 #ifndef HAVE_LIBQUICKLZ
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("QuickLZ library is not supported by this build"),
-					 errhint("Compile with --with-quicklz to use QuickLZ compression.")));
+			if (validate)
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("QuickLZ library is not supported by this build"),
+						 errhint("Compile with --with-quicklz to use QuickLZ compression.")));
 #endif
 			if (result->compresslevel != 1)
 			{
@@ -1100,7 +1103,7 @@ validate_and_adjust_options(StdRdOptions *result,
 	analyze_hll_non_part_table_opt = get_option_set(options, num_options, SOPT_ANALYZEHLL);
 	if (analyze_hll_non_part_table_opt != NULL)
 	{
-		if (!KIND_IS_RELATION(kind))
+		if (!KIND_IS_RELATION(kind) && validate)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("usage of parameter \"analyze_hll_non_part_table\" in a non relation object is not supported")));
