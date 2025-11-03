@@ -69,3 +69,4 @@ FTSReplicationStatusLock  		62
 GxidBumpLock		  		63
 ParallelCursorEndpointLock		64
 CommittedGxidArrayLock			65
+InstrumentationSlotHeaderLock		66

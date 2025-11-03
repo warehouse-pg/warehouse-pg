@@ -26,6 +26,7 @@
 #include "storage/shmem.h"
 #include "cdb/cdbdtxcontextinfo.h"
 #include "cdb/cdbtm.h"
+#include "storage/lwlock.h"
 
 BufferUsage pgBufferUsage;
 static BufferUsage save_pgBufferUsage;
@@ -344,7 +345,6 @@ InstrShmemInit(void)
 	/* header points to the first slot */
 	header->head = slot;
 	header->free = number_slots;
-	SpinLockInit(&header->lock);
 
 	/* Each slot points to next one to construct the free list */
 	for (i = 0; i < number_slots - 1; i++)
@@ -434,7 +434,7 @@ pickInstrFromShmem(const Plan *plan, int instrument_options)
 	InstrumentationResownerSet *item;
 
 	/* Lock to protect write to header */
-	SpinLockAcquire(&InstrumentGlobal->lock);
+	LWLockAcquire(InstrumentationSlotHeaderLock, LW_EXCLUSIVE);
 
 	/* Pick the first free slot */
 	slot = InstrumentGlobal->head;
@@ -445,7 +445,7 @@ pickInstrFromShmem(const Plan *plan, int instrument_options)
 		InstrumentGlobal->free--;
 	}
 
-	SpinLockRelease(&InstrumentGlobal->lock);
+	LWLockRelease(InstrumentationSlotHeaderLock);
 
 	if (NULL != slot && SlotIsEmpty(slot))
 	{
@@ -497,7 +497,7 @@ instrShmemRecycleCallback(ResourceReleasePhase phase, bool isCommit, bool isTopL
 
 	next = slotsOccupied;
 	slotsOccupied = NULL;
-	SpinLockAcquire(&InstrumentGlobal->lock);
+	LWLockAcquire(InstrumentationSlotHeaderLock, LW_EXCLUSIVE);
 	while (next)
 	{
 		curr = next;
@@ -520,7 +520,7 @@ instrShmemRecycleCallback(ResourceReleasePhase phase, bool isCommit, bool isTopL
 
 		pfree(curr);
 	}
-	SpinLockRelease(&InstrumentGlobal->lock);
+	LWLockRelease(InstrumentationSlotHeaderLock);
 }
 
 /*

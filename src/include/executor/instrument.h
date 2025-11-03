@@ -125,6 +125,8 @@ typedef struct InstrumentationHeader
 {
 	void	   *head;
 	int			free;
+
+	/* GP_ABI_BUMP_FIXME: deprecated field, keep it for ABI, do not use it */
 	slock_t		lock;
 } InstrumentationHeader;
 
