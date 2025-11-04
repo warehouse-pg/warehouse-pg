@@ -975,10 +975,11 @@ validate_and_adjust_options(StdRdOptions *result,
 			(pg_strcasecmp(result->compresstype, "zlib") == 0))
 		{
 #ifndef HAVE_LIBZ
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("zlib compression is not supported by this build"),
-					 errhint("Compile without --without-zlib to use zlib compression.")));
+			if (validate)
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("zlib compression is not supported by this build"),
+						 errhint("Compile without --without-zlib to use zlib compression.")));
 #endif
 			if (result->compresslevel > 9)
 			{
@@ -996,10 +997,11 @@ validate_and_adjust_options(StdRdOptions *result,
 			(pg_strcasecmp(result->compresstype, "zstd") == 0))
 		{
 #ifndef USE_ZSTD
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("Zstandard library is not supported by this build"),
-					 errhint("Compile with --with-zstd to use Zstandard compression.")));
+			if (validate)
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("Zstandard library is not supported by this build"),
+						 errhint("Compile with --with-zstd to use Zstandard compression.")));
 #endif
 			if (result->compresslevel > 19)
 			{
