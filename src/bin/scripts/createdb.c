@@ -177,6 +177,15 @@ main(int argc, char *argv[])
 			dbname = get_user_name_or_exit(progname);
 	}
 
+	/* No point in trying to use postgres db when creating postgres db. */
+	if (maintenance_db == NULL && strcmp(dbname, "postgres") == 0)
+		maintenance_db = "template1";
+
+	conn = connectMaintenanceDatabase(maintenance_db, host, port, username,
+									  prompt_password, progname, echo);
+
+	setFmtEncoding(PQclientEncoding(conn));
+
 	initPQExpBuffer(&sql);
 
 	appendPQExpBuffer(&sql, "CREATE DATABASE %s",
@@ -196,15 +205,6 @@ main(int argc, char *argv[])
 		appendPQExpBuffer(&sql, " LC_CTYPE '%s'", lc_ctype);
 
 	appendPQExpBufferStr(&sql, ";");
-
-	/* No point in trying to use postgres db when creating postgres db. */
-	if (maintenance_db == NULL && strcmp(dbname, "postgres") == 0)
-		maintenance_db = "template1";
-
-	conn = connectMaintenanceDatabase(maintenance_db, host, port, username,
-									  prompt_password, progname, echo);
-
-	setFmtEncoding(PQclientEncoding(conn));
 
 	if (echo)
 		printf("%s\n", sql.data);
