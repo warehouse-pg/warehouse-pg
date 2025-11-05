@@ -6894,16 +6894,46 @@ CTranslatorExprToDXL::MakeDXLTableDescr(
 			colref = (*pdrgpcrOutput)[ul];
 			if (colref->GetUsage() != CColRef::EUsed)
 			{
-#ifdef GPOS_DEBUG
-				if (nullptr != reqd_prop_plan &&
-					nullptr != reqd_prop_plan->PcrsRequired())
+				bool required = false;
+				bool found_in_key = false;
+
+				// check if required
+				if (nullptr != reqd_prop_plan && reqd_prop_plan->PcrsRequired() &&
+					reqd_prop_plan->PcrsRequired()->FMember(colref))
 				{
-					// ensure that any col removed is not a part of the plan's required cols
-					GPOS_ASSERT(
-						!reqd_prop_plan->PcrsRequired()->FMember(colref));
+					required = true;
+
+					// check if part of any table key
+					const CBitSetArray *pdrgpbsKeys = ptabdesc->PdrgpbsKeys();
+					if (nullptr != pdrgpbsKeys)
+					{
+						const ULONG ulKeys = pdrgpbsKeys->Size();
+						for (ULONG k = 0; k < ulKeys && !found_in_key; k++)
+						{
+							CBitSet *pbs = (*pdrgpbsKeys)[k];
+							if (pbs != nullptr && pbs->Get(ul))
+							{
+								found_in_key = true;
+							}
+						}
+					}
 				}
-#endif
-				continue;
+				if (required && found_in_key)
+				{
+					// Use column
+					colref->MarkAsUsed();
+				}
+				else if (required && !found_in_key)
+				{
+					// something is wrong -> pruning a required column !
+					GPOS_ASSERT(!"Pruning a Required column— unexpected pruning!");
+					continue;
+				}
+				else
+				{
+					// prune
+					continue;
+				}
 			}
 		}
 		else
