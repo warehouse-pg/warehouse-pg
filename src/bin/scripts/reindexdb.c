@@ -331,7 +331,7 @@ reindex_system_catalogs(const char *dbname, const char *host, const char *port,
 
 	initPQExpBuffer(&sql);
 
-	appendPQExpBuffer(&sql, "REINDEX SYSTEM %s;", fmtId(PQdb(conn)));
+	appendPQExpBuffer(&sql, "REINDEX SYSTEM %s;", fmtIdEnc(PQdb(conn), PQclientEncoding(conn)));
 
 	if (!executeMaintenanceCommand(conn, sql.data, echo))
 	{
