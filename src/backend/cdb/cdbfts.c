@@ -159,7 +159,7 @@ FtsTestSegmentDBIsDown(SegmentDatabaseDescriptor **segdbDesc, int size)
 
 		if (FtsIsSegmentDown(segInfo))
 		{
-			ereport(LOG, (errmsg_internal("FTS: found fault with segment dbid %d. "
+			ereport(WARNING, (errmsg_internal("FTS: found fault with segment dbid %d. "
 										  "Reconfiguration is in progress", (int) segInfo->config->dbid)));
 			return true;
 		}

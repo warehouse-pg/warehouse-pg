@@ -66,7 +66,7 @@ checkIODataDirectory(void)
 				if (fd < 0)
 				{
 					failure = true;
-					ereport(LOG, (errcode_for_file_access(),
+					ereport(WARNING, (errcode_for_file_access(),
 							errmsg("FTS: could not create file \"%s\": %m",
 								FTS_PROBE_FILE_NAME)));
 				}
@@ -75,7 +75,7 @@ checkIODataDirectory(void)
 					strncpy(dataAligned, FTS_PROBE_MAGIC_STRING, magic_len);
 					if (write(fd, dataAligned, BLCKSZ) != BLCKSZ)
 					{
-						ereport(LOG, (errcode_for_file_access(),
+						ereport(WARNING, (errcode_for_file_access(),
 									  errmsg("FTS: could not write file \"%s\" : %m",
 											 FTS_PROBE_FILE_NAME)));
 						failure = true;
@@ -97,7 +97,7 @@ checkIODataDirectory(void)
 				 * Some other error
 				 */
 				failure = true;
-				ereport(LOG, (errcode_for_file_access(),
+				ereport(WARNING, (errcode_for_file_access(),
 						errmsg("FTS: could not open file \"%s\": %m",
 							FTS_PROBE_FILE_NAME)));
 			}
@@ -107,7 +107,7 @@ checkIODataDirectory(void)
 		int len = read(fd, dataAligned, BLCKSZ);
 		if (len != BLCKSZ)
 		{
-			ereport(LOG, (errcode_for_file_access(),
+			ereport(WARNING, (errcode_for_file_access(),
 					errmsg("FTS: could not read file \"%s\" "
 						"(actual bytes read %d, required: %d): %m",
 						FTS_PROBE_FILE_NAME, len, BLCKSZ)));
@@ -117,14 +117,14 @@ checkIODataDirectory(void)
 
 		if (strncmp(dataAligned, FTS_PROBE_MAGIC_STRING, magic_len) != 0)
 		{
-			ereport(LOG, (errmsg("FTS: Read corrupted data from \"%s\" file", FTS_PROBE_FILE_NAME)));
+			ereport(WARNING, (errmsg("FTS: Read corrupted data from \"%s\" file", FTS_PROBE_FILE_NAME)));
 			failure = true;
 			break;
 		}
 
 		if (lseek(fd, (off_t) 0, SEEK_SET) < 0)
 		{
-			ereport(LOG, (errcode_for_file_access(),
+			ereport(WARNING, (errcode_for_file_access(),
 					errmsg("FTS: could not seek in file \"%s\" to offset zero: %m",
 					FTS_PROBE_FILE_NAME)));
 			failure = true;
@@ -136,7 +136,7 @@ checkIODataDirectory(void)
 		 */
 		if (write(fd, dataAligned, BLCKSZ) != BLCKSZ)
 		{
-			ereport(LOG, (errcode_for_file_access(),
+			ereport(WARNING, (errcode_for_file_access(),
 					errmsg("FTS: could not write file \"%s\" : %m",
 					FTS_PROBE_FILE_NAME)));
 			failure = true;
@@ -162,7 +162,7 @@ checkIODataDirectory(void)
 		if (failure)
 		{
 			if (unlink(FTS_PROBE_FILE_NAME) < 0)
-				ereport(LOG,
+				ereport(WARNING,
 				(errcode_for_file_access(),
 				errmsg("could not unlink file \"%s\": %m", FTS_PROBE_FILE_NAME)));
 		}

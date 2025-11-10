@@ -178,7 +178,7 @@ ftsConnectStart(fts_segment_info *ftsInfo)
 	}
 	if (ftsInfo->conn->status == CONNECTION_BAD)
 	{
-		elog(LOG, "FTS: cannot establish libpq connection to "
+		elog(WARNING, "FTS: cannot establish libpq connection to "
 			 "(content=%d, dbid=%d): %s",
 			 ftsInfo->primary_cdbinfo->config->segindex, ftsInfo->primary_cdbinfo->config->dbid,
 			 PQerrorMessage(ftsInfo->conn));
@@ -367,7 +367,7 @@ ftsConnect(fts_context *context)
 						case PGRES_POLLING_FAILED:
 							ftsInfo->state = nextFailedState(ftsInfo->state);
 							checkIfFailedDueToNormalRestart(ftsInfo);
-							elog(LOG, "FTS: cannot establish libpq connection "
+							elog(WARNING, "FTS: cannot establish libpq connection "
 								 "(content=%d, dbid=%d): %s, retry_count=%d",
 								 ftsInfo->primary_cdbinfo->config->segindex,
 								 ftsInfo->primary_cdbinfo->config->dbid,
@@ -420,7 +420,7 @@ ftsCheckTimeout(fts_segment_info *ftsInfo, pg_time_t now)
 	if (!IsFtsMessageStateSuccess(ftsInfo->state) &&
 		(int) (now - ftsInfo->startTime) > gp_fts_probe_timeout)
 	{
-		elog(LOG,
+		elog(WARNING,
 			 "FTS timeout detected for (content=%d, dbid=%d) "
 			 "state=%d, retry_count=%d, timeout_count=%d ",
 			 ftsInfo->primary_cdbinfo->config->segindex,
@@ -503,7 +503,7 @@ ftsPoll(fts_context *context)
 			else if (ftsInfo->poll_revents & (POLLHUP | POLLERR))
 			{
 				ftsInfo->state = nextFailedState(ftsInfo->state);
-				elog(LOG,
+				elog(WARNING,
 					 "FTS poll failed (revents=%d, events=%d) for "
 					 "(content=%d, dbid=%d) state=%d, retry_count=%d, "
 					 "libpq status=%d, asyncStatus=%d",
@@ -516,7 +516,7 @@ ftsPoll(fts_context *context)
 			else if (ftsInfo->poll_revents)
 			{
 				ftsInfo->state = nextFailedState(ftsInfo->state);
-				elog(LOG,
+				elog(WARNING,
 					 "FTS unexpected events (revents=%d, events=%d) for "
 					 "(content=%d, dbid=%d) state=%d, retry_count=%d, "
 					 "libpq status=%d, asyncStatus=%d",
@@ -604,7 +604,7 @@ ftsSend(fts_context *context)
 				}
 				else
 				{
-					elog(LOG,
+					elog(WARNING,
 						 "FTS: failed to send %s to segment (content=%d, "
 						 "dbid=%d) state=%d, retry_count=%d, "
 						 "conn->asyncStatus=%d %s", message,
@@ -697,7 +697,7 @@ ftsReceive(fts_context *context)
 				/* Read the response that has arrived. */
 				if (!PQconsumeInput(ftsInfo->conn))
 				{
-					elog(LOG, "FTS: failed to read from (content=%d, dbid=%d)"
+					elog(WARNING, "FTS: failed to read from (content=%d, dbid=%d)"
 						 " state=%d, retry_count=%d, conn->asyncStatus=%d %s",
 						 ftsInfo->primary_cdbinfo->config->segindex,
 						 ftsInfo->primary_cdbinfo->config->dbid,
@@ -723,7 +723,7 @@ ftsReceive(fts_context *context)
 
 				if (!result || PQstatus(ftsInfo->conn) == CONNECTION_BAD)
 				{
-					elog(LOG, "FTS: error getting results from (content=%d, "
+					elog(WARNING, "FTS: error getting results from (content=%d, "
 						 "dbid=%d) state=%d, retry_count=%d, "
 						 "conn->asyncStatus=%d conn->status=%d %s",
 						 ftsInfo->primary_cdbinfo->config->segindex,
@@ -738,7 +738,7 @@ ftsReceive(fts_context *context)
 
 				if (PQresultStatus(result) != PGRES_TUPLES_OK)
 				{
-					elog(LOG, "FTS: error response from (content=%d, dbid=%d)"
+					elog(WARNING, "FTS: error response from (content=%d, dbid=%d)"
 						 " state=%d, retry_count=%d, conn->asyncStatus=%d %s",
 						 ftsInfo->primary_cdbinfo->config->segindex,
 						 ftsInfo->primary_cdbinfo->config->dbid,
@@ -757,7 +757,7 @@ ftsReceive(fts_context *context)
 					 * XXX: Investigate: including conn->asyncStatus generated
 					 * a format string warning at compile time.
 					 */
-					elog(LOG, "FTS: invalid response from (content=%d, dbid=%d)"
+					elog(WARNING, "FTS: invalid response from (content=%d, dbid=%d)"
 						 " state=%d, retry_count=%d, expected %d tuple with "
 						 "%d fields, got %d tuples with %d fields",
 						 ftsInfo->primary_cdbinfo->config->segindex,
@@ -797,7 +797,7 @@ retryForFtsFailed(fts_segment_info *ftsInfo, pg_time_t now)
 {
 	if (ftsInfo->retry_count == gp_fts_probe_retries)
 	{
-		elog(LOG, "FTS max (%d) retries exhausted "
+		elog(WARNING, "FTS max (%d) retries exhausted "
 			"(content=%d, dbid=%d) state=%d",
 			ftsInfo->retry_count,
 			ftsInfo->primary_cdbinfo->config->segindex,
