@@ -153,3 +153,8 @@ select * from test3;
 (2 rows)
 
 drop table test3;
+-- invalid option
+copy (select * from pg_class) to '/dev/null' with (heater);
+ERROR:  option "heater" not recognized
+LINE 1: copy (select * from pg_class) to '/dev/null' with (heater);
+                                                           ^

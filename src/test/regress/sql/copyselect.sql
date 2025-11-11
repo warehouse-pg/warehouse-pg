@@ -94,3 +94,6 @@ select 0\; copy test3 from stdin\; copy test3 from stdin\; select 1; -- 1
 \.
 select * from test3;
 drop table test3;
+
+-- invalid option
+copy (select * from pg_class) to '/dev/null' with (heater);
