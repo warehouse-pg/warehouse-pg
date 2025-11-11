@@ -43,6 +43,7 @@
 #include "port/pg_crc32c.h"
 #include "pgstat.h"
 #include "postmaster/postmaster.h"
+#include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/pmsignal.h"
 #include "utils/builtins.h"
@@ -638,8 +639,17 @@ typedef struct ICStatistics
 /* Statistics for UDP interconnect. */
 static ICStatistics ic_statistics;
 
-/* Cached sockaddr of the listening udp socket */
-static struct sockaddr_storage udp_dummy_packet_sockaddr;
+/*
+ * used to access array of file descriptors in rxThreadFunc.
+ * UDP_RX_POLL_FD_SOCKET_NORMAL: normal socket fd, using for receiving network data
+ * UDP_RX_POLL_FD_PIPE_TERMINATOR: only used to exit poll() blocking state, pipe fd
+ */
+#define UDP_RX_POLL_FD_SOCKET_NORMAL   (0)
+#define UDP_RX_POLL_FD_PIPE_TERMINATOR  (1)
+
+/* self-pipe to detect shutdown for the UDP IC rx thread */
+static int udp_rx_terminator_pipe_fd_read = -1;
+static int udp_rx_terminator_pipe_fd_write = -1;
 
 /*=========================================================================
  * STATIC FUNCTIONS declarations
@@ -660,17 +670,15 @@ static void setMainThreadWaiting(ThreadWaitingState *state, int motNodeId, int r
 static void checkRxThreadError(void);
 static void setRxThreadError(int eno);
 static void resetRxThreadError(void);
-static void SendDummyPacket(void);
 
 static void ConvertToIPv4MappedAddr(struct sockaddr_storage *sockaddr, socklen_t *o_len);
-#if defined(__darwin__)
-#define	s6_addr32 __u6_addr.__u6_addr32
-static void ConvertIPv6WildcardToLoopback(struct sockaddr_storage* dest);
-#endif
+
 static void getSockAddr(struct sockaddr_storage *peer, socklen_t *peer_len, const char *listenerAddr, int listenerPort);
 static uint32 setUDPSocketBufferSize(int ic_socket, int buffer_type);
-static void setupUDPListeningSocket(int *listenerSocketFd, uint16 *listenerPort,
-							int *txFamily, struct sockaddr_storage *listenerSockaddr);
+static void setupUDPListeningSocket(int *listenerSocketFd, uint16 *listenerPort, int *txFamily);
+static void setupUDPReceiverTerminateSelfPipe(void);
+static void sendSelfPipeTerminateByte(void);
+
 static ChunkTransportStateEntry *startOutgoingUDPConnections(ChunkTransportState *transportStates,
 							ExecSlice *sendSlice,
 							int *pOutgoingCount);
@@ -1170,7 +1178,7 @@ resetRxThreadError()
  * 		Setup udp listening socket.
  */
 static void
-setupUDPListeningSocket(int *listenerSocketFd, uint16 *listenerPort, int *txFamily, struct sockaddr_storage *listenerSockaddr)
+setupUDPListeningSocket(int *listenerSocketFd, uint16 *listenerPort, int *txFamily)
 {
 	struct addrinfo 		*addrs = NULL;
 	struct addrinfo 		*addr;
@@ -1304,13 +1312,6 @@ setupUDPListeningSocket(int *listenerSocketFd, uint16 *listenerPort, int *txFami
 		*txFamily = AF_INET;
 	}
 
-	/*
-	 * cache the successful sockaddr of the listening socket, so
-	 * we can use this information to connect to the listening socket.
-	 */
-	if (listenerSockaddr != NULL)
-		memcpy(listenerSockaddr, &listenerAddr, sizeof(struct sockaddr_storage));
-
 	/* Set up socket non-blocking mode */
 	if (!pg_set_noblock(ic_socket))
 	{
@@ -1443,8 +1444,9 @@ InitMotionUDPIFC(int *listenerSocketFd, uint16 *listenerPort)
 	/*
 	 * setup listening socket and sending socket for Interconnect.
 	 */
-	setupUDPListeningSocket(listenerSocketFd, listenerPort, &txFamily, &udp_dummy_packet_sockaddr);
-	setupUDPListeningSocket(&ICSenderSocket, &ICSenderPort, &ICSenderFamily, NULL);
+	setupUDPListeningSocket(listenerSocketFd, listenerPort, &txFamily);
+	setupUDPListeningSocket(&ICSenderSocket, &ICSenderPort, &ICSenderFamily);
+	setupUDPReceiverTerminateSelfPipe();
 
 	/* Initialize receive control data. */
 	resetMainThreadWaiting(&rx_control_info.mainWaitingState);
@@ -1545,7 +1547,12 @@ CleanupMotionUDPIFC(void)
 	ICSenderPort = 0;
 	ICSenderFamily = 0;
 
-	memset(&udp_dummy_packet_sockaddr, 0, sizeof(udp_dummy_packet_sockaddr));
+	if (udp_rx_terminator_pipe_fd_read > 0)
+		close(udp_rx_terminator_pipe_fd_read);
+	if (udp_rx_terminator_pipe_fd_write > 0)
+		close(udp_rx_terminator_pipe_fd_write);
+	udp_rx_terminator_pipe_fd_read = -1;
+	udp_rx_terminator_pipe_fd_write = -1;
 
 #ifdef USE_ASSERT_CHECKING
 
@@ -6212,8 +6219,15 @@ rxThreadFunc(void *arg)
 
 	for (;;)
 	{
-		struct pollfd nfd;
-		int			n;
+		/*
+		 * There are two poll descriptors in fds:
+		 * - fds[0] is a normal network socket file descriptor used to receive other motion data.
+		 * - fds[1] is a self-pipe file descriptor used to make poll() return immediately during
+		 * teardown, rather than waiting for the timeout to expire. After that, it checks
+		 * ic_control_info.shutdown and exits gracefully.
+		 */
+		struct pollfd fds[2];
+		int			n = -1;
 
 		/* check shutdown condition */
 		if (pg_atomic_read_u32(&ic_control_info.shutdown) == 1)
@@ -6241,11 +6255,19 @@ rxThreadFunc(void *arg)
 
 		if (!skip_poll)
 		{
-			/* Do we have inbound traffic to handle ? */
-			nfd.fd = UDP_listenerFd;
-			nfd.events = POLLIN;
+			Assert(UDP_listenerFd > 0);
+			Assert(udp_rx_terminator_pipe_fd_read > 0);
 
-			n = poll(&nfd, 1, RX_THREAD_POLL_TIMEOUT);
+			/* Do we have inbound traffic to handle ? */
+			fds[UDP_RX_POLL_FD_SOCKET_NORMAL].fd = UDP_listenerFd;
+			fds[UDP_RX_POLL_FD_SOCKET_NORMAL].events = POLLIN;
+			fds[UDP_RX_POLL_FD_SOCKET_NORMAL].revents = 0;
+
+			fds[UDP_RX_POLL_FD_PIPE_TERMINATOR].fd = udp_rx_terminator_pipe_fd_read;
+			fds[UDP_RX_POLL_FD_PIPE_TERMINATOR].events = POLLIN;
+			fds[UDP_RX_POLL_FD_PIPE_TERMINATOR].revents = 0;
+
+			n = poll(fds, 2, RX_THREAD_POLL_TIMEOUT);
 
 			if (pg_atomic_read_u32(&ic_control_info.shutdown) == 1)
 			{
@@ -6277,7 +6299,7 @@ rxThreadFunc(void *arg)
 				continue;
 		}
 
-		if (skip_poll || (n == 1 && (nfd.events & POLLIN)))
+		if (skip_poll || (n >= 1 && (fds[UDP_RX_POLL_FD_SOCKET_NORMAL].revents & POLLIN)))
 		{
 			/* we've got something interesting to read */
 			/* handle incoming */
@@ -6934,7 +6956,7 @@ WaitInterconnectQuitUDPIFC(void)
 
 	if (ic_control_info.threadCreated)
 	{
-		SendDummyPacket();
+		sendSelfPipeTerminateByte();
 		pthread_join(ic_control_info.threadHandle, NULL);
 	}
 	ic_control_info.threadCreated = false;
@@ -6979,81 +7001,91 @@ ConvertToIPv4MappedAddr(struct sockaddr_storage *sockaddr, socklen_t *o_len)
 	*o_len = sizeof(struct sockaddr_in6);
 }
 
-#if defined(__darwin__)
-/* macos does not accept :: as the destination, we will need to covert this to the IPv6 loopback */
-static void
-ConvertIPv6WildcardToLoopback(struct sockaddr_storage* dest)
-{
-	char address[INET6_ADDRSTRLEN];
-	/* we want to terminate our own process, so this should be local */
-	const struct sockaddr_in6 *in6 = (const struct sockaddr_in6 *) &udp_dummy_packet_sockaddr;
-	inet_ntop(AF_INET6, &in6->sin6_addr, address, sizeof(address));
-	if (strcmp("::", address) == 0)
-		((struct sockaddr_in6 *)dest)->sin6_addr = in6addr_loopback;
-}
-#endif
-
 /*
- * Send a dummy packet to interconnect thread to exit poll() immediately
+ * Set up a self-pipe to allow the IC main thread to wake the IC receiver thread
+ * from its poll(). During process teardown, the main thread writes a byte to the
+ * pipe's write end (see WaitInterconnectQuitUDPIFC()). The receiver thread polls
+ * on the read end and thus detects the notification (see rxThreadFunc()).
+ *
+ * Note: This mechanism is modeled after the self-pipe pattern used for latches.
  */
 static void
-SendDummyPacket(void)
+setupUDPReceiverTerminateSelfPipe(void)
 {
-	int					ret;
-	char				*dummy_pkt = "stop it";
-	int					counter;
-	struct sockaddr_storage dest;
-	socklen_t	dest_len;
+	int udp_rx_terminator_pipe_fd[2];
 
-	Assert(udp_dummy_packet_sockaddr.ss_family == AF_INET || udp_dummy_packet_sockaddr.ss_family == AF_INET6);
-	Assert(ICSenderFamily == AF_INET || ICSenderFamily == AF_INET6);
+	if (pipe(udp_rx_terminator_pipe_fd) == -1)
+		ereport(ERROR,
+				(errcode(ERRCODE_GP_INTERCONNECTION_ERROR),
+				 errmsg("failed to create pipe fd for UDP terminator"),
+				 errdetail("%m")));
 
-	dest = udp_dummy_packet_sockaddr;
-	dest_len = (ICSenderFamily == AF_INET) ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
+	if (fcntl(udp_rx_terminator_pipe_fd[0], F_SETFL, O_NONBLOCK) == -1)
+		ereport(ERROR,
+				(errcode(ERRCODE_GP_INTERCONNECTION_ERROR),
+				 errmsg("read pipe: failed to set O_NONBLOCK for UDP terminator"),
+				 errdetail("%m")));
 
-	if (ICSenderFamily == AF_INET6)
+	if (fcntl(udp_rx_terminator_pipe_fd[0], F_SETFD, FD_CLOEXEC) == -1)
+		ereport(ERROR,
+				(errcode(ERRCODE_GP_INTERCONNECTION_ERROR),
+				 errmsg("read pipe: failed to set FD_CLOEXEC for UDP terminator"),
+				 errdetail("%m")));
+
+	if (fcntl(udp_rx_terminator_pipe_fd[1], F_SETFL, O_NONBLOCK) == -1)
+		ereport(ERROR,
+				(errcode(ERRCODE_GP_INTERCONNECTION_ERROR),
+				 errmsg("write pipe: failed to set O_NONBLOCK for UDP terminator"),
+				 errdetail("%m")));
+
+	if (fcntl(udp_rx_terminator_pipe_fd[1], F_SETFD, FD_CLOEXEC) == -1)
+		ereport(ERROR,
+				(errcode(ERRCODE_GP_INTERCONNECTION_ERROR),
+				 errmsg("write pipe: failed to set FD_CLOEXEC for UDP terminator"),
+				 errdetail("%m")));
+
+	udp_rx_terminator_pipe_fd_read = udp_rx_terminator_pipe_fd[0];
+	udp_rx_terminator_pipe_fd_write = udp_rx_terminator_pipe_fd[1];
+}
+
+/*
+ * Send one byte to interconnect thread to exit poll() immediately, instead of
+ * waiting timeout.
+ */
+static void
+sendSelfPipeTerminateByte(void)
+{
+	int			rc;
+	char		dummy = 0;
+
+	/* We should have already set the shutdown flag before we send terminator byte to the pipe */
+	Assert(pg_atomic_read_u32(&ic_control_info.shutdown) == 1);
+	Assert(proc_exit_inprogress);
+	Assert(udp_rx_terminator_pipe_fd_write > 0);
+
+	retry:
+		rc = write(udp_rx_terminator_pipe_fd_write, &dummy, 1);
+	if (rc < 0)
 	{
-#if defined(__darwin__)
-		if (udp_dummy_packet_sockaddr.ss_family == AF_INET6)
-			ConvertIPv6WildcardToLoopback(&dest);
-#endif
-		if (udp_dummy_packet_sockaddr.ss_family == AF_INET)
-			ConvertToIPv4MappedAddr(&dest, &dest_len);
-	}
+		/* If interrupted by signal, just retry */
+		if (errno == EINTR)
+			goto retry;
 
-	if (ICSenderFamily == AF_INET && udp_dummy_packet_sockaddr.ss_family == AF_INET6)
-	{
-		/* the size of AF_INET6 is bigger than the side of IPv4, so
-		 * converting from IPv6 to IPv4 may potentially not work. */
-		ereport(LOG, errmsg("sending dummy packet failed: cannot send from AF_INET to receiving on AF_INET6"));
-		return;
-	}
+		/*
+		 * If the pipe is full, we don't need to retry, the data that's there
+		 * already is enough to wake up the poll().
+		 */
+		if (errno == EAGAIN || errno == EWOULDBLOCK)
+			return;
 
-	/*
-	 * Send a dummy package to the interconnect listener, try 10 times.
-	 * We don't want to close the socket at the end of this function, since
-	 * the socket will eventually close during the motion layer cleanup.
-	 */
-	counter = 0;
-	while (counter < 10)
-	{
-		counter++;
-		ret = sendto(ICSenderSocket, dummy_pkt, strlen(dummy_pkt), 0, (struct sockaddr *) &dest, dest_len);
-		if (ret < 0)
-		{
-			if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
-				continue;
-			else
-			{
-				ereport(LOG, errmsg("send dummy packet failed, sendto failed: %m"));
-				return;
-			}
-		}
-		break;
+		/*
+		 * write() failed for an unexpected reason. We can log the error and
+		 * continue, allowing the poll() timeout in rxThreadFunc() to expire naturally.
+		 * The process will exit anyway.
+		 */
+		elogif(gp_log_interconnect >= GPVARS_VERBOSITY_DEBUG,
+			   WARNING, "failed to write byte to udp self-pipe: %m")
 	}
-
-	if (counter >= 10)
-		ereport(LOG, errmsg("send dummy packet failed, sendto failed with 10 times: %m"));
 }
 
 uint32
