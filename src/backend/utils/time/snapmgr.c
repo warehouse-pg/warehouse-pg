@@ -2316,11 +2316,7 @@ EstimateSnapshotSpace(Snapshot snap)
 	{
 		DistributedSnapshot *ds = &snap->distribSnapshotWithLocalMapping.ds;
 		if (ds->count > 0)
-		{
-			size = MAXALIGN(size);
-			size = add_size(size,
-							mul_size(ds->count, sizeof(DistributedTransactionId)));
-		}
+			size = add_size(size, mul_size(ds->count, sizeof(DistributedTransactionId)));
 	}
 
 	return size;
@@ -2405,11 +2401,11 @@ SerializeSnapshot(Snapshot snapshot, char *start_address)
 	/* Copy inProgressXidArray in distributed snapshot */
 	if (snapshot->haveDistribSnapshot && serialized_snapshot.ds.count > 0)
 	{
-		char *xidoff = (char *) MAXALIGN((uintptr_t)(start_address +
+		char *dxipoff = start_address +
 						sizeof(SerializedSnapshotData) +
 						snapshot->xcnt * sizeof(TransactionId) +
-						serialized_snapshot.subxcnt * sizeof(TransactionId)));
-		memcpy(xidoff,
+						serialized_snapshot.subxcnt * sizeof(TransactionId);
+		memcpy(dxipoff,
 			   snapshot->distribSnapshotWithLocalMapping.ds.inProgressXidArray,
 			   serialized_snapshot.ds.count * sizeof(DistributedTransactionId));
 	}
@@ -2442,10 +2438,7 @@ RestoreSnapshot(char *start_address)
 
 	/* If distributed snapshot exists, add space for inProgressXidArray */
 	if (serialized_snapshot.haveDistribSnapshot && serialized_snapshot.ds.count > 0)
-	{
-		size = MAXALIGN(size);
 		size += serialized_snapshot.ds.count * sizeof(DistributedTransactionId);
-	}
 
 	/* Copy all required fields */
 	snapshot = (Snapshot) MemoryContextAlloc(TopTransactionContext, size);
@@ -2484,7 +2477,6 @@ RestoreSnapshot(char *start_address)
 	if (snapshot->haveDistribSnapshot)
 	{
 		DistributedSnapshot *ds = &snapshot->distribSnapshotWithLocalMapping.ds;
-
 		ds->xminAllDistributedSnapshots = serialized_snapshot.ds.xminAllDistributedSnapshots;
 		ds->distribSnapshotId = serialized_snapshot.ds.distribSnapshotId;
 		ds->xmin = serialized_snapshot.ds.xmin;
@@ -2493,17 +2485,16 @@ RestoreSnapshot(char *start_address)
 
 		if (ds->count > 0)
 		{
-			char *xidoff = (char *)MAXALIGN((uintptr_t)(start_address +
-														sizeof(SerializedSnapshotData) +
-														serialized_snapshot.xcnt * sizeof(TransactionId) +
-														serialized_snapshot.subxcnt * sizeof(TransactionId)));
+			char *dxipoff = start_address +
+							sizeof(SerializedSnapshotData) +
+							serialized_snapshot.xcnt * sizeof(TransactionId) +
+							serialized_snapshot.subxcnt * sizeof(TransactionId);
 
-			ds->inProgressXidArray = (DistributedTransactionId *) (char *) MAXALIGN(
-									 (uintptr_t)((char *)(snapshot + 1) +
+			ds->inProgressXidArray = (DistributedTransactionId*)((char *)(snapshot + 1) +
 									 serialized_snapshot.xcnt * sizeof(TransactionId) +
-									 serialized_snapshot.subxcnt * sizeof(TransactionId)));
+									 serialized_snapshot.subxcnt * sizeof(TransactionId));
 
-			memcpy(ds->inProgressXidArray, xidoff,
+			memcpy(ds->inProgressXidArray, dxipoff,
 				   ds->count * sizeof(DistributedTransactionId));
 		}
 		else

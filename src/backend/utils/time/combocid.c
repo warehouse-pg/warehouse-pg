@@ -238,7 +238,7 @@ GetComboCommandId(CommandId cmin, CommandId cmax)
 	 * Dispatcher and Writer QE dump combo cid into shared memory by dumpSharedComboCommandIds(),
 	 * Entrydb and QE reader load combo cid by loadSharedComboCommandIds().
 	 *
-	 * Before parallel workers are created, combo cid are serialize by SerializeComboCIDState(),
+	 * Before parallel workers are created, combo cid are serialized by SerializeComboCIDState(),
 	 * Parallel workers can get combo cid from dynamic shared memory segment
 	 * by RestoreComboCIDState(), so that parallel workers can share combo cid with their leader.
 	 */

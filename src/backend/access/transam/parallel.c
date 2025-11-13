@@ -377,7 +377,14 @@ InitializeParallelDSM(ParallelContext *pcxt)
 		SerializeGUCState(guc_len, gucspace);
 		shm_toc_insert(pcxt->toc, PARALLEL_KEY_GUC, gucspace);
 
-		/* CDB: Serialize DtxContextInfo */
+		/*
+		 * CDB: Serialize DtxContextInfo
+		 * QEs use DtxContextInfo to keep distributed transaction consistency with QD.
+		 * QD dispatches DtxContextInfo to QEs, including Writer and Reader QE.
+		 * However, parallel workers can't get dispatched information from QD.
+		 * So the leader QE needs to serialize its DtxContextInfo into DSM.
+		 * When parallel workers are created, they get DtxContextInfo from DSM.
+		 */
 		dtxspace = shm_toc_allocate(pcxt->toc, sizeof(uint32) + dtxlen);
 		*((uint32 *) dtxspace) = (uint32) dtxlen;
 		DtxContextInfo_Serialize(dtxspace + sizeof(uint32), &QEDtxContextInfo);
@@ -1447,7 +1454,11 @@ ParallelWorkerMain(Datum main_arg)
 	uint32 dtx_len = *((uint32 *) dtxspace);
 	DtxContextInfo_Deserialize(dtxspace + sizeof(uint32), (int) dtx_len, &QEDtxContextInfo);
 
-	/* CDB: Set DistributedTransactionContext */
+	/*
+	 * CDB: Set DistributedTransactionContext for Parallel workers.
+	 * Parallel workers behaves as Reader QEs, their DistributedTransactionContext
+	 * needs to be set since it is referenced when check tuple visibility.
+	 */
 	if (QEDtxContextInfo.haveDistributedSnapshot)
 	{
 		if (IS_QUERY_DISPATCHER())
