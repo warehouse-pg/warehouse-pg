@@ -4,12 +4,14 @@
 #include <setjmp.h>
 #include "cmockery.h"
 
+#include "../../motion/ic_udpifc.c"
+
 /*
  * Use a 10-second timeout to guarantee that the polling path is exercised
  * during testing and to eliminate unexpected race conditions.
  */
+#undef RX_THREAD_POLL_TIMEOUT
 #define RX_THREAD_POLL_TIMEOUT (10000)
-#include "../../motion/ic_udpifc.c"
 
 /*
  * PROTOTYPES

@@ -640,14 +640,13 @@ typedef struct ICStatistics
 static ICStatistics ic_statistics;
 
 /*
- * used to access array of file descriptors in rxThreadFunc.
  * UDP_RX_POLL_FD_SOCKET_NORMAL: normal socket fd, using for receiving network data
  * UDP_RX_POLL_FD_PIPE_TERMINATOR: only used to exit poll() blocking state, pipe fd
  */
 #define UDP_RX_POLL_FD_SOCKET_NORMAL   (0)
 #define UDP_RX_POLL_FD_PIPE_TERMINATOR  (1)
 
-/* self-pipe to detect shutdown for the UDP IC rx thread */
+/* self-pipe file descriptor to detect the shutdown message for the UDP IC receive thread */
 static int udp_rx_terminator_pipe_fd_read = -1;
 static int udp_rx_terminator_pipe_fd_write = -1;
 
@@ -7051,6 +7050,8 @@ setupUDPReceiverTerminateSelfPipe(void)
 /*
  * Send one byte to interconnect thread to exit poll() immediately, instead of
  * waiting timeout.
+ *
+ * Mostly copied from sendSelfPipeByte() in latch.c.
  */
 static void
 sendSelfPipeTerminateByte(void)
