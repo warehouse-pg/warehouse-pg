@@ -98,6 +98,8 @@ typedef struct InstrumentationHeader
 {
 	void	   *head;
 	int			free;
+
+	/* deprecated field, keep it for ABI */
 	slock_t		lock;
 } InstrumentationHeader;
 

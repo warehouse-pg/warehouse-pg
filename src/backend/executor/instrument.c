@@ -333,7 +333,7 @@ pickInstrFromShmem(const Plan *plan, int instrument_options)
 	InstrumentationResownerSet *item;
 
 	/* Lock to protect write to header */
-	SpinLockAcquire(&InstrumentGlobal->lock);
+	LWLockAcquire(InstrumentationSlotHeaderLock, LW_EXCLUSIVE);
 
 	/* Pick the first free slot */
 	slot = InstrumentGlobal->head;
@@ -344,7 +344,7 @@ pickInstrFromShmem(const Plan *plan, int instrument_options)
 		InstrumentGlobal->free--;
 	}
 
-	SpinLockRelease(&InstrumentGlobal->lock);
+	LWLockRelease(InstrumentationSlotHeaderLock);
 
 	if (NULL != slot && SlotIsEmpty(slot))
 	{
@@ -395,7 +395,7 @@ instrShmemRecycleCallback(ResourceReleasePhase phase, bool isCommit, bool isTopL
 
 	next = slotsOccupied;
 	slotsOccupied = NULL;
-	SpinLockAcquire(&InstrumentGlobal->lock);
+	LWLockAcquire(InstrumentationSlotHeaderLock, LW_EXCLUSIVE);
 	while (next)
 	{
 		curr = next;
@@ -418,5 +418,5 @@ instrShmemRecycleCallback(ResourceReleasePhase phase, bool isCommit, bool isTopL
 
 		pfree(curr);
 	}
-	SpinLockRelease(&InstrumentGlobal->lock);
+	LWLockRelease(InstrumentationSlotHeaderLock);
 }

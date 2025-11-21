@@ -143,7 +143,9 @@ extern PGDLLIMPORT LWLockPadded *MainLWLockArray;
 #define FTSReplicationStatusLock	(&MainLWLockArray[PG_NUM_INDIVIDUAL_LWLOCKS + 11].lock)
 #define TwophaseCommitLock			(&MainLWLockArray[PG_NUM_INDIVIDUAL_LWLOCKS + 12].lock)
 #define ParallelCursorEndpointLock	(&MainLWLockArray[PG_NUM_INDIVIDUAL_LWLOCKS + 13].lock)
-#define GP_NUM_INDIVIDUAL_LWLOCKS		13
+#define InstrumentationSlotHeaderLock (&MainLWLockArray[PG_NUM_INDIVIDUAL_LWLOCKS + 14].lock)
+
+#define GP_NUM_INDIVIDUAL_LWLOCKS		14
 
 /*
  * It would probably be better to allocate separate LWLock tranches
