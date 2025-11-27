@@ -9,7 +9,7 @@ PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
 else
-subdir = src/test/fdw/extended_protocol_commit_extension
+subdir = src/test/fdw/extended_protocol_commit_test_extension
 top_builddir = ../../../..
 include $(top_builddir)/src/Makefile.global
 include $(top_srcdir)/contrib/contrib-global.mk
