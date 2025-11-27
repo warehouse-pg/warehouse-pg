@@ -1,30 +1,26 @@
-SUBDIRS = extension
+SUBDIRS = extended_protocol_commit_test_extension no_rescan_test_extension
 
 PROGRAM = extended_protocol_commit_test
 
 OBJS = extended_protocol_commit_test.o
 
-REGRESS = extended_protocol_commit_test
+REGRESS = extended_protocol_commit_test no_rescan_test
+REGRESS_OPTS = --init-file=init_file
 
-
-subdir = src/test/isolation2
+ifdef USE_PGXS
+PG_CONFIG = pg_config
+PGXS := $(shell $(PG_CONFIG) --pgxs)
+include $(PGXS)
+else
+subdir = src/test/fdw
 top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
-NO_PGXS = 1
-include $(top_srcdir)/src/makefiles/pgxs.mk
-include $(top_srcdir)/src/Makefile.shlib
-
-ifeq ($(PORTNAME), win32)
-LDLIBS += -lws2_32
+include $(top_srcdir)/contrib/contrib-global.mk
 endif
-override CPPFLAGS := -I$(srcdir) -I$(libpq_srcdir) -I$(srcdir)/../regress $(CPPFLAGS)
-override LDLIBS := $(libpq_pgport) $(LDLIBS)
 
+override CPPFLAGS := -I$(libpq_srcdir) $(CPPFLAGS)
+override LDFLAGS := $(libpq_pgport) $(LDFLAGS)
 
 installcheck: install
 
-extended_protocol_commit_test: extended_protocol_commit_test.c
-	$(CC) $(CPPFLAGS) -I$(top_builddir)/src/interfaces/libpq -L$(top_builddir)/src/interfaces/libpq -o $@ $< -lpq
-
-
-$(call recurse,all clean installcheck)
+$(call recurse,all install clean)

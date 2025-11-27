@@ -307,6 +307,16 @@ ExecReScanForeignScan(ForeignScanState *node)
 {
 	PlanState  *outerPlan = outerPlanState(node);
 
+	/*
+	 * If the FDW doesn't provide a ReScanForeignScan callback, this should
+	 * not be called. The planner should have inserted a Material node to
+	 * shield the foreign scan from rescanning. If we get here anyway, it's
+	 * a bug in the planner or the FDW didn't properly advertise its
+	 * capabilities.
+	 */
+	if (node->fdwroutine->ReScanForeignScan == NULL)
+		elog(ERROR, "foreign-data wrapper does not support ReScan");
+
 	node->fdwroutine->ReScanForeignScan(node);
 
 	/*

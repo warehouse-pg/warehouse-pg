@@ -3400,6 +3400,15 @@ create_foreignscan_path(PlannerInfo *root, RelOptInfo *rel,
 	pathnode->fdw_outerpath = fdw_outerpath;
 	pathnode->fdw_private = fdw_private;
 
+	/*
+	 * A foreign scan is considered rescannable only if the FDW provides
+	 * a ReScanForeignScan callback. If not provided, the planner will
+	 * automatically insert a Material node when rescanning is needed
+	 * (e.g., for nested loop joins).
+	 */
+	pathnode->path.rescannable = (rel->fdwroutine != NULL &&
+								  rel->fdwroutine->ReScanForeignScan != NULL);
+
 	return pathnode;
 }
 
@@ -3477,6 +3486,14 @@ create_foreign_join_path(PlannerInfo *root, RelOptInfo *rel,
 	pathnode->fdw_outerpath = fdw_outerpath;
 	pathnode->fdw_private = fdw_private;
 
+	/*
+	 * A foreign join is considered rescannable only if the FDW provides
+	 * a ReScanForeignScan callback. If not provided, the planner will
+	 * automatically insert a Material node when rescanning is needed.
+	 */
+	pathnode->path.rescannable = (rel->fdwroutine != NULL &&
+								  rel->fdwroutine->ReScanForeignScan != NULL);
+
 	return pathnode;
 }
 
@@ -3547,6 +3564,14 @@ create_foreign_upper_path(PlannerInfo *root, RelOptInfo *rel,
 	}
 	pathnode->fdw_outerpath = fdw_outerpath;
 	pathnode->fdw_private = fdw_private;
+
+	/*
+	 * A foreign upper relation is considered rescannable only if the FDW
+	 * provides a ReScanForeignScan callback. If not provided, the planner
+	 * will automatically insert a Material node when rescanning is needed.
+	 */
+	pathnode->path.rescannable = (rel->fdwroutine != NULL &&
+								  rel->fdwroutine->ReScanForeignScan != NULL);
 
 	return pathnode;
 }

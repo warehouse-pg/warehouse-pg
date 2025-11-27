@@ -1,3 +1,4 @@
 comment = 'Extended protocol commit test foreign data wrapper'
 default_version = '1.0'
+module_pathname = '$libdir/extended_protocol_commit_test_fdw'
 relocatable = true
