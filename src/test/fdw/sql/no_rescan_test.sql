@@ -124,6 +124,50 @@ FROM test_local_small l1
 INNER JOIN test_local_small l2 ON l1.id = l2.id
 INNER JOIN test_no_rescan_ft f ON l1.id = f.id;
 
+-- Test 8: Correlated subquery limitation - execution time error
+-- A correlated subquery in the SELECT list creates a SubPlan that must rescan
+-- the foreign table for each outer row. SubPlans are planned independently,
+-- so the foreign table scan doesn't know it will need rescanning until execution.
+-- This is a known limitation: FDWs without ReScanForeignScan cannot be used
+-- in correlated subqueries.
+--
+-- ORCA has its trick to avoid correlated subquery and rescan.
+EXPLAIN (COSTS OFF)
+SELECT l.id, l.name,
+       (SELECT f.data FROM test_no_rescan_ft f WHERE f.id = l.id LIMIT 1) as fdata
+FROM test_local_small l
+ORDER BY l.id;
+
+-- Execution fails because each SubPlan execution requires rescanning the
+-- foreign table with different parameter values, which is impossible without
+-- the ReScanForeignScan callback.
+SELECT l.id, l.name,
+       (SELECT f.data FROM test_no_rescan_ft f WHERE f.id = l.id LIMIT 1) as fdata
+FROM test_local_small l
+ORDER BY l.id;
+
+-- Test 9: LATERAL query - planner avoids parameterization
+-- Even though this uses LATERAL syntax, the planner can convert it to a
+-- regular nested loop join with a filter condition (l.id = f.id), avoiding
+-- the need for a parameterized foreign scan path. A Material node is inserted
+-- to buffer the foreign scan results for rescanning.
+-- This works because the foreign scan itself doesn't need parameters - the
+-- filtering happens after the scan.
+EXPLAIN (COSTS OFF)
+SELECT l.id, l.name, f.data
+FROM test_local_small l,
+     LATERAL (SELECT * FROM test_no_rescan_ft f WHERE f.id = l.id) f
+WHERE l.id < 3
+ORDER BY l.id;
+
+-- Executes successfully: Material buffers all foreign scan results, then
+-- rescans from the buffer for each outer row while applying the join filter.
+SELECT l.id, l.name, f.data
+FROM test_local_small l,
+     LATERAL (SELECT * FROM test_no_rescan_ft f WHERE f.id = l.id) f
+WHERE l.id < 3
+ORDER BY l.id;
+
 -- Reset planner settings
 RESET enable_hashjoin;
 RESET enable_mergejoin;
@@ -139,7 +183,17 @@ DROP EXTENSION no_rescan_test_fdw;
 
 -- Summary:
 -- This test demonstrates that:
--- 1. FDWs can safely omit ReScanForeignScan implementation
--- 2. The planner automatically inserts Material nodes when rescanning is needed
--- 3. Queries execute correctly even though the FDW doesn't support rescan
--- 4. No code changes needed in existing queries or applications
+-- 1. FDWs can safely omit ReScanForeignScan implementation for simple cases
+-- 2. The planner automatically inserts Material nodes when rescanning is needed in joins
+-- 3. Parameterized paths are rejected at planning time if FDW doesn't support rescan
+--    (see create_foreignscan_path and create_foreign_join_path in pathnode.c)
+-- 4. KNOWN LIMITATION: Correlated subqueries (SubPlans) require rescan support.
+--    When used in a correlated subquery, execution will fail with:
+--    "ERROR: foreign-data wrapper does not support ReScan"
+--    This is expected behavior - FDWs used in correlated subqueries must implement
+--    the ReScanForeignScan callback. The planner cannot detect this at planning time
+--    because subqueries are planned independently.
+-- 5. For FDWs that support join pushdown (GetForeignJoinPaths), attempting to create
+--    a parameterized foreign join path without rescan support will cause:
+--    "ERROR: could not devise a query plan for the given query"
+--    This happens at planning time because all candidate paths are rejected.

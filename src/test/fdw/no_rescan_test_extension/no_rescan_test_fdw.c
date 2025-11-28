@@ -131,9 +131,21 @@ noRescanGetForeignPaths(PlannerInfo *root,
 	ForeignPath *path;
 
 	/*
-	 * Create a simple ForeignPath.
+	 * Create a simple non-parameterized ForeignPath.
+	 *
 	 * The key point: because we don't implement ReScanForeignScan,
-	 * the path creation code will set path.rescannable = false.
+	 * create_foreignscan_path will set path.rescannable = false.
+	 * This allows the planner to automatically insert Material nodes
+	 * for non-parameterized rescans (e.g., inner side of nested loops).
+	 *
+	 * For parameterized paths (required_outer != NULL), create_foreignscan_path
+	 * will reject the path if we don't support rescan. This prevents generating
+	 * plans that would fail at execution time in regular joins.
+	 *
+	 * However, correlated subqueries (SubPlans) are a special case: they are
+	 * planned independently and the foreign table doesn't know it will be used
+	 * in a SubPlan that requires rescanning. These will fail at execution time
+	 * with "ERROR: foreign-data wrapper does not support ReScan".
 	 */
 	path = create_foreignscan_path(root, baserel,
 								   NULL,	/* default pathtarget */
@@ -145,10 +157,13 @@ noRescanGetForeignPaths(PlannerInfo *root,
 								   NULL,	/* no fdw_outerpath */
 								   NIL);	/* no fdw_private */
 
-	add_path(baserel, (Path *) path);
+	if (path != NULL)
+	{
+		add_path(baserel, (Path *) path);
 
-	elog(DEBUG1, "no_rescan_test_fdw: Added foreign path (rescannable=%d)",
-		 path->path.rescannable);
+		elog(DEBUG1, "no_rescan_test_fdw: Added foreign path (rescannable=%d)",
+			 path->path.rescannable);
+	}
 }
 
 /*
