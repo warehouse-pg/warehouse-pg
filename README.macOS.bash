@@ -23,6 +23,7 @@ brew install libxml2
 brew install pkg-config
 brew install perl
 brew install python3
+brew install python-setuptools
 
 brew link --force apr
 brew link --force apr-util
@@ -38,39 +39,31 @@ sudo ln -s /usr/sbin/netstat /usr/local/bin/ss
 echo 127.0.0.1$'\t'$(hostname) | sudo tee -a /etc/hosts
 
 # OS settings
-sudo sysctl -w kern.sysv.shmmax=2147483648
-sudo sysctl -w kern.sysv.shmmin=1
-sudo sysctl -w kern.sysv.shmmni=64
-sudo sysctl -w kern.sysv.shmseg=16
-sudo sysctl -w kern.sysv.shmall=524288
+sudo sysctl -w kern.maxfiles=131072
+sudo sysctl -w kern.maxfilesperproc=131072
+sudo sysctl -w kern.ipc.maxsockbuf=8388608
+
+sudo sysctl -w net.inet.tcp.sendspace=262144
+sudo sysctl -w net.inet.tcp.recvspace=262144
 sudo sysctl -w net.inet.tcp.msl=60
 
 sudo sysctl -w net.local.dgram.recvspace=262144
 sudo sysctl -w net.local.dgram.maxdgram=16384
-sudo sysctl -w kern.maxfiles=131072
-sudo sysctl -w kern.maxfilesperproc=131072
-sudo sysctl -w net.inet.tcp.sendspace=262144
-sudo sysctl -w net.inet.tcp.recvspace=262144
-sudo sysctl -w kern.ipc.maxsockbuf=8388608
 
 sudo tee -a /etc/sysctl.conf << EOF
-kern.sysv.shmmax=2147483648
-kern.sysv.shmmin=1
-kern.sysv.shmmni=64
-kern.sysv.shmseg=16
-kern.sysv.shmall=524288
+kern.maxfiles=131072
+kern.maxfilesperproc=131072
+kern.ipc.maxsockbuf=8388608
+
+net.inet.tcp.sendspace=262144
+net.inet.tcp.recvspace=262144
 net.inet.tcp.msl=60
 
 net.local.dgram.recvspace=262144
 net.local.dgram.maxdgram=16384
-kern.maxfiles=131072
-kern.maxfilesperproc=131072
-net.inet.tcp.sendspace=262144
-net.inet.tcp.recvspace=262144
-kern.ipc.maxsockbuf=8388608
 EOF
 
-# Create GPDB destination directory
+# Create destination directory
 sudo mkdir /usr/local/gpdb
 sudo chown $USER:admin /usr/local/gpdb
 
@@ -82,8 +75,8 @@ export LC_CTYPE="en_US.UTF-8"
 
 eval "$(/opt/homebrew/bin/brew shellenv)"
 export PATH="`brew --prefix`/opt/apr/bin:`brew --prefix`/opt/apr-util/bin:`brew --prefix`/opt/libxml2/bin:$PATH"
-export LDFLAGS="-L`brew --prefix`/opt/zstd/lib -L`brew --prefix`/opt/libevent/lib -L`brew --prefix`/opt/openssl/lib -L`brew --prefix`/opt/libxml2/lib -L`brew --prefix`/opt/libyaml/lib"
-export CPPFLAGS="-I`brew --prefix`/opt/zstd/include -I`brew --prefix`/opt/libevent/include -I`brew --prefix`/opt/openssl/include -I`brew --prefix`/opt/libxml2/include -I`brew --prefix`/opt/libyaml/include"
+export LDFLAGS="-L`brew --prefix`/opt/zstd/lib -L`brew --prefix`/opt/libevent/lib -L`brew --prefix`/opt/openssl/lib -L`brew --prefix`/opt/libxml2/lib -L`brew --prefix`/opt/libyaml/lib -L`brew --prefix`/opt/xerces-c/lib"
+export CPPFLAGS="-I`brew --prefix`/opt/zstd/include -I`brew --prefix`/opt/libevent/include -I`brew --prefix`/opt/openssl/include -I`brew --prefix`/opt/libxml2/include -I`brew --prefix`/opt/libyaml/include -I`brew --prefix`/opt/xerces-c/include"
 EOF
 source ~/.bashrc
 

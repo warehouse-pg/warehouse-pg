@@ -1,43 +1,70 @@
 #!/bin/bash
 
-# Install needed packages. Please add to this list if you discover additional prerequisites
+# Install "Development Tools"
 sudo yum group install -y "Development Tools"
+
 # Install epel-release
 sudo yum install -y epel-release
 
-INSTALL_PKGS="apr-devel bison bzip2-devel cmake3 flex gcc gcc-c++ krb5-devel libcurl-devel libevent-devel libkadm5 libxml2-devel libzstd-devel openssl-devel python3.11 python3-devel python3.11-devel python3-psutil python3.11-pip perl-ExtUtils-MakeMaker.noarch perl-ExtUtils-Embed.noarch readline-devel rsync xerces-c-devel zlib-devel python3-psutil python3-pyyaml python3-psycopg2"
-
-sudo yum install -y $INSTALL_PKGS
-
-sudo yum --enablerepo=powertools install -y libyaml-devel
-
-sudo yum install -y postgresql 
-sudo yum install -y postgresql-devel
-sudo yum install -y python3-pip
+# Install needed packages. Please add to this list if you discover additional prerequisites
+sudo yum install -y apr-devel \
+	bison \
+	bzip2-devel \
+	cmake3 \
+	flex \
+	gcc \
+	gcc-c++ \
+	git \
+	iproute \
+	jq \
+	krb5-devel \
+	libcurl-devel \
+	libevent-devel \
+	libxml2-devel \
+	libyaml-devel \
+	libzstd-devel \
+	openssh-clients \
+	openssh-server \
+	openssl-devel \
+	passwd \
+	perl-ExtUtils-Embed.noarch \
+	perl-ExtUtils-MakeMaker.noarch \
+	python3-devel \
+	python3-pip \
+	python3-psutil \
+	python3-psycopg2 \
+	python3-pyyaml \
+	readline-devel \
+	rsync \
+	xerces-c-devel \
+	zlib-devel
 
 # These dependencies are installed by `yum install`
 # pip3 install -r python-dependencies.txt
 
-#For all WarehousePG host systems running RHEL, CentOs or Rocky8, SELinux must either be Disabled or configured to allow unconfined access to WarehousePG processes, directories, and the gpadmin user.
-setenforce 0
+# For all WarehousePG host systems running RHEL, CentOS or Rocky, SELinux must
+# either be Disabled or configured to allow unconfined access to WarehousePG
+# processes, directories, and the gpadmin user
+sudo setenforce 0
 sudo tee -a /etc/selinux/config << EOF
 SELINUX=disabled
 EOF
 
-#To prevent SELinux-related SSH authentication denials that could occur even with SELinux deactivated
+# To prevent SELinux-related SSH authentication denials that could occur even
+# with SELinux deactivated
 sudo tee -a /etc/sssd/sssd.conf << EOF
 selinux_provider=none
 EOF
 
 sudo systemctl stop firewalld.service
 
-#Configure kernel settings so the system is optimized for WarehousePG.
+# Configure kernel settings so the system is optimized for WarehousePG
 sudo tee -a /etc/sysctl.d/10-whpg.conf << EOF
 kernel.msgmax = 65536
 kernel.msgmnb = 65536
-kernel.msgmni = 2048
+kernel.msgmni = 32768
 kernel.sem = 500 2048000 200 8192
-kernel.shmmni = 1024
+kernel.shmmni = 32768
 kernel.core_uses_pid = 1
 kernel.core_pattern=/var/core/core.%h.%t
 kernel.sysrq = 1
@@ -63,10 +90,11 @@ net.ipv4.tcp_syncookies = 1
 net.ipv4.ipfrag_high_thresh = 41943040
 net.ipv4.ipfrag_low_thresh = 31457280
 net.ipv4.ipfrag_time = 60
-net.ipv4.ip_local_reserved_ports=65330
+net.ipv4.ip_local_reserved_ports = 65330
+net.ipv4.tcp_tw_reuse = 1
 vm.overcommit_memory = 2
 vm.overcommit_ratio = 95
-vm.swappiness = 10
+vm.swappiness = 1
 vm.dirty_expire_centisecs = 500
 vm.dirty_writeback_centisecs = 100
 vm.zone_reclaim_mode = 0
@@ -81,8 +109,6 @@ if [ $RAM_IN_BYTES -le $((64*1024*1024*1024)) ]; then
     echo "vm.dirty_background_ratio = 3" | sudo tee -a /etc/sysctl.d/10-whpg.conf > /dev/null
     echo "vm.dirty_ratio = 10" | sudo tee -a /etc/sysctl.d/10-whpg.conf > /dev/null
 else
-    echo "vm.dirty_background_ratio = 0" | sudo tee -a /etc/sysctl.d/10-whpg.conf > /dev/null
-    echo "vm.dirty_ratio = 0" | sudo tee -a /etc/sysctl.d/10-whpg.conf > /dev/null
     echo "vm.dirty_background_bytes = 1610612736 # 1.5GB" | sudo tee -a /etc/sysctl.d/10-whpg.conf > /dev/null
     echo "vm.dirty_bytes = 4294967296 # 4GB" | sudo tee -a /etc/sysctl.d/10-whpg.conf > /dev/null
 fi
@@ -99,4 +125,3 @@ EOF
 
 
 ulimit -n 65536 65536
-

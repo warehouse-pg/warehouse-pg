@@ -17,6 +17,52 @@ performance on large data volumes.
 The [Greenplum Database OSS project](https://github.com/greenplum-db/gpdb-archive) was released under the [Apache 2
 license](https://github.com/greenplum-db/gpdb-archive/blob/main/LICENSE) and went closed source in May 2024.
 
+### Build the database
+
+Follow [appropriate Linux steps](README.RHEL-Rocky.bash) for getting your system ready.
+
+```
+# Configure build environment to install at /usr/local/whpg
+./configure --with-perl --with-python --with-libxml --with-gssapi --prefix=/usr/local/whpg
+
+# Compile and install
+make -j8
+make -j8 install
+
+# Bring in greenplum environment into your running shell
+source /usr/local/whpg/greenplum_path.sh
+
+# Start demo cluster
+make create-demo-cluster
+# (gpdemo-env.sh contains __PGPORT__ and __COORDINATOR_DATA_DIRECTORY__ values)
+source gpAux/gpdemo/gpdemo-env.sh
+```
+
+The directory, the TCP ports, the number of segments, and the existence of
+standbys for segments and coordinator for the demo cluster can be changed
+on the fly.
+Instead of `make create-demo-cluster`, consider:
+
+```
+DATADIRS=/tmp/whpg-cluster PORT_BASE=5555 NUM_PRIMARY_MIRROR_PAIRS=1 WITH_MIRRORS=false make create-demo-cluster
+```
+
+The TCP port for the regression test can be changed on the fly:
+
+```
+PGPORT=5555 make installcheck-world
+```
+
+To turn GPORCA off and use Postgres planner for query optimization:
+```
+set optimizer=off;
+```
+
+If you want to clean all generated files
+```
+make distclean
+```
+
 ## Disclaimer
 Greenplum® is a registered trademark of Broadcom Inc.<br>
 EDB and EDB Postgres AI are not affiliated with, endorsed by, or sponsored by Broadcom Inc.<br>
