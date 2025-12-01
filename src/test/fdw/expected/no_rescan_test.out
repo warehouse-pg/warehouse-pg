@@ -254,7 +254,7 @@ FROM test_local_small l
 ORDER BY l.id;
 NOTICE:  no_rescan_test_fdw: BeginForeignScan - will generate 10 rows
 NOTICE:  no_rescan_test_fdw: BeginForeignScan - will generate 10 rows  (seg2 slice1 127.0.0.1:40002 pid=158265)
-ERROR:  foreign-data wrapper does not support ReScan (nodeForeignscan.c:318)  (seg2 slice1 127.0.0.1:40002 pid=158265) (nodeForeignscan.c:318)
+ERROR:  foreign-data wrapper does not support ReScan (nodeForeignscan.c:319)  (seg2 slice1 127.0.0.1:40002 pid=158265) (nodeForeignscan.c:319)
 -- Test 9: LATERAL query - planner avoids parameterization
 -- Even though this uses LATERAL syntax, the planner can convert it to a
 -- regular nested loop join with a filter condition (l.id = f.id), avoiding
@@ -311,19 +311,3 @@ DROP TABLE test_local_medium;
 DROP FOREIGN TABLE test_no_rescan_ft;
 DROP SERVER no_rescan_server;
 DROP EXTENSION no_rescan_test_fdw;
--- Summary:
--- This test demonstrates that:
--- 1. FDWs can safely omit ReScanForeignScan implementation for simple cases
--- 2. The planner automatically inserts Material nodes when rescanning is needed in joins
--- 3. Parameterized paths are rejected at planning time if FDW doesn't support rescan
---    (see create_foreignscan_path and create_foreign_join_path in pathnode.c)
--- 4. KNOWN LIMITATION: Correlated subqueries (SubPlans) require rescan support.
---    When used in a correlated subquery, execution will fail with:
---    "ERROR: foreign-data wrapper does not support ReScan"
---    This is expected behavior - FDWs used in correlated subqueries must implement
---    the ReScanForeignScan callback. The planner cannot detect this at planning time
---    because subqueries are planned independently.
--- 5. For FDWs that support join pushdown (GetForeignJoinPaths), attempting to create
---    a parameterized foreign join path without rescan support will cause:
---    "ERROR: could not devise a query plan for the given query"
---    This happens at planning time because all candidate paths are rejected.

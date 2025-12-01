@@ -3420,7 +3420,14 @@ create_foreignscan_path(PlannerInfo *root, RelOptInfo *rel,
 	{
 		pathnode->path.rescannable = false;
 
-		/* Reject parameterized paths if FDW doesn't support rescan */
+		/*
+		 * Reject parameterized paths if FDW doesn't support rescan
+		 *
+		 * We only need to check path.required_outer here. For a base relation,
+		 * any dependency from rel->lateral_relids is already reflected in the
+		 * required_outer set passed to this function. Therefore, checking
+		 * required_outer is sufficient to detect all parameterization.
+		 */
 		if (!bms_is_empty(required_outer))
 		{
 			pfree(pathnode);
@@ -3509,8 +3516,6 @@ create_foreign_join_path(PlannerInfo *root, RelOptInfo *rel,
 	 * A foreign join is considered rescannable only if the FDW provides
 	 * a ReScanForeignScan callback. If not provided, the planner will
 	 * automatically insert a Material node when rescanning is needed.
-	 *
-	 * Reject parameterized paths if FDW doesn't support rescan.
 	 */
 	if (rel->fdwroutine != NULL && rel->fdwroutine->ReScanForeignScan != NULL)
 	{
@@ -3518,13 +3523,11 @@ create_foreign_join_path(PlannerInfo *root, RelOptInfo *rel,
 	}
 	else
 	{
+	  /*
+	   * Parameterized paths are rejected at the beginning of this function
+	   * already.
+	   */
 		pathnode->path.rescannable = false;
-
-		if (!bms_is_empty(required_outer))
-		{
-			pfree(pathnode);
-			return NULL;
-		}
 	}
 
 	return pathnode;
