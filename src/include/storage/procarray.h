@@ -159,4 +159,6 @@ extern bool ResGroupMoveSignalTarget(int sessionId, void *slot, Oid groupId,
 extern void ResGroupMoveCheckTargetReady(int sessionId, bool *clean, bool *result);
 extern void ResGroupMoveNotifyInitiator(pid_t callerPid);
 
+extern void AddLocalTransactionIDToGlobalWaitGXIds(TransactionId xid);
+
 #endif							/* PROCARRAY_H */

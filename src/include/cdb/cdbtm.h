@@ -19,6 +19,7 @@
 #include "nodes/plannodes.h"
 
 struct Gang;
+struct pg_result;
 
 /**
  * DTX states, used to track the state of the distributed transaction
@@ -239,6 +240,22 @@ typedef struct TMGXACTLOCAL
 
 	Bitmapset					*dtxSegmentsMap;
 	List						*dtxSegments;
+
+	/*
+	 * With GDD enabled, waitGxids is used to lift lock-wait information from
+	 * QEs to the QD. A QE may detect a row lock held by a distributed
+	 * transaction, but only the QD can determine its global commit status.
+	 *
+	 * Workflow:
+	 *   1. On a QE, heapam_tuple_lock() → XactLockTableWait() identifies a
+	 *      blocking gxid and records it in the QE’s waitGxids.
+	 *   2. During DTX commit, doDispatchDtxProtocolCommand() sends commit
+	 *      commands to all QEs.
+	 *   3. Each QE returns its waitGxids to the QD through
+	 *      sendWaitGxidsToQD().
+	 *   4. The QD aggregates these gxids and waits for them to finish via
+	 *      GxactLockTableWait().
+	 */
 	List						*waitGxids;
 }	TMGXACTLOCAL;
 
@@ -364,5 +381,8 @@ extern DtxRecoveryEvent GetDtxRecoveryEvent(void);
 extern void SetDtxRecoveryEvent(DtxRecoveryEvent event);
 extern void DtxRecoveryMain(Datum main_arg);
 extern bool DtxRecoveryStartRule(Datum main_arg);
+
+extern void sendWaitGxidsToQD(List *waitGxids);
+extern void gatherWaitedGxids(int resultCount, struct pg_result **results);
 
 #endif   /* CDBTM_H */

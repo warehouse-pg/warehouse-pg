@@ -688,26 +688,8 @@ XactLockTableWait(TransactionId xid, Relation rel, ItemPointer ctid,
 	 * gxid), need to report the waited transactions to QD to make sure the they have
 	 * the same transaction order on the coordinator.
 	 */
-	if (Gp_role == GP_ROLE_EXECUTE)
-	{
-		MemoryContext oldContext;
-		DistributedTransactionId gxid = LocalXidGetDistributedXid(xid);
-
-		if (gxid != InvalidDistributedTransactionId)
-		{
-			/*
-			 * allocate waitGxids in TopMemoryContext since it's used in
-			 * 'commit prepared' and the TopTransactionContext has been delete
-			 * after 'prepare'
-			 */
-			oldContext = MemoryContextSwitchTo(TopMemoryContext);
-			DistributedTransactionId *datum_gxid = palloc(sizeof(DistributedTransactionId));
-			*datum_gxid = gxid;
-
-			MyTmGxactLocal->waitGxids = lappend(MyTmGxactLocal->waitGxids, datum_gxid);
-			MemoryContextSwitchTo(oldContext);
-		}
-	}
+	if (gp_enable_global_deadlock_detector && Gp_role == GP_ROLE_EXECUTE)
+		AddLocalTransactionIDToGlobalWaitGXIds(xid);
 
 	/*
 	 * If an operation is specified, set up our verbose error context

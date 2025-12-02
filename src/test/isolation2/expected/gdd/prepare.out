@@ -67,19 +67,53 @@ CREATE TABLE
 INSERT INTO datadir select 1,datadir from gp_segment_configuration where role='p' and content=-1;
 INSERT 0 1
 
-ALTER SYSTEM SET gp_enable_global_deadlock_detector TO on;
-ALTER SYSTEM
-ALTER SYSTEM SET gp_global_deadlock_detector_period TO 5;
-ALTER SYSTEM
+-- start_ignore
+!\retcode gpconfig -c gp_enable_global_deadlock_detector -v on;
+-- start_ignore
+20251202:10:48:16:3181289 gpconfig:neo:smart-[INFO]:-completed successfully with parameters '-c gp_enable_global_deadlock_detector -v on'
 
--- Use utility session on seg 0 to restart coordinator. This way avoids the
--- situation where session issuing the restart doesn't disappear
--- itself.
-1U:SELECT pg_ctl(dir, 'restart') from datadir;
- pg_ctl 
---------
- OK     
-(1 row)
+-- end_ignore
+(exited with code 0)
+!\retcode gpconfig -c gp_global_deadlock_detector_period -v 5;
+-- start_ignore
+20251202:10:48:17:3181326 gpconfig:neo:smart-[INFO]:-completed successfully with parameters '-c gp_global_deadlock_detector_period -v 5'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpconfig -c autovacuum -v off;
+-- start_ignore
+20251202:10:48:17:3181371 gpconfig:neo:smart-[INFO]:-completed successfully with parameters '-c autovacuum -v off'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -rai;
+-- start_ignore
+20251202:10:48:17:3181408 gpstop:neo:smart-[INFO]:-Starting gpstop with args: -rai
+20251202:10:48:17:3181408 gpstop:neo:smart-[INFO]:-Gathering information and validating the environment...
+20251202:10:48:17:3181408 gpstop:neo:smart-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20251202:10:48:17:3181408 gpstop:neo:smart-[INFO]:-Obtaining Segment details from coordinator...
+20251202:10:48:17:3181408 gpstop:neo:smart-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.2.1-WHPG+dev.64.gfab25d3c6e build dev'
+20251202:10:48:17:3181408 gpstop:neo:smart-[INFO]:-Commencing Coordinator instance shutdown with mode='immediate'
+20251202:10:48:17:3181408 gpstop:neo:smart-[INFO]:-Coordinator segment instance directory=/home/smart/workspace/gpdb/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
+20251202:10:48:17:3181408 gpstop:neo:smart-[INFO]:-Attempting forceful termination of any leftover coordinator process
+20251202:10:48:17:3181408 gpstop:neo:smart-[INFO]:-Terminating processes for segment /home/smart/workspace/gpdb/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
+20251202:10:48:17:3181408 gpstop:neo:smart-[INFO]:-No standby coordinator host configured
+20251202:10:48:17:3181408 gpstop:neo:smart-[INFO]:-Targeting dbid [2, 3, 4] for shutdown
+20251202:10:48:17:3181408 gpstop:neo:smart-[INFO]:-Commencing parallel segment instance shutdown, please wait...
+20251202:10:48:17:3181408 gpstop:neo:smart-[INFO]:-0.00% of jobs completed
+20251202:10:48:19:3181408 gpstop:neo:smart-[INFO]:-100.00% of jobs completed
+20251202:10:48:19:3181408 gpstop:neo:smart-[INFO]:-----------------------------------------------------
+20251202:10:48:19:3181408 gpstop:neo:smart-[INFO]:-   Segments stopped successfully      = 3
+20251202:10:48:19:3181408 gpstop:neo:smart-[INFO]:-   Segments with errors during stop   = 0
+20251202:10:48:19:3181408 gpstop:neo:smart-[INFO]:-----------------------------------------------------
+20251202:10:48:19:3181408 gpstop:neo:smart-[INFO]:-Successfully shutdown 3 of 3 segment instances 
+20251202:10:48:19:3181408 gpstop:neo:smart-[INFO]:-Database successfully shutdown with no errors reported
+20251202:10:48:19:3181408 gpstop:neo:smart-[INFO]:-Restarting System...
+
+-- end_ignore
+(exited with code 0)
+-- end_ignore
+
 -- Start new session on coordinator to make sure it has fully completed
 -- recovery and up and running again.
 1: SHOW gp_enable_global_deadlock_detector;

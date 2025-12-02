@@ -1,10 +1,10 @@
-ALTER SYSTEM RESET gp_enable_global_deadlock_detector;
-ALTER SYSTEM RESET gp_global_deadlock_detector_period;
+-- start_ignore
+!\retcode gpconfig -c gp_enable_global_deadlock_detector -v off;
+!\retcode gpconfig -c gp_global_deadlock_detector_period -v 120;
+!\retcode gpconfig -c autovacuum -v on;
+!\retcode gpstop -rai;
+-- end_ignore
 
--- Use utility session on seg 0 to restart coordinator. This way avoids the
--- situation where session issuing the restart doesn't disappear
--- itself.
-1U:SELECT pg_ctl(dir, 'restart') from datadir;
 -- Start new session on coordinator to make sure it has fully completed
 -- recovery and up and running again.
 1: SHOW gp_enable_global_deadlock_detector;

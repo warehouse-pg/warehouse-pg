@@ -3047,6 +3047,8 @@ CommitTransaction(void)
 	/* Release resource group slot at the end of a transaction */
 	if (ShouldUnassignResGroup())
 		UnassignResGroup();
+
+	SIMPLE_FAULT_INJECTOR("local_commit_transaction");
 }
 
 /*
@@ -3883,6 +3885,13 @@ CommitTransactionCommand(void)
 
 	if (s->chain)
 		SaveTransactionCharacteristics();
+
+	if (Gp_role == GP_ROLE_EXECUTE && list_length(MyTmGxactLocal->waitGxids) != 0)
+	{
+		sendWaitGxidsToQD(MyTmGxactLocal->waitGxids);
+		list_free_deep(MyTmGxactLocal->waitGxids);
+		MyTmGxactLocal->waitGxids = NULL;
+	}
 
 	switch (s->blockState)
 	{

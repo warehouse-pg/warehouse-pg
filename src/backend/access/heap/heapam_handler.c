@@ -38,6 +38,8 @@
 #include "commands/progress.h"
 #include "commands/vacuum.h"
 #include "executor/executor.h"
+#include "libpq/pqformat.h"
+#include "libpq/libpq.h"
 #include "optimizer/plancat.h"
 #include "pgstat.h"
 #include "storage/bufmgr.h"
@@ -49,6 +51,8 @@
 #include "storage/smgr.h"
 #include "utils/builtins.h"
 #include "utils/rel.h"
+
+#include "cdb/cdbvars.h"
 
 
 static void reform_and_rewrite_tuple(HeapTuple tuple,
@@ -62,6 +66,9 @@ static bool SampleHeapTupleVisible(TableScanDesc scan, Buffer buffer,
 static BlockNumber heapam_scan_get_blocks_done(HeapScanDesc hscan);
 
 static const TableAmRoutine heapam_methods;
+
+static void AddInProgressTransactionIDToGlobalWaitGXIds(Relation relation,
+														ItemPointer otid, Snapshot snapshot);
 
 
 /* ------------------------------------------------------------------------
@@ -324,12 +331,29 @@ heapam_tuple_delete(Relation relation, ItemPointer tid, CommandId cid,
 					Snapshot snapshot, Snapshot crosscheck, bool wait,
 					TM_FailureData *tmfd, bool changingPart)
 {
+	TM_Result	result;
 	/*
 	 * Currently Deleting of index tuples are handled at vacuum, in case if
 	 * the storage itself is cleaning the dead tuples by itself, it is the
 	 * time to call the index tuple deletion also.
 	 */
-	return heap_delete(relation, tid, cid, crosscheck, wait, tmfd, changingPart);
+	result = heap_delete(relation, tid, cid, crosscheck, wait, tmfd, changingPart);
+
+	/*
+	 * When a tuple is marked as deleted, it is possible that the xmax’s gxid has
+	 * already committed locally on the segment, yet our DistributedSnapshot still
+	 * treats that global transaction as running. In this case, we must look up the
+	 * corresponding gxid, place it in waitGxids, and block until the QD observes
+	 * that transaction as fully finished.
+	 *
+	 * In short, any lock state inferred on a segment for such tuples must be
+	 * elevated to a cluster-wide lock interpretation and the actual waiting must be
+	 * performed on the coordinator.
+	 */
+	if (result == TM_Deleted && wait)
+		AddInProgressTransactionIDToGlobalWaitGXIds(relation, tid, snapshot);
+
+	return result;
 }
 
 
@@ -360,6 +384,16 @@ heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	 * If it's a HOT update, we mustn't insert new index entries.
 	 */
 	*update_indexes = result == TM_Ok && !HeapTupleIsHeapOnly(tuple);
+
+	/*
+	 * When a tuple is marked as deleted, it is possible that the xmax’s gxid has
+	 * already committed locally on the segment, yet our DistributedSnapshot still
+	 * treats that global transaction as running. In this case, we must look up the
+	 * corresponding gxid, place it in waitGxids, and block until the QD observes
+	 * that transaction as fully finished.
+	 */
+	if (result == TM_Updated && wait)
+		AddInProgressTransactionIDToGlobalWaitGXIds(relation, otid, snapshot);
 
 	if (shouldFree)
 		pfree(tuple);
@@ -523,6 +557,16 @@ tuple_lock_retry:
 					 * This is a live tuple, so try to lock it again.
 					 */
 					ReleaseBuffer(buffer);
+
+					/*
+					 * This tuple is visible, which means the updating transaction has already
+					 * completed on the segment. However, its distributed transaction may not yet
+					 * be recognized as committed at the global level. Record its gxid in
+					 * waitGxids so we can wait for the distributed commit to finalize.
+					 */
+					if (gp_enable_global_deadlock_detector && Gp_role == GP_ROLE_EXECUTE)
+						AddLocalTransactionIDToGlobalWaitGXIds(HeapTupleHeaderGetRawXmin(tuple->t_data));
+
 					goto tuple_lock_retry;
 				}
 
@@ -572,6 +616,14 @@ tuple_lock_retry:
 				*tid = tuple->t_data->t_ctid;
 				/* updated row should have xmin matching this xmax */
 				priorXmax = HeapTupleHeaderGetUpdateXid(tuple->t_data);
+
+				/*
+				* All the transactions in the HOT chain should be added into waitGxids,
+				* and wait them commit in QD.
+				*/
+				if (gp_enable_global_deadlock_detector && Gp_role == GP_ROLE_EXECUTE)
+					AddLocalTransactionIDToGlobalWaitGXIds(HeapTupleHeaderGetRawXmax(tuple->t_data));
+
 				ReleaseBuffer(buffer);
 				/* loop back to fetch next in chain */
 			}
@@ -2809,4 +2861,36 @@ Datum
 heap_tableam_handler(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_POINTER(&heapam_methods);
+}
+
+/*
+ * Derive the distributed transaction ID from xmax and verify whether that
+ * distributed transaction is considered committed on this QE. If it has
+ * already completed locally, record its gxid in
+ * MyTmGxactLocal->waitGxids and return control to the QD so the global
+ * commit can be awaited there.
+ */
+void
+AddInProgressTransactionIDToGlobalWaitGXIds(Relation relation, ItemPointer otid, Snapshot snapshot)
+{
+	if (gp_enable_global_deadlock_detector && Gp_role == GP_ROLE_EXECUTE)
+	{
+		bool setDistributedSnapshotIgnore;
+
+		BlockNumber block = ItemPointerGetBlockNumber(otid);
+		Buffer buffer = ReadBuffer(relation, block);
+		Page page = BufferGetPage(buffer);
+		ItemId lp = PageGetItemId(page, ItemPointerGetOffsetNumber(otid));
+
+		LockBuffer(buffer, BUFFER_LOCK_SHARE);
+		HeapTupleHeader header = (HeapTupleHeader) PageGetItem(page, lp);
+		TransactionId updated_xid = HeapTupleHeaderGetUpdateXid(header);
+		UnlockReleaseBuffer(buffer);
+
+		XidInMVCCSnapshotCheckResult snapshotCheckResult =
+				XidInMVCCSnapshot(updated_xid, snapshot, false, &setDistributedSnapshotIgnore);
+
+		if (snapshotCheckResult == XID_IN_SNAPSHOT)
+			AddLocalTransactionIDToGlobalWaitGXIds(updated_xid);
+	}
 }

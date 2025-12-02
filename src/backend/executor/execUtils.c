@@ -1577,6 +1577,24 @@ void mppExecutorFinishup(QueryDesc *queryDesc)
 		/* sum up rejected rows if any (single row error handling only) */
 		cdbdisp_sumRejectedRows(pr);
 
+		CdbPgResults cdb_pgresults = {NULL, 0};
+		cdbdisp_returnResults(pr, &cdb_pgresults);
+		gatherWaitedGxids(cdb_pgresults.numResults, cdb_pgresults.pg_results);
+
+		/* and wait corresponding transaction */
+		ListCell *l;
+		foreach(l, MyTmGxactLocal->waitGxids)
+		{
+			DistributedTransactionId gxid = *(DistributedTransactionId *) lfirst(l);
+			GxactLockTableWait(gxid);
+		}
+		/* clean it */
+		if (MyTmGxactLocal->waitGxids != NULL)
+		{
+			list_free_deep(MyTmGxactLocal->waitGxids);
+			MyTmGxactLocal->waitGxids = NULL;
+		}
+
 		/*
 		 * Check and free the results of all gangs. If any QE had an
 		 * error, report it and exit to our error handler via PG_THROW.

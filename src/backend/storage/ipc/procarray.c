@@ -462,7 +462,7 @@ ProcArrayEndTransaction(PGPROC *proc, TransactionId latestXid)
 #ifdef FAULT_INJECTOR
 	FaultInjector_InjectFaultIfSet("before_xact_end_procarray",
 			DDLNotSpecified,
-			MyProcPort ? MyProcPort->database_name : "",  // databaseName
+			"",  // databaseName
 			""); // tableName
 #endif
 
@@ -5405,4 +5405,24 @@ ResGroupMoveNotifyInitiator(pid_t callerPid)
 		break;
 	}
 	LWLockRelease(ProcArrayLock);
+}
+
+
+/*
+ * Find the responding Distributed Transaction ID with xid, and add it
+ * into MyTmGxactLocal->waitGxids.
+ */
+void
+AddLocalTransactionIDToGlobalWaitGXIds(TransactionId xid)
+{
+	DistributedTransactionId gxid = LocalXidGetDistributedXid(xid);
+	MemoryContext oldContext;
+	if (gxid != InvalidDistributedTransactionId)
+	{
+		oldContext = MemoryContextSwitchTo(TopMemoryContext);
+		DistributedTransactionId *waitid = palloc(sizeof(DistributedTransactionId));
+		*waitid = gxid;
+		MyTmGxactLocal->waitGxids = lappend(MyTmGxactLocal->waitGxids, waitid);
+		MemoryContextSwitchTo(oldContext);
+	}
 }

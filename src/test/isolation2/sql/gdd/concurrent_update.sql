@@ -28,18 +28,17 @@ DROP TABLE t_concurrent_update;
 3&: UPDATE t_concurrent_update SET b=b+10 WHERE a=1;
 
 -- transaction 2 suspend before commit, but it will wake up transaction 3 on segment
-2: select gp_inject_fault('before_xact_end_procarray', 'suspend', '', 'isolation2test', '', 1, 1, 0, dbid) FROM gp_segment_configuration WHERE role='p' AND content=-1;
+2: select gp_inject_fault('before_xact_end_procarray', 'suspend', dbid) FROM gp_segment_configuration WHERE role='p' AND content=-1;
 2&: END;
-1: select gp_wait_until_triggered_fault('before_xact_end_procarray', 1, dbid) FROM gp_segment_configuration WHERE role='p' AND content=-1;
--- transaction 3 should wait transaction 2 commit on coordinator
-3<:
-3&: END;
--- the query should not get the incorrect distributed snapshot: transaction 1 in-progress
--- and transaction 2 finished
 1: SELECT * FROM t_concurrent_update;
 1: select gp_inject_fault('before_xact_end_procarray', 'reset', dbid) FROM gp_segment_configuration WHERE role='p' AND content=-1;
-2<:
+
+-- transaction 3 should wait transaction 2 commit on coordinator
 3<:
+3: SELECT * FROM t_concurrent_update;
+3: END;
+
+2<:
 2q:
 3q:
 
@@ -59,17 +58,66 @@ DROP TABLE t_concurrent_update;
 5: SELECT gp_inject_fault('before_get_distributed_xid', 'suspend', dbid) FROM gp_segment_configuration WHERE role='p' AND content=1;
 5&: UPDATE t_concurrent_update SET b=b+10 WHERE a=1;
 
-6: SELECT gp_wait_until_triggered_fault('before_get_distributed_xid', 1, dbid) FROM gp_segment_configuration WHERE role='p' AND content=1;
 4: END;
+6: SELECT gp_wait_until_triggered_fault('before_get_distributed_xid', 1, dbid) FROM gp_segment_configuration WHERE role='p' AND content=1;
 4: SELECT gp_inject_fault('before_get_distributed_xid', 'reset', dbid) FROM gp_segment_configuration WHERE role='p' AND content=1;
 
 5<:
 5: END;
 6: SELECT * FROM t_concurrent_update;
-6: DROP TABLE t_concurrent_update;
 4q:
 5q:
 6q:
+
+
+-- Same test as the above, transaction 8 should wait transaction 7 commit on coordinator
+7: truncate table t_concurrent_update;
+7: insert into t_concurrent_update values (1, 10);
+
+7: BEGIN;
+7: SET optimizer=off;
+7: UPDATE t_concurrent_update SET b=b+10 WHERE a=1;
+7: SELECT * FROM t_concurrent_update;
+7: SELECT gp_inject_fault('local_commit_transaction', 'suspend', dbid) FROM gp_segment_configuration WHERE role='p' AND content = 1;
+7&: commit;
+
+8: BEGIN;
+-- Transaction 8 should be able to update the tuple without being blocked, but it will wait for transaction 7
+8&: UPDATE t_concurrent_update SET b=b+10;
+
+9: SELECT gp_inject_fault('local_commit_transaction', 'reset', dbid) FROM gp_segment_configuration WHERE role='p' AND content = 1;
+7<:
+8<:
+8: SELECT * FROM t_concurrent_update;
+8: commit;
+
+
+-- Test delete
+7: truncate table t_concurrent_update;
+7: insert into t_concurrent_update values (1, 10), (2, 10);
+7: begin;
+7: delete from t_concurrent_update where b = 10;
+-- Since our two rows are on seg0 and seg1 (on a 3-segments demo cluster), suspending seg2 does
+-- not affect seg0 and seg1 from committing locally.
+7: select gp_inject_fault('qe_start_commit_prepared', 'suspend',dbid) from gp_segment_configuration where content=2 and role='p';
+-- transaction will suspend
+7&: end;
+
+8: begin;
+-- should be blocked
+8&: delete from t_concurrent_update where b = 10;
+
+9: select gp_inject_fault('qe_start_commit_prepared', 'reset',dbid) from gp_segment_configuration where content=2 and role='p';
+7<:
+8<:
+-- should no tuple returns
+8: select * from t_concurrent_update;
+8: commit;
+
+9: drop table t_concurrent_update;
+7q:
+8q:
+9q:
 
 -- Test update distkey
 -- IF we enable the GDD, then the lock maybe downgrade to
