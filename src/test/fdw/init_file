@@ -1,0 +1,9 @@
+-- This file contains patterns to filter out variable parts from test output
+-- when comparing with expected results.
+
+-- start_matchsubs
+# Filter out pid information from NOTICE messages
+# Example: (entry db 127.0.0.1:15432 pid=81718) -> (entry db 127.0.0.1:15432 pid=XXXXX)
+m/\s+\(entry db(.*)+\spid=\d+\)/
+s/\s+\(entry db(.*)+\spid=\d+\)//
+-- end_matchsubs

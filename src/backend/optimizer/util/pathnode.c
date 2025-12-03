@@ -19,6 +19,7 @@
 #include <math.h>
 
 #include "miscadmin.h"
+#include "foreign/fdwapi.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
@@ -3102,6 +3103,41 @@ create_foreignscan_path(PlannerInfo *root, RelOptInfo *rel,
 	}
 
 	pathnode->fdw_private = fdw_private;
+
+	/*
+	 * A foreign scan is considered rescannable only if the FDW provides
+	 * a ReScanForeignScan callback. If not provided, the planner will
+	 * automatically insert a Material node when rescanning is needed
+	 * (e.g., for nested loop joins).
+	 *
+	 * However, if the path is parameterized (required_outer is not empty),
+	 * and the FDW doesn't support rescan, we cannot create this path.
+	 * Parameterized paths require rescanning with different parameter values,
+	 * and Material nodes don't help in this case (they would need to be
+	 * rescanned too). This is similar to how Motion paths work.
+	 */
+	if (rel->fdwroutine != NULL && rel->fdwroutine->ReScanForeignScan != NULL)
+	{
+		pathnode->path.rescannable = true;
+	}
+	else
+	{
+		pathnode->path.rescannable = false;
+
+		/*
+		 * Reject parameterized paths if FDW doesn't support rescan
+		 *
+		 * We only need to check path.required_outer here. For a base relation,
+		 * any dependency from rel->lateral_relids is already reflected in the
+		 * required_outer set passed to this function. Therefore, checking
+		 * required_outer is sufficient to detect all parameterization.
+		 */
+		if (!bms_is_empty(required_outer))
+		{
+			pfree(pathnode);
+			return NULL;
+		}
+	}
 
 	return pathnode;
 }

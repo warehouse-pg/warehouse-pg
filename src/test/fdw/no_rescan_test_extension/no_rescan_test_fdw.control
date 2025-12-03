@@ -1,0 +1,4 @@
+comment = 'Dummy extension to test FDW handling not rescannable'
+default_version = '1.0'
+module_pathname = '$libdir/no_rescan_test_fdw'
+relocatable = true
