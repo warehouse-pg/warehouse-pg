@@ -101,8 +101,11 @@ $node->command_checks_all(['pg_waldump', '-p', "$pgdata/pg_wal/", '-t', '1','--l
 my $header_size1 = 32*1024;
 open my $fh1, '>', $corrupt_wal_file or die "Cannot open WAL file $corrupt_wal_file: $!";
 
-# Simulate corrupt header
+# Simulate corrupt header, but fill xlp_seg_size position with DEFAULT_XLOG_SEG_SIZE.
+# Otherwise, the below command may report fatal as above case when set WalSegSz.
 my $corrupt_header1 = "\x00" x $header_size1; # Filling the header with null bytes
+my $value = 64 * 1024 * 1024;
+substr($corrupt_header1, 32, 4) = pack("V", $value);
 print $fh1 $corrupt_header1;
 close $fh1;
 
