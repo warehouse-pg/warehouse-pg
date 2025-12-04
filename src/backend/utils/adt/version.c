@@ -30,5 +30,8 @@ pgsql_version(PG_FUNCTION_ARGS pg_attribute_unused() )
 
 	strcat(version, " Bhuvnesh C.");
 
+	// add WarehousePG name at the end of the version string
+	strcat(version, " WarehousePG");
+
 	PG_RETURN_TEXT_P(cstring_to_text(version));
 }
