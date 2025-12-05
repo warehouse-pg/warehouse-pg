@@ -28,5 +28,8 @@ pgsql_version(PG_FUNCTION_ARGS __attribute__((unused)) )
 	strcat(version, " (with assert checking)");
 #endif 
 
+	// add WarehousePG name at the end of the version string
+	strcat(version, " WarehousePG");
+
 	PG_RETURN_TEXT_P(cstring_to_text(version));
 }
