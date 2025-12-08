@@ -303,6 +303,8 @@ NOTICE:  no_rescan_test_fdw: EndForeignScan - scanned 10 of 10 rows
 -- Reset planner settings
 RESET enable_hashjoin;
 RESET enable_mergejoin;
+RESET optimizer_enable_hashjoin;
+RESET optimizer_enable_mergejoin;
 RESET enable_material;
 RESET enable_nestloop;
 -- Cleanup

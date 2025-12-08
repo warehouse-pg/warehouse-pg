@@ -171,6 +171,8 @@ ORDER BY l.id;
 -- Reset planner settings
 RESET enable_hashjoin;
 RESET enable_mergejoin;
+RESET optimizer_enable_hashjoin;
+RESET optimizer_enable_mergejoin;
 RESET enable_material;
 RESET enable_nestloop;
 
