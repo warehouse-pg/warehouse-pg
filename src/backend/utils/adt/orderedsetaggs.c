@@ -1546,6 +1546,7 @@ gp_percentile_cont_transition(FunctionCallInfo fcinfo,
 		cnt = (int64 *) MemoryContextAllocZero(fcinfo->flinfo->fn_mcxt, sizeof(int64));
 		*cnt = 1;
 		fcinfo->flinfo->fn_extra = cnt;
+		return_state = val;
 	}
 	else
 	{
@@ -1644,6 +1645,7 @@ gp_percentile_disc_transition(PG_FUNCTION_ARGS)
 		cnt = (int64 *) MemoryContextAllocZero(fcinfo->flinfo->fn_mcxt, sizeof(int64));
 		*cnt = 1;
 		fcinfo->flinfo->fn_extra = cnt;
+		return_state = val;
 		if (percentile == 0.0)
 			rownum = 1;
 	}
