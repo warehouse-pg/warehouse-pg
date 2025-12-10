@@ -1570,6 +1570,9 @@ gp_percentile_cont_transition(FunctionCallInfo fcinfo,
 		fcinfo->flinfo->fn_extra = NULL;
 	}
 
+	if (return_state == (Datum)0)
+		PG_RETURN_NULL();
+
 	PG_RETURN_DATUM(return_state);
 }
 
@@ -1667,6 +1670,9 @@ gp_percentile_disc_transition(PG_FUNCTION_ARGS)
 		pfree(cnt);
 		fcinfo->flinfo->fn_extra = NULL;
 	}
+
+	if (return_state == (Datum) 0)
+		PG_RETURN_NULL();
 
 	PG_RETURN_DATUM(return_state);
 }
