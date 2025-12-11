@@ -1418,3 +1418,20 @@ WITH cte AS ( SELECT k1, m1, m2, m3 FROM t_metrics GROUP BY 1,2,3,4 ) SELECT per
 WITH cte AS ( SELECT k1, m1 FROM t_metrics GROUP BY 1,2 ) SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY m1) AS p50_m1 FROM cte;
 
 DROP TABLE t_metrics;
+
+CREATE TABLE t_metrics ( k1 INT, m1 NUMERIC, m2 interval) DISTRIBUTED BY (k1);
+INSERT INTO t_metrics (k1, m1, m2) VALUES
+  (1, 0.15, INTERVAL '1 day'),
+  (2, NULL, INTERVAL '3 hours'),
+  (3, 0.80, NULL),
+  (4, NULL, NULL),
+  (5, 0.25, INTERVAL '2 days 4 hours'),
+  (6, 1.05, INTERVAL '15 minutes'),
+  (7, 0.00, INTERVAL '1 month'),
+  (8, 0.55, NULL),
+  (9, NULL, INTERVAL '7 days'),
+  (10, 0.33, INTERVAL '2 hours 30 minutes');
+
+select percentile_cont(0.9999) within group (order by m2) from t_metrics;
+
+DROP TABLE t_metrics;
