@@ -160,4 +160,7 @@ s/ The longest  establish conn time: \d+\.\d+ ms, segindex: \d+/ The longest  es
 # ignore resource queue ids
 m/resource queue id: \d+/
 s/resource queue id: \d+/resource queue id: XXXX/
+
+m/ERROR:  could not devise a query plan for the given query \(.*\)/
+s/ERROR:  could not devise a query plan for the given query \(.*\)/ERROR:  could not devise a query plan for the given query/
 -- end_matchsubs
