@@ -1409,16 +1409,6 @@ explain analyze select count(*) from pg_class, (select count(*) > 0 from (select
 reset enable_indexonlyscan;
 
 -- Test percentile agg with pass-by-ref datatype
-CREATE TABLE t_metrics ( k1 INT, m1 NUMERIC, m2 NUMERIC, m3 NUMERIC ) DISTRIBUTED BY (k1);
-INSERT INTO t_metrics VALUES (1, 0.10, 0.20, 0.30), (1, 0.12, 0.18, 0.25), (1, 0.15, 0.22, 0.28), (2, 0.50, 0.60, 0.70), (2, 0.55, 0.58, 0.65), (3, 0.90, 0.10, 0.05);
-
--- SQL 1
-WITH cte AS ( SELECT k1, m1, m2, m3 FROM t_metrics GROUP BY 1,2,3,4 ) SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY m1) AS p50_m1, percentile_disc(0.5) WITHIN GROUP (ORDER BY m2) AS p50_m2, percentile_disc(0.5) WITHIN GROUP (ORDER BY m3) AS p50_m3 FROM cte;
--- SQL 2
-WITH cte AS ( SELECT k1, m1 FROM t_metrics GROUP BY 1,2 ) SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY m1) AS p50_m1 FROM cte;
-
-DROP TABLE t_metrics;
-
 CREATE TABLE t_metrics ( k1 INT, m1 NUMERIC, m2 interval) DISTRIBUTED BY (k1);
 INSERT INTO t_metrics (k1, m1, m2) VALUES
   (1, 0.15, INTERVAL '1 day'),
@@ -1432,6 +1422,12 @@ INSERT INTO t_metrics (k1, m1, m2) VALUES
   (9, NULL, INTERVAL '7 days'),
   (10, 0.33, INTERVAL '2 hours 30 minutes');
 
+select percentile_disc(0.5) within group (order by m1) from t_metrics;
+
 select percentile_cont(0.9999) within group (order by m2) from t_metrics;
+
+WITH cte AS (SELECT k1, m1, m2 FROM t_metrics GROUP BY 1,2,3) SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY m1) AS p50_m1, percentile_disc(0.5) WITHIN GROUP (ORDER BY m2) AS p50_m2 FROM cte;
+
+WITH cte AS (SELECT k1, m1 FROM t_metrics GROUP BY 1,2) SELECT percentile_disc(0.2) WITHIN GROUP (ORDER BY m1) AS p50_m1 FROM cte;
 
 DROP TABLE t_metrics;
