@@ -1503,9 +1503,27 @@ hypothetical_dense_rank_final(PG_FUNCTION_ARGS)
 }
 
 /*
- * Generic transition function for gp_percentile_cont
- * with a single input column in which we want to suppress nulls
- * This assumes the input tuples are already sorted
+ * Generic transition function for gp_percentile_cont()
+ * with a single input column (ignoring NULL inputs for the column).
+ *
+ * This function consumes already-sorted input tuples and computes the continuous percentile
+ * via linear interpolation. Given percentile p (0 <= p <= 1) and total_rows = N, define:
+ *
+ *     first_row  = floor(p * (N - 1) + 1)
+ *     second_row = ceil(p * (N - 1) + 1)
+ *     proportion = p * (N - 1) - floor(p * (N - 1)) (set to 0 if first_row == second_row)
+ *
+ * If first_row == second_row, the result is the value at that position.
+ * Otherwise, interpolate between the first_row(prev) and second_row(val)
+ * using lerpfunc(prev, val, proportion). For duplicate values,
+ * peer_count denotes the size of the current "peer group".
+ *
+ * fcinfo->args:
+ *     0: previous_state_value (Datum)   — transition state from the prior call
+ *     1: val (Datum)                    — current input value
+ *     2: percentile (float8)            — the requested percentile
+ *     3: total_rows (int64)             — total number of non-null rows
+ *     4: peer_count (int64)             — size of the current peer group
  */
 static Datum
 gp_percentile_cont_transition(FunctionCallInfo fcinfo,
@@ -1514,11 +1532,11 @@ gp_percentile_cont_transition(FunctionCallInfo fcinfo,
 	int64        first_row;
 	int64        second_row;
 
-	/* Return state for NULL inputs of val*/
+	/* Return state for NULL inputs of val */
 	if (PG_ARGISNULL(1) && !PG_ARGISNULL(0))
 		PG_RETURN_DATUM(PG_GETARG_DATUM(0));
 
-	/* Ignore NULL inputs for val, percent and total_count*/
+	/* Ignore NULL inputs for val, percent and total_rows */
 	if (PG_ARGISNULL(1) || PG_ARGISNULL(2) || PG_ARGISNULL(3))
 		PG_RETURN_NULL();
 
@@ -1530,6 +1548,7 @@ gp_percentile_cont_transition(FunctionCallInfo fcinfo,
 						percentile)));
 
 	Datum prev_state = PG_GETARG_DATUM(0);
+	bool  return_isnull = PG_ARGISNULL(0);
 	Datum val = PG_GETARG_DATUM(1);
 	Datum return_state = prev_state;
 	int64 total_rows = PG_GETARG_INT64(3);
@@ -1546,7 +1565,6 @@ gp_percentile_cont_transition(FunctionCallInfo fcinfo,
 		cnt = (int64 *) MemoryContextAllocZero(fcinfo->flinfo->fn_mcxt, sizeof(int64));
 		*cnt = 1;
 		fcinfo->flinfo->fn_extra = cnt;
-		return_state = val;
 	}
 	else
 	{
@@ -1556,10 +1574,12 @@ gp_percentile_cont_transition(FunctionCallInfo fcinfo,
 	if(*cnt <= first_row && first_row < *cnt + peer_count)
 	{
 		return_state = val;
+		return_isnull = false;
 	}
 	else if(*cnt <= second_row && second_row < *cnt + peer_count)
 	{
 		return_state = lerpfunc(prev_state, val, proportion);
+		return_isnull = false;
 	}
 	*cnt = *cnt + peer_count;
 
@@ -1570,10 +1590,10 @@ gp_percentile_cont_transition(FunctionCallInfo fcinfo,
 		fcinfo->flinfo->fn_extra = NULL;
 	}
 
-	if (return_state == (Datum)0)
+	if (return_isnull)
 		PG_RETURN_NULL();
-
-	PG_RETURN_DATUM(return_state);
+	else
+		PG_RETURN_DATUM(return_state);
 }
 
 /*
@@ -1613,19 +1633,35 @@ gp_percentile_cont_timestamptz_transition(PG_FUNCTION_ARGS)
 }
 
 /*
- * Transition function for gp_percentile_disc  - discrete percentile
- * This assumes the input tuples are already sorted
+ * Transition function for gp_percentile_disc()
+ *
+ * This transition function consumes a set of already-sorted input tuples
+ * and computes the discrete percentile. For a percentile p (0 <= p <= 1) and
+ * total_rows = N, the target position (1-based) is:
+ *
+ *     rownum = ceil(p * N)
+ *
+ * The result is the first value whose cumulative count is >= rownum.
+ * For duplicate values, peer_count denotes the size of the current "peer
+ * group".
+ *
+ * PG_FUNCTION_ARGS:
+ *     0: previous_state_value (Datum)   — transition state from the prior call
+ *     1: val (Datum)                    — current input value
+ *     2: percentile (float8)            — the requested percentile
+ *     3: total_rows (int64)             — total number of non-null rows
+ *     4: peer_count (int64)             — size of the current peer group
  */
 Datum
 gp_percentile_disc_transition(PG_FUNCTION_ARGS)
 {
 	int64        rownum;
 
-	/* Return state for NULL inputs of val*/
+	/* Return state for NULL inputs of val */
 	if (PG_ARGISNULL(1) && !PG_ARGISNULL(0))
 		PG_RETURN_DATUM(PG_GETARG_DATUM(0));
 
-	/* Ignore NULL inputs for val, percent and total_count*/
+	/* Ignore NULL inputs for val, percent and total_rows */
 	if (PG_ARGISNULL(1) || PG_ARGISNULL(2) || PG_ARGISNULL(3))
 			PG_RETURN_NULL();
 
@@ -1636,6 +1672,7 @@ gp_percentile_disc_transition(PG_FUNCTION_ARGS)
 				 errmsg("percentile value %g is not between 0 and 1",
 						percentile)));
 	Datum prev_state = PG_GETARG_DATUM(0);
+	bool  return_isnull = PG_ARGISNULL(0);
 	Datum val = PG_GETARG_DATUM(1);
 	Datum return_state = prev_state;
 	int64 total_rows = PG_GETARG_INT64(3);
@@ -1648,7 +1685,6 @@ gp_percentile_disc_transition(PG_FUNCTION_ARGS)
 		cnt = (int64 *) MemoryContextAllocZero(fcinfo->flinfo->fn_mcxt, sizeof(int64));
 		*cnt = 1;
 		fcinfo->flinfo->fn_extra = cnt;
-		return_state = val;
 		if (percentile == 0.0)
 			rownum = 1;
 	}
@@ -1660,6 +1696,7 @@ gp_percentile_disc_transition(PG_FUNCTION_ARGS)
 	if(*cnt <= rownum && rownum < *cnt + peer_count)
 	{
 		return_state = val;
+		return_isnull = false;
 	}
 
 	*cnt = *cnt + peer_count;
@@ -1671,10 +1708,10 @@ gp_percentile_disc_transition(PG_FUNCTION_ARGS)
 		fcinfo->flinfo->fn_extra = NULL;
 	}
 
-	if (return_state == (Datum) 0)
+	if (return_isnull)
 		PG_RETURN_NULL();
-
-	PG_RETURN_DATUM(return_state);
+	else
+		PG_RETURN_DATUM(return_state);
 }
 
 /*
