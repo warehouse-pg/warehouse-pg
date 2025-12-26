@@ -157,10 +157,11 @@ typedef struct
 	PathTarget  *input_proj_target;     /* input tuple tlist + DQA expr */
 
 	List        *dqa_group_clause;      /* DQA exprs + group by clause for remove duplication */
-
 	List        *dqa_expr_lst;          /* DQAExpr list */
-	double		 dNumDistinctGroups;	/* # of distinct combinations of GROUP BY and DISTINCT exprs */
+	List        *dqa_clause;            /* DQA exprs */
 
+	double		 dNumDistinctGroups;	/* # of distinct combinations of GROUP BY and DISTINCT exprs */
+	bool		 hasAggFilter;          /* Does DQA have AggFilter */
 } cdb_dqas_info;
 
 typedef struct
@@ -200,10 +201,8 @@ static void add_second_stage_hash_agg_path(PlannerInfo *root,
 static void add_single_dqa_hash_agg_path(PlannerInfo *root,
 										 Path *path,
 										 cdb_agg_planning_context *ctx,
-										 RelOptInfo *output_rel,
-										 PathTarget *input_target,
-										 List       *dqa_group_clause,
-										 double dNumDistinctGroups);
+										 cdb_dqas_info *info,
+										 RelOptInfo *output_rel);
 static void add_single_mixed_dqa_hash_agg_path(PlannerInfo *root,
                                                Path *path,
                                                cdb_agg_planning_context *ctx,
@@ -487,10 +486,8 @@ cdb_create_multistage_grouping_paths(PlannerInfo *root,
 				add_single_dqa_hash_agg_path(root,
 											 cheapest_path,
 											 &ctx,
-											 output_rel,
-											 info.input_proj_target,
-											 info.dqa_group_clause,
-											 info.dNumDistinctGroups);
+											 &info,
+											 output_rel);
 			}
 			break;
 		case SINGLE_DQA_WITHAGG:
@@ -933,7 +930,55 @@ add_first_stage_group_agg_path(PlannerInfo *root,
 		dqa_group_tles = get_common_group_tles(info.input_proj_target,
 											   info.dqa_group_clause,
 											   ctx->rollups);
-		if (!cdbpathlocus_collocates_tlist(root, path->locus, dqa_group_tles))
+
+		/*
+		 * DQA with AggFilter requires special handling. Multi-stage DQA paths (3+ stages)
+		 * often fail to correctly propagate filter states or resolve variable mappings
+		 * (setrefs.c). We force a two-stage aggregation path here to ensure correctness.
+		 */
+		if (info.hasAggFilter)
+		{
+			/*
+			 * Case 1: Scalar Aggregation (No GROUP BY clause)
+			 * For example:
+			 *		select sum(distinct b) filter (where c > 4) from dqa_f3;
+			 * Strategy: Redistribute on the distinct key and perform two-stage aggregation.
+			 * 		-> GroupAggregate
+			 * 			-> Gather Motion
+			 * 				-> GroupAggregate
+			 * 					-> Redistribute Motion(on distinct key)
+			 */
+			if (ctx->groupClause == NIL)
+			{
+				bool		distinct_need_redistribute;
+
+				/* Identify target list entries for the DQA key to determine distribution */
+				List		*dqa_tles = get_common_group_tles(info.input_proj_target, info.dqa_clause, NIL);
+				CdbPathLocus distinct_locus = choose_grouping_locus(root, path,
+													   dqa_tles,
+													   &distinct_need_redistribute);
+
+				/* If data isn't already distributed by the DQA key, insert a Motion node */
+				if (distinct_need_redistribute)
+					path = cdbpath_create_motion_path(root, path, NIL, false, distinct_locus);
+			}
+			else
+			{
+				/*
+				 * Case 2: Grouped Aggregation
+				 * Query: SELECT SUM(DISTINCT b) FILTER (WHERE c > 4) FROM table GROUP BY e;
+				 * Current Limitation: Two-stage paths for grouped DQA with filters are
+				 * complex to coordinate across segments. Fall back to a safe
+				 * one-stage (global) aggregation path to guarantee result integrity.
+				 */
+				return;
+			}
+		}
+		/*
+		 * Standard DQA (no filter): Check if the current path locus matches
+		 * the required distribution for the DQA keys.
+		 */
+		else if (!cdbpathlocus_collocates_tlist(root, path->locus, dqa_group_tles))
 			return;
 	}
 
@@ -1307,6 +1352,9 @@ add_single_mixed_dqa_hash_agg_path(PlannerInfo *root,
 	if (!gp_enable_agg_distinct)
 		return;
 
+	if (info->hasAggFilter)
+		return;
+
 	/*
 	 * intermediate_target fetched by fetch_single_dqa_target()
 	 */
@@ -1518,10 +1566,8 @@ static void
 add_single_dqa_hash_agg_path(PlannerInfo *root,
 							 Path *path,
 							 cdb_agg_planning_context *ctx,
-							 RelOptInfo *output_rel,
-							 PathTarget *input_target,
-							 List       *dqa_group_clause,
-							 double dNumDistinctGroups)
+							 cdb_dqas_info *info,
+							 RelOptInfo *output_rel)
 {
 	List	   *dqa_group_tles;
 	int			num_input_segments;
@@ -1532,7 +1578,14 @@ add_single_dqa_hash_agg_path(PlannerInfo *root,
 	CdbPathLocus distinct_locus;
 	bool		distinct_need_redistribute;
 
+	PathTarget *input_target = info->input_proj_target;
+	List	   *dqa_group_clause = info->dqa_group_clause;
+	double dNumDistinctGroups = info->dNumDistinctGroups;
+
 	if (!gp_enable_agg_distinct)
+		return;
+
+	if (info->hasAggFilter)
 		return;
 
 	/*
@@ -2614,11 +2667,9 @@ fetch_multi_dqas_info(PlannerInfo *root,
 	 * find all DQAs with different args, count the number, store their args bitmapsets
 	 */
 	dNumDistinctGroups = 0;
-	forboth(lc, ctx->agg_partial_costs->distinctAggrefs,
-	        lcc, ctx->agg_final_costs->distinctAggrefs)
+	foreach(lc, ctx->agg_partial_costs->distinctAggrefs)
 	{
 		Aggref	        *aggref = (Aggref *) lfirst(lc);
-		Aggref	        *aggref_final = (Aggref *) lfirst(lcc);
 		SortGroupClause *arg_sortcl;
 		TargetEntry     *arg_tle;
 		ListCell        *lc2;
@@ -2765,9 +2816,19 @@ fetch_multi_dqas_info(PlannerInfo *root,
 
 		/* rid of filter in aggref, will push them down to the TupleSplit node */
 		aggref->aggfilter = NULL;
-		aggref_final->aggfilter = NULL;
 	}
 	info->dNumDistinctGroups = dNumDistinctGroups;
+
+	/*
+	 * Note: final_tlist may contain duplicate entries that are absent in the
+	 * deduplicated partial_tlist. To handle this potential length mismatch in
+	 * distinctAggrefs, reset the aggfilter to NULL to maintain target list integrity.
+	 */
+	foreach(lcc, ctx->agg_final_costs->distinctAggrefs)
+	{
+		Aggref *aggref_final = (Aggref *) lfirst(lcc);
+		aggref_final->aggfilter = NULL;
+	}
 
 	/*
 	 * Find DQAExpr for vars in normal agg, if not found
@@ -2866,6 +2927,8 @@ fetch_single_dqa_info(PlannerInfo *root,
 	ListCell   *lc;
 	ListCell   *lcc;
 
+	info->hasAggFilter = (aggref->aggfilter != NULL);
+
 	foreach (lc, aggref->aggdistinct)
 	{
 		arg_sortcl = (SortGroupClause *) lfirst(lc);
@@ -2890,6 +2953,8 @@ fetch_single_dqa_info(PlannerInfo *root,
 		sortcl = copyObject(arg_sortcl);
 		sortcl->tleSortGroupRef = info->input_proj_target->sortgrouprefs[idx];
 		sortcl->hashable = true;	/* we verified earlier that it's hashable */
+
+		info->dqa_clause = lappend(info->dqa_clause, sortcl);
 
 		if (ctx->groupClause == NULL)
 		{
