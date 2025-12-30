@@ -610,6 +610,31 @@ select count(distinct a), count(distinct b), sum(c), sum(d), count(*) from dqa_f
 
 select count(distinct a), count(distinct b), sum(a), sum(b), count(*) from dqa_f3;
 
+-- Test DQA with Agg Filter
+explain (verbose, costs off)
+select sum(distinct b) filter (where c > 4) from dqa_f3;
+select sum(distinct b) filter (where c > 4) from dqa_f3;
+
+explain (verbose, costs off)
+select sum(distinct b) filter (where c > 4) from dqa_f3 group by a;
+select sum(distinct b) filter (where c > 4) from dqa_f3 group by a;
+
+explain (verbose, costs off)
+select sum(distinct b) filter (where c > 4) from dqa_f3 group by b;
+select sum(distinct b) filter (where c > 4) from dqa_f3 group by b;
+
+explain (verbose, costs off)
+select sum(distinct d) filter (where c > 4), sum(distinct b) filter (where c > 4), sum(distinct b) filter (where c > 4) from dqa_f3;
+select sum(distinct d) filter (where c > 4), sum(distinct b) filter (where c > 4), sum(distinct b) filter (where c > 4) from dqa_f3;
+
+explain (verbose, costs off)
+select sum(distinct d) filter (where c > 4), sum(distinct b) filter (where c > 4), sum(distinct b) filter (where c > 4) from dqa_f3 group by a;
+select sum(distinct d) filter (where c > 4), sum(distinct b) filter (where c > 4), sum(distinct b) filter (where c > 4) from dqa_f3 group by a;
+
+explain (verbose, costs off)
+select sum(distinct d) filter (where c > 4), sum(distinct b) filter (where c > 4), sum(distinct b) filter (where c > 4) from dqa_f3 group by b;
+select sum(distinct d) filter (where c > 4), sum(distinct b) filter (where c > 4), sum(distinct b) filter (where c > 4) from dqa_f3 group by b;
+
 -- Test multi distinct in aggregation
 explain (verbose on, costs off) select count(distinct c), count(distinct d), to_char(corr(distinct b, a), '9.99999999999999'), sum(b + a), count(*) from dqa_f3;
 select count(distinct c), count(distinct d), to_char(corr(distinct b, a), '9.99999999999999'), sum(b + a), count(*) from dqa_f3;

@@ -3106,6 +3106,254 @@ select count(distinct a), count(distinct b), sum(a), sum(b), count(*) from dqa_f
     23 |    12 | 1040 | 534 |   100
 (1 row)
 
+-- Test DQA with Agg Filter
+explain (verbose, costs off)
+select sum(distinct b) filter (where c > 4) from dqa_f3;
+                                     QUERY PLAN                                     
+------------------------------------------------------------------------------------
+ Finalize Aggregate
+   Output: sum(DISTINCT b) FILTER (WHERE (c > 4))
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         Output: (PARTIAL sum(DISTINCT b) FILTER (WHERE (c > 4)))
+         ->  Partial Aggregate
+               Output: PARTIAL sum(DISTINCT b) FILTER (WHERE (c > 4))
+               ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                     Output: b, c
+                     Hash Key: b
+                     ->  Seq Scan on public.dqa_f3
+                           Output: b, c
+ Optimizer: Postgres-based planner
+ Settings: enable_groupagg = 'off', gp_motion_cost_per_row = '1', optimizer = 'off'
+(13 rows)
+
+select sum(distinct b) filter (where c > 4) from dqa_f3;
+ sum 
+-----
+  66
+(1 row)
+
+explain (verbose, costs off)
+select sum(distinct b) filter (where c > 4) from dqa_f3 group by a;
+                                     QUERY PLAN                                     
+------------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   Output: (sum(DISTINCT b) FILTER (WHERE (c > 4))), a
+   ->  GroupAggregate
+         Output: sum(DISTINCT b) FILTER (WHERE (c > 4)), a
+         Group Key: dqa_f3.a
+         ->  Sort
+               Output: a, b, c
+               Sort Key: dqa_f3.a
+               ->  Seq Scan on public.dqa_f3
+                     Output: a, b, c
+ Optimizer: Postgres-based planner
+ Settings: enable_groupagg = 'off', gp_motion_cost_per_row = '1', optimizer = 'off'
+(12 rows)
+
+select sum(distinct b) filter (where c > 4) from dqa_f3 group by a;
+ sum 
+-----
+  19
+  11
+  21
+   5
+  11
+   1
+  14
+   3
+  14
+  13
+   8
+   9
+  16
+  17
+  10
+  16
+  22
+  15
+   9
+  11
+   1
+   7
+   7
+(23 rows)
+
+explain (verbose, costs off)
+select sum(distinct b) filter (where c > 4) from dqa_f3 group by b;
+                                     QUERY PLAN                                     
+------------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   Output: (sum(DISTINCT b) FILTER (WHERE (c > 4))), b
+   ->  GroupAggregate
+         Output: sum(DISTINCT b) FILTER (WHERE (c > 4)), b
+         Group Key: dqa_f3.b
+         ->  Sort
+               Output: b, c
+               Sort Key: dqa_f3.b
+               ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                     Output: b, c
+                     Hash Key: b
+                     ->  Seq Scan on public.dqa_f3
+                           Output: b, c
+ Optimizer: Postgres-based planner
+ Settings: enable_groupagg = 'off', gp_motion_cost_per_row = '1', optimizer = 'off'
+(15 rows)
+
+select sum(distinct b) filter (where c > 4) from dqa_f3 group by b;
+ sum 
+-----
+   0
+   1
+   2
+   3
+   4
+   7
+   8
+   5
+   6
+   9
+  10
+  11
+(12 rows)
+
+explain (verbose, costs off)
+select sum(distinct d) filter (where c > 4), sum(distinct b) filter (where c > 4), sum(distinct b) filter (where c > 4) from dqa_f3;
+                                                            QUERY PLAN                                                            
+----------------------------------------------------------------------------------------------------------------------------------
+ Finalize Aggregate
+   Output: sum(DISTINCT d), sum(DISTINCT b), sum(DISTINCT b)
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         Output: (PARTIAL sum(DISTINCT d)), (PARTIAL sum(DISTINCT b))
+         ->  Partial Aggregate
+               Output: PARTIAL sum(DISTINCT d), PARTIAL sum(DISTINCT b)
+               ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                     Output: d, c, b, (AggExprId)
+                     Hash Key: d, b, (AggExprId)
+                     ->  Streaming HashAggregate
+                           Output: d, c, b, (AggExprId)
+                           Group Key: AggExprId, dqa_f3.d, dqa_f3.b
+                           ->  TupleSplit
+                                 Output: d, c, b, AggExprId
+                                 Split by Col: (dqa_f3.d) FILTER (WHERE (dqa_f3.c > 4)), (dqa_f3.b) FILTER (WHERE (dqa_f3.c > 4))
+                                 ->  Seq Scan on public.dqa_f3
+                                       Output: a, b, c, d, e
+ Optimizer: Postgres-based planner
+ Settings: enable_groupagg = 'off', gp_motion_cost_per_row = '1', optimizer = 'off'
+(19 rows)
+
+select sum(distinct d) filter (where c > 4), sum(distinct b) filter (where c > 4), sum(distinct b) filter (where c > 4) from dqa_f3;
+ sum | sum | sum 
+-----+-----+-----
+  10 |  66 |  66
+(1 row)
+
+explain (verbose, costs off)
+select sum(distinct d) filter (where c > 4), sum(distinct b) filter (where c > 4), sum(distinct b) filter (where c > 4) from dqa_f3 group by a;
+                                                               QUERY PLAN                                                               
+----------------------------------------------------------------------------------------------------------------------------------------
+ Finalize HashAggregate
+   Output: sum(d), sum(b), sum(b), a
+   Group Key: dqa_f3.a
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         Output: a, (PARTIAL sum(d)), (PARTIAL sum(b))
+         ->  Partial HashAggregate
+               Output: a, PARTIAL sum(d), PARTIAL sum(b)
+               Group Key: dqa_f3.a
+               ->  HashAggregate
+                     Output: a, d, c, b, (AggExprId)
+                     Group Key: (AggExprId), dqa_f3.d, dqa_f3.b, dqa_f3.a
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                           Output: a, d, c, b, (AggExprId)
+                           Hash Key: a, d, b, (AggExprId)
+                           ->  Streaming HashAggregate
+                                 Output: a, d, c, b, (AggExprId)
+                                 Group Key: AggExprId, dqa_f3.d, dqa_f3.b, dqa_f3.a
+                                 ->  TupleSplit
+                                       Output: a, d, c, b, AggExprId
+                                       Split by Col: (dqa_f3.d) FILTER (WHERE (dqa_f3.c > 4)), (dqa_f3.b) FILTER (WHERE (dqa_f3.c > 4))
+                                       Group Key: dqa_f3.a
+                                       ->  Seq Scan on public.dqa_f3
+                                             Output: a, b, c, d, e
+ Optimizer: Postgres-based planner
+ Settings: enable_groupagg = 'off', gp_motion_cost_per_row = '1', optimizer = 'off'
+(25 rows)
+
+select sum(distinct d) filter (where c > 4), sum(distinct b) filter (where c > 4), sum(distinct b) filter (where c > 4) from dqa_f3 group by a;
+ sum | sum | sum 
+-----+-----+-----
+   2 |   9 |   9
+   5 |  13 |  13
+   7 |  16 |  16
+   3 |   3 |   3
+   2 |   7 |   7
+   5 |  19 |  19
+   2 |   1 |   1
+   5 |  14 |  14
+   3 |   7 |   7
+   3 |  17 |  17
+   5 |  11 |  11
+   5 |  15 |  15
+   7 |  22 |  22
+   7 |  14 |  14
+   5 |  11 |  11
+   2 |  11 |  11
+   5 |  10 |  10
+   5 |   9 |   9
+   3 |   1 |   1
+   5 |   8 |   8
+   3 |   5 |   5
+   8 |  16 |  16
+   3 |  21 |  21
+(23 rows)
+
+explain (verbose, costs off)
+select sum(distinct d) filter (where c > 4), sum(distinct b) filter (where c > 4), sum(distinct b) filter (where c > 4) from dqa_f3 group by b;
+                                                               QUERY PLAN                                                               
+----------------------------------------------------------------------------------------------------------------------------------------
+ Finalize HashAggregate
+   Output: sum(d), sum(b), sum(b), b
+   Group Key: dqa_f3.b
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         Output: b, (PARTIAL sum(d)), (PARTIAL sum(b))
+         ->  Partial HashAggregate
+               Output: b, PARTIAL sum(d), PARTIAL sum(b)
+               Group Key: dqa_f3.b
+               ->  HashAggregate
+                     Output: b, d, c, (AggExprId)
+                     Group Key: (AggExprId), dqa_f3.d, dqa_f3.b
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                           Output: b, d, c, (AggExprId)
+                           Hash Key: b, d, (AggExprId)
+                           ->  Streaming HashAggregate
+                                 Output: b, d, c, (AggExprId)
+                                 Group Key: AggExprId, dqa_f3.d, dqa_f3.b
+                                 ->  TupleSplit
+                                       Output: b, d, c, AggExprId
+                                       Split by Col: (dqa_f3.d) FILTER (WHERE (dqa_f3.c > 4)), (dqa_f3.b) FILTER (WHERE (dqa_f3.c > 4))
+                                       Group Key: dqa_f3.b
+                                       ->  Seq Scan on public.dqa_f3
+                                             Output: a, b, c, d, e
+ Optimizer: Postgres-based planner
+ Settings: enable_groupagg = 'off', gp_motion_cost_per_row = '1', optimizer = 'off'
+(25 rows)
+
+select sum(distinct d) filter (where c > 4), sum(distinct b) filter (where c > 4), sum(distinct b) filter (where c > 4) from dqa_f3 group by b;
+ sum | sum | sum 
+-----+-----+-----
+   6 |   3 |   3
+   4 |   8 |   8
+   6 |  11 |  11
+   4 |  10 |  10
+   6 |   9 |   9
+   6 |   7 |   7
+   6 |   1 |   1
+   6 |   5 |   5
+   4 |   2 |   2
+   4 |   4 |   4
+   4 |   0 |   0
+   4 |   6 |   6
+(12 rows)
+
 -- Test multi distinct in aggregation
 explain (verbose on, costs off) select count(distinct c), count(distinct d), to_char(corr(distinct b, a), '9.99999999999999'), sum(b + a), count(*) from dqa_f3;
                                                                               QUERY PLAN                                                                              
