@@ -1515,7 +1515,7 @@ ShouldAssignResGroupOnCoordinator(void)
 		!procIsWaiting(MyProc) &&
 		!IsAutoVacuumWorkerProcess() &&
 		!IsAbortedTransactionBlockState() &&
-		(!selfIsAssigned() || bypassedGroup);
+		!(selfIsAssigned() || bypassedGroup);
 }
 
 /*
