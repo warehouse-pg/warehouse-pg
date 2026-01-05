@@ -1505,13 +1505,17 @@ ShouldAssignResGroupOnCoordinator(void)
 	 *
 	 * Also bypass resource group when it's exiting.
 	 * Also bypass resource group when it's vacuum worker process.
+	 * Also bypass resource group when it's aborting transaction.
+	 * Also bypass resource group when it already has a slot or bypass slot.
 	 */
 	return IsResGroupActivated() &&
 		IsNormalProcessingMode() &&
 		Gp_role == GP_ROLE_DISPATCH &&
 		!proc_exit_inprogress &&
 		!procIsWaiting(MyProc) &&
-		!IsAutoVacuumWorkerProcess();
+		!IsAutoVacuumWorkerProcess() &&
+		!IsAbortedTransactionBlockState() &&
+		(!selfIsAssigned() || bypassedGroup);
 }
 
 /*
