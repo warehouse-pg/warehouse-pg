@@ -163,7 +163,7 @@ findchar(char *str, int c)
 	{
 		if (t_iseq(str, c))
 			return str;
-		str += pg_mblen(str);
+		str += pg_mblen_cstr(str);
 	}
 
 	return NULL;
@@ -176,7 +176,7 @@ findchar2(char *str, int c1, int c2)
 	{
 		if (t_iseq(str, c1) || t_iseq(str, c2))
 			return str;
-		str += pg_mblen(str);
+		str += pg_mblen_cstr(str);
 	}
 
 	return NULL;
@@ -304,7 +304,7 @@ NIImportDictionary(IspellDict *Conf, const char *filename)
 			while (*s)
 			{
 				/* we allow only single encoded flags for faster works */
-				if (pg_mblen(s) == 1 && t_isprint(s) && !t_isspace(s))
+				if (pg_mblen_cstr(s) == 1 && t_isprint_unbounded(s) && !t_isspace_unbounded(s))
 					s++;
 				else
 				{
@@ -320,12 +320,12 @@ NIImportDictionary(IspellDict *Conf, const char *filename)
 		s = line;
 		while (*s)
 		{
-			if (t_isspace(s))
+			if (t_isspace_cstr(s))
 			{
 				*s = '\0';
 				break;
 			}
-			s += pg_mblen(s);
+			s += pg_mblen_cstr(s);
 		}
 		pstr = lowerstr_ctx(Conf, line);
 
@@ -499,17 +499,17 @@ get_nextfield(char **str, char *next)
 
 	while (**str)
 	{
+		int			clen = pg_mblen_cstr(*str);
+
 		if (state == PAE_WAIT_MASK)
 		{
 			if (t_iseq(*str, '#'))
 				return false;
-			else if (!t_isspace(*str))
+			else if (!t_isspace_cstr(*str))
 			{
-				int			clen = pg_mblen(*str);
-
 				if (clen < avail)
 				{
-					COPYCHAR(next, *str);
+					ts_copychar_with_len(next, *str, clen);
 					next += clen;
 					avail -= clen;
 				}
@@ -518,24 +518,22 @@ get_nextfield(char **str, char *next)
 		}
 		else	/* state == PAE_INMASK */
 		{
-			if (t_isspace(*str))
+			if (t_isspace_cstr(*str))
 			{
 				*next = '\0';
 				return true;
 			}
 			else
 			{
-				int			clen = pg_mblen(*str);
-
 				if (clen < avail)
 				{
-					COPYCHAR(next, *str);
+					ts_copychar_with_len(next, *str, clen);
 					next += clen;
 					avail -= clen;
 				}
 			}
 		}
-		*str += pg_mblen(*str);
+		*str += clen;
 	}
 
 	*next = '\0';
@@ -625,14 +623,15 @@ parse_affentry(char *str, char *mask, char *find, char *repl)
 
 	while (*str)
 	{
+		int			clen = pg_mblen_cstr(str);
+
 		if (state == PAE_WAIT_MASK)
 		{
 			if (t_iseq(str, '#'))
 				return false;
-			else if (!t_isspace(str))
+			else if (!t_isspace_cstr(str))
 			{
-				COPYCHAR(pmask, str);
-				pmask += pg_mblen(str);
+				pmask += ts_copychar_with_len(pmask, str, clen);
 				state = PAE_INMASK;
 			}
 		}
@@ -643,10 +642,9 @@ parse_affentry(char *str, char *mask, char *find, char *repl)
 				*pmask = '\0';
 				state = PAE_WAIT_FIND;
 			}
-			else if (!t_isspace(str))
+			else if (!t_isspace_cstr(str))
 			{
-				COPYCHAR(pmask, str);
-				pmask += pg_mblen(str);
+				pmask += ts_copychar_with_len(pmask, str, clen);
 			}
 		}
 		else if (state == PAE_WAIT_FIND)
@@ -655,13 +653,12 @@ parse_affentry(char *str, char *mask, char *find, char *repl)
 			{
 				state = PAE_INFIND;
 			}
-			else if (t_isalpha(str) || t_iseq(str, '\'') /* english 's */ )
+			else if (t_isalpha_cstr(str) || t_iseq(str, '\'') /* english 's */ )
 			{
-				COPYCHAR(prepl, str);
-				prepl += pg_mblen(str);
+				prepl += ts_copychar_with_len(prepl, str, clen);
 				state = PAE_INREPL;
 			}
-			else if (!t_isspace(str))
+			else if (!t_isspace_cstr(str))
 				ereport(ERROR,
 						(errcode(ERRCODE_CONFIG_FILE_ERROR),
 						 errmsg("syntax error")));
@@ -673,12 +670,11 @@ parse_affentry(char *str, char *mask, char *find, char *repl)
 				*pfind = '\0';
 				state = PAE_WAIT_REPL;
 			}
-			else if (t_isalpha(str))
+			else if (t_isalpha_cstr(str))
 			{
-				COPYCHAR(pfind, str);
-				pfind += pg_mblen(str);
+				pfind += ts_copychar_with_len(pfind, str, clen);
 			}
-			else if (!t_isspace(str))
+			else if (!t_isspace_cstr(str))
 				ereport(ERROR,
 						(errcode(ERRCODE_CONFIG_FILE_ERROR),
 						 errmsg("syntax error")));
@@ -689,13 +685,12 @@ parse_affentry(char *str, char *mask, char *find, char *repl)
 			{
 				break;			/* void repl */
 			}
-			else if (t_isalpha(str))
+			else if (t_isalpha_cstr(str))
 			{
-				COPYCHAR(prepl, str);
-				prepl += pg_mblen(str);
+				prepl += ts_copychar_with_len(prepl, str, clen);
 				state = PAE_INREPL;
 			}
-			else if (!t_isspace(str))
+			else if (!t_isspace_cstr(str))
 				ereport(ERROR,
 						(errcode(ERRCODE_CONFIG_FILE_ERROR),
 						 errmsg("syntax error")));
@@ -707,12 +702,11 @@ parse_affentry(char *str, char *mask, char *find, char *repl)
 				*prepl = '\0';
 				break;
 			}
-			else if (t_isalpha(str))
+			else if (t_isalpha_cstr(str))
 			{
-				COPYCHAR(prepl, str);
-				prepl += pg_mblen(str);
+				prepl += ts_copychar_with_len(prepl, str, clen);
 			}
-			else if (!t_isspace(str))
+			else if (!t_isspace_cstr(str))
 				ereport(ERROR,
 						(errcode(ERRCODE_CONFIG_FILE_ERROR),
 						 errmsg("syntax error")));
@@ -720,7 +714,7 @@ parse_affentry(char *str, char *mask, char *find, char *repl)
 		else
 			elog(ERROR, "unrecognized state in parse_affentry: %d", state);
 
-		str += pg_mblen(str);
+		str += clen;
 	}
 
 	*pmask = *pfind = *prepl = '\0';
@@ -731,15 +725,15 @@ parse_affentry(char *str, char *mask, char *find, char *repl)
 static void
 addFlagValue(IspellDict *Conf, char *s, uint32 val)
 {
-	while (*s && t_isspace(s))
-		s += pg_mblen(s);
+	while (*s && t_isspace_cstr(s))
+		s += pg_mblen_cstr(s);
 
 	if (!*s)
 		ereport(ERROR,
 				(errcode(ERRCODE_CONFIG_FILE_ERROR),
 				 errmsg("syntax error")));
 
-	if (pg_mblen(s) != 1)
+	if (pg_mblen_cstr(s) != 1)
 		ereport(ERROR,
 				(errcode(ERRCODE_CONFIG_FILE_ERROR),
 				 errmsg("multibyte flag character is not allowed")));
@@ -781,7 +775,7 @@ NIImportOOAffixes(IspellDict *Conf, const char *filename)
 
 	while ((recoded = tsearch_readline(&trst)) != NULL)
 	{
-		if (*recoded == '\0' || t_isspace(recoded) || t_iseq(recoded, '#'))
+		if (*recoded == '\0' || t_isspace_cstr(recoded) || t_iseq(recoded, '#'))
 		{
 			pfree(recoded);
 			continue;
@@ -816,8 +810,8 @@ NIImportOOAffixes(IspellDict *Conf, const char *filename)
 		{
 			char	   *s = recoded + strlen("FLAG");
 
-			while (*s && t_isspace(s))
-				s += pg_mblen(s);
+			while (*s && t_isspace_cstr(s))
+				s += pg_mblen_cstr(s);
 
 			if (*s && STRNCMP(s, "default") != 0)
 				ereport(ERROR,
@@ -839,7 +833,7 @@ NIImportOOAffixes(IspellDict *Conf, const char *filename)
 	{
 		int			fields_read;
 
-		if (*recoded == '\0' || t_isspace(recoded) || t_iseq(recoded, '#'))
+		if (*recoded == '\0' || t_isspace_cstr(recoded) || t_iseq(recoded, '#'))
 			goto nextline;
 
 		fields_read = parse_ooaffentry(recoded, type, sflag, find, repl, mask);
@@ -954,12 +948,12 @@ NIImportAffixes(IspellDict *Conf, const char *filename)
 			s = findchar2(recoded, 'l', 'L');
 			if (s)
 			{
-				while (*s && !t_isspace(s))
-					s += pg_mblen(s);
-				while (*s && t_isspace(s))
-					s += pg_mblen(s);
+				while (*s && !t_isspace_cstr(s))
+					s += pg_mblen_cstr(s);
+				while (*s && t_isspace_cstr(s))
+					s += pg_mblen_cstr(s);
 
-				if (*s && pg_mblen(s) == 1)
+				if (*s && pg_mblen_cstr(s) == 1)
 				{
 					Conf->flagval[*(unsigned char *) s] = FF_COMPOUNDFLAG;
 					Conf->usecompound = true;
@@ -987,8 +981,8 @@ NIImportAffixes(IspellDict *Conf, const char *filename)
 			s = recoded + 4;	/* we need non-lowercased string */
 			flagflags = 0;
 
-			while (*s && t_isspace(s))
-				s += pg_mblen(s);
+			while (*s && t_isspace_cstr(s))
+				s += pg_mblen_cstr(s);
 
 			if (*s == '*')
 			{
@@ -1009,12 +1003,12 @@ NIImportAffixes(IspellDict *Conf, const char *filename)
 			 * be followed by EOL, whitespace, or ':'.  Otherwise this is a
 			 * new-format flag command.
 			 */
-			if (*s && pg_mblen(s) == 1)
+			if (*s && pg_mblen_cstr(s) == 1)
 			{
 				flag = *(unsigned char *) s;
 				s++;
 				if (*s == '\0' || *s == '#' || *s == '\n' || *s == ':' ||
-					t_isspace(s))
+					t_isspace_cstr(s))
 				{
 					oldformat = true;
 					goto nextline;
