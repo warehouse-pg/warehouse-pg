@@ -84,6 +84,8 @@ levenshtein_internal(text *s, text *t,
 	const char *s_data;
 	const char *t_data;
 	const char *y;
+	const char *send;
+	const char *tend;
 
 	/*
 	 * For levenshtein_less_equal_internal, we have real variables called
@@ -112,6 +114,8 @@ levenshtein_internal(text *s, text *t,
 	/* Determine length of each string in bytes and characters. */
 	s_bytes = VARSIZE_ANY_EXHDR(s);
 	t_bytes = VARSIZE_ANY_EXHDR(t);
+	send = s_data + s_bytes;
+	tend = t_data + t_bytes;
 	m = pg_mbstrlen_with_len(s_data, s_bytes);
 	n = pg_mbstrlen_with_len(t_data, t_bytes);
 
@@ -186,10 +190,10 @@ levenshtein_internal(text *s, text *t,
 #endif
 
 	/*
-	 * In order to avoid calling pg_mblen() repeatedly on each character in s,
-	 * we cache all the lengths before starting the main loop -- but if all
-	 * the characters in both strings are single byte, then we skip this and
-	 * use a fast-path in the main loop.  If only one string contains
+	 * In order to avoid calling pg_mblen_range() repeatedly on each character
+	 * in s, we cache all the lengths before starting the main loop -- but if
+	 * all the characters in both strings are single byte, then we skip this
+	 * and use a fast-path in the main loop.  If only one string contains
 	 * multi-byte characters, we still build the array, so that the fast-path
 	 * needn't deal with the case where the array hasn't been initialized.
 	 */
@@ -201,7 +205,7 @@ levenshtein_internal(text *s, text *t,
 		s_char_len = (int *) palloc((m + 1) * sizeof(int));
 		for (i = 0; i < m; ++i)
 		{
-			s_char_len[i] = pg_mblen(cp);
+			s_char_len[i] = pg_mblen_range(cp, send);
 			cp += s_char_len[i];
 		}
 		s_char_len[i] = 0;
@@ -227,7 +231,7 @@ levenshtein_internal(text *s, text *t,
 	{
 		int		   *temp;
 		const char *x = s_data;
-		int			y_char_len = n != t_bytes + 1 ? pg_mblen(y) : 1;
+		int			y_char_len = n != t_bytes + 1 ? pg_mblen_range(y, tend) : 1;
 
 #ifdef LEVENSHTEIN_LESS_EQUAL
 

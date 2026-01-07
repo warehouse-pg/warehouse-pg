@@ -41,27 +41,84 @@ typedef struct
 
 #define TOUCHAR(x)	(*((const unsigned char *) (x)))
 
-#ifdef USE_WIDE_UPPER_LOWER
-
-extern int	t_isdigit(const char *ptr);
-extern int	t_isspace(const char *ptr);
-extern int	t_isalpha(const char *ptr);
-extern int	t_isprint(const char *ptr);
-
 /* The second argument of t_iseq() must be a plain ASCII character */
 #define t_iseq(x,c)		(TOUCHAR(x) == (unsigned char) (c))
 
-#define COPYCHAR(d,s)	memcpy(d, s, pg_mblen(s))
+/* Copy multibyte character of known byte length, return byte length. */
+static inline int
+ts_copychar_with_len(void *dest, const void *src, int length)
+{
+	memcpy(dest, src, length);
+	return length;
+}
+
+#define GENERATE_T_ISCLASS_DECL(character_class) \
+extern int	t_is##character_class##_with_len(const char *ptr, int len); \
+extern int	t_is##character_class##_cstr(const char *ptr); \
+extern int	t_is##character_class##_unbounded(const char *ptr); \
+\
+/* deprecated */ \
+extern int	t_is##character_class(const char *ptr);
+
+#ifdef USE_WIDE_UPPER_LOWER
+
+/* Copy multibyte character from null-terminated string,  return byte length. */
+static inline int
+ts_copychar_cstr(void *dest, const void *src)
+{
+	return ts_copychar_with_len(dest, src, pg_mblen_cstr((const char *) src));
+}
+
+GENERATE_T_ISCLASS_DECL(alpha);
+GENERATE_T_ISCLASS_DECL(digit);
+GENERATE_T_ISCLASS_DECL(print);
+GENERATE_T_ISCLASS_DECL(space);
+
 #else							/* not USE_WIDE_UPPER_LOWER */
 
-#define t_isdigit(x)	isdigit(TOUCHAR(x))
-#define t_isspace(x)	isspace(TOUCHAR(x))
-#define t_isalpha(x)	isalpha(TOUCHAR(x))
-#define t_isprint(x)	isprint(TOUCHAR(x))
-#define t_iseq(x,c)		(TOUCHAR(x) == (unsigned char) (c))
+/*
+ * Without the wide-character functions we only ever look at the first byte,
+ * so every flavor collapses to the single-byte test and no multibyte length
+ * is ever computed.  The bounds arguments are accepted and ignored so that
+ * callers need not be conditional.
+ */
+static inline int
+ts_copychar_cstr(void *dest, const void *src)
+{
+	return ts_copychar_with_len(dest, src, 1);
+}
 
-#define COPYCHAR(d,s)	(*((unsigned char *) (d)) = TOUCHAR(s))
+#define GENERATE_T_ISCLASS_FALLBACK(character_class) \
+static inline int \
+t_is##character_class##_with_len(const char *ptr, int len) \
+{ \
+	return is##character_class(TOUCHAR(ptr)); \
+} \
+static inline int \
+t_is##character_class##_cstr(const char *ptr) \
+{ \
+	return is##character_class(TOUCHAR(ptr)); \
+} \
+static inline int \
+t_is##character_class##_unbounded(const char *ptr) \
+{ \
+	return is##character_class(TOUCHAR(ptr)); \
+} \
+static inline int \
+t_is##character_class(const char *ptr) \
+{ \
+	return is##character_class(TOUCHAR(ptr)); \
+}
+
+GENERATE_T_ISCLASS_FALLBACK(alpha)
+GENERATE_T_ISCLASS_FALLBACK(digit)
+GENERATE_T_ISCLASS_FALLBACK(print)
+GENERATE_T_ISCLASS_FALLBACK(space)
+
 #endif   /* USE_WIDE_UPPER_LOWER */
+
+/* Historical macro for ts_copychar_cstr(). */
+#define COPYCHAR ts_copychar_cstr
 
 extern char *lowerstr(const char *str);
 extern char *lowerstr_with_len(const char *str, int len);

@@ -443,7 +443,14 @@ extern int	pg_char_and_wchar_strcmp(const char *s1, const pg_wchar *s2);
 extern int	pg_wchar_strncmp(const pg_wchar *s1, const pg_wchar *s2, size_t n);
 extern int	pg_char_and_wchar_strncmp(const char *s1, const pg_wchar *s2, size_t n);
 extern size_t pg_wchar_strlen(const pg_wchar *wstr);
+extern int	pg_mblen_cstr(const char *mbstr);
+extern int	pg_mblen_range(const char *mbstr, const char *end);
+extern int	pg_mblen_with_len(const char *mbstr, int limit);
+extern int	pg_mblen_unbounded(const char *mbstr);
+
+/* deprecated */
 extern int	pg_mblen(const char *mbstr);
+
 extern int	pg_dsplen(const char *mbstr);
 extern void pg_encoding_set_invalid(int encoding, char *dst);
 extern int	pg_encoding_mblen(int encoding, const char *mbstr);
@@ -522,6 +529,7 @@ extern void check_encoding_conversion_args(int src_encoding,
 							   int expected_dest_encoding);
 
 extern void report_invalid_encoding(int encoding, const char *mbstr, int len) __attribute__((noreturn));
+extern void report_invalid_encoding_db(const char *mbstr, int mblen, int len) __attribute__((noreturn));
 extern void report_untranslatable_char(int src_encoding, int dest_encoding,
 					   const char *mbstr, int len) __attribute__((noreturn));
 

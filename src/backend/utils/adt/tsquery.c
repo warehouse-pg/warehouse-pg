@@ -67,7 +67,7 @@ get_modifiers(char *buf, int16 *weight, bool *prefix)
 		return buf;
 
 	buf++;
-	while (*buf && pg_mblen(buf) == 1)
+	while (*buf && pg_mblen_cstr(buf) == 1)
 	{
 		switch (*buf)
 		{
@@ -135,7 +135,7 @@ gettoken_query(TSQueryParserState state,
 				if (t_iseq(state->buf, '!'))
 				{
 					(state->buf)++;		/* can safely ++, t_iseq guarantee
-										 * that pg_mblen()==1 */
+										 * that pg_mblen_cstr()==1 */
 					*operator = OP_NOT;
 					state->state = WAITOPERAND;
 					return PT_OPR;
@@ -154,7 +154,7 @@ gettoken_query(TSQueryParserState state,
 							 errmsg("syntax error in tsquery: \"%s\"",
 									state->buffer)));
 				}
-				else if (!t_isspace(state->buf))
+				else if (!t_isspace_cstr(state->buf))
 				{
 					/*
 					 * We rely on the tsvector parser to parse the value for
@@ -199,7 +199,7 @@ gettoken_query(TSQueryParserState state,
 				}
 				else if (*(state->buf) == '\0')
 					return (state->count) ? PT_ERR : PT_END;
-				else if (!t_isspace(state->buf))
+				else if (!t_isspace_cstr(state->buf))
 					return PT_ERR;
 				break;
 			case WAITSINGLEOPERAND:
@@ -214,7 +214,7 @@ gettoken_query(TSQueryParserState state,
 				return PT_ERR;
 				break;
 		}
-		state->buf += pg_mblen(state->buf);
+		state->buf += pg_mblen_cstr(state->buf);
 	}
 }
 
@@ -630,9 +630,8 @@ infix(INFIX *in, bool first)
 				*(in->cur) = '\\';
 				in->cur++;
 			}
-			COPYCHAR(in->cur, op);
 
-			clen = pg_mblen(op);
+			clen = ts_copychar_cstr(in->cur, op);
 			op += clen;
 			in->cur += clen;
 		}

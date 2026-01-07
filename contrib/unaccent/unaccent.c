@@ -124,9 +124,9 @@ initTrie(char *filename)
 				state = 0;
 				for (ptr = line; *ptr; ptr += ptrlen)
 				{
-					ptrlen = pg_mblen(ptr);
+					ptrlen = pg_mblen_cstr(ptr);
 					/* ignore whitespace, but end src or trg */
-					if (t_isspace(ptr))
+					if (t_isspace_cstr(ptr))
 					{
 						if (state == 1)
 							state = 2;
@@ -267,6 +267,7 @@ unaccent_lexize(PG_FUNCTION_ARGS)
 	char	   *srcchar = (char *) PG_GETARG_POINTER(1);
 	int32		len = PG_GETARG_INT32(2);
 	char	   *srcstart = srcchar;
+	const char *srcend = srcstart + len;
 	TSLexeme   *res;
 	StringInfoData buf;
 
@@ -278,7 +279,7 @@ unaccent_lexize(PG_FUNCTION_ARGS)
 		TrieChar   *node;
 		int			charlen;
 
-		charlen = pg_mblen(srcchar);
+		charlen = pg_mblen_range(srcchar, srcend);
 
 		node = findReplaceTo(rootTrie, (unsigned char *) srcchar, charlen);
 		if (node && node->replaceTo)
