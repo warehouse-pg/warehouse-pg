@@ -424,7 +424,7 @@ parse_re_flags(pg_re_flags *flags, text *opts)
 					ereport(ERROR,
 							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 							 errmsg("invalid regular expression option: \"%.*s\"",
-									pg_mblen(opt_p + i), opt_p + i)));
+									pg_mblen_range(opt_p + i, opt_p + opt_len), opt_p + i)));
 					break;
 			}
 		}
@@ -669,6 +669,7 @@ similar_escape(PG_FUNCTION_ARGS)
 			   *r;
 	int			plen,
 				elen;
+	const char *pend;
 	bool		afterescape = false;
 	bool		incharclass = false;
 	int			nquotes = 0;
@@ -679,6 +680,7 @@ similar_escape(PG_FUNCTION_ARGS)
 	pat_text = PG_GETARG_TEXT_PP(0);
 	p = VARDATA_ANY(pat_text);
 	plen = VARSIZE_ANY_EXHDR(pat_text);
+	pend = p + plen;
 	if (PG_ARGISNULL(1))
 	{
 		/* No ESCAPE clause provided; default to backslash as escape */
@@ -768,7 +770,7 @@ similar_escape(PG_FUNCTION_ARGS)
 
 		if (elen > 1)
 		{
-			int			mblen = pg_mblen(p);
+			int			mblen = pg_mblen_range(p, pend);
 
 			if (mblen > 1)
 			{
