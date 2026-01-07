@@ -2035,6 +2035,10 @@ pg_encoding_max_length(int encoding)
 
 #ifndef FRONTEND
 
+pg_attribute_noreturn()
+static void report_invalid_encoding_int(int encoding, const char *mbstr,
+										int mblen, int len);
+
 /*
  * fetch maximum length of the encoding for the current database
  */
@@ -2204,12 +2208,19 @@ void
 report_invalid_encoding(int encoding, const char *mbstr, int len)
 {
 	int			l = pg_encoding_mblen_or_incomplete(encoding, mbstr, len);
+
+	report_invalid_encoding_int(encoding, mbstr, l, len);
+}
+
+static void
+report_invalid_encoding_int(int encoding, const char *mbstr, int mblen, int len)
+{
 	char		buf[8 * 5 + 1];
 	char	   *p = buf;
 	int			j,
 				jlimit;
 
-	jlimit = Min(l, len);
+	jlimit = Min(mblen, len);
 	jlimit = Min(jlimit, 8);	/* prevent buffer overrun */
 
 	for (j = 0; j < jlimit; j++)
@@ -2224,6 +2235,12 @@ report_invalid_encoding(int encoding, const char *mbstr, int len)
 			 errmsg("invalid byte sequence for encoding \"%s\": %s",
 					pg_enc2name_tbl[encoding].name,
 					buf)));
+}
+
+void
+report_invalid_encoding_db(const char *mbstr, int mblen, int len)
+{
+	report_invalid_encoding_int(GetDatabaseEncoding(), mbstr, mblen, len);
 }
 
 /*
