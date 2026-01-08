@@ -48,7 +48,7 @@ SET
 3&: UPDATE t_concurrent_update SET b=b+10 WHERE a=1;  <waiting ...>
 
 -- transaction 2 suspend before commit, but it will wake up transaction 3 on segment
-2: select gp_inject_fault('before_xact_end_procarray', 'suspend', dbid) FROM gp_segment_configuration WHERE role='p' AND content=-1;
+2: select gp_inject_fault('before_xact_end_procarray', 'suspend', dbid, current_setting('gp_session_id')::int) FROM gp_segment_configuration WHERE role='p' AND content=-1;
  gp_inject_fault 
 -----------------
  Success:        
@@ -103,7 +103,7 @@ BEGIN
 5: SET optimizer=off;
 SET
 -- suspend before get 'wait gxid'
-5: SELECT gp_inject_fault('before_get_distributed_xid', 'suspend', dbid) FROM gp_segment_configuration WHERE role='p' AND content=1;
+5: SELECT gp_inject_fault('before_get_distributed_xid', 'suspend', dbid, current_setting('gp_session_id')::int) FROM gp_segment_configuration WHERE role='p' AND content=1;
  gp_inject_fault 
 -----------------
  Success:        
@@ -136,7 +136,7 @@ COMMIT
 5q: ... <quitting>
 6q: ... <quitting>
 
-
+-- Test concurrent update
 -- Same test as the above, transaction 8 should wait transaction 7 commit on coordinator
 7: truncate table t_concurrent_update;
 TRUNCATE TABLE
@@ -147,14 +147,15 @@ INSERT 0 1
 BEGIN
 7: SET optimizer=off;
 SET
-7: UPDATE t_concurrent_update SET b=b+10 WHERE a=1;
+-- One phase transaction commit
+7: UPDATE t_concurrent_update SET b=b+10 where a=1;
 UPDATE 1
 7: SELECT * FROM t_concurrent_update;
  a | b  
 ---+----
  1 | 20 
 (1 row)
-7: SELECT gp_inject_fault('local_commit_transaction', 'suspend', dbid) FROM gp_segment_configuration WHERE role='p' AND content = 1;
+7: SELECT gp_inject_fault('local_commit_transaction', 'suspend', dbid, current_setting('gp_session_id')::int) FROM gp_segment_configuration WHERE role='p' AND content = 1;
  gp_inject_fault 
 -----------------
  Success:        
