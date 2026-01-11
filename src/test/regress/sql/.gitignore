@@ -5,6 +5,7 @@
 /create_function_1.sql
 /create_function_2.sql
 /gp_transactions.sql
+/encoding.sql
 /largeobject.sql
 /misc.sql
 /oid_wraparound.sql
