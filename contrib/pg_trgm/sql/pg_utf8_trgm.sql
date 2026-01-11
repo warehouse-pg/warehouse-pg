@@ -1,0 +1,9 @@
+-- This test requires a UTF8 server encoding.  Upstream guards it with psql's
+-- \if, which arrived in PG10; this branch's psql has no way to skip the rest
+-- of a script, so the test simply runs.  gpinitsystem (and hence gpdemo)
+-- creates the cluster with UTF-8, so the guard would never fire here anyway.
+
+-- Index 50 translations of the word "Mathematics"
+CREATE TEMP TABLE mb (s text);
+\copy mb from 'data/trgm_utf8.data'
+CREATE INDEX ON mb USING gist(s gist_trgm_ops);

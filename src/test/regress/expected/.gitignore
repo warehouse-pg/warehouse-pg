@@ -20,6 +20,7 @@ gptokencheck.out
 /gp_tablespace_with_faults.out
 guc_env_var.out
 hooktest.out
+/encoding.out
 /largeobject.out
 /largeobject_1.out
 /misc.out
