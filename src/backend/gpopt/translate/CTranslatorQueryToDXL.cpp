@@ -3545,7 +3545,7 @@ CTranslatorQueryToDXL::NoteDistributionPolicyOpclasses(const RangeTblEntry *rte)
 		GpPolicy *policy = rel->rd_cdbpolicy;
 
 		// coordinator-only tables
-		if (nullptr == policy)
+		if (GpPolicyIsEntry(policy))
 		{
 			return;
 		}

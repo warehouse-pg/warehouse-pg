@@ -5618,6 +5618,14 @@ DistributedBy:   DISTRIBUTED BY  '(' distributed_by_list ')'
 				distributedBy->keyCols = NIL;
 				$$ = (Node *)distributedBy;
 			}
+			| DISTRIBUTED COORDINATOR ONLY
+			{
+				DistributedBy *distributedBy = makeNode(DistributedBy);
+				distributedBy->ptype = POLICYTYPE_ENTRY;
+				distributedBy->numsegments = -1;
+				distributedBy->keyCols = NIL;
+				$$ = (Node *)distributedBy;
+			}
 		;
 
 OptDistributedBy:   DistributedBy			{ $$ = $1; }

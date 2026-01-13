@@ -11871,6 +11871,10 @@ pg_get_table_distributedby(PG_FUNCTION_ARGS)
 	{
 		appendStringInfo(&buf, "DISTRIBUTED REPLICATED");
 	}
+	else if (policyform->policytype == SYM_POLICYTYPE_ENTRY)
+	{
+		appendStringInfo(&buf, "DISTRIBUTED COORDINATOR ONLY");
+	}
 	else if (policyform->policytype == SYM_POLICYTYPE_PARTITIONED)
 	{
 		int			nkeys;

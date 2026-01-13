@@ -532,8 +532,7 @@ CTranslatorRelcacheToDXL::RetrieveRel(CMemoryPool *mp, CMDAccessor *md_accessor,
 
 	CheckUnsupportedRelation(rel.get());
 
-	if (nullptr != rel->rd_cdbpolicy &&
-		POLICYTYPE_ENTRY != rel->rd_cdbpolicy->ptype &&
+	if (!GpPolicyIsEntry(rel->rd_cdbpolicy) &&
 		gpdb::GetGPSegmentCount() != rel->rd_cdbpolicy->numsegments)
 	{
 		// GPORCA does not support partially distributed tables yet

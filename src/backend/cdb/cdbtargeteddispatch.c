@@ -91,7 +91,7 @@ DisableTargetedDispatch(DirectDispatchInfo *data)
  * helper function for AssignContentIdsFromUpdateDeleteQualification
  */
 static DirectDispatchInfo
-GetContentIdsFromPlanForSingleRelation(PlannerInfo *root, Plan *plan, int rangeTableIndex, List *qualification)
+GetDispatchInfoFromPlanForSingleRelation(PlannerInfo *root, Plan *plan, int rangeTableIndex, List *qualification)
 {
 	GpPolicy   *policy = NULL;
 	PartitionKeyInfo *parts = NULL;
@@ -129,7 +129,7 @@ GetContentIdsFromPlanForSingleRelation(PlannerInfo *root, Plan *plan, int rangeT
 		relation = relation_open(rte->relid, NoLock);
 		policy = relation->rd_cdbpolicy;
 
-		if (policy != NULL)
+		if (policy != NULL && policy->nattrs > 0)
 		{
 			parts = (PartitionKeyInfo *) palloc(policy->nattrs * sizeof(PartitionKeyInfo));
 			for (i = 0; i < policy->nattrs; i++)
@@ -146,9 +146,9 @@ GetContentIdsFromPlanForSingleRelation(PlannerInfo *root, Plan *plan, int rangeT
 		/* fall through, policy will be NULL so we won't direct dispatch */
 	}
 
-	if (rte->forceDistRandom ||	policy == NULL)
+	if (rte->forceDistRandom || GpPolicyIsEntry(policy))
 	{
-		/*  we won't direct dispatch  */
+		/* direct dispatch doesn't fit non or randomly distributed tables */
 		if (rte->rtekind == RTE_RELATION)
 			relation_close(relation, NoLock);
 		result.haveProcessedAnyCalculations = true;
@@ -413,7 +413,7 @@ DirectDispatchUpdateContentIdsFromPlan(PlannerInfo *root, Plan *plan)
 			 * we can determine the dispatch data to merge by looking at
 			 * the relation begin scanned
 			 */
-			dispatchInfo = GetContentIdsFromPlanForSingleRelation(root,
+			dispatchInfo = GetDispatchInfoFromPlanForSingleRelation(root,
 																  plan,
 																  ((Scan *) plan)->scanrelid,
 																  plan->qual);
@@ -427,7 +427,7 @@ DirectDispatchUpdateContentIdsFromPlan(PlannerInfo *root, Plan *plan)
 				 * we can determine the dispatch data to merge by looking
 				 * at the relation begin scanned
 				 */
-				dispatchInfo = GetContentIdsFromPlanForSingleRelation(root,
+				dispatchInfo = GetDispatchInfoFromPlanForSingleRelation(root,
 																	  plan,
 																	  ((Scan *) plan)->scanrelid,
 																	  indexScan->indexqualorig);
@@ -443,7 +443,7 @@ DirectDispatchUpdateContentIdsFromPlan(PlannerInfo *root, Plan *plan)
 				 * we can determine the dispatch data to merge by looking
 				 * at the relation begin scanned
 				 */
-				dispatchInfo = GetContentIdsFromPlanForSingleRelation(root,
+				dispatchInfo = GetDispatchInfoFromPlanForSingleRelation(root,
 																	  plan,
 																	  ((Scan *) plan)->scanrelid,
 																	  indexOnlyScan->recheckqual);
@@ -459,7 +459,7 @@ DirectDispatchUpdateContentIdsFromPlan(PlannerInfo *root, Plan *plan)
 				 * we can determine the dispatch data to merge by looking
 				 * at the relation begin scanned
 				 */
-				dispatchInfo = GetContentIdsFromPlanForSingleRelation(root,
+				dispatchInfo = GetDispatchInfoFromPlanForSingleRelation(root,
 																	  plan,
 																	  ((Scan *) plan)->scanrelid,
 																	  bitmapScan->indexqualorig);

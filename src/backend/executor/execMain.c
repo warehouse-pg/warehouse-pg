@@ -240,7 +240,8 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
 
 	Assert(queryDesc->plannedstmt->intoPolicy == NULL ||
 		GpPolicyIsPartitioned(queryDesc->plannedstmt->intoPolicy) ||
-		GpPolicyIsReplicated(queryDesc->plannedstmt->intoPolicy));
+		GpPolicyIsReplicated(queryDesc->plannedstmt->intoPolicy) ||
+		GpPolicyIsEntry(queryDesc->plannedstmt->intoPolicy));
 
 	/* GPDB hook for collecting query info */
 	if (query_info_collect_hook)
@@ -408,7 +409,8 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
 		estate->es_sliceTable = sliceTable;
 
 		if (sliceTable->slices[0].gangType != GANGTYPE_UNALLOCATED ||
-			sliceTable->hasMotions)
+			sliceTable->hasMotions ||
+			(sliceTable->slices[0].gangType == GANGTYPE_UNALLOCATED && GpPolicyIsEntry(queryDesc->plannedstmt->intoPolicy)))
 		{
 			if (queryDesc->ddesc == NULL)
 			{
@@ -1651,7 +1653,8 @@ InitPlan(QueryDesc *queryDesc, int eflags)
 
 	Assert(plannedstmt->intoPolicy == NULL ||
 		GpPolicyIsPartitioned(plannedstmt->intoPolicy) ||
-		GpPolicyIsReplicated(plannedstmt->intoPolicy));
+		GpPolicyIsReplicated(plannedstmt->intoPolicy) ||
+		GpPolicyIsEntry(plannedstmt->intoPolicy));
 
 	if (DEBUG1 >= log_min_messages)
 	{
@@ -4136,7 +4139,7 @@ AdjustReplicatedTableCounts(EState *estate)
 	{
 		resultRelInfo = estate->es_result_relations + i;
 
-		if (!resultRelInfo->ri_RelationDesc->rd_cdbpolicy)
+		if (GpPolicyIsEntry(resultRelInfo->ri_RelationDesc->rd_cdbpolicy))
 			continue;
 
 		if (GpPolicyIsReplicated(resultRelInfo->ri_RelationDesc->rd_cdbpolicy))

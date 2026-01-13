@@ -134,6 +134,8 @@ makeCdbHashForRelation(Relation rel)
 	int			i;
 	TupleDesc	desc = RelationGetDescr(rel);
 
+	Assert(!GpPolicyIsEntry(policy));
+
 	hashfuncs = palloc(policy->nattrs * sizeof(Oid));
 
 	for (i = 0; i < policy->nattrs; i++)

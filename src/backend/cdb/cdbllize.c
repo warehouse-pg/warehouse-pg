@@ -325,7 +325,7 @@ cdbllize_get_final_locus(PlannerInfo *root, PathTarget *target)
 
 		if (intoPolicy != NULL)
 		{
-			Assert(intoPolicy->ptype != POLICYTYPE_ENTRY);
+			Assert(intoPolicy->ptype != POLICYTYPE_ENTRY || intoPolicy->numsegments == -1);
 			Assert(intoPolicy->nattrs >= 0);
 			Assert(intoPolicy->nattrs <= MaxPolicyAttributeNumber);
 
@@ -410,7 +410,7 @@ cdbllize_adjust_top_path(PlannerInfo *root, Path *best_path,
 		{
 			targetPolicy = query->intoPolicy;
 
-			Assert(query->intoPolicy->ptype != POLICYTYPE_ENTRY);
+			Assert(query->intoPolicy->ptype != POLICYTYPE_ENTRY || query->intoPolicy->numsegments == -1);
 			Assert(query->intoPolicy->nattrs >= 0);
 			Assert(query->intoPolicy->nattrs <= MaxPolicyAttributeNumber);
 		}
@@ -498,7 +498,7 @@ cdbllize_adjust_top_path(PlannerInfo *root, Path *best_path,
 								 " Make sure column(s) chosen are the optimal data distribution key to minimize skew.")));
 			}
 		}
-		Assert(targetPolicy->ptype != POLICYTYPE_ENTRY);
+		Assert(targetPolicy->ptype != POLICYTYPE_ENTRY || targetPolicy->numsegments == -1);
 
 		query->intoPolicy = targetPolicy;
 

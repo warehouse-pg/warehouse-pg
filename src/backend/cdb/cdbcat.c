@@ -103,6 +103,23 @@ makeGpPolicy(GpPolicyType ptype, int nattrs, int numsegments)
 }
 
 /*
+ * createCoordinatorOnlyPolicy -- Create a policy with data
+ * located only on the coordinator
+ *
+ * It doesn't like the catalog, which doesn't have a policy.
+ */
+GpPolicy *
+createCoordinatorOnlyPolicy(void)
+{
+	/*
+	 * numsegments is -1 because the data is not on any segment, also because
+	 * coordinator-only external tables had been there for many years and its
+	 * numsegments is -1
+	 */
+	return makeGpPolicy(POLICYTYPE_ENTRY, 0, -1);
+}
+
+/*
  * createReplicatedGpPolicy-- Create a policy with replicated distribution
  */
 GpPolicy *
@@ -294,8 +311,9 @@ GpPolicyIsHashPartitioned(const GpPolicy *policy)
 bool
 GpPolicyIsEntry(const GpPolicy *policy)
 {
+	/* No policy tables has always been treated as entry distributed */
 	if (policy == NULL)
-		return false;
+		return true;
 
 	return policy->ptype == POLICYTYPE_ENTRY;
 }
@@ -447,6 +465,9 @@ GpPolicyFetch(Oid tbloid)
 
 		switch (policyform->policytype)
 		{
+			case SYM_POLICYTYPE_ENTRY:
+				policy = createCoordinatorOnlyPolicy();
+				break;
 			case SYM_POLICYTYPE_REPLICATED:
 				policy = createReplicatedGpPolicy(policyform->numsegments);
 				break;
@@ -518,9 +539,6 @@ GpPolicyStore(Oid tbloid, const GpPolicy *policy)
 				referenced;
 	int			i;
 
-	/* Sanity check the policy and its opclasses before storing it. */
-	if (policy->ptype == POLICYTYPE_ENTRY)
-		elog(ERROR, "cannot store entry-type policy in gp_distribution_policy");
 	for (i = 0; i < policy->nattrs; i++)
 	{
 		if (policy->opclasses[i] == InvalidOid)
@@ -543,6 +561,10 @@ GpPolicyStore(Oid tbloid, const GpPolicy *policy)
 	if (GpPolicyIsReplicated(policy))
 	{
 		values[1] = CharGetDatum(SYM_POLICYTYPE_REPLICATED);
+	}
+	else if (GpPolicyIsEntry(policy))
+	{
+		values[1] = CharGetDatum(SYM_POLICYTYPE_ENTRY);
 	}
 	else
 	{
@@ -613,7 +635,7 @@ GpPolicyReplace(Oid tbloid, const GpPolicy *policy)
 
 	/* Sanity check the policy and its opclasses before storing it. */
 	if (policy->ptype == POLICYTYPE_ENTRY)
-		elog(ERROR, "cannot store entry-type policy in gp_distribution_policy");
+		elog(ERROR, "cannot alter the distribution policy of a coordinator-only table");
 	for (i = 0; i < policy->nattrs; i++)
 	{
 		if (policy->opclasses[i] == InvalidOid)
@@ -796,8 +818,9 @@ index_check_policy_compatible(GpPolicy *policy,
 	int			j;
 
 	/*
-	 * POLICYTYPE_ENTRY normally means it's a system table or a table created
-	 * in utility mode, so unique/primary key is allowed anywhere.
+	 * POLICYTYPE_ENTRY normally means it's a system table, a coordinator-only
+	 * table or a table created in utility mode, so unique/primary key is
+	 * allowed anywhere.
 	 */
 	if (GpPolicyIsEntry(policy))
 		return true;

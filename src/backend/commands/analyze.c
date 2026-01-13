@@ -1480,8 +1480,7 @@ gp_acquire_sample_rows_func(Relation onerel, int elevel,
 							   HeapTuple *rows, int targrows,
 							   double *totalrows, double *totaldeadrows)
 {
-	if (Gp_role == GP_ROLE_DISPATCH &&
-		onerel->rd_cdbpolicy && !GpPolicyIsEntry(onerel->rd_cdbpolicy))
+	if (Gp_role == GP_ROLE_DISPATCH && !GpPolicyIsEntry(onerel->rd_cdbpolicy))
 	{
 		/* Fetch sample from the segments. */
 		return acquire_sample_rows_dispatcher(onerel, false, elevel,
@@ -1774,7 +1773,7 @@ acquire_inherited_sample_rows(Relation onerel, int elevel,
 	 * Like in acquire_sample_rows(), if we're in the QD, fetch the sample
 	 * from segments.
 	 */
-	if (Gp_role == GP_ROLE_DISPATCH)
+	if (Gp_role == GP_ROLE_DISPATCH && !GpPolicyIsEntry(onerel->rd_cdbpolicy))
 	{
 		return acquire_sample_rows_dispatcher(onerel,
 											  true, /* inherited stats */
@@ -2069,8 +2068,7 @@ AcquireNumberOfBlocks(Relation onerel)
 {
 	int64		totalbytes;
 
-	if (Gp_role == GP_ROLE_DISPATCH &&
-		onerel->rd_cdbpolicy && !GpPolicyIsEntry(onerel->rd_cdbpolicy))
+	if (Gp_role == GP_ROLE_DISPATCH && !GpPolicyIsEntry(onerel->rd_cdbpolicy))
 	{
 		/* Query the segments using pg_relation_size(<rel>). */
 		char		*relsize_sql;
@@ -2123,8 +2121,7 @@ acquire_index_number_of_blocks(Relation indexrel, Relation tablerel)
 {
 	int64		totalbytes;
 
-	if (Gp_role == GP_ROLE_DISPATCH &&
-		tablerel->rd_cdbpolicy && !GpPolicyIsEntry(tablerel->rd_cdbpolicy))
+	if (Gp_role == GP_ROLE_DISPATCH && !GpPolicyIsEntry(tablerel->rd_cdbpolicy))
 	{
 		/* Query the segments using pg_relation_size(<rel>). */
 		char		relsize_sql[100];
@@ -2645,11 +2642,18 @@ acquire_sample_rows_dispatcher(Relation onerel, bool inh, int elevel,
 	 * doesn't pass that down to us, let alone the per-segment sizes.
 	 */
 	if (GpPolicyIsReplicated(onerel->rd_cdbpolicy))
+	{
 		perseg_targrows = targrows;
+	}
 	else if (GpPolicyIsPartitioned(onerel->rd_cdbpolicy))
+	{
 		perseg_targrows = targrows / onerel->rd_cdbpolicy->numsegments;
+	}
 	else
+	{
+		Assert(GpPolicyIsEntry(onerel->rd_cdbpolicy));
 		elog(ERROR, "acquire_sample_rows_dispatcher() cannot be used on a non-distributed table");
+	}
 
 	/*
 	 * Did not use 'select * from pg_catalog.gp_acquire_sample_rows(...) as (..);'

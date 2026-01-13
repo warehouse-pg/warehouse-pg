@@ -396,7 +396,7 @@ AppendOnlySegmentFileFullCompaction(Relation aorel,
     Oid         blkdirrelid;
 	int64		heap_blks_scanned = 0;
 
-	Assert(Gp_role == GP_ROLE_EXECUTE || Gp_role == GP_ROLE_UTILITY);
+	Assert(Gp_role == GP_ROLE_EXECUTE || Gp_role == GP_ROLE_UTILITY || GpPolicyIsEntry(aorel->rd_cdbpolicy));
 	Assert(RelationStorageIsAoRows(aorel));
 	Assert(insertDesc);
 
@@ -799,7 +799,7 @@ AppendOnlyCompact(Relation aorel,
 	Snapshot	appendOnlyMetaDataSnapshot = RegisterSnapshot(GetCatalogSnapshot(InvalidOid));
 
 	Assert(RelationStorageIsAoRows(aorel));
-	Assert(Gp_role == GP_ROLE_EXECUTE || Gp_role == GP_ROLE_UTILITY);
+	Assert(Gp_role == GP_ROLE_EXECUTE || Gp_role == GP_ROLE_UTILITY || GpPolicyIsEntry(aorel->rd_cdbpolicy));
 
 	relname = RelationGetRelationName(aorel);
 

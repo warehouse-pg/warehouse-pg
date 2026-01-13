@@ -4543,7 +4543,7 @@ child_distribution_mismatch(Relation rel)
 	}
 
 	GpPolicy *rootPolicy = rel->rd_cdbpolicy;
-	Assert(NULL != rootPolicy && "Partitioned tables cannot be coordinator-only");
+	Assert(!GpPolicyIsEntry(rootPolicy) && "Partitioned tables cannot be coordinator-only");
 
 	/* replicated table can't have child */
 	Assert(!GpPolicyIsReplicated(rootPolicy));

@@ -2340,9 +2340,17 @@ transformCreateExternalStmt(CreateExternalStmt *stmt, const char *queryString)
 														 (DistributedBy *) likeDistributedBy,
 														 bQuiet);
 			if (stmt->distributedBy->ptype == POLICYTYPE_REPLICATED)
+			{
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
 						 errmsg("external tables can't have DISTRIBUTED REPLICATED clause")));
+			}
+			else if (stmt->distributedBy->ptype == POLICYTYPE_ENTRY)
+			{
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+							errmsg("external tables can't have DISTRIBUTED COORDINATOR ONLY clause")));
+			}
 		}
 	}
 	else if (stmt->distributedBy != NULL)
@@ -2395,6 +2403,13 @@ transformDistributedBy(ParseState *pstate,
 	 */
 	if (Gp_role != GP_ROLE_DISPATCH && !IsBinaryUpgrade)
 		return NULL;
+
+	/* COORDINATOR ONLY */
+	if (distributedBy && distributedBy->ptype == POLICYTYPE_ENTRY)
+	{
+		Assert(distributedBy->numsegments == -1);
+		return distributedBy;
+	}
 
 	if (distributedBy && distributedBy->numsegments > 0)
 		/* If numsegments is set in DISTRIBUTED BY use the specified value */
@@ -2560,20 +2575,16 @@ transformDistributedBy(ParseState *pstate,
 			 * segment in utility mode and the distribution policy isn't stored
 			 * in the segments.
 			 */
-			if ((parentPolicy == NULL ||
-					parentPolicy->ptype == POLICYTYPE_ENTRY) &&
-					!IsBinaryUpgrade)
+			if (GpPolicyIsEntry(parentPolicy) && !IsBinaryUpgrade)
 			{
 				ereport(ERROR,
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("cannot inherit from catalog table \"%s\" to create table \"%s\"",
+						 errmsg("cannot inherit from non-distributed table \"%s\" to create table \"%s\"",
 								parent->relname, cxt->relation->relname),
 						 errdetail("An inheritance hierarchy cannot contain a mixture of distributed and non-distributed tables.")));
 			}
 
-			if ((parentPolicy == NULL ||
-					GpPolicyIsReplicated(parentPolicy)) &&
-					!IsBinaryUpgrade)
+			if (GpPolicyIsReplicated(parentPolicy) && !IsBinaryUpgrade)
 			{
 				ereport(ERROR,
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -3101,8 +3112,7 @@ getPolicyForDistributedBy(DistributedBy *distributedBy, TupleDesc tupdesc)
 											   distributedBy->numsegments);;
 
 		case POLICYTYPE_ENTRY:
-			elog(ERROR, "unexpected entry distribution policy");
-			return NULL;
+			return createCoordinatorOnlyPolicy();
 
 		case POLICYTYPE_REPLICATED:
 			return createReplicatedGpPolicy(distributedBy->numsegments);
@@ -5003,7 +5013,7 @@ getLikeDistributionPolicy(TableLikeClause *e)
 
 	rel = relation_openrv(e->relation, AccessShareLock);
 
-	if (rel->rd_cdbpolicy != NULL && rel->rd_cdbpolicy->ptype != POLICYTYPE_ENTRY)
+	if (rel->rd_cdbpolicy)
 	{
 		likeDistributedBy = make_distributedby_for_rel(rel);
 	}

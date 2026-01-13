@@ -6265,10 +6265,12 @@ page_size(double tuples, int width)
  */
 int planner_segment_count(GpPolicy *policy)
 {
-	if ( Gp_role != GP_ROLE_DISPATCH )
+	if (Gp_role != GP_ROLE_DISPATCH)
 		return 1;
-	else if ( gp_segments_for_planner > 0 )
+	else if (gp_segments_for_planner > 0)
 		return gp_segments_for_planner;
+	else if (policy && policy->ptype == POLICYTYPE_ENTRY)
+		return 1;
 	else if (policy && policy->ptype != POLICYTYPE_ENTRY)
 		return policy->numsegments;
 	else

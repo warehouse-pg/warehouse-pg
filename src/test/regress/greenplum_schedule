@@ -191,7 +191,10 @@ test: minirepro
 # NOTE: gporca_faults uses gp_fault_injector - so do not add to a parallel group
 test: gporca_faults
 
-# Tests for replicated table
+# Tests for coordinator only tables
+test: rpt coordinator_only
+
+# Tests for replicated tables
 test: rpt rpt_joins rpt_tpch rpt_returning
 
 # NOTE: The bfv_temp test assumes that there are no temporary tables in

@@ -97,7 +97,7 @@ check_online_expansion(void)
 								"JOIN (SELECT count(*) segcount "
 								"      FROM pg_catalog.gp_segment_configuration "
 								"      WHERE content >= 0 and role = 'p') s "
-								"ON d.numsegments <> s.segcount "
+								"ON d.numsegments <> s.segcount AND d.numsegments <> -1"
 								"LIMIT 1;");
 
 		ntups = PQntuples(res);

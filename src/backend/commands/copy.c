@@ -1227,7 +1227,7 @@ DoCopy(ParseState *pstate, const CopyStmt *stmt,
 	{
 		Assert(rel);
 
-		if (stmt->sreh && Gp_role != GP_ROLE_EXECUTE && !rel->rd_cdbpolicy)
+		if (stmt->sreh && Gp_role != GP_ROLE_EXECUTE && GpPolicyIsEntry(rel->rd_cdbpolicy))
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("COPY single row error handling only available for distributed user tables")));
@@ -2589,7 +2589,7 @@ BeginCopyTo(ParseState *pstate,
 
 	/* Determine the mode */
 	if (Gp_role == GP_ROLE_DISPATCH && !cstate->on_segment &&
-		cstate->rel && cstate->rel->rd_cdbpolicy)
+		cstate->rel && !GpPolicyIsEntry(cstate->rel->rd_cdbpolicy))
 	{
 		cstate->dispatch_mode = COPY_DISPATCH;
 	}
@@ -2770,7 +2770,8 @@ DoCopyTo(CopyState cstate)
 		 * doing COPY (SELECT) we just go straight to work, without
 		 * dispatching COPY commands to executors.
 		 */
-		if (Gp_role == GP_ROLE_DISPATCH && cstate->rel && cstate->rel->rd_cdbpolicy)
+		if (Gp_role == GP_ROLE_DISPATCH && cstate->rel &&
+			!GpPolicyIsEntry(cstate->rel->rd_cdbpolicy))
 			processed = CopyToDispatch(cstate);
 		else
 			processed = CopyTo(cstate);
@@ -4215,7 +4216,10 @@ CopyFrom(CopyState cstate)
 	 * directly from a file, and there's no guarantee on what it contains, so we
 	 * need to do the checking in the QE.
 	 */
-	is_check_distkey = (cstate->on_segment && Gp_role == GP_ROLE_EXECUTE && gp_enable_segment_copy_checking) ? true : false;
+	is_check_distkey = cstate->on_segment &&
+						Gp_role == GP_ROLE_EXECUTE &&
+						gp_enable_segment_copy_checking &&
+						!GpPolicyIsEntry(cstate->rel->rd_cdbpolicy);
 
 	/*
 	 * Initialize information about distribution keys, needed to compute target
@@ -4944,16 +4948,14 @@ BeginCopyFrom(ParseState *pstate,
 	if (cstate->on_segment || data_source_cb)
 		cstate->dispatch_mode = COPY_DIRECT;
 	else if (Gp_role == GP_ROLE_DISPATCH &&
-			 cstate->rel && cstate->rel->rd_cdbpolicy &&
-			 cstate->rel->rd_cdbpolicy->ptype != POLICYTYPE_ENTRY)
+			 cstate->rel && !GpPolicyIsEntry(cstate->rel->rd_cdbpolicy))
 		cstate->dispatch_mode = COPY_DISPATCH;
 	/*
 	 * Handle case where fdw executes on coordinator while it's acting as a segment
 	 * This occurs when fdw is under a redistribute on the coordinator
 	 */
 	else if (Gp_role == GP_ROLE_EXECUTE &&
-			 cstate->rel && cstate->rel->rd_cdbpolicy &&
-			 cstate->rel->rd_cdbpolicy->ptype == POLICYTYPE_ENTRY)
+			 cstate->rel && GpPolicyIsEntry(cstate->rel->rd_cdbpolicy))
 		cstate->dispatch_mode = COPY_DIRECT;
 	else if (Gp_role == GP_ROLE_EXECUTE)
 		cstate->dispatch_mode = COPY_EXECUTOR;

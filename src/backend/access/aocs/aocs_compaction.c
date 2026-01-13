@@ -233,7 +233,7 @@ AOCSSegmentFileFullCompaction(Relation aorel,
 	int64		curr_heap_blks_scanned = 0;
 	int64		prev_heap_blks_scanned = 0;
 
-	Assert(Gp_role == GP_ROLE_EXECUTE || Gp_role == GP_ROLE_UTILITY);
+	Assert(Gp_role == GP_ROLE_EXECUTE || Gp_role == GP_ROLE_UTILITY || GpPolicyIsEntry(aorel->rd_cdbpolicy));
 	Assert(RelationStorageIsAoCols(aorel));
 	Assert(insertDesc);
 
@@ -382,7 +382,7 @@ AOCSCompact(Relation aorel,
 	Snapshot	appendOnlyMetaDataSnapshot = RegisterSnapshot(GetCatalogSnapshot(InvalidOid));
 
 	Assert(RelationStorageIsAoCols(aorel));
-	Assert(Gp_role == GP_ROLE_EXECUTE || Gp_role == GP_ROLE_UTILITY);
+	Assert(Gp_role == GP_ROLE_EXECUTE || Gp_role == GP_ROLE_UTILITY || GpPolicyIsEntry(aorel->rd_cdbpolicy));
 
 	relname = RelationGetRelationName(aorel);
 	elogif(Debug_appendonly_print_compaction, LOG,

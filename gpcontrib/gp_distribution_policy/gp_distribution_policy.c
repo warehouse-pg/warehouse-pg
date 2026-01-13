@@ -69,6 +69,12 @@ gp_distribution_policy_table_check(PG_FUNCTION_ARGS)
 				 errmsg("input relation is not a table")));
 	}
 
+	if (GpPolicyIsEntry(policy))
+	{
+		table_close(rel, AccessShareLock);
+		PG_RETURN_BOOL(true);
+	}
+
 	slot = table_slot_create(rel, NULL);
 
 	TableScanDesc scandesc = table_beginscan(rel, GetActiveSnapshot(), 0, NULL);

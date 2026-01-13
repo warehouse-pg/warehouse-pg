@@ -3589,8 +3589,14 @@ setQryDistributionPolicy(ParseState *pstate, IntoClause *into, Query *qry)
 				 errmsg("number of distributed by columns exceeds limit (%d)",
 						MaxPolicyAttributeNumber)));
 
-	if (dist->ptype == POLICYTYPE_REPLICATED)
+	if (dist->ptype == POLICYTYPE_ENTRY)
+	{
+		qry->intoPolicy = createCoordinatorOnlyPolicy();
+	}
+	else if (dist->ptype == POLICYTYPE_REPLICATED)
+	{
 		qry->intoPolicy = createReplicatedGpPolicy(dist->numsegments);
+	}
 	else
 	{
 		List	*policykeys = NIL;
