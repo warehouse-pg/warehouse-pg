@@ -410,7 +410,19 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
 
 		if (sliceTable->slices[0].gangType != GANGTYPE_UNALLOCATED ||
 			sliceTable->hasMotions ||
-			(sliceTable->slices[0].gangType == GANGTYPE_UNALLOCATED && GpPolicyIsEntry(queryDesc->plannedstmt->intoPolicy)))
+			/*
+			 * CREATE TABLE foo SELECT bar FROM coordinator-only DISTRIBUTED
+			 * COORDINATOR ONLY, the root slice is GANGTYPE_UNALLOCATED and
+			 * there is no motion in this case, but we still need to dispatch
+			 * the query description to create the table.
+			 *
+			 * It is worth noting that we double-check that intoPolicy is not
+			 * NULL to exclude some intermediate states, such as during CREATE
+			 * PARTITION or table rewrites triggered by ALTER.
+			 */
+			(sliceTable->slices[0].gangType == GANGTYPE_UNALLOCATED &&
+			 queryDesc->plannedstmt->intoPolicy != NULL &&
+			 GpPolicyIsEntry(queryDesc->plannedstmt->intoPolicy)))
 		{
 			if (queryDesc->ddesc == NULL)
 			{

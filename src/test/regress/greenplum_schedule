@@ -192,7 +192,7 @@ test: minirepro
 test: gporca_faults
 
 # Tests for coordinator only tables
-test: rpt coordinator_only
+test: coordinator_only
 
 # Tests for replicated tables
 test: rpt rpt_joins rpt_tpch rpt_returning

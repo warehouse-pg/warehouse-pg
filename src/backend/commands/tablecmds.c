@@ -17996,7 +17996,7 @@ ATExecSetDistributedBy(Relation rel, Node *node, AlterTableCmd *cmd)
 	/* we only support partitioned/replicated tables */
 	if (Gp_role == GP_ROLE_DISPATCH)
 	{
-		if (GpPolicyIsEntry(rel->rd_cdbpolicy) || (ldistro->ptype == POLICYTYPE_ENTRY))
+		if (GpPolicyIsEntry(rel->rd_cdbpolicy) || (ldistro && ldistro->ptype == POLICYTYPE_ENTRY))
 			ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("%s not supported on non-distributed tables",

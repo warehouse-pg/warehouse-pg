@@ -1206,7 +1206,8 @@ cdbllize_build_slice_table(PlannerInfo *root, Plan *top_plan,
 	{
 		PlanSlice *slice = (PlanSlice *) lfirst(lc);
 
-		if (slice->gangType != GANGTYPE_UNALLOCATED)
+		if (slice->gangType != GANGTYPE_UNALLOCATED ||
+			(query->intoPolicy && GpPolicyIsEntry(query->intoPolicy)))
 		{
 			all_root_slices = false;
 			break;

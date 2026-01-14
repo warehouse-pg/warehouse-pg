@@ -171,6 +171,11 @@ SELECT gp_segment_id, * FROM coordinator_only_heap ORDER BY c1;
             -1 | 315 | data_315 | 472.5
 (18 rows)
 
+SELECT gp_segment_id, * FROM gp_dist_random('coordinator_only_heap') ORDER BY c1;
+ gp_segment_id | c1 | c2 | c3 
+---------------+----+----+----
+(0 rows)
+
 -- Verify physical storage location
 SELECT pg_relation_size('coordinator_only_heap') > 0 AS has_data_on_coordinator;
  has_data_on_coordinator 
@@ -317,6 +322,11 @@ CREATE TABLE ctas_from_distributed AS
 SELECT * FROM distributed_table_aux
 WHERE c2 > 25
 DISTRIBUTED COORDINATOR ONLY;
+SELECT gp_segment_id, * FROM gp_dist_random('ctas_from_distributed') ORDER BY c1;
+ gp_segment_id | c1 | c2 
+---------------+----+----
+(0 rows)
+
 \d+ ctas_from_distributed
                            Table "public.ctas_from_distributed"
  Column |  Type   | Collation | Nullable | Default | Storage | Stats target | Description 
@@ -330,6 +340,11 @@ CREATE TABLE ctas_from_coordinator_only_to_only AS
 SELECT * FROM coordinator_only_heap
 WHERE c1 > 25
 DISTRIBUTED COORDINATOR ONLY;
+SELECT gp_segment_id, * FROM gp_dist_random('ctas_from_coordinator_only_to_only') ORDER BY c1;
+ gp_segment_id | c1 | c2 | c3 
+---------------+----+----+----
+(0 rows)
+
 \d+ ctas_from_coordinator_only_to_only
                      Table "public.ctas_from_coordinator_only_to_only"
  Column |  Type   | Collation | Nullable | Default | Storage  | Stats target | Description 
@@ -360,8 +375,6 @@ Distributed by: (c1)
 -- LIKE should inherit DISTRIBUTED COORDINATOR ONLY
 CREATE TABLE like_coordinator_only (LIKE coordinator_only_heap);
 NOTICE:  table doesn't have 'DISTRIBUTED BY' clause, defaulting to distribution columns from LIKE table
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'c1' as the Greenplum Database data distribution key for this table.
-HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 \d+ like_coordinator_only
                            Table "public.like_coordinator_only"
  Column |  Type   | Collation | Nullable | Default | Storage  | Stats target | Description 
@@ -439,6 +452,21 @@ WHERE c2 IN (SELECT c1 FROM coordinator_only_heap WHERE c1 < 500);
 CREATE MATERIALIZED VIEW mv_coordinator_only_explicit AS
 SELECT i FROM generate_series(1, 20) i
 DISTRIBUTED COORDINATOR ONLY;
+SELECT gp_segment_id, * FROM gp_dist_random('mv_coordinator_only_explicit') ORDER BY i;
+ gp_segment_id | i  
+---------------+----
+(0 rows)
+
+\d+ mv_coordinator_only_explicit;
+                 Materialized view "public.mv_coordinator_only_explicit"
+ Column |  Type   | Collation | Nullable | Default | Storage | Stats target | Description 
+--------+---------+-----------+----------+---------+---------+--------------+-------------
+ i      | integer |           |          |         | plain   |              | 
+View definition:
+ SELECT i.i
+   FROM generate_series(1, 20) i(i);
+Distributed by: DISTRIBUTED COORDINATOR ONLY
+
 -- Matview from coordinator-only table (should infer hash distribution)
 CREATE MATERIALIZED VIEW mv_from_coordinator_only AS
 SELECT c1, c2 FROM coordinator_only_heap WHERE c1 BETWEEN 100 AND 200;
@@ -557,6 +585,22 @@ PARTITION BY RANGE (c2)
 -- ==================================================================
 -- 16. Cleanup
 -- ==================================================================
+-- Before cleanup: verify coordinator-only tables exist in segments catalog
+SELECT gp_segment_id, count(*)
+FROM gp_dist_random('pg_class') 
+WHERE relname IN ('coordinator_only_heap', 'coordinator_only_ao', 'coordinator_only_aoco', 
+                  'ctas_from_distributed', 'ctas_from_coordinator_only_to_only',
+                  'like_coordinator_only', 'mv_coordinator_only_explicit',
+                  'coordinator_only_constraints', 'coordinator_only_partitioned')
+GROUP BY gp_segment_id
+ORDER BY gp_segment_id;
+ gp_segment_id | count 
+---------------+-------
+             0 |     9
+             1 |     9
+             2 |     9
+(3 rows)
+
 DROP TABLE IF EXISTS coordinator_only_heap CASCADE;
 NOTICE:  drop cascades to 3 other objects
 DETAIL:  drop cascades to function get_coordinator_only_data()
@@ -584,3 +628,16 @@ DROP EXTERNAL TABLE IF EXISTS ext_readable_coordinator_only;
 NOTICE:  foreign table "ext_readable_coordinator_only" does not exist, skipping
 DROP EXTERNAL TABLE IF EXISTS ext_writable_coordinator_only;
 NOTICE:  foreign table "ext_writable_coordinator_only" does not exist, skipping
+-- After cleanup: verify coordinator-only tables no longer exist in segments catalog
+SELECT gp_segment_id, count(*)
+FROM gp_dist_random('pg_class') 
+WHERE relname IN ('coordinator_only_heap', 'coordinator_only_ao', 'coordinator_only_aoco', 
+                  'ctas_from_distributed', 'ctas_from_coordinator_only_to_only',
+                  'like_coordinator_only', 'mv_coordinator_only_explicit',
+                  'coordinator_only_constraints', 'coordinator_only_partitioned')
+GROUP BY gp_segment_id
+ORDER BY gp_segment_id;
+ gp_segment_id | count 
+---------------+-------
+(0 rows)
+

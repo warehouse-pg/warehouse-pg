@@ -5020,6 +5020,11 @@ getLikeDistributionPolicy(TableLikeClause *e)
 
 	rel = relation_openrv(e->relation, AccessShareLock);
 
+	/*
+	 * Don't "LIKE" the distribution policy if it's a catalog table, readable
+	 * external table or other type of tables that doesn't have a policy to
+	 * avoid implicit creating COORDINATOR ONLY tables
+	 */
 	if (rel->rd_cdbpolicy)
 	{
 		likeDistributedBy = make_distributedby_for_rel(rel);
