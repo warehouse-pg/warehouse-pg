@@ -69,6 +69,7 @@ gp_distribution_policy_table_check(PG_FUNCTION_ARGS)
 				 errmsg("input relation is not a table")));
 	}
 
+	/* Catalog and coordinator only tables are not distributed */
 	if (GpPolicyIsEntry(policy))
 	{
 		table_close(rel, AccessShareLock);

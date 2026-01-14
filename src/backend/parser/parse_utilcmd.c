@@ -2636,6 +2636,13 @@ transformDistributedBy(ParseState *pstate,
 			distributedBy->numsegments = numsegments;
 			return distributedBy;
 		}
+		else if (likeDistributedBy->ptype == POLICYTYPE_ENTRY)
+		{
+			distributedBy = makeNode(DistributedBy);
+			distributedBy->ptype = POLICYTYPE_ENTRY;
+			distributedBy->numsegments = -1;
+			return distributedBy;
+		}
 
 		distrkeys = likeDistributedBy->keyCols;
 	}

@@ -129,6 +129,7 @@ GetDispatchInfoFromPlanForSingleRelation(PlannerInfo *root, Plan *plan, int rang
 		relation = relation_open(rte->relid, NoLock);
 		policy = relation->rd_cdbpolicy;
 
+		/* partitioned and not ramdomly distributed */
 		if (policy != NULL && policy->nattrs > 0)
 		{
 			parts = (PartitionKeyInfo *) palloc(policy->nattrs * sizeof(PartitionKeyInfo));
