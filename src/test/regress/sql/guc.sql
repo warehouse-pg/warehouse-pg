@@ -326,3 +326,7 @@ drop table public.t1;
 drop type public.ty1;
 drop function n1.drop_table(v_schema character varying, v_table character varying);
 drop schema n1;
+
+-- Test GUC archive_timeout visibility
+SHOW archive_timeout;
+SELECT name, setting FROM pg_settings WHERE name = 'archive_timeout';
