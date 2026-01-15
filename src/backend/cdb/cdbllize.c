@@ -325,6 +325,7 @@ cdbllize_get_final_locus(PlannerInfo *root, PathTarget *target)
 
 		if (intoPolicy != NULL)
 		{
+			Assert(intoPolicy->ptype != POLICYTYPE_ENTRY);
 			Assert(intoPolicy->nattrs >= 0);
 			Assert(intoPolicy->nattrs <= MaxPolicyAttributeNumber);
 

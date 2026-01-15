@@ -340,38 +340,26 @@ PARTITION BY RANGE (c2)
 SELECT gp_segment_id, count(*)
 FROM gp_dist_random('pg_class')
 WHERE relname IN ('coordinator_only_heap', 'coordinator_only_ao', 'coordinator_only_aoco',
-                  'ctas_from_distributed', 'ctas_from_coordinator_only_to_only',
-                  'like_coordinator_only', 'mv_coordinator_only_explicit',
-                  'coordinator_only_constraints', 'coordinator_only_partitioned')
+                  'like_coordinator_only', 'coordinator_only_constraints')
 GROUP BY gp_segment_id
 ORDER BY gp_segment_id;
 
 DROP TABLE IF EXISTS coordinator_only_heap CASCADE;
 DROP TABLE IF EXISTS coordinator_only_ao CASCADE;
 DROP TABLE IF EXISTS coordinator_only_aoco CASCADE;
-DROP TABLE IF EXISTS ctas_from_distributed CASCADE;
-DROP TABLE IF EXISTS ctas_from_coordinator_only_to_only CASCADE;
-DROP TABLE IF EXISTS ctas_from_coordinator_only_no_distribution CASCADE;
 DROP TABLE IF EXISTS like_coordinator_only CASCADE;
-DROP MATERIALIZED VIEW IF EXISTS mv_from_coordinator_only CASCADE;
 DROP TABLE IF EXISTS coordinator_only_constraints CASCADE;
 DROP FUNCTION IF EXISTS get_coordinator_only_data() CASCADE;
 DROP FUNCTION IF EXISTS get_coordinator_only_data_on_coordinator() CASCADE;
 
 -- Extra cleanup for auxiliary and optional objects
-DROP MATERIALIZED VIEW IF EXISTS mv_coordinator_only_explicit CASCADE;
-DROP TABLE IF EXISTS coordinator_only_partitioned CASCADE;
 DROP TABLE IF EXISTS distributed_table_aux CASCADE;
 DROP TABLE IF EXISTS distributed_table_aux_r CASCADE;
-DROP EXTERNAL TABLE IF EXISTS ext_readable_coordinator_only;
-DROP EXTERNAL TABLE IF EXISTS ext_writable_coordinator_only;
 
 -- After cleanup: verify coordinator-only tables no longer exist in segments catalog
 SELECT gp_segment_id, count(*)
 FROM gp_dist_random('pg_class')
 WHERE relname IN ('coordinator_only_heap', 'coordinator_only_ao', 'coordinator_only_aoco',
-                  'ctas_from_distributed', 'ctas_from_coordinator_only_to_only',
-                  'like_coordinator_only', 'mv_coordinator_only_explicit',
-                  'coordinator_only_constraints', 'coordinator_only_partitioned')
+                  'like_coordinator_only', 'coordinator_only_constraints')
 GROUP BY gp_segment_id
 ORDER BY gp_segment_id;

@@ -945,10 +945,10 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 			policy = createRandomPartitionedPolicy(policy->numsegments);
 	}
 
-	if (partitioned && GpPolicyIsReplicated(policy))
+	if (partitioned && (GpPolicyIsReplicated(policy) || (policy && GpPolicyIsEntry(policy))))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("PARTITION BY clause cannot be used with DISTRIBUTED REPLICATED clause")));
+				 errmsg("PARTITION BY clause cannot be used with DISTRIBUTED REPLICATED or COORDINATOR ONLY clause")));
 
 	/*
 	 * Find columns with default values and prepare for insertion of the
@@ -17996,11 +17996,17 @@ ATExecSetDistributedBy(Relation rel, Node *node, AlterTableCmd *cmd)
 	/* we only support partitioned/replicated tables */
 	if (Gp_role == GP_ROLE_DISPATCH)
 	{
-		if (GpPolicyIsEntry(rel->rd_cdbpolicy) || (ldistro && ldistro->ptype == POLICYTYPE_ENTRY))
+		if (GpPolicyIsEntry(rel->rd_cdbpolicy) && !ldistro)
+		{
 			ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("%s not supported on non-distributed tables",
-						ldistro ? "SET DISTRIBUTED BY" : "SET WITH")));
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("SET WITH not supported on non-distributed tables")));
+		} else if (GpPolicyIsEntry(rel->rd_cdbpolicy) || (ldistro && ldistro->ptype == POLICYTYPE_ENTRY))
+		{
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("cannot SET DISTRIBUTED COORDINATOR ONLY")));
+		}
 
 		if (rel_is_external_table(RelationGetRelid(rel)))
 		{

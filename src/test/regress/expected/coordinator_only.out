@@ -484,7 +484,7 @@ ALTER TABLE coordinator_only_heap SET DISTRIBUTED RANDOMLY;
 ERROR:  cannot set the policy of a non-distributed table
 -- Cannot change existing replicated table to coordinator-only
 ALTER TABLE distributed_table_aux_r SET DISTRIBUTED COORDINATOR ONLY;
-ERROR:  SET DISTRIBUTED BY not supported on non-distributed tables
+ERROR:  cannot SET DISTRIBUTED COORDINATOR ONLY
 -- Cannot EXPAND coordinator-only tables
 ALTER TABLE coordinator_only_heap EXPAND TABLE;
 ERROR:  cannot expand a non-distributed table
@@ -548,6 +548,7 @@ PARTITION BY RANGE (c2)
 (
     START ('2025-01-01'::DATE) END ('2025-12-31'::DATE) EVERY (INTERVAL '3 months')
 );
+ERROR:  PARTITION BY clause cannot be used with DISTRIBUTED REPLICATED or COORDINATOR ONLY clause
 -- ==================================================================
 -- 16. Cleanup
 -- ==================================================================
@@ -555,16 +556,14 @@ PARTITION BY RANGE (c2)
 SELECT gp_segment_id, count(*)
 FROM gp_dist_random('pg_class')
 WHERE relname IN ('coordinator_only_heap', 'coordinator_only_ao', 'coordinator_only_aoco',
-                  'ctas_from_distributed', 'ctas_from_coordinator_only_to_only',
-                  'like_coordinator_only', 'mv_coordinator_only_explicit',
-                  'coordinator_only_constraints', 'coordinator_only_partitioned')
+                  'like_coordinator_only', 'coordinator_only_constraints')
 GROUP BY gp_segment_id
 ORDER BY gp_segment_id;
  gp_segment_id | count 
 ---------------+-------
-             0 |     6
-             1 |     6
-             2 |     6
+             0 |     5
+             1 |     5
+             2 |     5
 (3 rows)
 
 DROP TABLE IF EXISTS coordinator_only_heap CASCADE;
@@ -574,36 +573,20 @@ drop cascades to function get_coordinator_only_data_on_coordinator()
 drop cascades to materialized view mv_from_coordinator_only
 DROP TABLE IF EXISTS coordinator_only_ao CASCADE;
 DROP TABLE IF EXISTS coordinator_only_aoco CASCADE;
-DROP TABLE IF EXISTS ctas_from_distributed CASCADE;
-NOTICE:  table "ctas_from_distributed" does not exist, skipping
-DROP TABLE IF EXISTS ctas_from_coordinator_only_to_only CASCADE;
-NOTICE:  table "ctas_from_coordinator_only_to_only" does not exist, skipping
-DROP TABLE IF EXISTS ctas_from_coordinator_only_no_distribution CASCADE;
 DROP TABLE IF EXISTS like_coordinator_only CASCADE;
-DROP MATERIALIZED VIEW IF EXISTS mv_from_coordinator_only CASCADE;
-NOTICE:  materialized view "mv_from_coordinator_only" does not exist, skipping
 DROP TABLE IF EXISTS coordinator_only_constraints CASCADE;
 DROP FUNCTION IF EXISTS get_coordinator_only_data() CASCADE;
 NOTICE:  function get_coordinator_only_data() does not exist, skipping
 DROP FUNCTION IF EXISTS get_coordinator_only_data_on_coordinator() CASCADE;
 NOTICE:  function get_coordinator_only_data_on_coordinator() does not exist, skipping
 -- Extra cleanup for auxiliary and optional objects
-DROP MATERIALIZED VIEW IF EXISTS mv_coordinator_only_explicit CASCADE;
-NOTICE:  materialized view "mv_coordinator_only_explicit" does not exist, skipping
-DROP TABLE IF EXISTS coordinator_only_partitioned CASCADE;
 DROP TABLE IF EXISTS distributed_table_aux CASCADE;
 DROP TABLE IF EXISTS distributed_table_aux_r CASCADE;
-DROP EXTERNAL TABLE IF EXISTS ext_readable_coordinator_only;
-NOTICE:  foreign table "ext_readable_coordinator_only" does not exist, skipping
-DROP EXTERNAL TABLE IF EXISTS ext_writable_coordinator_only;
-NOTICE:  foreign table "ext_writable_coordinator_only" does not exist, skipping
 -- After cleanup: verify coordinator-only tables no longer exist in segments catalog
 SELECT gp_segment_id, count(*)
 FROM gp_dist_random('pg_class')
 WHERE relname IN ('coordinator_only_heap', 'coordinator_only_ao', 'coordinator_only_aoco',
-                  'ctas_from_distributed', 'ctas_from_coordinator_only_to_only',
-                  'like_coordinator_only', 'mv_coordinator_only_explicit',
-                  'coordinator_only_constraints', 'coordinator_only_partitioned')
+                  'like_coordinator_only', 'coordinator_only_constraints')
 GROUP BY gp_segment_id
 ORDER BY gp_segment_id;
  gp_segment_id | count 

@@ -636,6 +636,7 @@ GpPolicyReplace(Oid tbloid, const GpPolicy *policy)
 	/* Sanity check the policy and its opclasses before storing it. */
 	if (policy->ptype == POLICYTYPE_ENTRY)
 		elog(ERROR, "cannot alter the distribution policy of a coordinator-only table");
+
 	for (i = 0; i < policy->nattrs; i++)
 	{
 		if (policy->opclasses[i] == InvalidOid)
