@@ -830,3 +830,16 @@ SHOW log_lock_waits;
  off
 (1 row)
 
+-- Test GUC archive_timeout visibility
+SHOW archive_timeout;
+ archive_timeout 
+-----------------
+ 0
+(1 row)
+
+SELECT name, setting FROM pg_settings WHERE name = 'archive_timeout';
+      name       | setting 
+-----------------+---------
+ archive_timeout | 0
+(1 row)
+

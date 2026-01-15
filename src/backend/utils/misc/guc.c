@@ -1609,7 +1609,7 @@ static struct config_int ConfigureNamesInt[] =
 			gettext_noop("Forces a switch to the next xlog file if a "
 						 "new file has not been started within N seconds."),
 			NULL,
-			GUC_UNIT_S | GUC_NOT_IN_SAMPLE | GUC_NO_SHOW_ALL
+			GUC_UNIT_S | GUC_NOT_IN_SAMPLE
 		},
 		&XLogArchiveTimeout,
 		0, 0, INT_MAX / 2,

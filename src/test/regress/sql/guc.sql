@@ -316,3 +316,6 @@ drop schema n1;
 -- GP: assert that we don't support turning on log_lock_waits
 SET log_lock_waits TO on;
 SHOW log_lock_waits;
+-- Test GUC archive_timeout visibility
+SHOW archive_timeout;
+SELECT name, setting FROM pg_settings WHERE name = 'archive_timeout';
