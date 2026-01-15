@@ -1257,10 +1257,7 @@ InitSliceTable(EState *estate, PlannedStmt *plannedstmt)
 	 */
 	if ((plannedstmt->intoClause != NULL || plannedstmt->copyIntoClause != NULL || plannedstmt->refreshClause))
 	{
-		if (table->slices[0].gangType == GANGTYPE_PRIMARY_WRITER ||
-			(table->slices[0].gangType == GANGTYPE_UNALLOCATED &&
-			 plannedstmt->intoPolicy &&
-			 GpPolicyIsEntry(plannedstmt->intoPolicy)))
+		if (table->slices[0].gangType == GANGTYPE_PRIMARY_WRITER)
 		{
 			int			numsegments = getgpsegmentCount();
 

@@ -240,8 +240,7 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
 
 	Assert(queryDesc->plannedstmt->intoPolicy == NULL ||
 		GpPolicyIsPartitioned(queryDesc->plannedstmt->intoPolicy) ||
-		GpPolicyIsReplicated(queryDesc->plannedstmt->intoPolicy) ||
-		GpPolicyIsEntry(queryDesc->plannedstmt->intoPolicy));
+		GpPolicyIsReplicated(queryDesc->plannedstmt->intoPolicy));
 
 	/* GPDB hook for collecting query info */
 	if (query_info_collect_hook)
@@ -409,20 +408,7 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
 		estate->es_sliceTable = sliceTable;
 
 		if (sliceTable->slices[0].gangType != GANGTYPE_UNALLOCATED ||
-			sliceTable->hasMotions ||
-			/*
-			 * CREATE TABLE foo SELECT bar FROM coordinator-only DISTRIBUTED
-			 * COORDINATOR ONLY, the root slice is GANGTYPE_UNALLOCATED and
-			 * there is no motion in this case, but we still need to dispatch
-			 * the query description to create the table.
-			 *
-			 * It is worth noting that we double-check that intoPolicy is not
-			 * NULL to exclude some intermediate states, such as during CREATE
-			 * PARTITION or table rewrites triggered by ALTER.
-			 */
-			(sliceTable->slices[0].gangType == GANGTYPE_UNALLOCATED &&
-			 queryDesc->plannedstmt->intoPolicy != NULL &&
-			 GpPolicyIsEntry(queryDesc->plannedstmt->intoPolicy)))
+			sliceTable->hasMotions)
 		{
 			if (queryDesc->ddesc == NULL)
 			{
@@ -1665,8 +1651,7 @@ InitPlan(QueryDesc *queryDesc, int eflags)
 
 	Assert(plannedstmt->intoPolicy == NULL ||
 		GpPolicyIsPartitioned(plannedstmt->intoPolicy) ||
-		GpPolicyIsReplicated(plannedstmt->intoPolicy) ||
-		GpPolicyIsEntry(plannedstmt->intoPolicy));
+		GpPolicyIsReplicated(plannedstmt->intoPolicy));
 
 	if (DEBUG1 >= log_min_messages)
 	{

@@ -409,6 +409,7 @@ cdbllize_adjust_top_path(PlannerInfo *root, Path *best_path,
 		{
 			targetPolicy = query->intoPolicy;
 
+			Assert(query->intoPolicy->ptype != POLICYTYPE_ENTRY);
 			Assert(query->intoPolicy->nattrs >= 0);
 			Assert(query->intoPolicy->nattrs <= MaxPolicyAttributeNumber);
 		}
@@ -496,6 +497,7 @@ cdbllize_adjust_top_path(PlannerInfo *root, Path *best_path,
 								 " Make sure column(s) chosen are the optimal data distribution key to minimize skew.")));
 			}
 		}
+		Assert(targetPolicy->ptype != POLICYTYPE_ENTRY);
 
 		query->intoPolicy = targetPolicy;
 
@@ -1206,8 +1208,7 @@ cdbllize_build_slice_table(PlannerInfo *root, Plan *top_plan,
 	{
 		PlanSlice *slice = (PlanSlice *) lfirst(lc);
 
-		if (slice->gangType != GANGTYPE_UNALLOCATED ||
-			(query->intoPolicy && GpPolicyIsEntry(query->intoPolicy)))
+		if (slice->gangType != GANGTYPE_UNALLOCATED)
 		{
 			all_root_slices = false;
 			break;

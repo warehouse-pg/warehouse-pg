@@ -88,8 +88,14 @@ SELECT i, 'data_' || i, i * 1.5
 FROM generate_series(300, 315) i;
 
 -- Verify all data is on coordinator (gp_segment_id = -1)
-SELECT gp_segment_id, * FROM coordinator_only_heap ORDER BY c1;
-SELECT gp_segment_id, * FROM gp_dist_random('coordinator_only_heap') ORDER BY c1;
+SELECT gp_segment_id, count(*) FROM coordinator_only_heap GROUP BY gp_segment_id ORDER BY gp_segment_id;
+SELECT gp_segment_id, count(*) FROM gp_dist_random('coordinator_only_heap') GROUP BY gp_segment_id ORDER BY gp_segment_id;
+
+SELECT gp_segment_id, count(*) FROM coordinator_only_ao GROUP BY gp_segment_id ORDER BY gp_segment_id;
+SELECT gp_segment_id, count(*) FROM gp_dist_random('coordinator_only_ao') GROUP BY gp_segment_id ORDER BY gp_segment_id;
+
+SELECT gp_segment_id, count(*) FROM coordinator_only_aoco GROUP BY gp_segment_id ORDER BY gp_segment_id;
+SELECT gp_segment_id, count(*) FROM gp_dist_random('coordinator_only_aoco') GROUP BY gp_segment_id ORDER BY gp_segment_id;
 
 -- Verify physical storage location
 SELECT pg_relation_size('coordinator_only_heap') > 0 AS has_data_on_coordinator;
@@ -168,21 +174,17 @@ WHERE c2 > 25
 DISTRIBUTED BY (c1);
 \d+ ctas_from_distributed_to_distributed
 
--- CTAS from a regular distributed table to coordinator-only
+-- CTAS from a regular distributed table to coordinator-only, should fail
 CREATE TABLE ctas_from_distributed AS
 SELECT * FROM distributed_table_aux
 WHERE c2 > 25
 DISTRIBUTED COORDINATOR ONLY;
-SELECT gp_segment_id, * FROM gp_dist_random('ctas_from_distributed') ORDER BY c1;
-\d+ ctas_from_distributed
 
--- CTAS from a coordinator-only table to coordinator-only
+-- CTAS from a coordinator-only table to coordinator-only, should fail
 CREATE TABLE ctas_from_coordinator_only_to_only AS
 SELECT * FROM coordinator_only_heap
 WHERE c1 > 25
 DISTRIBUTED COORDINATOR ONLY;
-SELECT gp_segment_id, * FROM gp_dist_random('ctas_from_coordinator_only_to_only') ORDER BY c1;
-\d+ ctas_from_coordinator_only_to_only
 
 -- CTAS from coordinator-only table (should create hash-distributed table by default)
 CREATE TABLE ctas_from_coordinator_only_no_distribution AS
@@ -221,12 +223,10 @@ WHERE c2 IN (SELECT c1 FROM coordinator_only_heap WHERE c1 < 500);
 -- 9. Materialized Views
 -- ==================================================================
 
--- Create matview with explicit DISTRIBUTED COORDINATOR ONLY
+-- Create matview with explicit DISTRIBUTED COORDINATOR ONLY, should fail
 CREATE MATERIALIZED VIEW mv_coordinator_only_explicit AS
 SELECT i FROM generate_series(1, 20) i
 DISTRIBUTED COORDINATOR ONLY;
-SELECT gp_segment_id, * FROM gp_dist_random('mv_coordinator_only_explicit') ORDER BY i;
-\d+ mv_coordinator_only_explicit;
 
 -- Matview from coordinator-only table (should infer hash distribution)
 CREATE MATERIALIZED VIEW mv_from_coordinator_only AS
