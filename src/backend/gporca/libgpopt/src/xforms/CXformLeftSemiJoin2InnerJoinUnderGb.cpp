@@ -107,6 +107,12 @@ CXformLeftSemiJoin2InnerJoinUnderGb::Transform(CXformContext *pxfctxt,
 		CUtils::PdrgpcrGroupingKey(mp, pexprOuter, &pdrgpcrKeys);
 	GPOS_ASSERT(nullptr != pdrgpcrKeys);
 
+	// Ensure that all grouping columns that are part of a key are marked as used.
+	// This prevents key columns from being pruned later (MakeDXLTableDescr),
+	// which could cause crashes in semijoin/EXISTS query plans
+	// when ORCA generates grouping keys.
+	MarkGroupingKeyColsAsUsed(mp, pexprOuter, pdrgpcrGrouping);
+
 	CExpression *pexprInnerJoin = CUtils::PexprLogicalJoin<CLogicalInnerJoin>(
 		mp, pexprOuter, pexprInner, pexprScalar);
 
@@ -119,6 +125,55 @@ CXformLeftSemiJoin2InnerJoinUnderGb::Transform(CXformContext *pxfctxt,
 		GPOS_NEW(mp) CExpression(mp, GPOS_NEW(mp) CScalarProjectList(mp)));
 
 	pxfres->Add(pexprGb);
+}
+
+//---------------------------------------------------------------------------
+//	@function:
+//		CXformLeftSemiJoin2InnerJoinUnderGb::MarkGroupingKeyColsAsUsed(
+//
+//	@doc:
+//		Helper function to marks grouping columns that are part of a key
+//		as used to prevent pruning.
+//
+//---------------------------------------------------------------------------
+void
+CXformLeftSemiJoin2InnerJoinUnderGb::MarkGroupingKeyColsAsUsed(
+	CMemoryPool *mp, CExpression *pexprOuter,
+	const CColRefArray *pdrgpcrGrouping)
+{
+	GPOS_ASSERT(nullptr != mp);
+	GPOS_ASSERT(nullptr != pexprOuter);
+	GPOS_ASSERT(nullptr != pdrgpcrGrouping);
+
+	// Derive the key collection for the outer relation
+	CKeyCollection *pkcOuter = pexprOuter->DeriveKeyCollection();
+
+	// Iterate over all grouping columns
+	for (ULONG i = 0; i < pdrgpcrGrouping->Size(); i++)
+	{
+		CColRef *pcr = (*pdrgpcrGrouping)[i];
+
+		// Skip columns that are already marked as used
+		if (pcr->GetUsage() == CColRef::EUsed)
+		{
+			continue;
+		}
+
+		// If not set EUsed, check if this column is part of any key in the outer relation
+		BOOL found_in_key = false;
+		for (ULONG k = 0; k < pkcOuter->Keys() && !found_in_key; k++)
+		{
+			CColRefSet *pcrsKey = pkcOuter->PcrsKey(mp, k);
+			found_in_key = pcrsKey->FMember(pcr);
+			pcrsKey->Release();
+		}
+
+		// If this column is part of a key, mark it as used to prevent pruning
+		if (found_in_key)
+		{
+			pcr->MarkAsUsed();
+		}
+	}
 }
 
 // EOF

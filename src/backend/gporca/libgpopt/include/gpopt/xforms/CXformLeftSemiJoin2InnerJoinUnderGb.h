@@ -57,6 +57,8 @@ public:
 	// compute xform promise for a given expression handle
 	EXformPromise Exfp(CExpressionHandle &exprhdl) const override;
 
+	static void MarkGroupingKeyColsAsUsed(CMemoryPool *mp, CExpression *pexprOuter,
+										  const CColRefArray *pdrgpcrGrouping);
 	// actual transform
 	void Transform(CXformContext *pxfctxt, CXformResult *pxfres,
 				   CExpression *pexpr) const override;
