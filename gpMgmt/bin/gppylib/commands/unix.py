@@ -15,7 +15,6 @@ import signal
 import uuid
 import shlex
 import re
-from pkg_resources import parse_version
 
 from gppylib.gplog import get_default_logger
 from gppylib.commands.base import *
@@ -805,7 +804,7 @@ def validate_rsync_version(min_ver):
     pattern = r"version (\d+\.\d+\.\d+)"
     match = re.search(pattern, rsync_version_info)
     current_rsync_version = match.group(1)
-    if parse_version(current_rsync_version) < parse_version(min_ver):
+    if tuple(map(int, current_rsync_version.split('.'))) < tuple(map(int, min_ver.split('.'))):
         return False
     return True
 
