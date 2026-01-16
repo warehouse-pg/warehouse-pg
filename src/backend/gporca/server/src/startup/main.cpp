@@ -314,6 +314,18 @@ PvExec(void *pv)
 
 	if (fMinidump)
 	{
+		if (!gpos::ioutils::PathExists(file_name))
+		{
+			GPOS_TRACE_FORMAT_ERR("DXL file not found: %s", file_name);
+			return nullptr;
+		}
+
+		if (gpos::ioutils::IsDir(file_name))
+		{
+			GPOS_TRACE_FORMAT_ERR("DXL path is a directory, expected a file: %s", file_name);
+			return nullptr;
+		}
+
 		// initialize DXL support
 		InitDXL();
 
