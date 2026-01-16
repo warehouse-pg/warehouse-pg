@@ -2604,6 +2604,8 @@ CUtils::PdrgpcrGroupingKey(
 	}
 
 	// prefer extracting a hashable key since Agg operator may redistribute child on grouping columns
+	// The Key columns usage can be !=EUsed. Marking them as EUsed should be handled
+	// by the calling function that rely on these keys.
 	CColRefArray *pdrgpcrKey = pkc->PdrgpcrHashableKey(mp);
 	if (nullptr == pdrgpcrKey)
 	{
