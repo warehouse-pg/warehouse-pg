@@ -236,7 +236,7 @@ class RecoveryResult(object):
         as it is logged after every failed pg_rewind operation.
         To ensure grep doesn't return a non-zero exit code, it is ORed with true.
         """
-        cmdStr = 'set -o pipefail; cat {} | (grep -i "ERROR\|PANIC\|FATAL" | grep -v "fatal: postgres single-user mode of target instance failed for command" || true) | tail -1'.format(progress_file)
+        cmdStr = r'set -o pipefail; cat {} | (grep -i "ERROR\|PANIC\|FATAL" | grep -v "fatal: postgres single-user mode of target instance failed for command" || true) | tail -1'.format(progress_file)
         cmd = Command(name="Parse logfile for errors on a remote host", cmdStr=cmdStr, ctxt=REMOTE, remoteHost=hostname)
         cmd.run()
 
