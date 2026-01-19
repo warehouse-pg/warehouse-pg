@@ -5,7 +5,7 @@
         For EXISTS/semijoin subqueries, outer table columns that are part of the
         primary key may be required for grouping even if they are not used in the query output.
         Previously, unused but required columns could trigger an assertion failure in
-        CTranslatorExprToDXL::MakeDXLTableDescr(). This MDP adds the failing test case (Ref: PTT-371)
+        CTranslatorExprToDXL::MakeDXLTableDescr(). This MDP adds the failing test case.
 
     Query & Plan:
         SELECT count(a.col1) FROM tabOuter a WHERE a.col66='VAL1' AND EXISTS

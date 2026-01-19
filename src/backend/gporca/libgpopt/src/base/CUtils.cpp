@@ -2574,6 +2574,7 @@ CUtils::FScalarConstFalse(CExpression *pexpr)
 }
 
 //	create an array of expression's output columns including a key for grouping
+//  The Key columns' usage can be !=EUsed.
 CColRefArray *
 CUtils::PdrgpcrGroupingKey(
 	CMemoryPool *mp, CExpression *pexpr,

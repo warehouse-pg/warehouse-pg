@@ -132,7 +132,7 @@ CXformLeftSemiJoin2InnerJoinUnderGb::Transform(CXformContext *pxfctxt,
 //		CXformLeftSemiJoin2InnerJoinUnderGb::MarkGroupingKeyColsAsUsed(
 //
 //	@doc:
-//		Helper function to marks grouping columns that are part of a key
+//		Helper function to mark grouping columns that are part of a key
 //		as used to prevent pruning.
 //
 //---------------------------------------------------------------------------
