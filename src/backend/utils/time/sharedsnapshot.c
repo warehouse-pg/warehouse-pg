@@ -220,7 +220,7 @@ static SharedSnapshotSlot *SharedSnapshotAdd(int32 slotId);
 static SharedSnapshotSlot *SharedSnapshotLookup(int32 slotId);
 
 /*
- * Report shared-memory space needed by CreateSharedSnapshot.
+ * Report shared-memory space needed by CreateSharedSnapshotArray().
  */
 Size
 SharedSnapshotShmemSize(void)
@@ -232,6 +232,7 @@ SharedSnapshotShmemSize(void)
 
 	slotSize = sizeof(SharedSnapshotSlot);
 	slotSize += mul_size(sizeof(TransactionId), (xipEntryCount));
+	slotSize += mul_size(sizeof(TransactionId), (SUBXIPARRAY_THRESHOLD));
 	slotSize = MAXALIGN(slotSize);
 
 	/*
@@ -304,6 +305,7 @@ CreateSharedSnapshotArray(void)
 			tmpSlot->slotid = -1;
 			tmpSlot->slotindex = i;
 			tmpSlot->slotLock = &lock_base[i].lock;
+			tmpSlot->sub_xips_handle = 0;
 
 			MemSet(tmpSlot->dump, 0, sizeof(SnapshotDump) * SNAPSHOTDUMPARRAYSZ);
 			tmpSlot->cur_dump_id = 0;
@@ -315,6 +317,8 @@ CreateSharedSnapshotArray(void)
 			 */
 			tmpSlot->snapshot.xip = &xip_base[0];
 			xip_base += xipEntryCount;
+			tmpSlot->snapshot.subxip = &xip_base[0];
+			xip_base += SUBXIPARRAY_THRESHOLD;
 		}
 	}
 }
@@ -458,6 +462,7 @@ retry:
 	slot->startTimestamp = 0;
 	slot->distributedXid = InvalidDistributedTransactionId;
 	slot->segmateSync = 0;
+	slot->sub_xips_handle = 0;
 	/* Remember the writer proc for IsCurrentTransactionIdForReader */
 	slot->writer_proc = MyProc;
 	slot->writer_xact = MyPgXact;
@@ -514,28 +519,58 @@ SharedSnapshotLookup(int32 slotId)
 
 		LWLockRelease(SharedSnapshotLock);
 
-		if (slot != NULL)
+		if (slot == NULL && retryCount > 0)
 		{
-			break;
+			/* If slot not found and retries are left, sleep for 100ms and retry */
+			retryCount--;
+
+			pg_usleep(100000); /* 100ms, wait gp_snapshotadd_timeout seconds max. */
 		}
 		else
 		{
-			if (retryCount > 0)
-			{
-				retryCount--;
-
-				pg_usleep(100000); /* 100ms, wait gp_snapshotadd_timeout seconds max. */
-			}
-			else
-			{
-				break;
-			}
+			/* If slot found or no retries left, break the loop */
+			break;
 		}
 	}
 
 	return slot;
 }
 
+
+/*
+ * SharedSnapshotDetach
+ *		Clean up DSM resources for reader processes detaching from shared snapshot.
+ *
+ * Reader processes that attached to a DSM segment for subXIP data need to
+ * properly detach when they're done. This ensures the segment's reference
+ * count is maintained correctly.
+ */
+void
+SharedSnapshotDetach(volatile SharedSnapshotSlot *slot, char *readerDescription)
+{
+	dsm_handle subxip_handle;
+	dsm_segment *subxip_segment;
+
+	subxip_handle = slot->sub_xips_handle;
+
+	/* Only proceed if this slot has a DSM segment for subXIPs */
+	if (subxip_handle == 0)
+		return;
+
+	/* Look up the segment in our process's DSM mappings */
+	subxip_segment = dsm_find_mapping(subxip_handle);
+
+	if (subxip_segment != NULL)
+	{
+		/* Release our reference to the segment */
+		dsm_detach(subxip_segment);
+
+		elog((Debug_print_full_dtm ? LOG : DEBUG5),
+			 "reader process '%s' detached from subXIP DSM (handle=%u, slot=%d, address=%p)",
+			 readerDescription, subxip_handle, slot->slotid,
+			 SharedLocalSnapshotSlot);
+	}
+}
 
 /*
  * Used by the "writer" qExec to "release" the slot it had been using.
@@ -566,6 +601,19 @@ SharedSnapshotRemove(volatile SharedSnapshotSlot *slot, char *creatorDescription
 	slot->startTimestamp = 0;
 	slot->distributedXid = InvalidDistributedTransactionId;
 	slot->segmateSync = 0;
+
+	/*
+	 * Clean up DSM segment if one was allocated for subXIPs.
+	 * Writer process is responsible for detaching the segment it created.
+	 */
+	if (slot->sub_xips_handle != 0)
+	{
+		dsm_segment *subxip_segment;
+
+		subxip_segment = dsm_find_mapping(slot->sub_xips_handle);
+		if (subxip_segment != NULL)
+			dsm_detach(subxip_segment);
+	}
 
 	sharedSnapshotArray->numSlots -= 1;
 
@@ -645,7 +693,72 @@ dumpSharedLocalSnapshot_forCursor(void)
 	segment = dsm_create(sz, 0);
 
 	char *ptr = dsm_segment_address(segment);
+
+	/*
+	 * SerializeSnapshot needs a contiguous subXIP array. If subXIDs are stored
+	 * in a separate DSM segment (due to large count), temporarily materialize
+	 * them into a regular palloc'd array for serialization.
+	 */
+	if (src->snapshot.subxcnt > 0)
+	{
+		bool use_temp_array;
+
+#ifdef FAULT_INJECTOR
+		use_temp_array = (src->snapshot.subxcnt > SUBXIPARRAY_THRESHOLD &&
+								 SIMPLE_FAULT_INJECTOR("force_sharedsnapshot_subxip_dsm") != FaultInjectorTypeSkip);
+#else
+		use_temp_array = (src->snapshot.subxcnt > SUBXIPARRAY_THRESHOLD);
+#endif
+
+		if (use_temp_array)
+		{
+			dsm_segment *subxip_seg;
+			TransactionId *temp_subxip_array;
+			Size subxip_size;
+
+			/* Find or attach to the subXIP DSM segment */
+			subxip_seg = dsm_find_mapping(SharedLocalSnapshotSlot->sub_xips_handle);
+			if (subxip_seg == NULL)
+			{
+				subxip_seg = dsm_attach(SharedLocalSnapshotSlot->sub_xips_handle);
+				if (subxip_seg != NULL)
+					dsm_pin_mapping(subxip_seg);
+			}
+
+			if (subxip_seg == NULL)
+				elog(ERROR, "failed to attach to subXIP DSM segment (handle: %u)",
+					 SharedLocalSnapshotSlot->sub_xips_handle);
+
+			/* Allocate temporary array and copy subXIDs from DSM */
+			subxip_size = src->snapshot.subxcnt * sizeof(TransactionId);
+			temp_subxip_array = (TransactionId *) palloc(subxip_size);
+			memcpy(temp_subxip_array, dsm_segment_address(subxip_seg), subxip_size);
+
+			/* Point snapshot to temporary array for serialization */
+			src->snapshot.subxip = temp_subxip_array;
+		}
+	}
+
 	SerializeSnapshot(&src->snapshot, ptr);
+
+	/* Clean up temporary subXIP array if we created one */
+	if (src->snapshot.subxcnt > 0)
+	{
+		bool use_temp_array;
+
+#ifdef FAULT_INJECTOR
+		use_temp_array = (src->snapshot.subxcnt > SUBXIPARRAY_THRESHOLD &&
+						   SIMPLE_FAULT_INJECTOR("force_sharedsnapshot_subxip_dsm") != FaultInjectorTypeSkip);
+#else
+		use_temp_array = (src->snapshot.subxcnt > SUBXIPARRAY_THRESHOLD);
+#endif
+
+		if (use_temp_array)
+		{
+			pfree(src->snapshot.subxip);
+			src->snapshot.subxip = NULL;
+		}
+	}
 
 	pDump->segment = segment;
 	pDump->handle = dsm_segment_handle(segment);
@@ -744,11 +857,23 @@ readSharedLocalSnapshot_forCursor(Snapshot snapshot, DtxContext distributedTrans
 	snapshot->xmin = dumpsnapshot->xmin;
 	snapshot->xmax = dumpsnapshot->xmax;
 	snapshot->xcnt = dumpsnapshot->xcnt;
+	snapshot->suboverflowed = dumpsnapshot->suboverflowed;
+	snapshot->subxcnt = dumpsnapshot->subxcnt;
 
 	memcpy(snapshot->xip, dumpsnapshot->xip, snapshot->xcnt * sizeof(TransactionId));
 
 	/* zero out the slack in the xip-array */
 	memset(snapshot->xip + snapshot->xcnt, 0, (xipEntryCount - snapshot->xcnt)*sizeof(TransactionId));
+
+	if (snapshot->subxcnt > 0)
+	{
+		Assert(snapshot->subxcnt <= GetMaxSnapshotSubxidCount());
+
+		/* restored snapshot has the subxip array, no need to read from the shared memory */
+		memcpy(snapshot->subxip, dumpsnapshot->subxip, snapshot->subxcnt * sizeof(TransactionId));
+		/* zero out the slack in the subxip-array */
+		memset(snapshot->subxip + snapshot->subxcnt, 0, (GetMaxSnapshotSubxidCount() - snapshot->subxcnt)*sizeof(TransactionId));
+	}
 
 	snapshot->curcid = dumpsnapshot->curcid;
 

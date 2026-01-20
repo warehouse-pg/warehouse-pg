@@ -1000,26 +1000,36 @@ ProcKill(int code, Datum arg)
 		AtExitCleanup_ResPortals();
 
 	/*
-	 * Remove the shared snapshot slot.
+	 * Release shared snapshot slot if we were using one.
+	 *
+	 * Different process roles have different cleanup responsibilities:
+	 * - Creators (writers/dispatchers) remove the slot
+	 * - Users (readers) just detach from DSM resources
 	 */
 	if (SharedLocalSnapshotSlot != NULL)
 	{
-		if (Gp_role == GP_ROLE_DISPATCH)
+		volatile SharedSnapshotSlot *slot = SharedLocalSnapshotSlot;
+		bool is_slot_creator;
+
+		/*
+		 * Determine if this process created the slot or just used it.
+		 */
+		is_slot_creator = (Gp_role == GP_ROLE_DISPATCH ||
+						   (Gp_role == GP_ROLE_EXECUTE && Gp_is_writer));
+
+		if (is_slot_creator)
 		{
-			SharedSnapshotRemove(SharedLocalSnapshotSlot,
-								 "Query Dispatcher");
+			char *role_desc = (Gp_role == GP_ROLE_DISPATCH) ?
+				"Query Dispatcher" : "Writer qExec";
+			SharedSnapshotRemove(slot, role_desc);
 		}
-	    else if (IS_QUERY_DISPATCHER() && Gp_role == GP_ROLE_EXECUTE && !Gp_is_writer)
-	    {
-			/* 
-			 * Entry db singleton QE is a user of the shared snapshot -- not a creator.
-			 */	
-	    }
-		else if (Gp_role == GP_ROLE_EXECUTE && Gp_is_writer)
+		else if (Gp_role == GP_ROLE_EXECUTE)
 		{
-			SharedSnapshotRemove(SharedLocalSnapshotSlot,
-								 "Writer qExec");
+			char *role_desc = IS_QUERY_DISPATCHER() ?
+				"Entry DB Singleton" : "Reader qExec";
+			SharedSnapshotDetach(slot, role_desc);
 		}
+
 		SharedLocalSnapshotSlot = NULL;
 	}
 

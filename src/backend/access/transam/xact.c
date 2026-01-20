@@ -353,13 +353,6 @@ typedef struct SubXactCallbackItem
 
 static SubXactCallbackItem *SubXact_callbacks = NULL;
 
-/*
- * Subtransaction file used to keep subtransaction Ids that spill over from
- * shared snapshot. Kept outside of shared snapshot because readers and writer
- * have their own File pointer.
- */
-File subxip_file = 0;
-
 /* local function prototypes */
 static void AssignTransactionId(TransactionState s);
 static void AbortTransaction(void);

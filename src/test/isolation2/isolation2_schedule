@@ -372,3 +372,6 @@ test: brin_heap
 
 # Intensive tests for BRIN
 test: uao/brin_chain_row uao/brin_chain_column
+
+# test for sharedsnapshot's subtransaction handling
+test: sharedsnapshot_subxact

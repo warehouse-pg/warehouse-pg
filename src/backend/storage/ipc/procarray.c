@@ -1624,6 +1624,8 @@ updateSharedLocalSnapshot(DtxContextInfo *dtxContextInfo,
 	SharedLocalSnapshotSlot->snapshot.xmin = snapshot->xmin;
 	SharedLocalSnapshotSlot->snapshot.xmax = snapshot->xmax;
 	SharedLocalSnapshotSlot->snapshot.xcnt = snapshot->xcnt;
+	SharedLocalSnapshotSlot->snapshot.suboverflowed = snapshot->suboverflowed;
+	SharedLocalSnapshotSlot->snapshot.subxcnt = snapshot->subxcnt;
 
 	if (snapshot->xcnt > 0)
 	{
@@ -1634,6 +1636,88 @@ updateSharedLocalSnapshot(DtxContextInfo *dtxContextInfo,
 						SharedLocalSnapshotSlot->snapshot.xcnt)));
 
 		memcpy(SharedLocalSnapshotSlot->snapshot.xip, snapshot->xip, snapshot->xcnt * sizeof(TransactionId));
+	}
+
+	if (snapshot->suboverflowed && !snapshot->takenDuringRecovery)
+		SharedLocalSnapshotSlot->snapshot.subxcnt = 0;
+
+	/*
+	 * Synchronize subtransaction IDs to the shared snapshot slot.
+	 * For small counts, use the inline array. For large counts, use DSM
+	 * to avoid exhausting shared memory.
+	 */
+	if (SharedLocalSnapshotSlot->snapshot.subxcnt > 0)
+	{
+		int subxid_count;
+		bool use_dsm;
+
+		Assert(snapshot->subxip != NULL);
+		Assert(snapshot->subxcnt <= GetMaxSnapshotSubxidCount());
+
+		subxid_count = SharedLocalSnapshotSlot->snapshot.subxcnt;
+
+		ereport((Debug_print_full_dtm ? LOG : DEBUG5),
+				(errmsg("updateSharedLocalSnapshot count of in-doubt sub-ids %u",
+						subxid_count)));
+
+		/* Determine if we should use DSM based on subtransaction count */
+#ifdef FAULT_INJECTOR
+		use_dsm = (snapshot->subxcnt > SUBXIPARRAY_THRESHOLD &&
+							  SIMPLE_FAULT_INJECTOR("force_sharedsnapshot_subxip_dsm") != FaultInjectorTypeSkip);
+#else
+		use_dsm = (snapshot->subxcnt > SUBXIPARRAY_THRESHOLD);
+#endif
+
+		if (use_dsm)
+		{
+			dsm_segment *subxip_segment;
+			Size segment_size;
+
+			/*
+			 * Check if we already have a mapping; if not, allocate a new one.
+			 *
+			 * The sub_xips_handle will not be reset until the writer process
+			 * is destroyed, so we can reuse the DSM segment.
+			 *
+			 * Note: Writers never attach to existing segments, only create.
+			 */
+			subxip_segment = dsm_find_mapping(SharedLocalSnapshotSlot->sub_xips_handle);
+
+			if (subxip_segment == NULL)
+			{
+				/*
+				 * Allocate segment large enough for maximum possible subXIDs.
+				 * Content varies across queries, so we allocate max size upfront.
+				 */
+				segment_size = GetMaxSnapshotSubxidCount() * sizeof(TransactionId);
+				subxip_segment = dsm_create(segment_size, 0);
+
+				if (subxip_segment != NULL)
+				{
+					SharedLocalSnapshotSlot->sub_xips_handle = dsm_segment_handle(subxip_segment);
+					/*
+					 * Pin the mapping to keep segment alive beyond current
+					 * resource owner.
+					 */
+					dsm_pin_mapping(subxip_segment);
+				}
+			}
+
+			if (subxip_segment == NULL)
+				elog(ERROR, "failed to allocate DSM segment for shared snapshot subXIPs");
+
+			/* Copy subtransaction IDs to the DSM segment */
+			memcpy(dsm_segment_address(subxip_segment),
+				   snapshot->subxip,
+				   snapshot->subxcnt * sizeof(TransactionId));
+		}
+		else
+		{
+			/* Small number of subXIDs - use inline shared memory array */
+			memcpy(SharedLocalSnapshotSlot->snapshot.subxip,
+				   snapshot->subxip,
+				   snapshot->subxcnt * sizeof(TransactionId));
+		}
 	}
 	
 	SharedLocalSnapshotSlot->snapshot.curcid = snapshot->curcid;
@@ -1705,12 +1789,70 @@ copyLocalSnapshot(Snapshot snapshot)
 	snapshot->xmin = SharedLocalSnapshotSlot->snapshot.xmin;
 	snapshot->xmax = SharedLocalSnapshotSlot->snapshot.xmax;
 	snapshot->xcnt = SharedLocalSnapshotSlot->snapshot.xcnt;
+	snapshot->suboverflowed = SharedLocalSnapshotSlot->snapshot.suboverflowed;
+	snapshot->subxcnt = SharedLocalSnapshotSlot->snapshot.subxcnt;
 
 	/* We now capture our current view of the xip/combocid arrays */
 	memcpy(snapshot->xip, SharedLocalSnapshotSlot->snapshot.xip, snapshot->xcnt * sizeof(TransactionId));
 
+	/*
+	 * Retrieve subtransaction IDs if present. Check whether they're stored
+	 * in DSM (for large counts) or inline shared memory (for small counts).
+	 */
+	if (snapshot->subxcnt > 0)
+	{
+		bool use_dsm;
+
+		Assert(snapshot->subxcnt <= GetMaxSnapshotSubxidCount());
+
+#ifdef FAULT_INJECTOR
+		use_dsm = (snapshot->subxcnt > SUBXIPARRAY_THRESHOLD &&
+						  SIMPLE_FAULT_INJECTOR("force_sharedsnapshot_subxip_dsm") != FaultInjectorTypeSkip);
+#else
+		use_dsm = (snapshot->subxcnt > SUBXIPARRAY_THRESHOLD);
+#endif
+
+		if (use_dsm)
+		{
+			dsm_segment *subxip_segment;
+			dsm_handle handle;
+
+			handle = SharedLocalSnapshotSlot->sub_xips_handle;
+
+			/* Check if we already have the segment mapped */
+			subxip_segment = dsm_find_mapping(handle);
+
+			if (subxip_segment == NULL)
+			{
+				/*
+				 * Reader processes attach to existing DSM segment created by writer.
+				 * Readers never create segments themselves.
+				 */
+				subxip_segment = dsm_attach(handle);
+
+				if (subxip_segment != NULL)
+					dsm_pin_mapping(subxip_segment);
+			}
+
+			if (subxip_segment == NULL)
+				elog(ERROR, "reader failed to attach to shared snapshot subXIP DSM segment (handle: %u)",
+					 handle);
+
+			/* Copy subXIDs from DSM to local snapshot */
+			memcpy(snapshot->subxip,
+				   dsm_segment_address(subxip_segment),
+				   snapshot->subxcnt * sizeof(TransactionId));
+		}
+		else
+		{
+			/* SubXIDs stored in inline shared memory array */
+			memcpy(snapshot->subxip,
+				   SharedLocalSnapshotSlot->snapshot.subxip,
+				   snapshot->subxcnt * sizeof(TransactionId));
+		}
+	}
+
 	snapshot->curcid = SharedLocalSnapshotSlot->snapshot.curcid;
-	snapshot->subxcnt = -1;
 
 	if (TransactionIdPrecedes(snapshot->xmin, TransactionXmin))
 		TransactionXmin = snapshot->xmin;
