@@ -182,6 +182,9 @@ typedef struct pgssEntry
 	int			query_len;		/* # of valid bytes in query string, or -1 */
 	int			encoding;		/* query text encoding */
 	slock_t		mutex;			/* protects the counters only */
+
+	/* initialized to be false, will be set by the QD only */
+	bool        qtext_stored;
 } pgssEntry;
 
 /*
@@ -315,6 +318,9 @@ static void pgss_store(const char *query, uint64 queryId,
 					   double total_time, uint64 rows,
 					   const BufferUsage *bufusage,
 					   pgssJumbleState *jstate);
+static void pgss_store_on_executor(uint64 queryId,
+		   double total_time, uint64 rows,
+		   const BufferUsage *bufusage);
 static void pg_stat_statements_internal(FunctionCallInfo fcinfo,
 										pgssVersion api_version,
 										bool showtext);
@@ -1114,12 +1120,20 @@ pgss_store(const char *query, uint64 queryId,
 	if (!pgss || !pgss_hash)
 		return;
 
-	/* Query Executor does not need to run pgss_store. Because the query string
-	 * is truncated when buildGpQueryString, then the Assert for strlen(query)
-	 * below will fail.
-	 */
-	if (Gp_role != GP_ROLE_DISPATCH)
+	/* WHPG patch starts */
+	if (Gp_role == GP_ROLE_EXECUTE)
+	{
+		if (!jstate)
+		{
+			pgss_store_on_executor(queryId,
+					total_time, rows,
+					bufusage);
+		}
+		/* Query string is only stored on QD. Just return if jstate is not null.
+		 */
 		return;
+	}
+	/* WHPG patch ends */
 
 	/*
 	 * Confine our attention to the relevant part of the string, if the query
@@ -1180,7 +1194,7 @@ pgss_store(const char *query, uint64 queryId,
 	entry = (pgssEntry *) hash_search(pgss_hash, &key, HASH_FIND, NULL);
 
 	/* Create new entry, if not present */
-	if (!entry)
+	if (!entry || !entry->qtext_stored)
 	{
 		Size		query_offset;
 		int			gc_count;
@@ -1237,6 +1251,17 @@ pgss_store(const char *query, uint64 queryId,
 		/* OK to create a new hashtable entry */
 		entry = entry_alloc(&key, query_offset, query_len, encoding,
 							jstate != NULL);
+		/* WHPG patch starts */
+		/* On coordinator, the entry could be created on dispatcher or the
+		 * QE on coordinator. But QE won't have the query string information.
+		 * qtext_stored flag is used to mark if the entry is created by QE on
+		 * coordinator, the dispatcher still need reach here to set the query
+		 * string. */
+		entry->query_offset = query_offset;
+		entry->query_len = query_len;
+		entry->encoding = encoding;
+		entry->qtext_stored = true;
+		/* WHPG patch ends */
 
 		/* If needed, perform garbage collection while exclusive lock held */
 		if (do_gc)
@@ -1309,6 +1334,125 @@ done:
 	/* We postpone this clean-up until we're out of the lock */
 	if (norm_query)
 		pfree(norm_query);
+}
+
+/*
+ * Store statistics on QE.
+ *
+ * This function is almost the same as pgss_store except it doesn't store the
+ * query string. The query string gets truncated before dispatched to the QE,
+ * and it is not necessary to be saved since the QE has the same query_id which
+ * can be used to identify the query string on QD.
+ *
+ * Remember to change this function when the statistics members change in
+ * pgss_store().
+ */
+static void pgss_store_on_executor(uint64 queryId,
+		double total_time, uint64 rows,
+		const BufferUsage *bufusage)
+{
+	pgssHashKey key;
+	pgssEntry  *entry;
+	volatile pgssEntry *e;
+	int			encoding = GetDatabaseEncoding();
+
+	Assert(Gp_role == GP_ROLE_EXECUTE);
+
+	/*
+	 * On segments, we need a valid queryId since we can't reliably compute
+	 * it from a potentially truncated query string. Utility statements
+	 * (queryId == 0) are skipped on segments.
+	 */
+	if (queryId == UINT64CONST(0))
+		return;
+
+	/* Set up key for hashtable search */
+	key.userid = GetUserId();
+	key.dbid = MyDatabaseId;
+	key.queryid = queryId;
+
+	/* Lookup the hash table entry with shared lock */
+	LWLockAcquire(pgss->lock, LW_SHARED);
+
+	entry = (pgssEntry *) hash_search(pgss_hash, &key, HASH_FIND, NULL);
+
+	if (!entry)
+	{
+		/* Need exclusive lock to make a new hashtable entry - promote */
+		LWLockRelease(pgss->lock);
+		LWLockAcquire(pgss->lock, LW_EXCLUSIVE);
+
+		/*
+		 * Create entry with empty query text (query_offset=0, query_len=0).
+		 * On segments, query text is not available due to truncation.
+		 */
+		entry = entry_alloc(&key, 0, 0, encoding, false);
+
+		/* entry_alloc can return NULL if out of memory */
+		if (!entry)
+		{
+			LWLockRelease(pgss->lock);
+			return;
+		}
+	}
+
+	/*
+	 * Grab the spinlock while updating the counters (see comment about
+	 * locking rules at the head of the file)
+	 */
+	e = (volatile pgssEntry *) entry;
+
+	SpinLockAcquire(&e->mutex);
+
+	/* "Unstick" entry if it was previously sticky */
+	if (e->counters.calls == 0)
+		e->counters.usage = USAGE_INIT;
+
+	e->counters.calls += 1;
+	e->counters.total_time += total_time;
+	if (e->counters.calls == 1)
+	{
+		e->counters.min_time = total_time;
+		e->counters.max_time = total_time;
+		e->counters.mean_time = total_time;
+	}
+	else
+	{
+		/*
+		 * Welford's method for accurately computing variance. See
+		 * <http://www.johndcook.com/blog/standard_deviation/>
+		 */
+		double		old_mean = e->counters.mean_time;
+
+		e->counters.mean_time +=
+			(total_time - old_mean) / e->counters.calls;
+		e->counters.sum_var_time +=
+			(total_time - old_mean) * (total_time - e->counters.mean_time);
+
+		/* calculate min and max time */
+		if (e->counters.min_time > total_time)
+			e->counters.min_time = total_time;
+		if (e->counters.max_time < total_time)
+			e->counters.max_time = total_time;
+	}
+	e->counters.rows += rows;
+	e->counters.shared_blks_hit += bufusage->shared_blks_hit;
+	e->counters.shared_blks_read += bufusage->shared_blks_read;
+	e->counters.shared_blks_dirtied += bufusage->shared_blks_dirtied;
+	e->counters.shared_blks_written += bufusage->shared_blks_written;
+	e->counters.local_blks_hit += bufusage->local_blks_hit;
+	e->counters.local_blks_read += bufusage->local_blks_read;
+	e->counters.local_blks_dirtied += bufusage->local_blks_dirtied;
+	e->counters.local_blks_written += bufusage->local_blks_written;
+	e->counters.temp_blks_read += bufusage->temp_blks_read;
+	e->counters.temp_blks_written += bufusage->temp_blks_written;
+	e->counters.blk_read_time += INSTR_TIME_GET_MILLISEC(bufusage->blk_read_time);
+	e->counters.blk_write_time += INSTR_TIME_GET_MILLISEC(bufusage->blk_write_time);
+	e->counters.usage += USAGE_EXEC(total_time);
+
+	SpinLockRelease(&e->mutex);
+
+	LWLockRelease(pgss->lock);
 }
 
 /*
@@ -1739,6 +1883,8 @@ entry_alloc(pgssHashKey *key, Size query_offset, int query_len, int encoding,
 		entry->query_offset = query_offset;
 		entry->query_len = query_len;
 		entry->encoding = encoding;
+
+		entry->qtext_stored = false;
 	}
 
 	return entry;
@@ -2521,6 +2667,19 @@ JumbleRangeTable(pgssJumbleState *jstate, List *rtable)
 				break;
 			case RTE_RESULT:
 				break;
+			/* WHPG patch starts */
+			case RTE_VOID:
+				/* GPDB: Deleted RTE, nothing to jumble */
+				break;
+			case RTE_TABLEFUNCTION:
+				/*
+				 * GPDB: Table function - jumble the functions list which contains
+				 * the FuncExpr (with function OID) and its args including the
+				 * TableValueExpr. The subquery is jumbled via TableValueExpr.
+				 */
+				JumbleExpr(jstate, (Node *) rte->functions);
+				break;
+			/* WHPG patch ends */
 			default:
 				elog(ERROR, "unrecognized RTE kind: %d", (int) rte->rtekind);
 				break;
@@ -2696,6 +2855,16 @@ JumbleExpr(pgssJumbleState *jstate, Node *node)
 				JumbleQuery(jstate, castNode(Query, sublink->subselect));
 			}
 			break;
+			/* WHPG patch starts */
+		case T_TableValueExpr:
+			{
+				/* GPDB: TABLE(<subquery>) expression used in table functions */
+				TableValueExpr *tve = (TableValueExpr *) node;
+
+				JumbleQuery(jstate, castNode(Query, tve->subquery));
+			}
+			break;
+			/* WHPG patch ends */
 		case T_FieldSelect:
 			{
 				FieldSelect *fs = (FieldSelect *) node;

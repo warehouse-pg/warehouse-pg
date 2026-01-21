@@ -97,7 +97,7 @@ SELECT *
 SELECT * FROM test ORDER BY a, b;
 
 -- SELECT with IN clause
-SELECT * FROM test WHERE a IN (1, 2, 3, 4, 5);
+SELECT * FROM test WHERE a IN (1, 2, 3, 4, 5) ORDER BY a, b;
 
 SELECT query, calls, rows FROM pg_stat_statements ORDER BY query COLLATE "C";
 

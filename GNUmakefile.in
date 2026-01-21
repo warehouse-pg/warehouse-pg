@@ -33,6 +33,7 @@ all:
 	$(MAKE) -C contrib/pg_buffercache all
 	$(MAKE) -C contrib/intarray all
 	$(MAKE) -C contrib/unaccent all
+	$(MAKE) -C contrib/pg_stat_statements all
 
 ifeq ($(with_openssl), yes)
 	$(MAKE) -C contrib/sslinfo all
@@ -84,6 +85,7 @@ install:
 	$(MAKE) -C contrib/pg_buffercache $@
 	$(MAKE) -C contrib/intarray $@
 	$(MAKE) -C contrib/unaccent $@
+	$(MAKE) -C contrib/pg_stat_statements $@
 
 ifeq ($(with_openssl), yes)
 	$(MAKE) -C contrib/sslinfo $@
@@ -192,6 +194,7 @@ ICW_TARGETS += contrib/indexscan contrib/hstore contrib/ltree contrib/pgcrypto c
 ICW_TARGETS += contrib/pg_buffercache
 ICW_TARGETS += contrib/intarray
 ICW_TARGETS += contrib/unaccent
+ICW_TARGETS += contrib/pg_stat_statements
 # sslinfo depends on openssl
 ifeq ($(with_openssl), yes)
 ICW_TARGETS += contrib/sslinfo
