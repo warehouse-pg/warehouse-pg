@@ -344,9 +344,10 @@ WHERE relname IN ('coordinator_only_heap', 'coordinator_only_ao', 'coordinator_o
 GROUP BY gp_segment_id
 ORDER BY gp_segment_id;
 
-DROP TABLE IF EXISTS coordinator_only_heap CASCADE;
+-- Left two coordinator-only tables for following pg_upgrade and gpcheckcat tests
+--  DROP TABLE IF EXISTS coordinator_only_heap CASCADE;
 DROP TABLE IF EXISTS coordinator_only_ao CASCADE;
-DROP TABLE IF EXISTS coordinator_only_aoco CASCADE;
+--  DROP TABLE IF EXISTS coordinator_only_aoco CASCADE;
 DROP TABLE IF EXISTS like_coordinator_only CASCADE;
 DROP TABLE IF EXISTS coordinator_only_constraints CASCADE;
 DROP FUNCTION IF EXISTS get_coordinator_only_data() CASCADE;

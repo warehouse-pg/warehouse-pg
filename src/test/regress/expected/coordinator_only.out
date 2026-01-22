@@ -566,19 +566,14 @@ ORDER BY gp_segment_id;
              2 |     5
 (3 rows)
 
-DROP TABLE IF EXISTS coordinator_only_heap CASCADE;
-NOTICE:  drop cascades to 3 other objects
-DETAIL:  drop cascades to function get_coordinator_only_data()
-drop cascades to function get_coordinator_only_data_on_coordinator()
-drop cascades to materialized view mv_from_coordinator_only
+-- Left two coordinator-only tables for following pg_upgrade and gpcheckcat tests
+--  DROP TABLE IF EXISTS coordinator_only_heap CASCADE;
 DROP TABLE IF EXISTS coordinator_only_ao CASCADE;
-DROP TABLE IF EXISTS coordinator_only_aoco CASCADE;
+--  DROP TABLE IF EXISTS coordinator_only_aoco CASCADE;
 DROP TABLE IF EXISTS like_coordinator_only CASCADE;
 DROP TABLE IF EXISTS coordinator_only_constraints CASCADE;
 DROP FUNCTION IF EXISTS get_coordinator_only_data() CASCADE;
-NOTICE:  function get_coordinator_only_data() does not exist, skipping
 DROP FUNCTION IF EXISTS get_coordinator_only_data_on_coordinator() CASCADE;
-NOTICE:  function get_coordinator_only_data_on_coordinator() does not exist, skipping
 -- Extra cleanup for auxiliary and optional objects
 DROP TABLE IF EXISTS distributed_table_aux CASCADE;
 DROP TABLE IF EXISTS distributed_table_aux_r CASCADE;
@@ -591,5 +586,8 @@ GROUP BY gp_segment_id
 ORDER BY gp_segment_id;
  gp_segment_id | count 
 ---------------+-------
-(0 rows)
+             0 |     2
+             1 |     2
+             2 |     2
+(3 rows)
 
