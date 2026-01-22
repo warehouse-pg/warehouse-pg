@@ -1080,6 +1080,14 @@ Where column_reference_storage_directive is:
   </para>
 
   <para>
+   You cannot use <command>ALTER TABLE</command> <literal>SET DISTRIBUTED</literal>
+   to change a table to <literal>COORDINATOR ONLY</literal> distribution,
+   nor can you change a <literal>COORDINATOR ONLY</literal> table to any
+   other distribution using <command>ALTER TABLE</command>. If you need a
+   coordinator-only table, please create it as such initially.
+  </para>
+
+  <para>
    You must own the table to use <command>ALTER TABLE</command>.
    To change the schema or tablespace of a table, you must also have
    <literal>CREATE</literal> privilege on the new schema or tablespace.

@@ -35,7 +35,7 @@ CREATE [ [ GLOBAL | LOCAL ] { TEMPORARY | TEMP } | UNLOGGED ] TABLE [ IF NOT EXI
 [ WITH ( <replaceable class="parameter">storage_parameter</replaceable> [= <replaceable class="parameter">value</replaceable>] [, ... ] ) | WITHOUT OIDS ]
 [ ON COMMIT { PRESERVE ROWS | DELETE ROWS | DROP } ]
 [ TABLESPACE <replaceable class="parameter">tablespace_name</replaceable> ]
-[ DISTRIBUTED BY (column [opclass], [ ... ] ) | DISTRIBUTED RANDOMLY | DISTRIBUTED REPLICATED]
+[ DISTRIBUTED BY (column [opclass], [ ... ] ) | DISTRIBUTED RANDOMLY | DISTRIBUTED REPLICATED | DISTRIBUTED COORDINATOR ONLY]
 [ PARTITION BY partition_type (column)
        [ SUBPARTITION BY partition_type (column) ] 
           [ SUBPARTITION TEMPLATE ( template_spec ) ]
@@ -62,7 +62,7 @@ CREATE [ [ GLOBAL | LOCAL ] { TEMPORARY | TEMP } | UNLOGGED ] TABLE [ IF NOT EXI
 [ WITH ( <replaceable class="parameter">storage_parameter</replaceable> [= <replaceable class="parameter">value</replaceable>] [, ... ] ) | WITHOUT OIDS ]
 [ ON COMMIT { PRESERVE ROWS | DELETE ROWS | DROP } ]
 [ TABLESPACE <replaceable class="parameter">tablespace_name</replaceable> ]
-[ DISTRIBUTED BY (column [opclass], [ ... ] ) | DISTRIBUTED RANDOMLY | DISTRIBUTED REPLICATED]
+[ DISTRIBUTED BY (column [opclass], [ ... ] ) | DISTRIBUTED RANDOMLY | DISTRIBUTED REPLICATED | DISTRIBUTED COORDINATOR ONLY]
 
 CREATE [ [ GLOBAL | LOCAL ] { TEMPORARY | TEMP } | UNLOGGED ] TABLE [ IF NOT EXISTS ] <replaceable class="parameter">table_name</replaceable>
     PARTITION OF <replaceable class="parameter">parent_table</replaceable> [ (
@@ -77,7 +77,7 @@ CREATE [ [ GLOBAL | LOCAL ] { TEMPORARY | TEMP } | UNLOGGED ] TABLE [ IF NOT EXI
 [ WITH ( <replaceable class="parameter">storage_parameter</replaceable> [= <replaceable class="parameter">value</replaceable>] [, ... ] ) | WITHOUT OIDS ]
 [ ON COMMIT { PRESERVE ROWS | DELETE ROWS | DROP } ]
 [ TABLESPACE <replaceable class="parameter">tablespace_name</replaceable> ]
-[ DISTRIBUTED BY (column [opclass], [ ... ] ) | DISTRIBUTED RANDOMLY | DISTRIBUTED REPLICATED]
+[ DISTRIBUTED BY (column [opclass], [ ... ] ) | DISTRIBUTED RANDOMLY | DISTRIBUTED REPLICATED | DISTRIBUTED COORDINATOR ONLY]
 
 where storage_parameter is:
    APPENDONLY={TRUE|FALSE}
@@ -235,6 +235,22 @@ Where column_reference_storage_directive is:
    Note: You cannot create a table with both column encodings
  
    and compression parameters in a WITH clause.
+  </para>
+
+  <para>
+   <command>CREATE TABLE</command> supports coordinator-only distribution via the clause
+   <literal>DISTRIBUTED COORDINATOR ONLY</literal>. However, coordinator-only
+   distribution cannot be used with inheritance or partitioning: tables using
+   <literal>INHERITS</literal>, <literal>PARTITION BY</literal>, or
+   <literal>PARTITION OF</literal> cannot be defined as coordinator-only.
+  </para>
+
+  <para>
+   Coordinator-only distribution is intended for specialized use cases and is
+   not recommended for general workloads. It exists primarily to support some
+   extensions or system components that need to consult their own metadata tables
+   at a very early stage of query processing (for example, during the planning
+   phase), before distributed execution can safely occur.
   </para>
 
   <para>

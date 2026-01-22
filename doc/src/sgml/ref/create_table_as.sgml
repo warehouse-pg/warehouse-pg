@@ -267,6 +267,15 @@ where storage_parameter is:
    TABLE AS</command> offers a superset of the functionality offered
    by <command>SELECT INTO</command>.
   </para>
+
+  <para>
+   <command>CREATE TABLE AS</command> does not support setting distribution
+   to <literal>COORDINATOR ONLY</literal>. You cannot create a coordinator-only
+   table using <command>CREATE TABLE AS</command>.
+   If a coordinator-only table is required, create it with <command>CREATE TABLE</command>
+   using the desired distribution and then populate it via <command>INSERT ... SELECT</command>
+   or a similar approach.
+  </para>
  </refsect1>
 
  <refsect1>
