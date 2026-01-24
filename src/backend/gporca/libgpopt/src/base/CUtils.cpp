@@ -1979,11 +1979,12 @@ CUtils::PexprCountStarAndSum(CMemoryPool *mp, const CColRef *colref,
 								   pexprPrjList);
 }
 
-// return True if passed expression is a Project Element defined on count(*)/count(Any) agg
+// return true if the passed expression is a Project Element defined on a
+// count-like aggregate (e.g. count(*)/count(Any)/regr_count()).
 BOOL
 CUtils::FCountAggProjElem(
 	CExpression *pexprPrjElem,
-	CColRef **ppcrCount	 // output: count(*)/count(Any) column
+	CColRef **ppcrCount	 // output: count-like aggregate column
 )
 {
 	GPOS_ASSERT(nullptr != pexprPrjElem);
@@ -1999,7 +2000,8 @@ CUtils::FCountAggProjElem(
 	{
 		CScalarAggFunc *popAggFunc =
 			CScalarAggFunc::PopConvert((*pexprPrjElem)[0]->Pop());
-		if (popAggFunc->FCountStar() || popAggFunc->FCountAny())
+		if (popAggFunc->FCountStar() || popAggFunc->FCountAny() ||
+			popAggFunc->FRegrCount())
 		{
 			*ppcrCount = CScalarProjectElement::PopConvert(pop)->Pcr();
 			return true;

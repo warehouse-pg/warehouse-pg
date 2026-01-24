@@ -125,6 +125,21 @@ CScalarAggFunc::FCountAny() const
 	return m_pmdidAggFunc->Equals(&CMDIdGPDB::m_mdid_count_any);
 }
 
+
+//---------------------------------------------------------------------------
+//	@function:
+//		CScalarAggFunc::FRegrCount
+//
+//	@doc:
+//		Is function regr_count()?
+//
+//---------------------------------------------------------------------------
+BOOL
+CScalarAggFunc::FRegrCount() const
+{
+	return m_pmdidAggFunc->Equals(&CMDIdGPDB::m_mdid_regr_count);
+}
+
 // Is function either min() or max()?
 BOOL
 CScalarAggFunc::IsMinMax(const IMDType *mdtype) const

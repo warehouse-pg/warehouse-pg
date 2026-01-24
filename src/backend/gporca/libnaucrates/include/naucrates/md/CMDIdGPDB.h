@@ -233,6 +233,9 @@ public:
 	// count(Any) mdid
 	static CMDIdGPDB m_mdid_count_any;
 
+	// regr_count() mdid
+	static CMDIdGPDB m_mdid_regr_count;
+
 	// uuid mdid
 	static CMDIdGPDB m_mdid_uuid;
 

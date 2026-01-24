@@ -243,6 +243,9 @@ public:
 	// is function count(Any)?
 	BOOL FCountAny() const;
 
+	// is function regr_count()?
+	BOOL FRegrCount() const;
+
 	// is function either min() or max()?
 	BOOL IsMinMax(const IMDType *mdtype) const;
 

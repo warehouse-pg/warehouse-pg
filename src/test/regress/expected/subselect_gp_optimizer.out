@@ -4288,7 +4288,7 @@ select count(*) from foo where a > (select count(*) from bar where foo.a = bar.x
 select count(*) from foo where a > (select count(*) from bar where foo.a = bar.x);
  count 
 -------
-    17
+      17
 (1 row)
 
 explain (costs off)
@@ -4346,47 +4346,49 @@ select count(*) from foo where a > (select (count(*) + foo.b) * 2 from bar where
 -- Test regr_count
 explain (costs off)
 select count(*) from foo where a > (select regr_count(x, y) from bar where foo.a = bar.x);
-                                               QUERY PLAN                                                
----------------------------------------------------------------------------------------------------------
+                            QUERY PLAN                            
+------------------------------------------------------------------
  Aggregate
    ->  Gather Motion 3:1  (slice1; segments: 3)
-         ->  Hash Join
-               Hash Cond: (bar.x = foo.a)
-               Join Filter: (foo.a > (regr_count((bar.x)::double precision, (bar.y)::double precision)))
-               ->  GroupAggregate
-                     Group Key: bar.x
-                     ->  Sort
-                           Sort Key: bar.x
-                           ->  Seq Scan on bar
-               ->  Hash
+         ->  Result
+               Filter: (foo.a > COALESCE((regr_count((bar.x)::double precision, (bar.y)::double precision)), '0'::bigint))
+               ->  Hash Left Join
+                     Hash Cond: (foo.a = bar.x)
                      ->  Seq Scan on foo
+                     ->  Hash
+                           ->  GroupAggregate
+                                 Group Key: bar.x
+                                 ->  Sort
+                                       Sort Key: bar.x
+                                       ->  Seq Scan on bar
  Optimizer: GPORCA
-(13 rows)
+(14 rows)
 
 select count(*) from foo where a > (select regr_count(x, y) from bar where foo.a = bar.x);
  count 
 -------
-     3
+    17
 (1 row)
 
 explain (costs off)
 select count(*) from foo where a > (select (regr_count(x, y) + 10) * 2 from bar where foo.a = bar.x);
-                                                      QUERY PLAN                                                      
-----------------------------------------------------------------------------------------------------------------------
+                                   QUERY PLAN                                    
+---------------------------------------------------------------------------------
  Aggregate
    ->  Gather Motion 3:1  (slice1; segments: 3)
-         ->  Hash Join
-               Hash Cond: (bar.x = foo.a)
-               Join Filter: (foo.a > (((regr_count((bar.x)::double precision, (bar.y)::double precision) + 10) * 2)))
-               ->  GroupAggregate
-                     Group Key: bar.x
-                     ->  Sort
-                           Sort Key: bar.x
-                           ->  Seq Scan on bar
-               ->  Hash
+         ->  Result
+               Filter: (foo.a > (((COALESCE((regr_count((bar.x)::double precision, (bar.y)::double precision)), '0'::bigint) + 10) * 2)))
+               ->  Hash Left Join
+                     Hash Cond: (foo.a = bar.x)
                      ->  Seq Scan on foo
+                     ->  Hash
+                           ->  GroupAggregate
+                                 Group Key: bar.x
+                                 ->  Sort
+                                       Sort Key: bar.x
+                                       ->  Seq Scan on bar
  Optimizer: GPORCA
-(13 rows)
+(14 rows)
 
 select count(*) from foo where a > (select (regr_count(x, y) + 10) * 2 from bar where foo.a = bar.x);
  count 
@@ -4400,17 +4402,17 @@ select count(*) from foo where a > (select (regr_count(x, y) + foo.b) * 2 from b
                                 QUERY PLAN                                
 --------------------------------------------------------------------------
  Aggregate
-   ->  Result
-         Filter: (foo.a > (SubPlan 1))
-         ->  Gather Motion 3:1  (slice1; segments: 3)
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Result
+               Filter: (foo.a > (SubPlan 1))
                ->  Seq Scan on foo
-         SubPlan 1
-           ->  Aggregate
-                 ->  Result
-                       Filter: (foo.a = bar.x)
-                       ->  Materialize
-                             ->  Gather Motion 3:1  (slice2; segments: 3)
-                                   ->  Seq Scan on bar
+               SubPlan 1
+                 ->  Aggregate
+                       ->  Result
+                             Filter: (foo.a = bar.x)
+                             ->  Materialize
+                                   ->  Broadcast Motion 3:3  (slice2; segments: 3)
+                                         ->  Seq Scan on bar
  Optimizer: GPORCA
 (13 rows)
 

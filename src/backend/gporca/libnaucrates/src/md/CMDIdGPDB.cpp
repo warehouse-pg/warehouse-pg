@@ -106,6 +106,9 @@ CMDIdGPDB CMDIdGPDB::m_mdid_count_star(IMDId::EmdidGeneral, GPDB_COUNT_STAR);
 // count(Any) mdid
 CMDIdGPDB CMDIdGPDB::m_mdid_count_any(IMDId::EmdidGeneral, GPDB_COUNT_ANY);
 
+// regr_count() mdid
+CMDIdGPDB CMDIdGPDB::m_mdid_regr_count(IMDId::EmdidGeneral, GPDB_REGR_COUNT);
+
 // uuid mdid
 CMDIdGPDB CMDIdGPDB::m_mdid_uuid(IMDId::EmdidGeneral, GPDB_UUID);
 
