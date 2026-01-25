@@ -4288,7 +4288,7 @@ select count(*) from foo where a > (select count(*) from bar where foo.a = bar.x
 select count(*) from foo where a > (select count(*) from bar where foo.a = bar.x);
  count 
 -------
-      17
+    17
 (1 row)
 
 explain (costs off)
