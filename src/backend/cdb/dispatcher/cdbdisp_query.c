@@ -670,7 +670,7 @@ cdbdisp_buildPlanQueryParms(struct QueryDesc *queryDesc,
 	pQueryParms->serializedQueryDispatchDesclen = sddesc_len;
 
 	/*
-	 * Serialize a version of our snapshot, and generate our transction
+	 * Serialize a version of our snapshot, and generate our transaction
 	 * isolations. We generally want Plan based dispatch to be in a global
 	 * transaction. The executor gets to decide if the special circumstances
 	 * exist which allow us to dispatch without starting a global xact.

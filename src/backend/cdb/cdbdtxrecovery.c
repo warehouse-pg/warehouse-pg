@@ -233,7 +233,7 @@ recoverInDoubtTransactions(void)
 								 PROGRESS_DTX_RECOVERY_PHASE_STARTUP_GATHER_IN_DOUBT_TX);
 
 	/*
-	 * Any in-doubt transctions found will be for aborted
+	 * Any in-doubt transactions found will be for aborted
 	 * transactions. Gather in-doubt transactions and issue aborts.
 	 */
 	htab = gatherRMInDoubtTransactions(0, true);

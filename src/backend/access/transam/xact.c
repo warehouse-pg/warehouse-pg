@@ -5731,7 +5731,7 @@ AbortOutOfAnyTransaction(void)
 	 * Greenplum specific behavior:
 	 * Some QEs might already be in Abort State, they still need
 	 * to reset Extension related global vars, so we invoke them
-	 * here (not AbortTransction).
+	 * here (not AbortTransaction).
 	 */
 	if (Gp_role == GP_ROLE_EXECUTE)
 		ResetExtensionCreatingGlobalVarsOnQE();
