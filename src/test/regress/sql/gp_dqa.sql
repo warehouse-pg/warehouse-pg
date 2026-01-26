@@ -660,3 +660,28 @@ select count(distinct c), count(distinct d), to_char(corr(distinct b, a), '9.999
 select count(distinct a), count(distinct b), sum(a), sum(b), count(*) from dqa_f3 group by c order by c;
 
 drop table dqa_f3;
+
+-- Test group key, more details could be found at 
+-- https://github.com/warehouse-pg/warehouse-pg/pull/20
+CREATE TABLE part_f (
+    p_partkey     INT NOT NULL,
+    p_brand       CHAR(10),
+    p_type        VARCHAR(25),
+    p_size        INT
+) DISTRIBUTED BY (p_partkey);
+
+CREATE TABLE partsupp_f (
+    ps_partkey    INT,
+    ps_suppkey    INT
+) DISTRIBUTED BY (ps_partkey);
+
+SET enable_groupagg = off;
+
+EXPLAIN SELECT COUNT(DISTINCT ps_suppkey) AS supplier_cnt
+FROM part_f, partsupp_f WHERE p_partkey = ps_partkey
+GROUP BY p_brand, p_type, p_size ORDER BY supplier_cnt DESC;
+
+DROP TABLE part_f;
+DROP TABLE partsupp_f;
+
+RESET enable_groupagg;

@@ -3557,3 +3557,43 @@ select count(distinct a), count(distinct b), sum(a), sum(b), count(*) from dqa_f
 (10 rows)
 
 drop table dqa_f3;
+-- Test group key, more details could be found at 
+-- https://github.com/warehouse-pg/warehouse-pg/pull/20
+CREATE TABLE part_f (
+    p_partkey     INT NOT NULL,
+    p_brand       CHAR(10),
+    p_type        VARCHAR(25),
+    p_size        INT
+) DISTRIBUTED BY (p_partkey);
+CREATE TABLE partsupp_f (
+    ps_partkey    INT,
+    ps_suppkey    INT
+) DISTRIBUTED BY (ps_partkey);
+SET enable_groupagg = off;
+EXPLAIN SELECT COUNT(DISTINCT ps_suppkey) AS supplier_cnt
+FROM part_f, partsupp_f WHERE p_partkey = ps_partkey
+GROUP BY p_brand, p_type, p_size ORDER BY supplier_cnt DESC;
+                                                       QUERY PLAN                                                       
+------------------------------------------------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)  (cost=692699.18..694154.33 rows=2180 width=124)
+   Merge Key: (count(partsupp_f.ps_suppkey))
+   ->  Sort  (cost=692699.18..692701.00 rows=727 width=124)
+         Sort Key: (count(partsupp_f.ps_suppkey)) DESC
+         ->  HashAggregate  (cost=692657.38..692664.65 rows=727 width=124)
+               Group Key: part_f.p_brand, part_f.p_type, part_f.p_size
+               ->  HashAggregate  (cost=677394.70..686400.78 rows=625660 width=120)
+                     Group Key: part_f.p_brand, part_f.p_type, part_f.p_size, partsupp_f.ps_suppkey
+                     Planned Partitions: 4
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)  (cost=197.50..658576.02 rows=625660 width=120)
+                           Hash Key: part_f.p_brand, part_f.p_type, part_f.p_size
+                           ->  Hash Join  (cost=197.50..32916.02 rows=625660 width=120)
+                                 Hash Cond: (partsupp_f.ps_partkey = part_f.p_partkey)
+                                 ->  Seq Scan on partsupp_f  (cost=0.00..321.00 rows=28700 width=8)
+                                 ->  Hash  (cost=106.67..106.67 rows=7267 width=120)
+                                       ->  Seq Scan on part_f  (cost=0.00..106.67 rows=7267 width=120)
+ Optimizer: Postgres-based planner
+(17 rows)
+
+DROP TABLE part_f;
+DROP TABLE partsupp_f;
+RESET enable_groupagg;
