@@ -2605,8 +2605,6 @@ CUtils::PdrgpcrGroupingKey(
 	}
 
 	// prefer extracting a hashable key since Agg operator may redistribute child on grouping columns
-	// The Key columns usage can be !=EUsed. Marking them as EUsed should be handled
-	// by the calling function that rely on these keys.
 	CColRefArray *pdrgpcrKey = pkc->PdrgpcrHashableKey(mp);
 	if (nullptr == pdrgpcrKey)
 	{
@@ -2614,6 +2612,15 @@ CUtils::PdrgpcrGroupingKey(
 		pdrgpcrKey = pkc->PdrgpcrKey(mp);
 	}
 	GPOS_ASSERT(nullptr != pdrgpcrKey);
+
+	for (ULONG i = 0; i < pdrgpcrKey->Size(); i++)
+	{
+		// Mark keys as EUSED.
+		// This prevents key columns from being pruned later (MakeDXLTableDescr),
+		// which could cause crashes in semijoin/EXISTS query plans
+		// when ORCA uses grouping keys.
+		(*pdrgpcrKey)[i]->MarkAsUsed();
+	}
 
 	CColRefSet *pcrsKey = GPOS_NEW(mp) CColRefSet(mp, pdrgpcrKey);
 	pcrsUsedOuter->Union(pcrsKey);
