@@ -1956,23 +1956,10 @@ CTranslatorDXLToScalar::TranslateDXLDatumGenericToScalar(CDXLDatum *datum_dxl)
 	{
 		constant->constvalue = (Datum) 0;
 	}
-	else if (constant->constbyval)
-	{
-		// if it is a by-value constant, the value is stored in the datum.
-		GPOS_ASSERT(constant->constlen >= 0);
-		GPOS_ASSERT((ULONG) constant->constlen <= sizeof(Datum));
-		memcpy(&constant->constvalue, datum_generic_dxl->GetByteArray(),
-			   sizeof(Datum));
-	}
 	else
 	{
-		Datum val = gpdb::DatumFromPointer(datum_generic_dxl->GetByteArray());
-		ULONG length = (ULONG) gpdb::DatumSize(val, false, constant->constlen);
-
-		CHAR *str = (CHAR *) gpdb::GPDBAlloc(length + 1);
-		memcpy(str, datum_generic_dxl->GetByteArray(), length);
-		str[length] = '\0';
-		constant->constvalue = gpdb::DatumFromPointer(str);
+		constant->constvalue = CTranslatorUtils::CreateDatumFromCDXLDatumGeneric(
+			constant->constbyval, constant->constlen, datum_generic_dxl);
 	}
 
 	return constant;

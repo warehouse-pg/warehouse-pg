@@ -30,6 +30,7 @@ extern "C" {
 
 #include "gpopt/translate/CMappingVarColId.h"
 #include "naucrates/dxl/CIdGenerator.h"
+#include "naucrates/dxl/operators/CDXLDatumGeneric.h"
 #include "naucrates/dxl/operators/CDXLIndexDescr.h"
 #include "naucrates/dxl/operators/CDXLLogicalSetOp.h"
 #include "naucrates/dxl/operators/CDXLLogicalTVF.h"
@@ -386,6 +387,10 @@ public:
 	// check if rel contains foreign partitions
 	static BOOL RelContainsForeignPartitions(const IMDRelation *rel,
 											 CMDAccessor *md_accessor);
+
+	// create a datum from CDXLDatumGeneric
+	static Datum CreateDatumFromCDXLDatumGeneric(BOOL passed_by_val, ULONG length,
+												 const CDXLDatumGeneric *datum_generic_dxl);
 };
 }  // namespace gpdxl
 
