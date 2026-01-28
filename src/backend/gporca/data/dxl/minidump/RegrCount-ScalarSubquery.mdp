@@ -1,16 +1,74 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <dxl:DXLMessage xmlns:dxl="http://greenplum.com/dxl/2010/12/">
-  <dxl:Comment><![CDATA[
-    Covers correlated scalar subquery decorrelation with count-like aggregate regr_count(x,y).
+    <dxl:Comment><![CDATA[
+      This test case covers decorrelation of a correlated scalar subquery whose inner query is a
+      count-like aggregate (regr_count(x,y)) without GROUP BY:
+      a > (select regr_count(x,y) from bar where foo.a = bar.x)
 
-    Query shape:
-      select count(*)
-      from foo
-      where foo.a > (select regr_count(x, y) from bar where foo.a = bar.x);
+      Semantics note:
+      For each outer row from foo, if the correlated predicate finds no matching rows in bar, the
+      aggregate still produces exactly one row and regr_count(...) evaluates to 0 (count-like).
 
-    Expected semantics:
-      - decorrelation must preserve outer rows (LEFT JOIN)
-      - empty inner results must behave like count-like aggregates (COALESCE(..., 0))
+      During decorrelation, ORCA typically rewrites the inner aggregate into a GROUP BY on bar.x
+      and joins it back to foo. Rows with no matching group become NULL on the joined side, so the
+      rewritten plan must use LEFT JOIN and COALESCE(regr_count(...), 0) before applying the "a >"
+      predicate.
+
+      Reference:
+      This rewrite corresponds to the aggregation-correlated-subquery decorrelation rule described in
+      "Orthogonal Optimization of Subqueries and Aggregation" (Figure 4, Identity (9)), which enables
+      removing correlation by pulling an aggregate above the (decorrelated) join.
+
+      create table foo (a int, b int);
+      create table bar (x int, y int);
+      insert into foo select i,i+1 from generate_series(1,20)i;
+      insert into bar select i%6+1,i+2 from generate_series(1,20)i;
+      select count(*) from foo where a > (select regr_count(x,y) from bar where foo.a = bar.x);
+
+      The correct result is 17 wheras the incorrect plan returns 3.
+
+      Expected plan:
+      explain select count(*) from foo
+      where a > (select regr_count(x,y) from bar where foo.a = bar.x);
+                      QUERY PLAN
+    ---------------------------------------------------------------------------------------------------------------------------
+    Aggregate  (cost=0.00..862.00 rows=1 width=8)
+      ->  Gather Motion 3:1  (slice1; segments: 3)  (cost=0.00..862.00 rows=1 width=1)
+            ->  Result  (cost=0.00..862.00 rows=1 width=1)
+                Filter: (foo.a > COALESCE((regr_count((bar.x)::double precision, (bar.y)::double precision)), 0::bigint))
+                  ->  Hash Left Join  (cost=0.00..862.00 rows=1 width=12)
+                        Hash Cond: (foo.a = bar.x)
+                        ->  Seq Scan on foo  (cost=0.00..431.00 rows=1 width=4)
+                        ->  Hash  (cost=431.00..431.00 rows=1 width=12)
+                              ->  GroupAggregate  (cost=0.00..431.00 rows=1 width=12)
+                                    Group Key: bar.x
+                                    ->  Sort  (cost=0.00..431.00 rows=1 width=8)
+                                          Sort Key: bar.x
+                                          ->  Seq Scan on bar  (cost=0.00..431.00 rows=1 width=8)
+
+      Incorrect plan:
+      A Hash Join without COALESCE, typically keeping the predicate as a join filter. This is wrong
+      because rows from foo that have no matching rows in bar should compare against 0, but the join
+      produces NULL on the inner side and the predicate becomes NULL/false, filtering out rows.
+
+    explain select count(*) from foo
+    where a > (select regr_count(x,y) from bar where foo.a = bar.x);
+                                                  QUERY PLAN
+    ---------------------------------------------------------------------------------------------------------
+    Aggregate  (cost=0.00..862.00 rows=1 width=8)
+      ->  Gather Motion 3:1  (slice1; segments: 3)  (cost=0.00..862.00 rows=1 width=1)
+            ->  Hash Join  (cost=0.00..862.00 rows=1 width=1)
+                  Hash Cond: (bar.x = foo.a)
+                  Join Filter: (foo.a > (regr_count((bar.x)::double precision, (bar.y)::double precision)))
+                  ->  GroupAggregate  (cost=0.00..431.00 rows=1 width=12)
+                        Group Key: bar.x
+                        ->  Sort  (cost=0.00..431.00 rows=1 width=8)
+                              Sort Key: bar.x
+                              ->  Seq Scan on bar  (cost=0.00..431.00 rows=1 width=8)
+                  ->  Hash  (cost=431.00..431.00 rows=1 width=4)
+                        ->  Seq Scan on foo  (cost=0.00..431.00 rows=1 width=4)
+    Optimizer: GPORCA
+    (13 rows)
   ]]></dxl:Comment>
   <dxl:Thread Id="0">
     <dxl:OptimizerConfig>
