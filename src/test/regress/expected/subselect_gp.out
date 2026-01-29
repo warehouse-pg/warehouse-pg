@@ -4561,5 +4561,34 @@ select count(*) from foo where a >>> (select max(y)::int from bar where foo.a = 
     14
 (1 row)
 
+-- create a case where bar.x matches but bar.y is NULL for all rows.
+-- expected: 20
+delete from foo;
+delete from bar;
+insert into foo select i,i+1 from generate_series(1,20) i;
+insert into bar select i%6+1, NULL::int from generate_series(1,20) i;
+explain (costs off)
+select count(*) from foo where a > (select regr_count(x, y) from bar where foo.a = bar.x);
+                                                        QUERY PLAN
+---------------------------------------------------------------------------------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Hash Left Join
+               Hash Cond: (foo.a = bar.x)
+               Filter: (foo.a > COALESCE((regr_count((bar.x)::double precision, (bar.y)::double precision)), '0'::bigint))
+               ->  Seq Scan on foo
+               ->  Hash
+                     ->  HashAggregate
+                           Group Key: bar.x
+                           ->  Seq Scan on bar
+ Optimizer: Postgres-based planner
+(11 rows)
+
+select count(*) from foo where a > (select regr_count(x, y) from bar where foo.a = bar.x);
+ count 
+-------
+    20
+(1 row)
+
 drop table foo;
 drop table bar;

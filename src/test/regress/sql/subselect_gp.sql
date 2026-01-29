@@ -1671,5 +1671,16 @@ explain (costs off)
 select count(*) from foo where a >>> (select max(y)::int from bar where foo.a = bar.x);
 select count(*) from foo where a >>> (select max(y)::int from bar where foo.a = bar.x);
 
+-- create a case where bar.x matches but bar.y is NULL for all rows.
+-- expected: 20
+delete from foo;
+delete from bar;
+insert into foo select i,i+1 from generate_series(1,20) i;
+insert into bar select i%6+1, NULL::int from generate_series(1,20) i;
+
+explain (costs off)
+select count(*) from foo where a > (select regr_count(x, y) from bar where foo.a = bar.x);
+select count(*) from foo where a > (select regr_count(x, y) from bar where foo.a = bar.x);
+
 drop table foo;
 drop table bar;
