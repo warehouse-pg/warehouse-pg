@@ -77,6 +77,7 @@ static text *text_substring(Datum str,
 			   int32 start,
 			   int32 length,
 			   bool length_not_specified);
+static int	pg_mbcharcliplen_chars(const char *mbstr, int len, int limit);
 static text *text_overlay(text *t1, text *t2, int sp, int sl);
 static int	text_position(text *t1, text *t2);
 static void text_position_setup(text *t1, text *t2, TextPositionState *state);
@@ -850,6 +851,7 @@ text_substring(Datum str, int32 start, int32 length, bool length_not_specified)
 		int32		slice_strlen;
 		int32		slice_len;
 		text	   *slice;
+		int32		E;				/* end position, exclusive */
 		int32		E1;
 		int32		i;
 		char	   *p;
@@ -871,10 +873,10 @@ text_substring(Datum str, int32 start, int32 length, bool length_not_specified)
 
 		if (length_not_specified)		/* special case - get length to end of
 										 * string */
-			slice_size = L1 = -1;
+			slice_size = L1 = E = -1;
 		else
 		{
-			int			E = S + length;
+			E = S + length;
 
 			/*
 			 * A negative value for L is the only way for the end position to
@@ -886,11 +888,11 @@ text_substring(Datum str, int32 start, int32 length, bool length_not_specified)
 						 errmsg("negative substring length not allowed")));
 
 			/*
-			 * A zero or negative value for the end position can happen if the
-			 * start was negative or one. SQL99 says to return a zero-length
-			 * string.
+			 * Ending at position 1, exclusive, obviously yields an empty
+			 * string.  A zero or negative value can happen if the start was
+			 * negative or one. SQL99 says to return a zero-length string.
 			 */
-			if (E < 1)
+			if (E <= 1)
 				return cstring_to_text("");
 
 			/*
@@ -900,10 +902,10 @@ text_substring(Datum str, int32 start, int32 length, bool length_not_specified)
 			L1 = E - S1;
 
 			/*
-			 * Total slice size in bytes can't be any longer than the start
-			 * position plus substring length times the encoding max length.
+			 * Total slice size in bytes can't be any longer than the
+			 * inclusive end position times the encoding max length.
 			 */
-			slice_size = (S1 + L1) * eml;
+			slice_size = (E - 1) * eml;
 		}
 
 		/*
@@ -925,9 +927,17 @@ text_substring(Datum str, int32 start, int32 length, bool length_not_specified)
 			return cstring_to_text("");
 		}
 
-		/* Now we can get the actual length of the slice in MB characters */
-		slice_strlen = pg_mbstrlen_with_len(VARDATA_ANY(slice),
-											slice_len);
+		/*
+		 * Now we can get the actual length of the slice in MB characters,
+		 * stopping at the end of the substring.  Continuing beyond the
+		 * substring end could find an incomplete character attributable
+		 * solely to DatumGetTextPSlice() chopping in the middle of a
+		 * character, and it would be superfluous work at best.
+		 */
+		slice_strlen =
+			(slice_size == -1 ?
+			 pg_mbstrlen_with_len(VARDATA_ANY(slice), slice_len) :
+			 pg_mbcharcliplen_chars(VARDATA_ANY(slice), slice_len, E - 1));
 
 		/*
 		 * Check that the start position wasn't > slice_strlen. If so, SQL99
@@ -980,6 +990,35 @@ text_substring(Datum str, int32 start, int32 length, bool length_not_specified)
 
 	/* not reached: suppress compiler warning */
 	return NULL;
+}
+
+/*
+ * pg_mbcharcliplen_chars -
+ *	Mirror pg_mbcharcliplen(), except return value unit is chars, not bytes.
+ *
+ *	This mirrors all the dubious historical behavior, so it's static to
+ *	discourage proliferation.  The assertions are specific to the one caller.
+ */
+static int
+pg_mbcharcliplen_chars(const char *mbstr, int len, int limit)
+{
+	int			nch = 0;
+	int			l;
+
+	Assert(len > 0);
+	Assert(limit > 0);
+	Assert(pg_database_encoding_max_length() > 1);
+
+	while (len > 0 && *mbstr)
+	{
+		l = pg_mblen_with_len(mbstr, len);
+		nch++;
+		if (nch == limit)
+			break;
+		len -= l;
+		mbstr += l;
+	}
+	return nch;
 }
 
 /*
