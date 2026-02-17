@@ -231,7 +231,9 @@ DROP TABLE encoding_tests;
 DROP TABLE toast_4b_utf8;
 -- WarehousePG: omitting the argument list needs PG10; spell it out.
 DROP FUNCTION test_encoding(text, text, bytea);
+DROP FUNCTION test_wchars_to_text(text, int[]);
 DROP FUNCTION test_text_to_wchars(text, text);
+DROP FUNCTION test_valid_server_encoding(text);
 DROP FUNCTION test_mblen_func(text, text, text, int);
 DROP FUNCTION test_bytea_to_text(bytea);
 DROP FUNCTION test_text_to_bytea(text);
