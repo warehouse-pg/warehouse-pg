@@ -2860,10 +2860,10 @@ CTranslatorRelcacheToDXL::IsIndexSupported(Relation index_rel)
 		return true;
 	}
 
-	// Fall back if query is on a relation with a pgvector index (ivfflat) or
-	// pg_embedding index (hnsw). Orca currently does not generate index scan
-	// alternatives here. Fall back to ensure users can get better performing
-	// index plans using planner.
+	// Fall back if query is on a relation with a pgvector index (ivfflat),
+	// pg_embedding index (hnsw), or VectorChord index (vchordrq, vchordg).
+	// Orca currently does not generate index scan alternatives here. Fall back
+	// to ensure users can get better performing index plans using planner.
 	//
 	// An alternative approach was considered to fall back for any unsupported
 	// index. However, the downside of that is that it will lead to many more
@@ -2875,13 +2875,15 @@ CTranslatorRelcacheToDXL::IsIndexSupported(Relation index_rel)
 		mp, gpdb::GetRelAmName(index_rel->rd_rel->relam));
 
 	if (am_name_str->Equals(GPOS_WSZ_LIT("ivfflat")) ||
-		am_name_str->Equals(GPOS_WSZ_LIT("hnsw")))
+		am_name_str->Equals(GPOS_WSZ_LIT("hnsw")) ||
+		am_name_str->Equals(GPOS_WSZ_LIT("vchordrq")) ||
+		am_name_str->Equals(GPOS_WSZ_LIT("vchordg")))
 	{
 		GPOS_DELETE(am_name_str);
 		GPOS_RAISE(
 			gpdxl::ExmaMD, gpdxl::ExmiMDObjUnsupported,
 			GPOS_WSZ_LIT(
-				"Queries on relations with pgvector indexes (ivfflat) or pg_embedding indexes (hnsw) are not supported"));
+				"Queries on relations with pgvector indexes (ivfflat, hnsw) or VectorChord indexes (vchordrq, vchordg) are not supported"));
 	}
 	GPOS_DELETE(am_name_str);
 	return false;
