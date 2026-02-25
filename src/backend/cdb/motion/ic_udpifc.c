@@ -378,6 +378,10 @@ static SendControlInfo snd_control_info;
 
 /* WaitEventSet for the icudp */
 static WaitEventSet *ICWaitSet = NULL;
+/* true if ICWaitSet has been populated with events for the current query */
+static bool ICWaitSetValid = false;
+/* number of events in ICWaitSet when it was last set up */
+static int ICWaitSetNEvents = 0;
 
 /*
  * ICGlobalControlInfo
@@ -3680,6 +3684,13 @@ void
 TeardownUDPIFCInterconnect(ChunkTransportState *transportStates,
 						   bool hasErrors)
 {
+	/*
+	 * Mark the ICWaitSet as invalid so that the next query will rebuild it
+	 * with fresh FDs.  Do this unconditionally before teardown so it is
+	 * reset even if teardown throws an error.
+	 */
+	ICWaitSetValid = false;
+
 	PG_TRY();
 	{
 		TeardownUDPIFCInterconnect_Internal(transportStates, hasErrors);
@@ -3747,43 +3758,54 @@ receiveChunksUDPIFC(ChunkTransportState *pTransportStates, ChunkTransportStateEn
 							 pTransportStates->sliceTable->ic_instance_id);
 	}
 
-	nevent = 2; /* nevent = waited fds number + 2 (latch and postmaster) */
-	if (Gp_role == GP_ROLE_DISPATCH)
-	{
-		/* get all wait sock fds */
-		waitFds = cdbdisp_getWaitSocketFds(pTransportStates->estate->dispatcherState, &nFds);
-		if (waitFds != NULL)
-			nevent += nFds;
-	}
-
-	/* reset WaitEventSet */
-	ResetWaitEventSet(&ICWaitSet, TopMemoryContext, nevent);
-
 	/*
-	 * Use PG_TRY() - PG_CATCH() to make sure destroy the waiteventset (close the epoll fd)
-	 * The main receive logic is in receiveChunksUDPIFCLoop()
+	 * The set of FDs to wait on (latch, postmaster death, dispatcher sockets)
+	 * does not change during a query's lifecycle.  Only rebuild the
+	 * WaitEventSet on the first call; reuse it on subsequent calls to avoid
+	 * expensive epoll_ctl syscalls on every received chunk.
 	 */
-	PG_TRY();
+	if (!ICWaitSetValid)
 	{
-		AddWaitEventToSet(ICWaitSet, WL_LATCH_SET, PGINVALID_SOCKET, &ic_control_info.latch, NULL);
-		AddWaitEventToSet(ICWaitSet, WL_POSTMASTER_DEATH, PGINVALID_SOCKET, NULL, NULL);
-		for (int i = 0; i < nFds; i++)
+		nevent = 2; /* latch + postmaster death */
+		if (Gp_role == GP_ROLE_DISPATCH)
 		{
-			AddWaitEventToSet(ICWaitSet, WL_SOCKET_READABLE, waitFds[i], NULL, NULL);
+			/* get all wait sock fds */
+			waitFds = cdbdisp_getWaitSocketFds(pTransportStates->estate->dispatcherState, &nFds);
+			if (waitFds != NULL)
+				nevent += nFds;
 		}
 
-		tcItem = receiveChunksUDPIFCLoop(pTransportStates, pEntry, srcRoute, conn, ICWaitSet, nevent);
-	}
-	PG_CATCH();
-	{
+		ResetWaitEventSet(&ICWaitSet, TopMemoryContext, nevent);
+
+		/*
+		 * Use PG_TRY() - PG_CATCH() to make sure the WaitEventSet destroyed
+		 * (epoll FDs closed), the main receive logic is in receiveChunksUDPIFCLoop()
+		 */
+		PG_TRY();
+		{
+			AddWaitEventToSet(ICWaitSet, WL_LATCH_SET, PGINVALID_SOCKET, &ic_control_info.latch, NULL);
+			AddWaitEventToSet(ICWaitSet, WL_POSTMASTER_DEATH, PGINVALID_SOCKET, NULL, NULL);
+			for (int i = 0; i < nFds; i++)
+			{
+				AddWaitEventToSet(ICWaitSet, WL_SOCKET_READABLE, waitFds[i], NULL, NULL);
+			}
+		}
+		PG_CATCH();
+		{
+			if (waitFds != NULL)
+				pfree(waitFds);
+			PG_RE_THROW();
+		}
+		PG_END_TRY();
+
 		if (waitFds != NULL)
 			pfree(waitFds);
-		PG_RE_THROW();
-	}
-	PG_END_TRY();
 
-	if (waitFds != NULL)
-		pfree(waitFds);
+		ICWaitSetNEvents = nevent;
+		ICWaitSetValid = true;
+	}
+
+	tcItem = receiveChunksUDPIFCLoop(pTransportStates, pEntry, srcRoute, conn, ICWaitSet, ICWaitSetNEvents);
 
 	return tcItem;
 }
