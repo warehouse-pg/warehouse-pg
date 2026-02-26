@@ -3685,10 +3685,17 @@ TeardownUDPIFCInterconnect(ChunkTransportState *transportStates,
 						   bool hasErrors)
 {
 	/*
-	 * Mark the ICWaitSet as invalid so that the next query will rebuild it
-	 * with fresh FDs.  Do this unconditionally before teardown so it is
-	 * reset even if teardown throws an error.
+	 * Flush the WaitEventSet while dispatcher socket FDs are still valid.
+	 * Gang destruction (which closes the FDs via PQfinish) happens later in
+	 * mppExecutorFinishup, so epoll_ctl(EPOLL_CTL_DEL) will succeed here
+	 * without ENOENT.  Do this before PG_TRY so it runs even if teardown
+	 * throws an error.
 	 */
+	if (ICWaitSetValid && ICWaitSet != NULL)
+	{
+		FlushWaitEventSet(ICWaitSet);
+		ICWaitSetNEvents = 0;
+	}
 	ICWaitSetValid = false;
 
 	PG_TRY();

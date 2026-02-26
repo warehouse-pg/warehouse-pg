@@ -619,16 +619,56 @@ CreateWaitEventSet(MemoryContext context, int nevents)
 }
 
 /*
+ * FlushWaitEventSet
+ *    Remove all registered events from the WaitEventSet without reallocating
+ *    memory or touching the underlying epoll fd.  After this call the set is
+ *    empty (nevents == 0) but still usable for AddWaitEventToSet().
+ *
+ *    Returns true if all events were successfully removed, false if any
+ *    epoll_ctl(DEL) failed (e.g. stale fd already closed by the kernel).
+ *
+ *    This is intended for callers that need to clear FDs from the epoll
+ *    interest list while those FDs are still open, but will rebuild the event
+ *    set from scratch later via ResetWaitEventSet().
+ */
+bool
+FlushWaitEventSet(WaitEventSet *set)
+{
+	bool	ret = true;
+
+#if defined(WAIT_USE_EPOLL)
+	for (int i = 0; i < set->nevents; i++)
+	{
+		WaitEvent  *event = &(set->events[i]);
+		int			rc;
+		rc = epoll_ctl(set->epoll_fd, EPOLL_CTL_DEL, event->fd, NULL);
+		if (rc < 0)
+		{
+			ereport(DEBUG1,
+				(errcode_for_socket_access(),
+				 errmsg("%s cleanup epoll events failed: %m",
+					 "epoll_ctl()")));
+			ret = false;
+			break;
+		}
+	}
+#endif
+	set->nevents = 0;
+	set->latch = NULL;
+	return ret;
+}
+
+/*
  * If *pset == NULL create a new WaitEventSet and set it to *pset
  * Else reset the existed WaitEventSet:
- *  - if enable epoll, it frees the old memory and reuse the epoll object.
+ *  - if enable epoll, it flushes events and reallocates memory while
+ *    reusing the epoll object.
  *  - else it just Free+Create a new WaitEventSet.
  *
- * Note: Why we want to reuse the epoll object? In previous code, it create
- * and free waiteventset several times for one query. And it leads performance
- * downgrade in pgbench test. After investigation, we found the culprit is
- * a large number of concurrent creation and destruction of epoll objects. So
- * we introduce the function to reuse epoll object.
+ * Note: Why reuse the epoll object?  Earlier code created and freed a
+ * WaitEventSet on every call, and the resulting flood of concurrent
+ * epoll_create/close syscalls caused measurable performance regression in
+ * pgbench.  This function avoids that by reusing the underlying epoll fd.
  */
 void
 ResetWaitEventSet(WaitEventSet **pset, MemoryContext context, int nevents)
@@ -641,28 +681,15 @@ ResetWaitEventSet(WaitEventSet **pset, MemoryContext context, int nevents)
 
 #if defined(WAIT_USE_EPOLL)
 	WaitEventSet *set = *pset;
-	/* delete existed events */
-	for (int i = 0; i < set->nevents; i++)
-	{
-		WaitEvent  *event = &(set->events[i]);
-		int			rc;
-		rc = epoll_ctl(set->epoll_fd, EPOLL_CTL_DEL, event->fd, NULL);
-		if (rc < 0)
-		{
-			ereport(DEBUG1,
-				(errcode_for_socket_access(),
-				/* translator: %s is a syscall name, such as "poll()" */
-				 errmsg("%s cleanup epoll events failed: %m",
-					 "epoll_ctl()")));
-			/*
-			 * in some scenarios, the event's fd has been cleanup,
-			 * so need to destory the whold epoll object
-			 */
-			goto CREATE_NEW_EV;
-		}
-	}
 
-	/* the same alloc logic as CreateWaitEventSet() */
+	/*
+	 * Flush existing events.  If any DEL fails (stale fd), fall through
+	 * to destroy the whole epoll object and create a fresh one.
+	 */
+	if (!FlushWaitEventSet(set))
+		goto CREATE_NEW_EV;
+
+	/* Reallocate with the same layout as CreateWaitEventSet() */
 	char	   *data;
 	Size		sz = 0;
 	sz += MAXALIGN(sizeof(WaitEventSet));
@@ -670,7 +697,7 @@ ResetWaitEventSet(WaitEventSet **pset, MemoryContext context, int nevents)
 	sz += MAXALIGN(sizeof(struct epoll_event) * nevents);
 	data = (char *) MemoryContextAllocZero(context, sz);
 
-	/* reuse the epoll object and free the old memory */
+	/* Preserve the epoll fd, free the old wrapper memory */
 	int	old_epoll_fd = set->epoll_fd;
 	pfree(set);
 
@@ -684,16 +711,16 @@ ResetWaitEventSet(WaitEventSet **pset, MemoryContext context, int nevents)
 	set->nevents_space = nevents;
 	set->exit_on_postmaster_death = false;
 
-	/* reuse the epoll object (is empty now) */
+	/* Reattach the existing epoll fd */
 	set->epoll_fd = old_epoll_fd;
 
 	*pset = set;
 	return;
 #endif
+
 CREATE_NEW_EV:
 	FreeWaitEventSet(*pset);
 	*pset = CreateWaitEventSet(context, nevents);
-
 }
 
 /*
