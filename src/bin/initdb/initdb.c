@@ -2134,12 +2134,16 @@ setup_cdb_schema(FILE *cmdfd)
 		errno = 0;
 #endif
 
-	closedir(dir);
-
 	if (errno != 0)
 	{
 		/* some kind of I/O error? */
 		pg_log_error("error while reading cdb_init.d directory: %m");
+		exit(1);
+	}
+
+	if (closedir(dir))
+	{
+		pg_log_error("error while closing cdb_init.d directory: %m");
 		exit(1);
 	}
 
