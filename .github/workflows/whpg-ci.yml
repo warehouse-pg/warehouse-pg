@@ -1,0 +1,267 @@
+name: WHPG CI
+
+# =============================================================================
+# Configuration: EL versions for each WHPG major version
+# Change these values to update which EL versions are tested
+# =============================================================================
+env:
+  WHPG7_EL_VERSIONS: '["8"]'            # WHPG 7 supported EL versions
+  WHPG6_EL_VERSIONS: '["7", "8", "9"]'  # WHPG 6 supported EL versions
+  DEFAULT_EL_VERSION: '["8"]'           # Default for feature branches
+  DEFAULT_INSTALLCHECK_TARGET: 'installcheck-small'  # Default installcheck target
+
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch'
+      && format('[7x] Manual: {0} on {1}', inputs.test_type == 'all' && 'all tests' || inputs.test_type, inputs.el_version == 'all' && 'all EL versions' || format('el{0}', inputs.el_version))
+      || format('[7x] {0} on {1}', github.event_name, github.ref_name) }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_type:
+        description: 'Which tests to run'
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - installcheck
+          - orca-unit-tests
+      installcheck_target:
+        description: 'Installcheck target (if installcheck selected)'
+        default: 'installcheck-small'
+        type: choice
+        options:
+          - installcheck-small
+          - installcheck-world
+      el_version:
+        description: 'Enterprise Linux version'
+        default: '8'
+        type: choice
+        options:
+          - 'all'
+          - '7'
+          - '8'
+          - '9'
+      debug_enabled:
+        description: 'Enable tmate debugging on failure'
+        required: false
+        default: false
+        type: boolean
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - '**'
+jobs:
+  detect-config:
+    name: detect-config
+    runs-on: ubuntu-latest
+    outputs:
+      whpg_major: ${{ steps.detect.outputs.ver }}
+      el_versions: ${{ steps.detect.outputs.el_versions }}
+      installcheck_target: ${{ steps.detect.outputs.installcheck_target }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: detect
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BRANCH_NAME: ${{ github.ref_name }}
+          INPUT_EL_VERSION: ${{ inputs.el_version }}
+          INPUT_INSTALLCHECK_TARGET: ${{ inputs.installcheck_target }}
+          WHPG7_EL_VERSIONS: ${{ env.WHPG7_EL_VERSIONS }}
+          WHPG6_EL_VERSIONS: ${{ env.WHPG6_EL_VERSIONS }}
+          DEFAULT_EL_VERSION: ${{ env.DEFAULT_EL_VERSION }}
+          DEFAULT_INSTALLCHECK_TARGET: ${{ env.DEFAULT_INSTALLCHECK_TARGET }}
+        run: bash .github/scripts/detect-config.bash
+
+  installcheck:
+    name: ${{ needs.detect-config.outputs.installcheck_target }} / EL${{ matrix.el_version }}
+    needs: detect-config
+    if: github.event_name != 'workflow_dispatch' || inputs.test_type == 'all' || inputs.test_type == 'installcheck'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        el_version: ${{ fromJson(needs.detect-config.outputs.el_versions) }}
+    container:
+      image: ghcr.io/warehouse-pg/whpg${{ needs.detect-config.outputs.whpg_major }}-${{ format('rocky{0}', matrix.el_version) }}-build
+      options: --privileged
+    env:
+      WHPG_MAJOR: ${{ needs.detect-config.outputs.whpg_major }}
+      EL_VERSION: ${{ matrix.el_version }}
+      TEST_TARGET: ${{ needs.detect-config.outputs.installcheck_target }}
+      GPDB_SRC: ${{ github.workspace }}
+      RESULTS_DIR: /tmp/test-results
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install required packages
+        run: |
+          # Base packages aligned with SPEC file
+          INSTALL_PKGS="apr-devel autoconf automake bison bzip2-devel flex gcc gcc-c++ iproute \
+            iputils krb5-devel less libcurl-devel libevent-devel libuuid-devel libuv-devel \
+            libxml2-devel libyaml-devel libzstd-devel make net-tools openldap-devel openssh \
+            openssl-devel pam-devel perl perl-Env perl-ExtUtils-Embed perl-IPC-Run perl-Test-Simple \
+            perl-devel pkgconfig readline-devel rsync sed tar wget which zip zlib-devel libicu-devel \
+            netcat openssl glibc-langpack-en procps lsof krb5-server krb5-workstation llvm-devel clang-devel"
+
+          yum install -y $INSTALL_PKGS
+
+          if [[ "${WHPG_MAJOR}" == "6" ]]; then
+            yum install -y python2-devel
+          else
+            yum install -y xerces-c-devel python3-devel python3-psutil python3-pyyaml python3-psycopg2 python3-lxml python3-pytest
+            ln -sf /usr/bin/pytest-3 /usr/bin/pytest || true
+          fi
+
+          if ! command -v passwd &>/dev/null; then
+            yum install -y passwd
+          fi
+
+      - name: Configure
+        run: |
+          CC='gcc -m64' \
+          CFLAGS='-O2 -g3' LDFLAGS='-Wl,--enable-new-dtags -Wl,--export-dynamic' \
+          ./configure --with-quicklz --disable-gpperfmon --with-gssapi --enable-mapreduce --enable-orafce --enable-ic-proxy \
+                      --enable-orca --with-libxml --with-pythonsrc-ext --with-uuid=e2fs --with-pgport=5432 --enable-tap-tests \
+                      --enable-debug-extensions --with-perl --with-python --with-openssl --with-pam --with-ldap --with-includes="" \
+                      --with-libraries="" --disable-rpath \
+                      --prefix=/usr/local/greenplum-db-devel \
+                      --mandir=/usr/local/greenplum-db-devel/man
+
+      - name: Build
+        run: make -j$(nproc)
+
+      - name: Install
+        run: make install
+
+      - name: Setup gpadmin user
+        run: |
+          # Create symlinks for easier navigation
+          ln -s . gpdb_src                          # For concourse scripts compatibility
+          ln -s "${GPDB_SRC}" /workspace            # Easy to remember path
+          ln -s "${GPDB_SRC}" /home/gpadmin/gpdb_src  # Accessible from gpadmin home
+          chown -h gpadmin:gpadmin /workspace /home/gpadmin/gpdb_src
+
+          export TEST_OS=centos
+          ./concourse/scripts/setup_gpadmin_user.bash
+          chown -R gpadmin:gpadmin /usr/local/greenplum-db-devel
+          chown -R gpadmin:gpadmin "${GPDB_SRC}"
+
+      - name: Create demo cluster
+        run: |
+          source concourse/scripts/common.bash
+          export WITH_MIRRORS=false
+          make_cluster
+
+      - name: Run installcheck tests
+        run: |
+          export MAKE_TEST_COMMAND="${TEST_TARGET}"
+          export GPVERSION="${WHPG_MAJOR}"
+          bash .github/scripts/run-installcheck.bash
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-el${{ matrix.el_version }}
+          path: |
+            /tmp/test-results/
+            src/test/regress/regression.diffs
+            src/test/regress/results/
+          if-no-files-found: ignore
+
+      - name: Upload cluster logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cluster-logs-el${{ matrix.el_version }}
+          path: |
+            gpAux/gpdemo/datadirs/qddir/demoDataDir-1/log/
+            gpAux/gpdemo/datadirs/dbfast*/demoDataDir*/log/
+            /home/gpadmin/gpAdminLogs/
+          if-no-files-found: ignore
+
+      - name: Install tmate
+        if: ${{ failure() && inputs.debug_enabled }}
+        run: |
+          # Install tmate on Rocky Linux (EPEL repo)
+          yum install -y epel-release
+          yum install -y tmate
+
+      - name: Setup tmate session
+        if: ${{ failure() && inputs.debug_enabled }}
+        uses: mxschmitt/action-tmate@v3
+        timeout-minutes: 30
+        with:
+          install-dependencies: false
+
+  orca-unit-tests:
+    name: orca-unit-tests / EL${{ matrix.el_version }}
+    needs: detect-config
+    if: github.event_name != 'workflow_dispatch' || inputs.test_type == 'all' || inputs.test_type == 'orca-unit-tests'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        el_version: ${{ fromJson(needs.detect-config.outputs.el_versions) }}
+    container:
+      image: ghcr.io/warehouse-pg/whpg${{ needs.detect-config.outputs.whpg_major }}-${{ format('rocky{0}', matrix.el_version) }}-build
+      options: --privileged
+    env:
+      WHPG_MAJOR: ${{ needs.detect-config.outputs.whpg_major }}
+      EL_VERSION: ${{ matrix.el_version }}
+      GPDB_SRC: ${{ github.workspace }}
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          yum install -y cmake gcc gcc-c++ make xerces-c-devel
+
+          if [[ "${WHPG_MAJOR}" == "6" ]]; then
+            yum install -y python2-devel
+          else
+            yum install -y python3-devel
+          fi
+
+      - name: Run ORCA unit tests
+        run: bash .github/scripts/run-orca-tests.bash
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: orca-test-results-el${{ matrix.el_version }}
+          path: |
+            src/backend/gporca/build*/Testing/
+            src/backend/gporca/build*/CMakeFiles/CMakeOutput.log
+            src/backend/gporca/build*/CMakeFiles/CMakeError.log
+          if-no-files-found: ignore
+
+      - name: Install tmate
+        if: ${{ failure() && inputs.debug_enabled }}
+        run: |
+          yum install -y epel-release
+          yum install -y tmate
+
+      - name: Setup tmate session
+        if: ${{ failure() && inputs.debug_enabled }}
+        uses: mxschmitt/action-tmate@v3
+        timeout-minutes: 30
+        with:
+          install-dependencies: false
