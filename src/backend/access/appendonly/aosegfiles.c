@@ -1523,8 +1523,6 @@ get_ao_compression_ratio(PG_FUNCTION_ARGS)
 	Relation	parentrel;
 	float8		result = -1.0;
 
-	Assert(Gp_role == GP_ROLE_DISPATCH);
-
 	/* open the parent (main) relation */
 	parentrel = table_open(relid, AccessShareLock);
 
@@ -1561,8 +1559,6 @@ aorow_compression_ratio_internal(Relation parentrel)
 	float8		compress_ratio = -1;	/* the default, meaning "not
 										 * available" */
 	Oid			segrelid = InvalidOid;
-
-	Assert(Gp_role == GP_ROLE_DISPATCH);
 
 	GetAppendOnlyEntryAuxOids(parentrel,
 							  &segrelid,

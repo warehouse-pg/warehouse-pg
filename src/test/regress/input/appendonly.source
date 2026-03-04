@@ -880,3 +880,28 @@ insert into fix_ao_truncate_last_sequence select 1, 1 from generate_series(1, 5)
 select count(*) from fix_ao_truncate_last_sequence;
 abort;
 
+-- Test get_ao_compression_ratio function, it could be executed on QE using
+-- gp_dist_random() method.
+create table compression_ao (a int, b text, c timestamp) with (appendoptimized=true, orientation=row, compresstype=zlib);
+create table compression_aocs (a int, b text, c timestamp) with (appendoptimized=true, orientation=column, compresstype=zlib);
+
+select get_ao_compression_ratio(oid) from pg_class where relname = 'compression_ao';
+select get_ao_compression_ratio(oid) from pg_class where relname = 'compression_aocs';
+
+select get_ao_compression_ratio(oid) from gp_dist_random('pg_class') where relname = 'compression_ao';
+select get_ao_compression_ratio(oid) from gp_dist_random('pg_class') where relname = 'compression_aocs';
+
+insert into compression_ao select id, 'test '|| id, clock_timestamp() from generate_series(1,10000) id;
+insert into compression_aocs select id, 'test '|| id, clock_timestamp() from generate_series(1,10000) id;
+
+-- start_ignore
+-- should not panic
+select get_ao_compression_ratio(oid) from gp_dist_random('pg_class') where relname = 'compression_ao';
+select get_ao_compression_ratio(oid) from gp_dist_random('pg_class') where relname = 'compression_aocs';
+-- end_ignore
+
+drop table compression_ao;
+drop table compression_aocs;
+
+
+
