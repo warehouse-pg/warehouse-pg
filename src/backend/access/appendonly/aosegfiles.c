@@ -1734,8 +1734,6 @@ get_ao_compression_ratio(PG_FUNCTION_ARGS)
 	Relation	parentrel;
 	float8		result;
 
-	Assert(Gp_role == GP_ROLE_DISPATCH);
-
 	/* open the parent (main) relation */
 	parentrel = heap_open(relid, AccessShareLock);
 
@@ -1767,8 +1765,6 @@ aorow_compression_ratio_internal(Relation parentrel)
 										 * available" */
 	Oid			segrelid = InvalidOid;
 
-	Assert(Gp_role == GP_ROLE_DISPATCH);
-
 	GetAppendOnlyEntryAuxOids(RelationGetRelid(parentrel), NULL,
 							  &segrelid,
 							  NULL, NULL, NULL, NULL);
@@ -1779,16 +1775,10 @@ aorow_compression_ratio_internal(Relation parentrel)
 	 */
 	aosegrel = heap_open(segrelid, AccessShareLock);
 	initStringInfo(&sqlstmt);
-	if (Gp_role == GP_ROLE_DISPATCH)
-		appendStringInfo(&sqlstmt, "select sum(eof), sum(eofuncompressed) "
-						 "from gp_dist_random('%s.%s')",
-						 get_namespace_name(RelationGetNamespace(aosegrel)),
-						 RelationGetRelationName(aosegrel));
-	else
-		appendStringInfo(&sqlstmt, "select eof, eofuncompressed "
-						 "from %s.%s",
-						 get_namespace_name(RelationGetNamespace(aosegrel)),
-						 RelationGetRelationName(aosegrel));
+	appendStringInfo(&sqlstmt, "select sum(eof), sum(eofuncompressed) "
+					 "from gp_dist_random('%s.%s')",
+					 get_namespace_name(RelationGetNamespace(aosegrel)),
+					 RelationGetRelationName(aosegrel));
 
 	heap_close(aosegrel, AccessShareLock);
 
