@@ -26,7 +26,7 @@ detect_whpg_version() {
     tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
 
     if [[ -z "$tag" ]]; then
-        echo "::error::No git tag found. Cannot determine WHPG version."
+        echo "::error::No git tag found. Cannot determine WHPG version." >&2
         exit 1
     fi
 
@@ -45,6 +45,12 @@ detect_whpg_version() {
 determine_el_versions() {
     local whpg_major="$1"
     local el_versions
+
+    # Validate WHPG version
+    if [[ "$whpg_major" != "7" && "$whpg_major" != "6" ]]; then
+        echo "::error::Unsupported WHPG major version: $whpg_major. Only 6 and 7 are supported." >&2
+        exit 1
+    fi
 
     if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
         # Dispatch: user-selected el_version

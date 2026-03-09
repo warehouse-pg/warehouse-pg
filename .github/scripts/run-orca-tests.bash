@@ -18,9 +18,13 @@ function _main() {
     echo "GPDB_SRC: ${GPDB_SRC}"
     echo "========================================================================"
 
-    # Set build architecture
-    export BLD_ARCH="rhel${EL_VERSION}_x86_64"
+    # Source common functions and set build architecture dynamically
+    cd "${GPDB_SRC}"
+    source concourse/scripts/common.bash
+    export BLD_ARCH=$(build_arch)
     export GPDB_SRC_PATH="${GPDB_SRC}"
+
+    echo "BLD_ARCH: ${BLD_ARCH}"
 
     # Create gpdb_src symlink expected by the script
     if [[ ! -e "${GPDB_SRC}/gpdb_src" ]]; then
@@ -28,7 +32,6 @@ function _main() {
     fi
 
     # Run the concourse script
-    cd "${GPDB_SRC}"
     bash concourse/scripts/unit_tests_gporca.bash
 
     echo "========================================================================"

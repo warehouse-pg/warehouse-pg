@@ -10,8 +10,6 @@ set -eox pipefail
 : "${MAKE_TEST_COMMAND:?MAKE_TEST_COMMAND not set}"
 : "${GPVERSION:?GPVERSION not set}"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
 # Source common functions
 source "${GPDB_SRC}/concourse/scripts/common.bash"
 
@@ -41,7 +39,8 @@ function look4diffs() {
     diff_files=$(find "${GPDB_SRC}" -name regression.diffs 2>/dev/null || true)
     for diff_file in ${diff_files}; do
         if [ -f "${diff_file}" ]; then
-            diff_file_copy=$(echo "${diff_file#*/gpdb_src/}" | tr '/' '-')
+            # Strip GPDB_SRC prefix and convert slashes to dashes
+            diff_file_copy=$(echo "${diff_file#${GPDB_SRC}/}" | tr '/' '-')
             cp "${diff_file}" "${RESULTS_DIR}/${diff_file_copy}"
 
             cat <<-EOF
