@@ -455,3 +455,70 @@ explain (COSTS OFF) select ((with cte as (select * from jazz) select 1 from cte 
 select ((with cte as (select * from jazz) select 1 from cte cte1, cte cte2 limit foo.a)) as t FROM foo;
 
 reset optimizer_trace_fallback;
+
+-- ORCA handling views with unused CTEs after table structure changes
+-- Issue: Query-to-DXL Translation: No variable entry found due to incorrect normalization of query
+                                                                                                                                                                                                                                         
+-- Create base tables
+DROP TABLE IF EXISTS t1 CASCADE;
+DROP TABLE IF EXISTS t2 CASCADE;
+
+CREATE TABLE t1 (
+  a int,
+  b int
+) DISTRIBUTED RANDOMLY;
+
+CREATE TABLE t2 (
+  c int,
+  d int,       -- This column will be dropped later
+  e int
+) DISTRIBUTED RANDOMLY;
+
+-- Create view with an unused CTE (unused_cte) that references t2
+-- Final SELECT only uses used_cte
+CREATE OR REPLACE VIEW v_test AS
+WITH used_cte AS (
+  SELECT x.c, x.e
+  FROM (SELECT rank() OVER (PARTITION BY c ORDER BY e DESC) AS rk, c, e FROM t2) x
+  WHERE x.rk = 1
+),
+unused_cte AS (
+  -- This CTE is not used in the final SELECT, but references t2
+  SELECT t2.c, t2.e
+  FROM t2
+  LEFT JOIN used_cte ON t2.c = used_cte.c
+  JOIN t1 ON 1 = 1
+)
+SELECT * FROM used_cte;
+
+-- Verify view works normally
+EXPLAIN SELECT * FROM v_test;
+
+-- Drop t2.d column (not directly referenced by view, so DROP succeeds)
+ALTER TABLE t2 DROP COLUMN d;
+
+-- Query view again - ORCA should not fallback to Postgres planner
+-- Original Error: Query-to-DXL Translation: No variable entry found due to incorrect normalization of query
+EXPLAIN SELECT * FROM v_test;
+
+-- Rebuild view to restore normal operation
+CREATE OR REPLACE VIEW v_test AS
+WITH used_cte AS (
+  SELECT x.c, x.e
+  FROM (SELECT rank() OVER (PARTITION BY c ORDER BY e DESC) AS rk, c, e FROM t2) x
+  WHERE x.rk = 1
+),
+unused_cte AS (
+  SELECT t2.c, t2.e
+  FROM t2
+  LEFT JOIN used_cte ON t2.c = used_cte.c
+  JOIN t1 ON 1 = 1
+)
+SELECT * FROM used_cte;
+
+EXPLAIN SELECT * FROM v_test;
+
+-- Cleanup
+DROP VIEW IF EXISTS v_test;
+DROP TABLE IF EXISTS t1 CASCADE;
+DROP TABLE IF EXISTS t2 CASCADE;

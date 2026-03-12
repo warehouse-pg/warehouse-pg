@@ -791,3 +791,110 @@ select ((with cte as (select * from jazz) select 1 from cte cte1, cte cte2 limit
 (1 row)
 
 reset optimizer_trace_fallback;
+-- ORCA handling views with unused CTEs after table structure changes
+-- Issue: Query-to-DXL Translation: No variable entry found due to incorrect normalization of query
+                                                                                                                                                                                                                                         
+-- Create base tables
+DROP TABLE IF EXISTS t1 CASCADE;
+NOTICE:  table "t1" does not exist, skipping
+DROP TABLE IF EXISTS t2 CASCADE;
+NOTICE:  table "t2" does not exist, skipping
+CREATE TABLE t1 (
+  a int,
+  b int
+) DISTRIBUTED RANDOMLY;
+CREATE TABLE t2 (
+  c int,
+  d int,       -- This column will be dropped later
+  e int
+) DISTRIBUTED RANDOMLY;
+-- Create view with an unused CTE (unused_cte) that references t2
+-- Final SELECT only uses used_cte
+CREATE OR REPLACE VIEW v_test AS
+WITH used_cte AS (
+  SELECT x.c, x.e
+  FROM (SELECT rank() OVER (PARTITION BY c ORDER BY e DESC) AS rk, c, e FROM t2) x
+  WHERE x.rk = 1
+),
+unused_cte AS (
+  -- This CTE is not used in the final SELECT, but references t2
+  SELECT t2.c, t2.e
+  FROM t2
+  LEFT JOIN used_cte ON t2.c = used_cte.c
+  JOIN t1 ON 1 = 1
+)
+SELECT * FROM used_cte;
+-- Verify view works normally
+EXPLAIN SELECT * FROM v_test;
+                                                   QUERY PLAN                                                   
+----------------------------------------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)  (cost=2716.92..3562.14 rows=78 width=8)
+   ->  Subquery Scan on x  (cost=2716.92..3560.84 rows=26 width=8)
+         Filter: (x.rk = 1)
+         ->  WindowAgg  (cost=2716.92..3236.26 rows=25967 width=16)
+               Partition By: t2.c
+               Order By: t2.e
+               ->  Sort  (cost=2716.92..2781.84 rows=25967 width=8)
+                     Sort Key: t2.c, t2.e DESC
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)  (cost=0.00..813.00 rows=25967 width=8)
+                           Hash Key: t2.c
+                           ->  Seq Scan on t2  (cost=0.00..293.67 rows=25967 width=8)
+ Optimizer: Postgres-based planner
+(12 rows)
+
+-- Drop t2.d column (not directly referenced by view, so DROP succeeds)
+ALTER TABLE t2 DROP COLUMN d;
+-- Query view again - ORCA should not fallback to Postgres planner
+-- Original Error: Query-to-DXL Translation: No variable entry found due to incorrect normalization of query
+EXPLAIN SELECT * FROM v_test;
+                                                   QUERY PLAN                                                   
+----------------------------------------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)  (cost=3020.06..3954.24 rows=86 width=8)
+   ->  Subquery Scan on x  (cost=3020.06..3952.81 rows=29 width=8)
+         Filter: (x.rk = 1)
+         ->  WindowAgg  (cost=3020.06..3594.06 rows=28700 width=16)
+               Partition By: t2.c
+               Order By: t2.e
+               ->  Sort  (cost=3020.06..3091.81 rows=28700 width=8)
+                     Sort Key: t2.c, t2.e DESC
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)  (cost=0.00..895.00 rows=28700 width=8)
+                           Hash Key: t2.c
+                           ->  Seq Scan on t2  (cost=0.00..321.00 rows=28700 width=8)
+ Optimizer: Postgres-based planner
+(12 rows)
+
+-- Rebuild view to restore normal operation
+CREATE OR REPLACE VIEW v_test AS
+WITH used_cte AS (
+  SELECT x.c, x.e
+  FROM (SELECT rank() OVER (PARTITION BY c ORDER BY e DESC) AS rk, c, e FROM t2) x
+  WHERE x.rk = 1
+),
+unused_cte AS (
+  SELECT t2.c, t2.e
+  FROM t2
+  LEFT JOIN used_cte ON t2.c = used_cte.c
+  JOIN t1 ON 1 = 1
+)
+SELECT * FROM used_cte;
+EXPLAIN SELECT * FROM v_test;
+                                                   QUERY PLAN                                                   
+----------------------------------------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)  (cost=3020.06..3954.24 rows=86 width=8)
+   ->  Subquery Scan on x  (cost=3020.06..3952.81 rows=29 width=8)
+         Filter: (x.rk = 1)
+         ->  WindowAgg  (cost=3020.06..3594.06 rows=28700 width=16)
+               Partition By: t2.c
+               Order By: t2.e
+               ->  Sort  (cost=3020.06..3091.81 rows=28700 width=8)
+                     Sort Key: t2.c, t2.e DESC
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)  (cost=0.00..895.00 rows=28700 width=8)
+                           Hash Key: t2.c
+                           ->  Seq Scan on t2  (cost=0.00..321.00 rows=28700 width=8)
+ Optimizer: Postgres-based planner
+(12 rows)
+
+-- Cleanup
+DROP VIEW IF EXISTS v_test;
+DROP TABLE IF EXISTS t1 CASCADE;
+DROP TABLE IF EXISTS t2 CASCADE;
