@@ -496,11 +496,11 @@ SELECT
     gspc.datname,
     gspc.relid,
     gspc.command,
-    -- Use coordinator's type if available, otherwise use segment's type
-    -- Coordinator's type is not available for COPY ON SEGMENT
-    -- Segment's type is always PIPE for regular COPY regardless of the actually type,
-    -- so need to use coordinator's type for regular COPY.
-    max(gspc."type") FILTER (WHERE gspc.gp_segment_id = -1 OR gspc.gp_segment_id = 0) AS "type",
+    -- Use first non-empty type, ordered by gp_segment_id (coordinator first).
+    -- Coordinator's type is empty for COPY ON SEGMENT (segments have the actual type).
+    -- Segment's type is always PIPE for regular COPY (coordinator has the actual type).
+    -- Returns NULL if no non-empty type is available.
+    (array_agg(gspc."type" ORDER BY gspc.gp_segment_id) FILTER (WHERE gspc."type" <> ''))[1] AS "type",
     -- Always use sum values for COPY ON SEGMENT
     -- Use average values for replicated tables unless it is COPY TO.
     -- COPY TO for replicated tables is always executed on segment 0 only, so use sum values.

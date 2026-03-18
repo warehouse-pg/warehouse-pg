@@ -14,6 +14,13 @@ INSERT INTO t_copy_d select i, i from generate_series(1, 12) i;
 INSERT 0 12
 COPY t_copy_d TO '/tmp/t_copy_d<SEGID>' ON SEGMENT;
 COPY 12
+-- setup DISTRIBUTED table with no data on segment 0
+CREATE TABLE t_copy_partial (a INT, b INT);
+CREATE TABLE
+INSERT INTO t_copy_partial SELECT i, i FROM generate_series(1, 100) i;
+INSERT 0 100
+DELETE FROM t_copy_partial WHERE gp_segment_id = 0;
+DELETE 38
 
 -- Suspend copy after processed 2 tuples on each segment (3 segments)
 select gp_inject_fault_infinite('copy_processed_two_tuples', 'suspend', dbid) FROM gp_segment_configuration WHERE content > -1 AND role = 'p';
@@ -48,6 +55,8 @@ select gp_inject_fault_infinite('copy_processed_two_tuples', 'suspend', dbid) FR
 -- session 13 & 14: Distributed table COPY FROM FILE ON SEGMENT
 13&: COPY t_copy_d FROM '/tmp/t_copy_d<SEGID>' ON SEGMENT;  <waiting ...>
 14&: COPY t_copy_d FROM '/tmp/t_copy_d<SEGID>' ON SEGMENT;  <waiting ...>
+-- session 15: Distributed table (no data on seg 0) COPY TO PROGRAM ON SEGMENT
+15&: COPY t_copy_partial TO PROGRAM 'cat > /tmp/t_copy_partial<SEGID>.txt' ON SEGMENT;  <waiting ...>
 
 SELECT gp_wait_until_triggered_fault('copy_processed_two_tuples', 1, dbid) FROM gp_segment_configuration WHERE content > -1 AND role = 'p';
  gp_wait_until_triggered_fault 
@@ -59,84 +68,88 @@ SELECT gp_wait_until_triggered_fault('copy_processed_two_tuples', 1, dbid) FROM 
 
 -- Verify the progress views
 SELECT gspc.gp_segment_id, gspc.datname, gspc.relid::regclass, gspc.command, gspc."type", gspc.bytes_processed, gspc.bytes_total, gspc.tuples_processed, gspc.tuples_excluded FROM gp_stat_progress_copy gspc JOIN gp_stat_activity ac USING (pid) ORDER BY (ac.sess_id, gspc.gp_segment_id);
- gp_segment_id | datname        | relid       | command              | type    | bytes_processed | bytes_total | tuples_processed | tuples_excluded 
----------------+----------------+-------------+----------------------+---------+-----------------+-------------+------------------+-----------------
- -1            | isolation2test | t_copy_repl | COPY TO ON SEGMENT   |         | 0               | 0           | 0                | 0               
- 0             | isolation2test | t_copy_repl | COPY TO ON SEGMENT   | FILE    | 8               | 0           | 2                | 0               
- 1             | isolation2test | t_copy_repl | COPY TO ON SEGMENT   | FILE    | 8               | 0           | 2                | 0               
- 2             | isolation2test | t_copy_repl | COPY TO ON SEGMENT   | FILE    | 8               | 0           | 2                | 0               
- -1            | isolation2test | t_copy_repl | COPY TO ON SEGMENT   |         | 0               | 0           | 0                | 0               
- 0             | isolation2test | t_copy_repl | COPY TO ON SEGMENT   | FILE    | 8               | 0           | 2                | 0               
- 1             | isolation2test | t_copy_repl | COPY TO ON SEGMENT   | FILE    | 8               | 0           | 2                | 0               
- 2             | isolation2test | t_copy_repl | COPY TO ON SEGMENT   | FILE    | 8               | 0           | 2                | 0               
- -1            | isolation2test | t_copy_repl | COPY FROM            | PROGRAM | 12              | 0           | 0                | 0               
- 0             | isolation2test | t_copy_repl | COPY FROM            | PIPE    | 0               | 0           | 2                | 0               
- 1             | isolation2test | t_copy_repl | COPY FROM            | PIPE    | 0               | 0           | 2                | 0               
- 2             | isolation2test | t_copy_repl | COPY FROM            | PIPE    | 0               | 0           | 2                | 0               
- -1            | isolation2test | t_copy_repl | COPY FROM            | PROGRAM | 12              | 0           | 0                | 0               
- 0             | isolation2test | t_copy_repl | COPY FROM            | PIPE    | 0               | 0           | 2                | 0               
- 1             | isolation2test | t_copy_repl | COPY FROM            | PIPE    | 0               | 0           | 2                | 0               
- 2             | isolation2test | t_copy_repl | COPY FROM            | PIPE    | 0               | 0           | 2                | 0               
- -1            | isolation2test | t_copy_repl | COPY FROM ON SEGMENT |         | 0               | 0           | 0                | 0               
- 0             | isolation2test | t_copy_repl | COPY FROM ON SEGMENT | FILE    | 12              | 12          | 2                | 0               
- 1             | isolation2test | t_copy_repl | COPY FROM ON SEGMENT | FILE    | 12              | 12          | 2                | 0               
- 2             | isolation2test | t_copy_repl | COPY FROM ON SEGMENT | FILE    | 12              | 12          | 2                | 0               
- -1            | isolation2test | t_copy_repl | COPY FROM ON SEGMENT |         | 0               | 0           | 0                | 0               
- 0             | isolation2test | t_copy_repl | COPY FROM ON SEGMENT | FILE    | 12              | 12          | 2                | 0               
- 1             | isolation2test | t_copy_repl | COPY FROM ON SEGMENT | FILE    | 12              | 12          | 2                | 0               
- 2             | isolation2test | t_copy_repl | COPY FROM ON SEGMENT | FILE    | 12              | 12          | 2                | 0               
- -1            | isolation2test | t_copy_d    | COPY TO              | PIPE    | 0               | 0           | 0                | 0               
- 0             | isolation2test | t_copy_d    | COPY TO              | PIPE    | 8               | 0           | 2                | 0               
- 1             | isolation2test | t_copy_d    | COPY TO              | PIPE    | 10              | 0           | 2                | 0               
- 2             | isolation2test | t_copy_d    | COPY TO              | PIPE    | 8               | 0           | 2                | 0               
- -1            | isolation2test | t_copy_d    | COPY TO              | PIPE    | 0               | 0           | 0                | 0               
- 0             | isolation2test | t_copy_d    | COPY TO              | PIPE    | 8               | 0           | 2                | 0               
- 1             | isolation2test | t_copy_d    | COPY TO              | PIPE    | 10              | 0           | 2                | 0               
- 2             | isolation2test | t_copy_d    | COPY TO              | PIPE    | 8               | 0           | 2                | 0               
- -1            | isolation2test | t_copy_d    | COPY TO ON SEGMENT   |         | 0               | 0           | 0                | 0               
- 0             | isolation2test | t_copy_d    | COPY TO ON SEGMENT   | FILE    | 8               | 0           | 2                | 0               
- 1             | isolation2test | t_copy_d    | COPY TO ON SEGMENT   | FILE    | 10              | 0           | 2                | 0               
- 2             | isolation2test | t_copy_d    | COPY TO ON SEGMENT   | FILE    | 8               | 0           | 2                | 0               
- -1            | isolation2test | t_copy_d    | COPY TO ON SEGMENT   |         | 0               | 0           | 0                | 0               
- 0             | isolation2test | t_copy_d    | COPY TO ON SEGMENT   | FILE    | 8               | 0           | 2                | 0               
- 1             | isolation2test | t_copy_d    | COPY TO ON SEGMENT   | FILE    | 10              | 0           | 2                | 0               
- 2             | isolation2test | t_copy_d    | COPY TO ON SEGMENT   | FILE    | 8               | 0           | 2                | 0               
- -1            | isolation2test | t_copy_d    | COPY FROM            | PROGRAM | 54              | 0           | 0                | 0               
- 0             | isolation2test | t_copy_d    | COPY FROM            | PIPE    | 0               | 0           | 2                | 0               
- 1             | isolation2test | t_copy_d    | COPY FROM            | PIPE    | 0               | 0           | 2                | 0               
- 2             | isolation2test | t_copy_d    | COPY FROM            | PIPE    | 0               | 0           | 2                | 0               
- -1            | isolation2test | t_copy_d    | COPY FROM            | PROGRAM | 54              | 0           | 0                | 0               
- 0             | isolation2test | t_copy_d    | COPY FROM            | PIPE    | 0               | 0           | 2                | 0               
- 1             | isolation2test | t_copy_d    | COPY FROM            | PIPE    | 0               | 0           | 2                | 0               
- 2             | isolation2test | t_copy_d    | COPY FROM            | PIPE    | 0               | 0           | 2                | 0               
- -1            | isolation2test | t_copy_d    | COPY FROM ON SEGMENT |         | 0               | 0           | 0                | 0               
- 0             | isolation2test | t_copy_d    | COPY FROM ON SEGMENT | FILE    | 20              | 20          | 2                | 0               
- 1             | isolation2test | t_copy_d    | COPY FROM ON SEGMENT | FILE    | 10              | 10          | 2                | 0               
- 2             | isolation2test | t_copy_d    | COPY FROM ON SEGMENT | FILE    | 24              | 24          | 2                | 0               
- -1            | isolation2test | t_copy_d    | COPY FROM ON SEGMENT |         | 0               | 0           | 0                | 0               
- 0             | isolation2test | t_copy_d    | COPY FROM ON SEGMENT | FILE    | 20              | 20          | 2                | 0               
- 1             | isolation2test | t_copy_d    | COPY FROM ON SEGMENT | FILE    | 10              | 10          | 2                | 0               
- 2             | isolation2test | t_copy_d    | COPY FROM ON SEGMENT | FILE    | 24              | 24          | 2                | 0               
-(56 rows)
+ gp_segment_id | datname        | relid          | command              | type    | bytes_processed | bytes_total | tuples_processed | tuples_excluded 
+---------------+----------------+----------------+----------------------+---------+-----------------+-------------+------------------+-----------------
+ -1            | isolation2test | t_copy_repl    | COPY TO ON SEGMENT   |         | 0               | 0           | 0                | 0               
+ 0             | isolation2test | t_copy_repl    | COPY TO ON SEGMENT   | FILE    | 8               | 0           | 2                | 0               
+ 1             | isolation2test | t_copy_repl    | COPY TO ON SEGMENT   | FILE    | 8               | 0           | 2                | 0               
+ 2             | isolation2test | t_copy_repl    | COPY TO ON SEGMENT   | FILE    | 8               | 0           | 2                | 0               
+ -1            | isolation2test | t_copy_repl    | COPY TO ON SEGMENT   |         | 0               | 0           | 0                | 0               
+ 0             | isolation2test | t_copy_repl    | COPY TO ON SEGMENT   | FILE    | 8               | 0           | 2                | 0               
+ 1             | isolation2test | t_copy_repl    | COPY TO ON SEGMENT   | FILE    | 8               | 0           | 2                | 0               
+ 2             | isolation2test | t_copy_repl    | COPY TO ON SEGMENT   | FILE    | 8               | 0           | 2                | 0               
+ -1            | isolation2test | t_copy_repl    | COPY FROM            | PROGRAM | 12              | 0           | 0                | 0               
+ 0             | isolation2test | t_copy_repl    | COPY FROM            | PIPE    | 0               | 0           | 2                | 0               
+ 1             | isolation2test | t_copy_repl    | COPY FROM            | PIPE    | 0               | 0           | 2                | 0               
+ 2             | isolation2test | t_copy_repl    | COPY FROM            | PIPE    | 0               | 0           | 2                | 0               
+ -1            | isolation2test | t_copy_repl    | COPY FROM            | PROGRAM | 12              | 0           | 0                | 0               
+ 0             | isolation2test | t_copy_repl    | COPY FROM            | PIPE    | 0               | 0           | 2                | 0               
+ 1             | isolation2test | t_copy_repl    | COPY FROM            | PIPE    | 0               | 0           | 2                | 0               
+ 2             | isolation2test | t_copy_repl    | COPY FROM            | PIPE    | 0               | 0           | 2                | 0               
+ -1            | isolation2test | t_copy_repl    | COPY FROM ON SEGMENT |         | 0               | 0           | 0                | 0               
+ 0             | isolation2test | t_copy_repl    | COPY FROM ON SEGMENT | FILE    | 12              | 12          | 2                | 0               
+ 1             | isolation2test | t_copy_repl    | COPY FROM ON SEGMENT | FILE    | 12              | 12          | 2                | 0               
+ 2             | isolation2test | t_copy_repl    | COPY FROM ON SEGMENT | FILE    | 12              | 12          | 2                | 0               
+ -1            | isolation2test | t_copy_repl    | COPY FROM ON SEGMENT |         | 0               | 0           | 0                | 0               
+ 0             | isolation2test | t_copy_repl    | COPY FROM ON SEGMENT | FILE    | 12              | 12          | 2                | 0               
+ 1             | isolation2test | t_copy_repl    | COPY FROM ON SEGMENT | FILE    | 12              | 12          | 2                | 0               
+ 2             | isolation2test | t_copy_repl    | COPY FROM ON SEGMENT | FILE    | 12              | 12          | 2                | 0               
+ -1            | isolation2test | t_copy_d       | COPY TO              | PIPE    | 0               | 0           | 0                | 0               
+ 0             | isolation2test | t_copy_d       | COPY TO              | PIPE    | 8               | 0           | 2                | 0               
+ 1             | isolation2test | t_copy_d       | COPY TO              | PIPE    | 10              | 0           | 2                | 0               
+ 2             | isolation2test | t_copy_d       | COPY TO              | PIPE    | 8               | 0           | 2                | 0               
+ -1            | isolation2test | t_copy_d       | COPY TO              | PIPE    | 0               | 0           | 0                | 0               
+ 0             | isolation2test | t_copy_d       | COPY TO              | PIPE    | 8               | 0           | 2                | 0               
+ 1             | isolation2test | t_copy_d       | COPY TO              | PIPE    | 10              | 0           | 2                | 0               
+ 2             | isolation2test | t_copy_d       | COPY TO              | PIPE    | 8               | 0           | 2                | 0               
+ -1            | isolation2test | t_copy_d       | COPY TO ON SEGMENT   |         | 0               | 0           | 0                | 0               
+ 0             | isolation2test | t_copy_d       | COPY TO ON SEGMENT   | FILE    | 8               | 0           | 2                | 0               
+ 1             | isolation2test | t_copy_d       | COPY TO ON SEGMENT   | FILE    | 10              | 0           | 2                | 0               
+ 2             | isolation2test | t_copy_d       | COPY TO ON SEGMENT   | FILE    | 8               | 0           | 2                | 0               
+ -1            | isolation2test | t_copy_d       | COPY TO ON SEGMENT   |         | 0               | 0           | 0                | 0               
+ 0             | isolation2test | t_copy_d       | COPY TO ON SEGMENT   | FILE    | 8               | 0           | 2                | 0               
+ 1             | isolation2test | t_copy_d       | COPY TO ON SEGMENT   | FILE    | 10              | 0           | 2                | 0               
+ 2             | isolation2test | t_copy_d       | COPY TO ON SEGMENT   | FILE    | 8               | 0           | 2                | 0               
+ -1            | isolation2test | t_copy_d       | COPY FROM            | PROGRAM | 54              | 0           | 0                | 0               
+ 0             | isolation2test | t_copy_d       | COPY FROM            | PIPE    | 0               | 0           | 2                | 0               
+ 1             | isolation2test | t_copy_d       | COPY FROM            | PIPE    | 0               | 0           | 2                | 0               
+ 2             | isolation2test | t_copy_d       | COPY FROM            | PIPE    | 0               | 0           | 2                | 0               
+ -1            | isolation2test | t_copy_d       | COPY FROM            | PROGRAM | 54              | 0           | 0                | 0               
+ 0             | isolation2test | t_copy_d       | COPY FROM            | PIPE    | 0               | 0           | 2                | 0               
+ 1             | isolation2test | t_copy_d       | COPY FROM            | PIPE    | 0               | 0           | 2                | 0               
+ 2             | isolation2test | t_copy_d       | COPY FROM            | PIPE    | 0               | 0           | 2                | 0               
+ -1            | isolation2test | t_copy_d       | COPY FROM ON SEGMENT |         | 0               | 0           | 0                | 0               
+ 0             | isolation2test | t_copy_d       | COPY FROM ON SEGMENT | FILE    | 20              | 20          | 2                | 0               
+ 1             | isolation2test | t_copy_d       | COPY FROM ON SEGMENT | FILE    | 10              | 10          | 2                | 0               
+ 2             | isolation2test | t_copy_d       | COPY FROM ON SEGMENT | FILE    | 24              | 24          | 2                | 0               
+ -1            | isolation2test | t_copy_d       | COPY FROM ON SEGMENT |         | 0               | 0           | 0                | 0               
+ 0             | isolation2test | t_copy_d       | COPY FROM ON SEGMENT | FILE    | 20              | 20          | 2                | 0               
+ 1             | isolation2test | t_copy_d       | COPY FROM ON SEGMENT | FILE    | 10              | 10          | 2                | 0               
+ 2             | isolation2test | t_copy_d       | COPY FROM ON SEGMENT | FILE    | 24              | 24          | 2                | 0               
+ -1            | isolation2test | t_copy_partial | COPY TO ON SEGMENT   |         | 0               | 0           | 0                | 0               
+ 1             | isolation2test | t_copy_partial | COPY TO ON SEGMENT   | PROGRAM | 10              | 0           | 2                | 0               
+ 2             | isolation2test | t_copy_partial | COPY TO ON SEGMENT   | PROGRAM | 8               | 0           | 2                | 0               
+(59 rows)
 
 SELECT ac.gp_segment_id = -1 as has_coordinator_pid, gspcs.datname, gspcs.relid::regclass, gspcs.command, gspcs."type", gspcs.bytes_processed, gspcs.bytes_total, gspcs.tuples_processed, gspcs.tuples_excluded FROM gp_stat_progress_copy_summary gspcs JOIN gp_stat_activity ac USING (pid) ORDER BY ac.sess_id;
- has_coordinator_pid | datname        | relid       | command              | type    | bytes_processed | bytes_total | tuples_processed | tuples_excluded 
----------------------+----------------+-------------+----------------------+---------+-----------------+-------------+------------------+-----------------
- t                   | isolation2test | t_copy_repl | COPY TO ON SEGMENT   | FILE    | 24              | 0           | 6                | 0               
- t                   | isolation2test | t_copy_repl | COPY TO ON SEGMENT   | FILE    | 24              | 0           | 6                | 0               
- t                   | isolation2test | t_copy_repl | COPY FROM            | PROGRAM | 4               | 0           | 2                | 0               
- t                   | isolation2test | t_copy_repl | COPY FROM            | PROGRAM | 4               | 0           | 2                | 0               
- t                   | isolation2test | t_copy_repl | COPY FROM ON SEGMENT | FILE    | 36              | 36          | 6                | 0               
- t                   | isolation2test | t_copy_repl | COPY FROM ON SEGMENT | FILE    | 36              | 36          | 6                | 0               
- t                   | isolation2test | t_copy_d    | COPY TO              | PIPE    | 26              | 0           | 6                | 0               
- t                   | isolation2test | t_copy_d    | COPY TO              | PIPE    | 26              | 0           | 6                | 0               
- t                   | isolation2test | t_copy_d    | COPY TO ON SEGMENT   | FILE    | 26              | 0           | 6                | 0               
- t                   | isolation2test | t_copy_d    | COPY TO ON SEGMENT   | FILE    | 26              | 0           | 6                | 0               
- t                   | isolation2test | t_copy_d    | COPY FROM            | PROGRAM | 54              | 0           | 6                | 0               
- t                   | isolation2test | t_copy_d    | COPY FROM            | PROGRAM | 54              | 0           | 6                | 0               
- t                   | isolation2test | t_copy_d    | COPY FROM ON SEGMENT | FILE    | 54              | 54          | 6                | 0               
- t                   | isolation2test | t_copy_d    | COPY FROM ON SEGMENT | FILE    | 54              | 54          | 6                | 0               
-(14 rows)
+ has_coordinator_pid | datname        | relid          | command              | type    | bytes_processed | bytes_total | tuples_processed | tuples_excluded 
+---------------------+----------------+----------------+----------------------+---------+-----------------+-------------+------------------+-----------------
+ t                   | isolation2test | t_copy_repl    | COPY TO ON SEGMENT   | FILE    | 24              | 0           | 6                | 0               
+ t                   | isolation2test | t_copy_repl    | COPY TO ON SEGMENT   | FILE    | 24              | 0           | 6                | 0               
+ t                   | isolation2test | t_copy_repl    | COPY FROM            | PROGRAM | 4               | 0           | 2                | 0               
+ t                   | isolation2test | t_copy_repl    | COPY FROM            | PROGRAM | 4               | 0           | 2                | 0               
+ t                   | isolation2test | t_copy_repl    | COPY FROM ON SEGMENT | FILE    | 36              | 36          | 6                | 0               
+ t                   | isolation2test | t_copy_repl    | COPY FROM ON SEGMENT | FILE    | 36              | 36          | 6                | 0               
+ t                   | isolation2test | t_copy_d       | COPY TO              | PIPE    | 26              | 0           | 6                | 0               
+ t                   | isolation2test | t_copy_d       | COPY TO              | PIPE    | 26              | 0           | 6                | 0               
+ t                   | isolation2test | t_copy_d       | COPY TO ON SEGMENT   | FILE    | 26              | 0           | 6                | 0               
+ t                   | isolation2test | t_copy_d       | COPY TO ON SEGMENT   | FILE    | 26              | 0           | 6                | 0               
+ t                   | isolation2test | t_copy_d       | COPY FROM            | PROGRAM | 54              | 0           | 6                | 0               
+ t                   | isolation2test | t_copy_d       | COPY FROM            | PROGRAM | 54              | 0           | 6                | 0               
+ t                   | isolation2test | t_copy_d       | COPY FROM ON SEGMENT | FILE    | 54              | 54          | 6                | 0               
+ t                   | isolation2test | t_copy_d       | COPY FROM ON SEGMENT | FILE    | 54              | 54          | 6                | 0               
+ t                   | isolation2test | t_copy_partial | COPY TO ON SEGMENT   | PROGRAM | 18              | 0           | 4                | 0               
+(15 rows)
 
 SELECT gp_inject_fault('copy_processed_two_tuples', 'reset', dbid) FROM gp_segment_configuration WHERE content > -1 AND role = 'p';
  gp_inject_fault 
@@ -173,6 +186,8 @@ COPY 12
 COPY 12
 14<:  <... completed>
 COPY 12
+15<:  <... completed>
+COPY 62
 
 -- Test COPY TO STDOUT
 -- We need to run this test separately because the COPY TO with replicated table
@@ -226,4 +241,6 @@ SELECT gp_inject_fault('copy_processed_two_tuples', 'reset', dbid) FROM gp_segme
 DROP TABLE t_copy_repl;
 DROP TABLE
 DROP TABLE t_copy_d;
+DROP TABLE
+DROP TABLE t_copy_partial;
 DROP TABLE

@@ -8,6 +8,10 @@ COPY t_copy_repl TO '/tmp/t_copy_relp<SEGID>' ON SEGMENT;
 CREATE TABLE t_copy_d (a INT, b INT);
 INSERT INTO t_copy_d select i, i from generate_series(1, 12) i;
 COPY t_copy_d TO '/tmp/t_copy_d<SEGID>' ON SEGMENT;
+-- setup DISTRIBUTED table with no data on segment 0
+CREATE TABLE t_copy_partial (a INT, b INT);
+INSERT INTO t_copy_partial SELECT i, i FROM generate_series(1, 100) i;
+DELETE FROM t_copy_partial WHERE gp_segment_id = 0;
 
 -- Suspend copy after processed 2 tuples on each segment (3 segments)
 select gp_inject_fault_infinite('copy_processed_two_tuples', 'suspend', dbid) FROM gp_segment_configuration WHERE content > -1 AND role = 'p';
@@ -36,6 +40,8 @@ select gp_inject_fault_infinite('copy_processed_two_tuples', 'suspend', dbid) FR
 -- session 13 & 14: Distributed table COPY FROM FILE ON SEGMENT
 13&: COPY t_copy_d FROM '/tmp/t_copy_d<SEGID>' ON SEGMENT;
 14&: COPY t_copy_d FROM '/tmp/t_copy_d<SEGID>' ON SEGMENT;
+-- session 15: Distributed table (no data on seg 0) COPY TO PROGRAM ON SEGMENT
+15&: COPY t_copy_partial TO PROGRAM 'cat > /tmp/t_copy_partial<SEGID>.txt' ON SEGMENT;
 
 SELECT gp_wait_until_triggered_fault('copy_processed_two_tuples', 1, dbid) FROM gp_segment_configuration WHERE content > -1 AND role = 'p';
 
@@ -83,6 +89,7 @@ SELECT gp_inject_fault('copy_processed_two_tuples', 'reset', dbid) FROM gp_segme
 12<:
 13<:
 14<:
+15<:
 
 -- Test COPY TO STDOUT
 -- We need to run this test separately because the COPY TO with replicated table
@@ -109,3 +116,4 @@ SELECT gp_inject_fault('copy_processed_two_tuples', 'reset', dbid) FROM gp_segme
 -- teardown
 DROP TABLE t_copy_repl;
 DROP TABLE t_copy_d;
+DROP TABLE t_copy_partial;
