@@ -491,7 +491,7 @@ GROUP BY a.datid, a.datname, a.relid, a.index_relid, a.command, a.phase, d.polic
 
 CREATE OR REPLACE VIEW gp_stat_progress_copy_summary AS
 SELECT
-    max(coalesce(ac1.pid, 0)) AS pid, -- coordinator's pid
+    max(gspc.pid) FILTER (WHERE gspc.gp_segment_id = -1) AS pid, -- coordinator's pid
     gspc.datid,
     gspc.datname,
     gspc.relid,
@@ -500,36 +500,41 @@ SELECT
     -- Coordinator's type is not available for COPY ON SEGMENT
     -- Segment's type is always PIPE for regular COPY regardless of the actually type,
     -- so need to use coordinator's type for regular COPY.
-    max(coalesce(gspc1."type", gspc2."type")) AS "type",
+    max(gspc."type") FILTER (WHERE gspc.gp_segment_id = -1 OR gspc.gp_segment_id = 0) AS "type",
     -- Always use sum values for COPY ON SEGMENT
     -- Use average values for replicated tables unless it is COPY TO.
     -- COPY TO for replicated tables is always executed on segment 0 only, so use sum values.
     CASE
-        WHEN policytype <> 'r' THEN sum(gspc.bytes_processed)
-        WHEN gspc.command LIKE '%ON SEGMENT' THEN sum(gspc.bytes_processed)
-        WHEN (gspc.command = 'COPY TO' AND d.policytype = 'r') THEN sum(gspc.bytes_processed)
-        ELSE (sum(gspc.bytes_processed)/numsegments)::bigint END bytes_processed,
+        WHEN d.policytype <> 'r' THEN sum(coalesce(gspc.bytes_processed, 0))
+        WHEN gspc.command LIKE '%ON SEGMENT' THEN sum(coalesce(gspc.bytes_processed, 0))
+        WHEN gspc.command = 'COPY TO' AND d.policytype = 'r' THEN sum(coalesce(gspc.bytes_processed, 0))
+        WHEN d.numsegments > 0 THEN (sum(coalesce(gspc.bytes_processed, 0)) / d.numsegments)::bigint
+        ELSE sum(coalesce(gspc.bytes_processed, 0))
+    END AS bytes_processed,
     CASE
-        WHEN policytype <> 'r' THEN sum(gspc.bytes_total)
-        WHEN gspc.command LIKE '%ON SEGMENT' THEN sum(gspc.bytes_total)
-        WHEN (gspc.command = 'COPY TO' AND d.policytype = 'r') THEN sum(gspc.bytes_total)
-        ELSE (sum(gspc.bytes_total)/numsegments)::bigint END bytes_total,
+        WHEN d.policytype <> 'r' THEN sum(coalesce(gspc.bytes_total, 0))
+        WHEN gspc.command LIKE '%ON SEGMENT' THEN sum(coalesce(gspc.bytes_total, 0))
+        WHEN gspc.command = 'COPY TO' AND d.policytype = 'r' THEN sum(coalesce(gspc.bytes_total, 0))
+        WHEN d.numsegments > 0 THEN (sum(coalesce(gspc.bytes_total, 0)) / d.numsegments)::bigint
+        ELSE sum(coalesce(gspc.bytes_total, 0))
+    END AS bytes_total,
     CASE
-        WHEN policytype <> 'r' THEN sum(gspc.tuples_processed)
-        WHEN gspc.command LIKE '%ON SEGMENT' THEN sum(gspc.tuples_processed)
-        WHEN (gspc.command = 'COPY TO' AND d.policytype = 'r') THEN sum(gspc.tuples_processed)
-        ELSE (sum(gspc.tuples_processed)/numsegments)::bigint END tuples_processed,
+        WHEN d.policytype <> 'r' THEN sum(coalesce(gspc.tuples_processed, 0))
+        WHEN gspc.command LIKE '%ON SEGMENT' THEN sum(coalesce(gspc.tuples_processed, 0))
+        WHEN gspc.command = 'COPY TO' AND d.policytype = 'r' THEN sum(coalesce(gspc.tuples_processed, 0))
+        WHEN d.numsegments > 0 THEN (sum(coalesce(gspc.tuples_processed, 0)) / d.numsegments)::bigint
+        ELSE sum(coalesce(gspc.tuples_processed, 0))
+    END AS tuples_processed,
     CASE
-        WHEN policytype <> 'r' THEN sum(gspc.tuples_excluded)
-        WHEN gspc.command LIKE '%ON SEGMENT' THEN sum(gspc.tuples_excluded)
-        WHEN (gspc.command = 'COPY TO' AND d.policytype = 'r') THEN sum(gspc.tuples_excluded)
-        ELSE (sum(gspc.tuples_excluded)/numsegments)::bigint END tuples_excluded
+        WHEN d.policytype <> 'r' THEN sum(coalesce(gspc.tuples_excluded, 0))
+        WHEN gspc.command LIKE '%ON SEGMENT' THEN sum(coalesce(gspc.tuples_excluded, 0))
+        WHEN gspc.command = 'COPY TO' AND d.policytype = 'r' THEN sum(coalesce(gspc.tuples_excluded, 0))
+        WHEN d.numsegments > 0 THEN (sum(coalesce(gspc.tuples_excluded, 0)) / d.numsegments)::bigint
+        ELSE sum(coalesce(gspc.tuples_excluded, 0))
+    END AS tuples_excluded
 FROM gp_stat_progress_copy gspc
     JOIN gp_stat_activity ac ON gspc.pid = ac.pid
-    LEFT JOIN gp_stat_activity ac1 ON gspc.pid = ac1.pid AND ac1.gp_segment_id = -1
     LEFT JOIN gp_distribution_policy d ON gspc.relid = d.localoid
-    LEFT JOIN gp_stat_progress_copy gspc1 ON gspc.pid = gspc1.pid AND gspc1.gp_segment_id = -1
-    LEFT JOIN gp_stat_progress_copy gspc2 ON gspc.pid = gspc2.pid AND gspc2.gp_segment_id = 0
 GROUP BY gspc.datid, gspc.datname, gspc.relid, gspc.command, ac.sess_id, d.policytype, d.numsegments;
 
 CREATE OR REPLACE VIEW gp_stat_progress_basebackup_summary AS
