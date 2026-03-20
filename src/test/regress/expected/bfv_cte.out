@@ -853,17 +853,17 @@ ALTER TABLE t1 DROP COLUMN a;
 EXPLAIN SELECT * FROM v_test;
                                                    QUERY PLAN                                                   
 ----------------------------------------------------------------------------------------------------------------
- Gather Motion 3:1  (slice1; segments: 3)  (cost=3020.06..3954.24 rows=86 width=8)
-   ->  Subquery Scan on x  (cost=3020.06..3952.81 rows=29 width=8)
+ Gather Motion 3:1  (slice1; segments: 3)  (cost=2716.92..3562.14 rows=78 width=8)
+   ->  Subquery Scan on x  (cost=2716.92..3560.84 rows=26 width=8)
          Filter: (x.rk = 1)
-         ->  WindowAgg  (cost=3020.06..3594.06 rows=28700 width=16)
+         ->  WindowAgg  (cost=2716.92..3236.26 rows=25967 width=16)
                Partition By: t2.c
                Order By: t2.e
-               ->  Sort  (cost=3020.06..3091.81 rows=28700 width=8)
+               ->  Sort  (cost=2716.92..2781.84 rows=25967 width=8)
                      Sort Key: t2.c, t2.e DESC
-                     ->  Redistribute Motion 3:3  (slice2; segments: 3)  (cost=0.00..895.00 rows=28700 width=8)
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)  (cost=0.00..813.00 rows=25967 width=8)
                            Hash Key: t2.c
-                           ->  Seq Scan on t2  (cost=0.00..321.00 rows=28700 width=8)
+                           ->  Seq Scan on t2  (cost=0.00..293.67 rows=25967 width=8)
  Optimizer: Postgres-based planner
 (12 rows)
 
