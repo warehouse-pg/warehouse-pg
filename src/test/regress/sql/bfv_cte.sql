@@ -477,21 +477,32 @@ CREATE TABLE t2 (
 -- Create view with an unused CTE (unused_cte) that references t2
 -- Final SELECT only uses used_cte
 CREATE OR REPLACE VIEW v_test AS
-WITH used_cte AS (
+WITH unused_cte1 AS (
+  -- This CTE is not used in the final SELECT, but references t1
+  SELECT t1.b FROM t1
+),
+used_cte AS (
   SELECT x.c, x.e
   FROM (SELECT rank() OVER (PARTITION BY c ORDER BY e DESC) AS rk, c, e FROM t2) x
   WHERE x.rk = 1
 ),
-unused_cte AS (
+unused_cte2 AS (
   -- This CTE is not used in the final SELECT, but references t2
   SELECT t2.c, t2.e
   FROM t2
   LEFT JOIN used_cte ON t2.c = used_cte.c
-  JOIN t1 ON 1 = 1
+  JOIN t1 ON TRUE
 )
 SELECT * FROM used_cte;
 
 -- Verify view works normally
+EXPLAIN SELECT * FROM v_test;
+
+-- Drop t1.a column (not directly referenced by view, so DROP succeeds)
+ALTER TABLE t1 DROP COLUMN a;
+
+-- Query view again - ORCA should not fallback to Postgres planner
+-- Original Error: Query-to-DXL Translation: No variable entry found due to incorrect normalization of query
 EXPLAIN SELECT * FROM v_test;
 
 -- Drop t2.d column (not directly referenced by view, so DROP succeeds)
@@ -499,23 +510,6 @@ ALTER TABLE t2 DROP COLUMN d;
 
 -- Query view again - ORCA should not fallback to Postgres planner
 -- Original Error: Query-to-DXL Translation: No variable entry found due to incorrect normalization of query
-EXPLAIN SELECT * FROM v_test;
-
--- Rebuild view to restore normal operation
-CREATE OR REPLACE VIEW v_test AS
-WITH used_cte AS (
-  SELECT x.c, x.e
-  FROM (SELECT rank() OVER (PARTITION BY c ORDER BY e DESC) AS rk, c, e FROM t2) x
-  WHERE x.rk = 1
-),
-unused_cte AS (
-  SELECT t2.c, t2.e
-  FROM t2
-  LEFT JOIN used_cte ON t2.c = used_cte.c
-  JOIN t1 ON 1 = 1
-)
-SELECT * FROM used_cte;
-
 EXPLAIN SELECT * FROM v_test;
 
 -- Cleanup
