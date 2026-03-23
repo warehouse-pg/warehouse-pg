@@ -49,10 +49,20 @@ on:
         type: boolean
   push:
     branches:
-      - '**'
+      - main
+      - 'WHPG_*_STABLE'
+      - 'ci/**'           # Opt-in CI for feature branches (e.g., ci/my-feature)
   pull_request:
     branches:
-      - '**'
+      - main
+      - 'WHPG_*_STABLE'
+
+# Cancel in-progress runs when new commits are pushed to the same branch
+# Exception: main and stable branch runs are never cancelled to ensure every merge is validated
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/WHPG_') }}
+
 jobs:
   detect-config:
     name: detect-config
@@ -91,10 +101,10 @@ jobs:
       image: ghcr.io/warehouse-pg/whpg${{ needs.detect-config.outputs.whpg_major }}-${{ format('rocky{0}', matrix.el_version) }}-build
       options: --privileged
     env:
-      WHPG_MAJOR: ${{ needs.detect-config.outputs.whpg_major }}
+      WHPG_MAJORVERSION: ${{ needs.detect-config.outputs.whpg_major }}
       EL_VERSION: ${{ matrix.el_version }}
       TEST_TARGET: ${{ needs.detect-config.outputs.installcheck_target }}
-      GPDB_SRC: ${{ github.workspace }}
+      WHPG_SRC: ${{ github.workspace }}
       RESULTS_DIR: /tmp/test-results
 
     steps:
@@ -104,32 +114,54 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      - name: Container info
+        run: |
+          echo "OS: $(cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"')"
+          echo "Arch: $(uname -m)"
+          echo "GCC: $(gcc --version | head -1)"
+
+      - name: Setup ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-el${{ matrix.el_version }}-whpg${{ env.WHPG_MAJORVERSION }}-${{ github.sha }}
+          restore-keys: |
+            ccache-el${{ matrix.el_version }}-whpg${{ env.WHPG_MAJORVERSION }}-
+
+      - name: Cache yum packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/dnf
+          key: yum-el${{ matrix.el_version }}-${{ hashFiles('.github/workflows/whpg-ci.yml') }}
+
       - name: Install required packages
         run: |
-          # Base packages aligned with SPEC file
-          INSTALL_PKGS="apr-devel autoconf automake bison bzip2-devel flex gcc gcc-c++ iproute \
-            iputils krb5-devel less libcurl-devel libevent-devel libuuid-devel libuv-devel \
-            libxml2-devel libyaml-devel libzstd-devel make net-tools openldap-devel openssh \
-            openssl-devel pam-devel perl perl-Env perl-ExtUtils-Embed perl-IPC-Run perl-Test-Simple \
-            perl-devel pkgconfig readline-devel rsync sed tar wget which zip zlib-devel libicu-devel \
-            netcat openssl glibc-langpack-en procps lsof krb5-server krb5-workstation llvm-devel clang-devel"
+          # Only install packages NOT already in the container image (see dockerfiles/Dockerfile.rh8)
+          # Most build dependencies are pre-installed in the container
+          INSTALL_PKGS="llvm-devel clang-devel krb5-server krb5-workstation lsof ccache"
 
-          yum install -y $INSTALL_PKGS
+          yum install -y --setopt=keepcache=1 $INSTALL_PKGS
 
-          if [[ "${WHPG_MAJOR}" == "6" ]]; then
-            yum install -y python2-devel
+          if [[ "${WHPG_MAJORVERSION}" == "6" ]]; then
+            yum install -y --setopt=keepcache=1 python2-devel
           else
-            yum install -y xerces-c-devel python3-devel python3-psutil python3-pyyaml python3-psycopg2 python3-lxml python3-pytest
+            # python3-psycopg2 not in container image
+            yum install -y --setopt=keepcache=1 python3-psycopg2
             ln -sf /usr/bin/pytest-3 /usr/bin/pytest || true
           fi
 
-          if ! command -v passwd &>/dev/null; then
-            yum install -y passwd
-          fi
+      - name: Configure ccache
+        run: |
+          ccache --set-config=max_size=1G
+          ccache --set-config=compression=true
+          ccache --zero-stats
 
+      # Note: --with-quicklz, --enable-mapreduce, and --with-pythonsrc-ext are recognized
+      # only in whpg6. They produce "unrecognized options" warnings in whpg7 but don't
+      # fail the build. Kept for compatibility with both versions using a single workflow.
       - name: Configure
         run: |
-          CC='gcc -m64' \
+          CC='ccache gcc -m64' \
           CFLAGS='-O2 -g3' LDFLAGS='-Wl,--enable-new-dtags -Wl,--export-dynamic' \
           ./configure --with-quicklz --disable-gpperfmon --with-gssapi --enable-mapreduce --enable-orafce --enable-ic-proxy \
                       --enable-orca --with-libxml --with-pythonsrc-ext --with-uuid=e2fs --with-pgport=5432 --enable-tap-tests \
@@ -139,35 +171,73 @@ jobs:
                       --mandir=/usr/local/greenplum-db-devel/man
 
       - name: Build
+        id: build
         run: make -j$(nproc)
 
+      - name: Show ccache stats
+        run: ccache --show-stats
+
       - name: Install
-        run: make install
+        id: install
+        run: make install -j$(nproc)
 
       - name: Setup gpadmin user
         run: |
           # Create symlinks for easier navigation
           ln -s . gpdb_src                          # For concourse scripts compatibility
-          ln -s "${GPDB_SRC}" /workspace            # Easy to remember path
-          ln -s "${GPDB_SRC}" /home/gpadmin/gpdb_src  # Accessible from gpadmin home
+          ln -s "${WHPG_SRC}" /workspace            # Easy to remember path
+          ln -s "${WHPG_SRC}" /home/gpadmin/gpdb_src  # Accessible from gpadmin home
           chown -h gpadmin:gpadmin /workspace /home/gpadmin/gpdb_src
 
           export TEST_OS=centos
           ./concourse/scripts/setup_gpadmin_user.bash
           chown -R gpadmin:gpadmin /usr/local/greenplum-db-devel
-          chown -R gpadmin:gpadmin "${GPDB_SRC}"
+          chown -R gpadmin:gpadmin "${WHPG_SRC}"
+
+          # Setup gpadmin environment for login shells
+          cat >> /home/gpadmin/.bash_profile << 'EOF'
+          source /usr/local/greenplum-db-devel/greenplum_path.sh
+          [ -f ~/gpdb_src/gpAux/gpdemo/gpdemo-env.sh ] && source ~/gpdb_src/gpAux/gpdemo/gpdemo-env.sh
+          EOF
+          echo "export WHPG_SRC=${WHPG_SRC}" >> /home/gpadmin/.bash_profile
+          echo "export WHPG_MAJORVERSION=${WHPG_MAJORVERSION}" >> /home/gpadmin/.bash_profile
 
       - name: Create demo cluster
+        id: cluster
         run: |
           source concourse/scripts/common.bash
           export WITH_MIRRORS=false
           make_cluster
 
       - name: Run installcheck tests
+        id: tests
         run: |
           export MAKE_TEST_COMMAND="${TEST_TARGET}"
-          export GPVERSION="${WHPG_MAJOR}"
           bash .github/scripts/run-installcheck.bash
+
+      - name: Installcheck Summary
+        if: always()
+        run: |
+          echo "## Installcheck Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| WHPG Version | ${WHPG_MAJORVERSION} |" >> $GITHUB_STEP_SUMMARY
+          echo "| EL Version | ${EL_VERSION} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Test Target | ${TEST_TARGET} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Step Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Step | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Build | ${{ steps.build.outcome == 'success' && '✅ passed' || '❌ failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Install | ${{ steps.install.outcome == 'success' && '✅ passed' || steps.install.outcome == 'skipped' && '⏭️ skipped' || '❌ failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Demo Cluster | ${{ steps.cluster.outcome == 'success' && '✅ passed' || steps.cluster.outcome == 'skipped' && '⏭️ skipped' || '❌ failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tests | ${{ steps.tests.outcome == 'success' && '✅ passed' || steps.tests.outcome == 'skipped' && '⏭️ skipped' || '❌ failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ccache Statistics" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          { ccache --show-stats 2>/dev/null | grep -E "cache hit|cache miss|hit rate|files in cache|cache size|max cache size" >> $GITHUB_STEP_SUMMARY; } || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Upload test results on failure
         if: failure()
@@ -191,12 +261,13 @@ jobs:
             /home/gpadmin/gpAdminLogs/
           if-no-files-found: ignore
 
+      # action-tmate uses apt-get internally which doesn't work on Rocky Linux.
+      # Manual installation via yum is required for this container.
       - name: Install tmate
         if: ${{ failure() && inputs.debug_enabled }}
         run: |
-          # Install tmate on Rocky Linux (EPEL repo)
-          yum install -y epel-release
-          yum install -y tmate
+          yum install -y --setopt=keepcache=1 epel-release
+          yum install -y --setopt=keepcache=1 tmate
 
       - name: Setup tmate session
         if: ${{ failure() && inputs.debug_enabled }}
@@ -219,9 +290,9 @@ jobs:
       image: ghcr.io/warehouse-pg/whpg${{ needs.detect-config.outputs.whpg_major }}-${{ format('rocky{0}', matrix.el_version) }}-build
       options: --privileged
     env:
-      WHPG_MAJOR: ${{ needs.detect-config.outputs.whpg_major }}
+      WHPG_MAJORVERSION: ${{ needs.detect-config.outputs.whpg_major }}
       EL_VERSION: ${{ matrix.el_version }}
-      GPDB_SRC: ${{ github.workspace }}
+      WHPG_SRC: ${{ github.workspace }}
 
     steps:
       - name: Checkout source
@@ -229,18 +300,76 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Container info
+        run: |
+          echo "OS: $(cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"')"
+          echo "Arch: $(uname -m)"
+          echo "GCC: $(gcc --version | head -1)"
+          echo "CMake: $(cmake --version | head -1)"
+
+      - name: Setup ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-orca-el${{ matrix.el_version }}-whpg${{ env.WHPG_MAJORVERSION }}-${{ github.sha }}
+          restore-keys: |
+            ccache-orca-el${{ matrix.el_version }}-whpg${{ env.WHPG_MAJORVERSION }}-
+
+      - name: Cache yum packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/dnf
+          key: yum-orca-el${{ matrix.el_version }}-${{ hashFiles('.github/workflows/whpg-ci.yml') }}
+
       - name: Install build dependencies
         run: |
-          yum install -y cmake gcc gcc-c++ make xerces-c-devel
+          # Only ccache is not in the container image
+          # cmake, gcc, gcc-c++, make, xerces-c-devel, python3-devel are pre-installed
+          yum install -y --setopt=keepcache=1 ccache
 
-          if [[ "${WHPG_MAJOR}" == "6" ]]; then
-            yum install -y python2-devel
-          else
-            yum install -y python3-devel
+          if [[ "${WHPG_MAJORVERSION}" == "6" ]]; then
+            yum install -y --setopt=keepcache=1 python2-devel
           fi
 
+      - name: Configure ccache
+        run: |
+          ccache --set-config=max_size=500M
+          ccache --set-config=compression=true
+          ccache --zero-stats
+
       - name: Run ORCA unit tests
+        id: tests
         run: bash .github/scripts/run-orca-tests.bash
+        env:
+          # For cmake builds (ORCA)
+          CMAKE_C_COMPILER_LAUNCHER: ccache
+          CMAKE_CXX_COMPILER_LAUNCHER: ccache
+          # For autotools builds (xerces)
+          CC: ccache gcc
+          CXX: ccache g++
+
+      - name: Show ccache stats
+        run: ccache --show-stats
+
+      - name: ORCA Unit Tests Summary
+        if: always()
+        run: |
+          echo "## ORCA Unit Tests Summary 🧪" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| WHPG Version | ${WHPG_MAJORVERSION} |" >> $GITHUB_STEP_SUMMARY
+          echo "| EL Version | ${EL_VERSION} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Step Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Step | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| ORCA Unit Tests | ${{ steps.tests.outcome == 'success' && '✅ passed' || '❌ failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ccache Statistics" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          { ccache --show-stats 2>/dev/null | grep -E "cache hit|cache miss|hit rate|files in cache|cache size|max cache size" >> $GITHUB_STEP_SUMMARY; } || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Upload test results on failure
         if: failure()
@@ -253,11 +382,13 @@ jobs:
             src/backend/gporca/build*/CMakeFiles/CMakeError.log
           if-no-files-found: ignore
 
+      # action-tmate uses apt-get internally which doesn't work on Rocky Linux.
+      # Manual installation via yum is required for this container.
       - name: Install tmate
         if: ${{ failure() && inputs.debug_enabled }}
         run: |
-          yum install -y epel-release
-          yum install -y tmate
+          yum install -y --setopt=keepcache=1 epel-release
+          yum install -y --setopt=keepcache=1 tmate
 
       - name: Setup tmate session
         if: ${{ failure() && inputs.debug_enabled }}

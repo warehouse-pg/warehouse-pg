@@ -1,5 +1,7 @@
 # WHPG CI Workflows
 
+[![WHPG CI](https://github.com/warehouse-pg/warehouse-pg/actions/workflows/whpg-ci.yml/badge.svg)](https://github.com/warehouse-pg/warehouse-pg/actions/workflows/whpg-ci.yml)
+
 ## Overview
 
 This directory contains GitHub Actions workflows for the Warehouse-PG project.
@@ -14,9 +16,20 @@ Main CI workflow that runs regression tests and ORCA unit tests.
 
 | Trigger | Behavior |
 |---------|----------|
-| **Push** | Runs all tests on any branch |
-| **Pull Request** | Runs all tests on any PR |
+| **Push** | Runs on `main`, `WHPG_*_STABLE`, and `ci/**` branches |
+| **Pull Request** | Runs on PRs targeting `main` and `WHPG_*_STABLE` |
 | **Manual Dispatch** | Run specific tests with custom options |
+
+#### Testing on Feature Branches
+
+To run CI on a feature branch without opening a PR, prefix the branch name with `ci/`:
+
+```bash
+git checkout -b ci/my-feature    # CI will run on push
+git push origin ci/my-feature
+```
+
+Regular feature branches (e.g., `feature/xyz`) do not trigger CI to save resources.
 
 #### Push/PR Behavior
 
@@ -24,8 +37,55 @@ On push or PR, tests run automatically with these defaults:
 
 | Branch Type | Tests | EL Versions | Installcheck Target |
 |-------------|-------|-------------|---------------------|
-| `main` / `WHPG_*_STABLE` | All (installcheck + orca-unit-tests) | All configured | `installcheck-world` |
-| Feature branches | All (installcheck + orca-unit-tests) | Default only | `installcheck-small` |
+| `main` / `WHPG_*_STABLE` (push) | All (installcheck + orca-unit-tests) | All configured | `installcheck-world` |
+| `ci/**` (push) | All (installcheck + orca-unit-tests) | Default only | `installcheck-small` |
+| PRs targeting `main` / `WHPG_*_STABLE` | All (installcheck + orca-unit-tests) | Default only | `installcheck-small` |
+
+> **Note:** Regular feature branch pushes (e.g., `feature/xyz`) do not trigger CI. Use `ci/` prefix or open a pull request.
+
+#### Concurrency
+
+The workflow uses concurrency groups to manage parallel runs:
+
+```yaml
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/WHPG_') }}
+```
+
+| Branch | Behavior |
+|--------|----------|
+| `main` / `WHPG_*_STABLE` | All runs complete (no cancellation) |
+| PR branches | Older runs cancelled when new commits pushed |
+
+#### Caching
+
+The workflow uses multiple caches to speed up builds:
+
+**ccache (compiler cache)**
+- Cache stored per EL version and WHPG version
+- First run: full build (~30 min)
+- Subsequent runs: incremental build (~5 min)
+
+| Component | Build System | ccache |
+|-----------|--------------|--------|
+| WHPG (main) | autotools | ✅ `CC='ccache gcc'` |
+| ORCA | cmake | ✅ `CMAKE_*_LAUNCHER` |
+| xerces | autotools | ✅ `CC/CXX` |
+
+**yum packages**
+- Caches downloaded RPM packages
+- Key based on workflow file hash (invalidates when packages change)
+- Reduces package download time on subsequent runs
+
+#### Job Summary
+
+Each job generates a summary (visible in the GitHub Actions Summary tab) showing:
+- WHPG and EL versions, test target
+- Step-by-step results (✅ passed / ❌ failed / ⏭️ skipped)
+- ccache statistics (hits, misses, hit rate, cache size)
+
+Summaries run with `if: always()` so they are available even when jobs fail.
 
 #### Manual Dispatch Behavior
 
@@ -44,7 +104,15 @@ On manual dispatch, you can customize:
 |-----|-------------|---------|
 | `detect-config` | Detects WHPG version and test configuration | - |
 | `installcheck` | Runs PostgreSQL regression tests | 120 min |
-| `orca-unit-tests` | Runs ORCA optimizer unit tests | 60 min |
+| `orca-unit-tests` | Runs ORCA optimizer unit tests (see below) | 60 min |
+
+**ORCA Unit Tests Details:**
+
+The ORCA unit tests run twice with different build configurations:
+1. **RelWithDebInfo** - Release build with debug info (optimized, for performance validation)
+2. **Debug** - Debug build (unoptimized, for thorough assertion checking)
+
+This dual-build approach ensures the optimizer works correctly in both production-like and debug environments. The underlying script (`concourse/scripts/unit_tests_gporca.bash`) handles both builds automatically.
 
 #### Configuration
 
@@ -62,6 +130,8 @@ env:
 
 When `debug_enabled` is checked during manual dispatch, failed jobs will start a tmate session (30 min timeout) for interactive debugging.
 
+> **Note:** The workflow manually installs tmate via `yum` because `action-tmate` uses `apt-get` internally, which doesn't work on Rocky Linux containers.
+
 ## Scripts
 
 Supporting scripts are located in `.github/scripts/`:
@@ -72,11 +142,28 @@ Supporting scripts are located in `.github/scripts/`:
 | `run-installcheck.bash` | Runs installcheck tests with proper environment setup |
 | `run-orca-tests.bash` | Runs ORCA unit tests using concourse scripts |
 
+### Environment Setup
+
+The `installcheck` job sets up gpadmin's `.bash_profile` with:
+
+```bash
+source /usr/local/greenplum-db-devel/greenplum_path.sh
+[ -f ~/gpdb_src/gpAux/gpdemo/gpdemo-env.sh ] && source ~/gpdb_src/gpAux/gpdemo/gpdemo-env.sh
+export WHPG_SRC=...
+export WHPG_MAJORVERSION=...
+```
+
+Scripts use `su - gpadmin` (login shell) to automatically source this environment.
+
 ## Container Images
 
 Tests run in pre-built container images from `ghcr.io/warehouse-pg/`:
 
-- `whpg7-rocky8-build` - WHPG 7 on Rocky Linux 8
+| Image Pattern | Example |
+|---------------|---------|
+| `whpg{major}-rocky{el}-build` | `whpg7-rocky8-build` |
+
+The image is automatically selected based on detected WHPG version and matrix EL version.
 
 ## Version Detection
 

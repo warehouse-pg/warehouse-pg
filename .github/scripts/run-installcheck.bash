@@ -5,13 +5,13 @@
 set -eox pipefail
 
 # Required configuration (from workflow env)
-: "${GPDB_SRC:?GPDB_SRC not set}"
+: "${WHPG_SRC:?WHPG_SRC not set}"
 : "${RESULTS_DIR:?RESULTS_DIR not set}"
 : "${MAKE_TEST_COMMAND:?MAKE_TEST_COMMAND not set}"
-: "${GPVERSION:?GPVERSION not set}"
+: "${WHPG_MAJORVERSION:?WHPG_MAJORVERSION not set}"
 
 # Source common functions
-source "${GPDB_SRC}/concourse/scripts/common.bash"
+source "${WHPG_SRC}/concourse/scripts/common.bash"
 
 function setup_results_dir() {
     mkdir -p "${RESULTS_DIR}"
@@ -36,11 +36,11 @@ function look4diffs() {
     fi
 
     # Collect regression.diffs
-    diff_files=$(find "${GPDB_SRC}" -name regression.diffs 2>/dev/null || true)
+    diff_files=$(find "${WHPG_SRC}" -name regression.diffs 2>/dev/null || true)
     for diff_file in ${diff_files}; do
         if [ -f "${diff_file}" ]; then
-            # Strip GPDB_SRC prefix and convert slashes to dashes
-            diff_file_copy=$(echo "${diff_file#${GPDB_SRC}/}" | tr '/' '-')
+            # Strip WHPG_SRC prefix and convert slashes to dashes
+            diff_file_copy=$(echo "${diff_file#${WHPG_SRC}/}" | tr '/' '-')
             cp "${diff_file}" "${RESULTS_DIR}/${diff_file_copy}"
 
             cat <<-EOF
@@ -56,7 +56,7 @@ function look4diffs() {
     done
 
     # Collect coordinator configs and logs
-    local coord_dir="${GPDB_SRC}/gpAux/gpdemo/datadirs/qddir/demoDataDir-1"
+    local coord_dir="${WHPG_SRC}/gpAux/gpdemo/datadirs/qddir/demoDataDir-1"
     if [ -d "${coord_dir}" ]; then
         cp "${coord_dir}"/*.conf "${RESULTS_DIR}/" 2>/dev/null || true
         [ -d "${coord_dir}/log" ] && cp "${coord_dir}"/log/*.* "${RESULTS_DIR}/" 2>/dev/null || true
@@ -69,20 +69,17 @@ function look4diffs() {
 
 function run_installcheck() {
     local test_target="${MAKE_TEST_COMMAND}"
-    local gpversion="${GPVERSION}"
 
     echo "========================================================================"
     echo "Running installcheck: ${test_target}"
-    echo "GPVERSION: ${gpversion}"
+    echo "WHPG_MAJORVERSION: ${WHPG_MAJORVERSION}"
     echo "========================================================================"
 
     # Set up error trap
     trap look4diffs ERR
 
-    # Source environment
-    source /usr/local/greenplum-db-devel/greenplum_path.sh
-    cd "${GPDB_SRC}"
-    source gpAux/gpdemo/gpdemo-env.sh
+    # Environment sourced from ~/.bash_profile (greenplum_path.sh, gpdemo-env.sh)
+    cd "${WHPG_SRC}"
 
     # Enable core dumps
     ulimit -c unlimited
@@ -91,15 +88,15 @@ function run_installcheck() {
     # Determine which directory to run from based on target
     # installcheck-world runs from root, installcheck-small from src/test/regress
     if [[ "${test_target}" == "installcheck-world" ]]; then
-        cd "${GPDB_SRC}"
+        cd "${WHPG_SRC}"
     else
-        cd "${GPDB_SRC}/src/test/regress"
+        cd "${WHPG_SRC}/src/test/regress"
     fi
 
     # Run tests based on version
-    if [[ "${gpversion}" == 6* ]]; then
+    if [[ "${WHPG_MAJORVERSION}" == 6* ]]; then
         # WHPG 6: Test PL/Python3 first
-        make installcheck -C "${GPDB_SRC}/src/pl/plpython" python_majorversion=3 || true
+        make installcheck -C "${WHPG_SRC}/src/pl/plpython" python_majorversion=3 || true
 
         export TEST_PGFDW=1
         make -s ${test_target}
@@ -115,8 +112,8 @@ function run_installcheck() {
 
 function _main() {
     echo "MAKE_TEST_COMMAND: ${MAKE_TEST_COMMAND}"
-    echo "GPVERSION: ${GPVERSION}"
-    echo "GPDB_SRC: ${GPDB_SRC}"
+    echo "WHPG_MAJORVERSION: ${WHPG_MAJORVERSION}"
+    echo "WHPG_SRC: ${WHPG_SRC}"
 
     setup_results_dir
     run_installcheck
@@ -124,8 +121,15 @@ function _main() {
 
 # Run as gpadmin if we're root
 if [ "$(id -u)" = "0" ]; then
-    export RESULTS_DIR MAKE_TEST_COMMAND GPVERSION GPDB_SRC
-    su gpadmin -c "RESULTS_DIR='${RESULTS_DIR}' MAKE_TEST_COMMAND='${MAKE_TEST_COMMAND}' GPVERSION='${GPVERSION}' GPDB_SRC='${GPDB_SRC}' bash ${BASH_SOURCE[0]}"
+    # Get absolute path since login shell changes working directory
+    SCRIPT_PATH="$(realpath ${BASH_SOURCE[0]})"
+
+    # Runtime variables to pass (not in .bash_profile)
+    # Note: Must be on single line for su -c to parse correctly
+    ENV_VARS="RESULTS_DIR='${RESULTS_DIR}' MAKE_TEST_COMMAND='${MAKE_TEST_COMMAND}'"
+
+    # Use login shell (-) to source .bash_profile (greenplum_path.sh, gpdemo-env.sh, WHPG_SRC, WHPG_MAJORVERSION)
+    su - gpadmin -c "${ENV_VARS} bash ${SCRIPT_PATH}"
 else
     _main "$@"
 fi

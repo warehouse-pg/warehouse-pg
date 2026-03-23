@@ -5,6 +5,11 @@
     <img alt="WarehousePG" src="logo-warehousepg.png" width="350px">
 </p>
 
+<p align="center">
+    <a href="https://github.com/warehouse-pg/warehouse-pg/actions/workflows/whpg-ci.yml">
+        <img src="https://github.com/warehouse-pg/warehouse-pg/actions/workflows/whpg-ci.yml/badge.svg" alt="CI Status">
+    </a>
+</p>
 
 WarehousePG (WHPG) is an advanced, fully featured, open
 source data warehouse, based on Greenplum® Database and PostgreSQL. 
