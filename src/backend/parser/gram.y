@@ -1663,6 +1663,10 @@ OptResourceGroupElem:
 				{
 					$$ = makeDefElem("io_limit", (Node *) makeString($2), @1);
 				}
+			| NAME_P name
+				{
+					$$ = makeDefElem("name", (Node *) makeString($2), @1);
+				}
 		;
 
 /*****************************************************************************

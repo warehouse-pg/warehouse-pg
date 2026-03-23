@@ -275,6 +275,64 @@ DROP TABLE rg_test_group_table;
 DROP ROLE rg_test_role;
 DROP RESOURCE GROUP rg_test_group;
 
+-- ----------------------------------------------------------------------
+-- Test: rename a resource group
+-- ----------------------------------------------------------------------
+
+-- positive: basic rename
+CREATE RESOURCE GROUP rg_test_group WITH (cpu_max_percent=10);
+SELECT groupname FROM gp_toolkit.gp_resgroup_config WHERE groupname='rg_test_group';
+ALTER RESOURCE GROUP rg_test_group SET name rg_test_group_renamed;
+SELECT groupname FROM gp_toolkit.gp_resgroup_config WHERE groupname='rg_test_group';
+SELECT groupname FROM gp_toolkit.gp_resgroup_config WHERE groupname='rg_test_group_renamed';
+DROP RESOURCE GROUP rg_test_group_renamed;
+
+-- positive: rename and verify capabilities are preserved
+CREATE RESOURCE GROUP rg_test_group WITH (cpu_max_percent=20, concurrency=5, cpu_weight=200);
+SELECT groupname,concurrency,cpu_max_percent,cpu_weight FROM gp_toolkit.gp_resgroup_config WHERE groupname='rg_test_group';
+ALTER RESOURCE GROUP rg_test_group SET name rg_new_name;
+SELECT groupname,concurrency,cpu_max_percent,cpu_weight FROM gp_toolkit.gp_resgroup_config WHERE groupname='rg_new_name';
+DROP RESOURCE GROUP rg_new_name;
+
+-- positive: rename and verify role assignment still works
+CREATE RESOURCE GROUP rg_test_group WITH (cpu_max_percent=10);
+CREATE ROLE rg_test_role RESOURCE GROUP rg_test_group;
+SELECT rolname, groupname FROM pg_roles, gp_toolkit.gp_resgroup_config
+WHERE pg_roles.rolresgroup = gp_toolkit.gp_resgroup_config.groupid
+  AND rolname = 'rg_test_role';
+ALTER RESOURCE GROUP rg_test_group SET name rg_renamed_group;
+-- role should still be associated with the renamed group
+SELECT rolname, groupname FROM pg_roles, gp_toolkit.gp_resgroup_config
+WHERE pg_roles.rolresgroup = gp_toolkit.gp_resgroup_config.groupid
+  AND rolname = 'rg_test_role';
+DROP ROLE rg_test_role;
+DROP RESOURCE GROUP rg_renamed_group;
+
+-- negative: rename to an existing resource group name
+CREATE RESOURCE GROUP rg_test_group1 WITH (cpu_max_percent=10);
+CREATE RESOURCE GROUP rg_test_group2 WITH (cpu_max_percent=10);
+ALTER RESOURCE GROUP rg_test_group1 SET name rg_test_group2;
+DROP RESOURCE GROUP rg_test_group1;
+DROP RESOURCE GROUP rg_test_group2;
+
+-- negative: rename to reserved name 'none'
+CREATE RESOURCE GROUP rg_test_group WITH (cpu_max_percent=10);
+ALTER RESOURCE GROUP rg_test_group SET name none;
+DROP RESOURCE GROUP rg_test_group;
+
+-- negative: rename default resource groups
+ALTER RESOURCE GROUP default_group SET name new_default_group;
+ALTER RESOURCE GROUP admin_group SET name new_admin_group;
+ALTER RESOURCE GROUP system_group SET name new_system_group;
+
+-- negative: rename non-existent resource group
+ALTER RESOURCE GROUP non_existent_group SET name new_name;
+
+-- negative: rename to the same name (should still check conflict)
+CREATE RESOURCE GROUP rg_test_group WITH (cpu_max_percent=10);
+ALTER RESOURCE GROUP rg_test_group SET name rg_test_group;
+DROP RESOURCE GROUP rg_test_group;
+
 -- test set cpu_max_percent to high value when gp_resource_group_cpu_limit is low
 -- start_ignore
 !\retcode gpconfig -c gp_resource_group_cpu_limit -v 0.5;

@@ -60,6 +60,9 @@ typedef enum ResGroupLimitType
 	RESGROUP_LIMIT_TYPE_IO_LIMIT,			/* io_limit */
 
 	RESGROUP_LIMIT_TYPE_COUNT,
+
+	/* not stored in pg_resgroupcapability, used for ALTER only */
+	RESGROUP_LIMIT_TYPE_NAME,			/* name (for rename) */
 } ResGroupLimitType;
 
 #endif   /* PG_RESGROUP_H */

@@ -81,6 +81,7 @@ static void createResgroupCallback(XactEvent event, void *arg);
 static void dropResgroupCallback(XactEvent event, void *arg);
 static void alterResgroupCallback(XactEvent event, void *arg);
 static void checkCpusetSyntax(const char *cpuset);
+static void updateResgroupName(Relation rel, Oid groupId, const char *newname);
 
 /*
  * CREATE RESOURCE GROUP
@@ -398,6 +399,11 @@ AlterResourceGroup(AlterResourceGroupStmt *stmt)
 	}
 	else if (limitType == RESGROUP_LIMIT_TYPE_IO_LIMIT)
 		io_limit = defGetString(defel);
+	else if (limitType == RESGROUP_LIMIT_TYPE_NAME)
+	{
+		/* name is handled separately below, just validate it's a string */
+		(void) defGetString(defel);
+	}
 	else
 	{
 		value = getResgroupOptionValue(defel);
@@ -409,6 +415,74 @@ AlterResourceGroup(AlterResourceGroupStmt *stmt)
 	 * exists.
 	 */
 	groupid = get_resgroup_oid(stmt->name, false);
+
+	/*
+	 * Handle RENAME separately since it modifies pg_resgroup
+	 * instead of pg_resgroupcapability.
+	 */
+	if (limitType == RESGROUP_LIMIT_TYPE_NAME)
+	{
+		Relation	pg_resgroup_rel;
+		ScanKeyData	scankey;
+		SysScanDesc	sscan;
+		const char *newname = defGetString(defel);
+
+		/* Check for an illegal name ('none' is used to signify no group in ALTER ROLE) */
+		if (strcmp(newname, "none") == 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_RESERVED_NAME),
+					 errmsg("resource group name \"none\" is reserved")));
+
+		/* cannot rename default resource groups */
+		if (groupid == DEFAULTRESGROUP_OID ||
+			groupid == ADMINRESGROUP_OID ||
+			groupid == SYSTEMRESGROUP_OID)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("cannot rename default resource group \"%s\"",
+							stmt->name)));
+
+		pg_resgroup_rel = table_open(ResGroupRelationId, RowExclusiveLock);
+
+		/* Check if the new name already exists */
+		ScanKeyInit(&scankey,
+					Anum_pg_resgroup_rsgname,
+					BTEqualStrategyNumber, F_NAMEEQ,
+					CStringGetDatum(newname));
+
+		sscan = systable_beginscan(pg_resgroup_rel, ResGroupRsgnameIndexId, true,
+								   NULL, 1, &scankey);
+
+		if (HeapTupleIsValid(systable_getnext(sscan)))
+			ereport(ERROR,
+					(errcode(ERRCODE_DUPLICATE_OBJECT),
+					 errmsg("resource group \"%s\" already exists",
+							newname)));
+
+		systable_endscan(sscan);
+
+		/* Update the name in pg_resgroup */
+		updateResgroupName(pg_resgroup_rel, groupid, newname);
+
+		/* Dispatch the statement to segments */
+		if (Gp_role == GP_ROLE_DISPATCH)
+		{
+			MetaTrackUpdObject(ResGroupRelationId,
+				   groupid,
+				   GetUserId(),
+				   "ALTER", "RENAME");
+
+			CdbDispatchUtilityStatement((Node *) stmt,
+										DF_CANCEL_ON_ERROR|
+										DF_WITH_SNAPSHOT|
+										DF_NEED_TWO_PHASE,
+										GetAssignedOidsForDispatch(),
+										NULL);
+		}
+
+		table_close(pg_resgroup_rel, NoLock);
+		return;
+	}
 
 	if (limitType == RESGROUP_LIMIT_TYPE_CONCURRENCY &&
 		value == 0 &&
@@ -865,6 +939,8 @@ getResgroupOptionType(const char* defname)
 		return RESGROUP_LIMIT_TYPE_MIN_COST;
 	else if (strcmp(defname, "io_limit") == 0)
 		return RESGROUP_LIMIT_TYPE_IO_LIMIT;
+	else if (strcmp(defname, "name") == 0)
+		return RESGROUP_LIMIT_TYPE_NAME;
 	else
 		return RESGROUP_LIMIT_TYPE_UNKNOWN;
 }
@@ -1269,6 +1345,53 @@ updateResgroupCapabilityEntry(Relation rel,
 
 	isnull[Anum_pg_resgroupcapability_value - 1] = false;
 	repl[Anum_pg_resgroupcapability_value - 1]  = true;
+
+	newTuple = heap_modify_tuple(oldTuple, RelationGetDescr(rel),
+								 values, isnull, repl);
+
+	CatalogTupleUpdate(rel, &oldTuple->t_self, newTuple);
+
+	systable_endscan(sscan);
+}
+
+/*
+ * Update the name of a resource group in pg_resgroup.
+ *
+ * Caller must have already verified that the new name doesn't conflict
+ * with existing resource groups.
+ */
+static void
+updateResgroupName(Relation rel, Oid groupId, const char *newname)
+{
+	HeapTuple	oldTuple;
+	HeapTuple	newTuple;
+	SysScanDesc	sscan;
+	ScanKeyData	scankey;
+	Datum		values[Natts_pg_resgroup];
+	bool		isnull[Natts_pg_resgroup];
+	bool		repl[Natts_pg_resgroup];
+
+	ScanKeyInit(&scankey,
+				Anum_pg_resgroup_oid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(groupId));
+
+	sscan = systable_beginscan(rel, ResGroupOidIndexId, true,
+							   NULL, 1, &scankey);
+
+	oldTuple = systable_getnext(sscan);
+	if (!HeapTupleIsValid(oldTuple))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("resource group %u does not exist", groupId)));
+
+	MemSet(values, 0, sizeof(values));
+	MemSet(isnull, false, sizeof(isnull));
+	MemSet(repl, false, sizeof(repl));
+
+	values[Anum_pg_resgroup_rsgname - 1] =
+		DirectFunctionCall1(namein, CStringGetDatum(newname));
+	repl[Anum_pg_resgroup_rsgname - 1] = true;
 
 	newTuple = heap_modify_tuple(oldTuple, RelationGetDescr(rel),
 								 values, isnull, repl);
