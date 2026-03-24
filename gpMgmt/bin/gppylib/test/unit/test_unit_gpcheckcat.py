@@ -576,7 +576,7 @@ class GpCheckCatTestCase(GpTestCase):
      where
          policytype = 'p'
          and distclass :: oid[] && oid_array;
-  
+
  -- all tables that don't use any legacy policy:
  with legacy_opclass_oids(oid_array) as (
    select
@@ -611,6 +611,55 @@ where
            '''
         self.assertEqual.__self__.maxDiff = None
         self.assertTrue(generated_query.strip() == expected_query.strip())
+
+    def test_checkTableInconsistentEntry__pg_authid_replaces_rolpassword_with_case_expr(self):
+        """
+        Test that checkTableInconsistentEntry replaces rolpassword column with a CASE
+        expression for pg_authid table to ignore SCRAM-SHA-256 password differences.
+        """
+        # Create a mock catalog table object for pg_authid
+        cat_mock = MagicMock()
+        cat_mock.getTableName.return_value = 'pg_authid'
+        cat_mock.getPrimaryKey.return_value = ['oid']
+        cat_mock.isCoordinatorOnly.return_value = False
+        cat_mock.isShared.return_value = True
+        cat_mock.getTableColumns.return_value = ['oid', 'rolname', 'rolpassword', 'rolsuper']
+        cat_mock.getTableColtypes.return_value = {
+            'oid': 'oid',
+            'rolname': 'name',
+            'rolpassword': 'text',
+            'rolsuper': 'bool'
+        }
+        cat_mock.tableHasConsistentOids.return_value = True
+
+        # Mock GV settings
+        self.subject.GV.opt['-S'] = None
+        self.subject.GV.max_content = 2
+
+        # Mock inconsistentEntryQuery to capture the columns passed to it
+        captured_args = {}
+        def capture_query(max_content, catname, pkey, columns, castcols):
+            captured_args['columns'] = columns
+            captured_args['castcols'] = castcols
+            return "SELECT 1"  # Return a dummy query
+
+        with patch.object(self.subject, 'inconsistentEntryQuery', side_effect=capture_query):
+            with patch.object(self.subject, 'connect2', return_value=self.db_connection):
+                mock_cursor = MagicMock()
+                mock_cursor.rowcount = 0
+                self.db_connection.cursor.return_value = mock_cursor
+
+                self.subject.checkTableInconsistentEntry(cat_mock)
+
+        # Verify that rolpassword was replaced with CASE expression
+        scram_expr = "CASE WHEN rolpassword LIKE 'SCRAM-SHA-256$%' THEN NULL ELSE rolpassword END"
+        self.assertIn(scram_expr, captured_args['columns'])
+        self.assertIn(scram_expr, captured_args['castcols'])
+        # Verify other columns are unchanged
+        self.assertIn('oid', captured_args['columns'])
+        self.assertIn('rolname', captured_args['columns'])
+        self.assertIn('rolsuper', captured_args['columns'])
+
 class Global():
     def __init__(self):
         self.opt = {}

@@ -506,6 +506,16 @@ Feature: gpcheckcat tests
         Then gpcheckcat should return a return code of 0
         And the user runs "dropdb gpextension_db"
 
+    Scenario: gpcheckcat should report no inconsistency for SCRAM-SHA-256 password hashes in pg_authid
+        Given database "scram_db" is dropped and recreated
+        And the user runs "psql scram_db -c "SET password_encryption = 'scram-sha-256'; CREATE ROLE scram_test_user WITH LOGIN PASSWORD 'testpass';""
+        Then psql should return a return code of 0
+        Then the user runs "gpcheckcat -R inconsistent scram_db"
+        Then gpcheckcat should return a return code of 0
+        And gpcheckcat should not print "pg_authid has" to stdout
+        And the user runs "psql scram_db -c "DROP ROLE scram_test_user;""
+        And the user runs "dropdb scram_db"
+
     Scenario: gpcheckcat orphaned_toast_tables test should pass when there is valid temp toast table exists
         Given database "temp_toast" is dropped and recreated
         And the user connects to "temp_toast" with named connection "default"
