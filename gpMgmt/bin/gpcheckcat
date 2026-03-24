@@ -1705,6 +1705,15 @@ def checkTableInconsistentEntry(cat):
         columns.remove('lastrownums')
         castcols.remove('lastrownums')
 
+    # pg_authid.rolpassword: SCRAM-SHA-256 hashes include random salts, so they
+    # will differ between coordinator and segments even for the same password.
+    # Replace SCRAM-SHA-256 passwords with NULL to skip comparison, but still
+    # check MD5 passwords for consistency.
+    if catname == 'pg_authid':
+        scram_expr = "CASE WHEN rolpassword LIKE 'SCRAM-SHA-256$%' THEN NULL ELSE rolpassword END"
+        columns = list(map(lambda b: scram_expr if b == 'rolpassword' else b, columns))
+        castcols = list(map(lambda b: scram_expr if b == 'rolpassword' else b, castcols))
+
     if cat.tableHasConsistentOids():
         qry = inconsistentEntryQuery(GV.max_content, catname, ['oid'], columns, castcols)
     else:
