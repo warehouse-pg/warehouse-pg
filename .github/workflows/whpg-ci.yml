@@ -5,8 +5,8 @@ name: WHPG CI
 # Change these values to update which EL versions are tested
 # =============================================================================
 env:
-  WHPG7_EL_VERSIONS: '["8"]'            # WHPG 7 supported EL versions
-  WHPG6_EL_VERSIONS: '["7", "8", "9"]'  # WHPG 6 supported EL versions
+  WHPG7_EL_VERSIONS: '["8","9"]'            # WHPG 7 supported EL versions
+  WHPG6_EL_VERSIONS: '["7", "8", "9"]'      # WHPG 6 supported EL versions
   DEFAULT_EL_VERSION: '["8"]'           # Default for feature branches
   DEFAULT_INSTALLCHECK_TARGET: 'installcheck-small'  # Default installcheck target
 
@@ -120,33 +120,31 @@ jobs:
           echo "Arch: $(uname -m)"
           echo "GCC: $(gcc --version | head -1)"
 
+      # Cache key format: {what}-{job}-{environment}-{version}
+      # ccache = compiler cache (ccache tool data from ~/.ccache)
+      # packages = downloaded RPM packages (/var/cache/dnf)
       - name: Setup ccache
-        uses: actions/cache@v4
+        run: mkdir -p ~/.ccache
+      - uses: actions/cache@v4
         with:
           path: ~/.ccache
-          key: ccache-el${{ matrix.el_version }}-whpg${{ env.WHPG_MAJORVERSION }}-${{ github.sha }}
+          key: ccache-installcheck-el${{ matrix.el_version }}-whpg${{ env.WHPG_MAJORVERSION }}-${{ github.sha }}
           restore-keys: |
-            ccache-el${{ matrix.el_version }}-whpg${{ env.WHPG_MAJORVERSION }}-
+            ccache-installcheck-el${{ matrix.el_version }}-whpg${{ env.WHPG_MAJORVERSION }}-
 
       - name: Cache yum packages
         uses: actions/cache@v4
         with:
           path: /var/cache/dnf
-          key: yum-el${{ matrix.el_version }}-${{ hashFiles('.github/workflows/whpg-ci.yml') }}
+          key: packages-installcheck-el${{ matrix.el_version }}-${{ hashFiles('.github/workflows/whpg-ci.yml') }}
 
       - name: Install required packages
         run: |
-          # Only install packages NOT already in the container image (see dockerfiles/Dockerfile.rh8)
-          # Most build dependencies are pre-installed in the container
-          INSTALL_PKGS="llvm-devel clang-devel krb5-server krb5-workstation lsof ccache"
-
-          yum install -y --setopt=keepcache=1 $INSTALL_PKGS
-
+          # All build and CI dependencies are pre-installed in the container image
+          # (see dockerfiles/Dockerfile.rh*). Only WHPG 6 needs additional packages.
           if [[ "${WHPG_MAJORVERSION}" == "6" ]]; then
             yum install -y --setopt=keepcache=1 python2-devel
           else
-            # python3-psycopg2 not in container image
-            yum install -y --setopt=keepcache=1 python3-psycopg2
             ln -sf /usr/bin/pytest-3 /usr/bin/pytest || true
           fi
 
@@ -232,7 +230,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### ccache Statistics" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          { ccache --show-stats 2>/dev/null | grep -E "cache hit|cache miss|hit rate|files in cache|cache size|max cache size" >> $GITHUB_STEP_SUMMARY; } || true
+          { ccache --show-stats 2>/dev/null | grep -iE "hit|miss|cache size|files in cache" >> $GITHUB_STEP_SUMMARY; } || true
           echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Upload test results on failure
@@ -304,7 +302,8 @@ jobs:
           echo "CMake: $(cmake --version | head -1)"
 
       - name: Setup ccache
-        uses: actions/cache@v4
+        run: mkdir -p ~/.ccache
+      - uses: actions/cache@v4
         with:
           path: ~/.ccache
           key: ccache-orca-el${{ matrix.el_version }}-whpg${{ env.WHPG_MAJORVERSION }}-${{ github.sha }}
@@ -315,14 +314,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /var/cache/dnf
-          key: yum-orca-el${{ matrix.el_version }}-${{ hashFiles('.github/workflows/whpg-ci.yml') }}
+          key: packages-orca-el${{ matrix.el_version }}-${{ hashFiles('.github/workflows/whpg-ci.yml') }}
 
       - name: Install build dependencies
         run: |
-          # Only ccache is not in the container image
-          # cmake, gcc, gcc-c++, make, xerces-c-devel, python3-devel are pre-installed
-          yum install -y --setopt=keepcache=1 ccache
-
+          # All build and CI dependencies are pre-installed in the container image
+          # (see dockerfiles/Dockerfile.rh*). Only WHPG 6 needs additional packages.
           if [[ "${WHPG_MAJORVERSION}" == "6" ]]; then
             yum install -y --setopt=keepcache=1 python2-devel
           fi
@@ -364,7 +361,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### ccache Statistics" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          { ccache --show-stats 2>/dev/null | grep -E "cache hit|cache miss|hit rate|files in cache|cache size|max cache size" >> $GITHUB_STEP_SUMMARY; } || true
+          { ccache --show-stats 2>/dev/null | grep -iE "hit|miss|cache size|files in cache" >> $GITHUB_STEP_SUMMARY; } || true
           echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Upload test results on failure
