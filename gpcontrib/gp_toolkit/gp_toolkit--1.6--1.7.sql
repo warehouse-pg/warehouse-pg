@@ -1,4 +1,4 @@
-/* gpcontrib/gp_toolkit/gp_toolkit--1.6--1.1.sql */
+/* gpcontrib/gp_toolkit/gp_toolkit--1.6--1.7.sql */
 
 -- complain if script is sourced in psql, rather than via ALTER EXTENSION
 \echo Use "ALTER EXTENSION gp_toolkit UPDATE TO '1.8'" to load this file. \quit
