@@ -3,32 +3,51 @@ name: Build Docker Image
 on:
   workflow_dispatch:
     inputs:
+      el_version:
+        description: 'Enterprise Linux version to build'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - 'all'
+          - '8'
+          - '9'
+      push:
+        description: 'Push image to registry'
+        required: true
+        default: false
+        type: boolean
       reason:
-        description: Reason to run this build
+        description: 'Reason to run this build'
         required: false
         type: string
 
-run-name: ${{ inputs.reason || github.event.head_commit.message || github.workflow }}
+run-name: ${{ inputs.reason || format('{0} EL{1} image', inputs.push && 'Build & push' || 'Build (test)', inputs.el_version) }}
 
 jobs:
-  build-and-push:
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        el_version: ${{ inputs.el_version == 'all' && fromJson('["8", "9"]') || fromJson(format('["{0}"]', inputs.el_version)) }}
 
     permissions:
       contents: read
       packages: write
       attestations: write
       id-token: write
-      
+
     steps:
       - name: Checkout source repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           repository: ${{ github.repository }}
           path: src
 
       - name: Login to GitHub Container Registry
+        if: ${{ inputs.push }}
         run: |
           echo "::group::Login to GitHub Container Registry"
           echo ${GITHUB_TOKEN} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
@@ -40,6 +59,20 @@ jobs:
       - name: Docker Build
         run: |
           cd src/dockerfiles
-          IMAGE_NAME=ghcr.io/warehouse-pg/whpg7-rocky8-build
-          docker build -t $IMAGE_NAME --file Dockerfile.rh8 .
+          IMAGE_NAME=ghcr.io/warehouse-pg/whpg7-rocky${{ matrix.el_version }}-build
+          docker build -t $IMAGE_NAME --file Dockerfile.rh${{ matrix.el_version }} .
+
+      - name: Validate Image
+        run: |
+          IMAGE_NAME=ghcr.io/warehouse-pg/whpg7-rocky${{ matrix.el_version }}-build
+          docker run --rm $IMAGE_NAME bash -c "
+            cat /etc/os-release | grep PRETTY_NAME
+            gcc --version | head -1
+            id gpadmin
+          "
+
+      - name: Docker Push
+        if: ${{ inputs.push }}
+        run: |
+          IMAGE_NAME=ghcr.io/warehouse-pg/whpg7-rocky${{ matrix.el_version }}-build
           docker push $IMAGE_NAME

@@ -8,7 +8,7 @@ ARG GLOB_IMAGE_DESCRIPTION="WarehousePG Database image"
 ARG GLOB_IMAGE_VERSION="HEAD"
 ARG GLOB_IMAGE_AUTHORS="bill.smith@enterprisedb.com"
 ARG GLOB_OS_NAME="RockyLinux"
-ARG GLOB_OS_VERSION="8"
+ARG GLOB_OS_VERSION="9"
 ARG GLOB_BUILD_VERSION
 ARG GLOB_WHPG_REPO_URL=https://github.com/warehouse-pg/warehouse-pg.git
 ARG GLOB_GPDB_BUILD_DIR=/opt/whpg-source
@@ -23,7 +23,7 @@ ARG GLOB_MASTER_DATA_DIRECTORY=$COORDINATOR_DATA_DIRECTORY
 
 
 # use Rocky Linux as base image
-FROM rockylinux:8 AS build-stage
+FROM rockylinux:9 AS build-stage
 
 ARG GLOB_MAINTAINER
 ARG GLOB_DESCRIPTION
@@ -108,7 +108,7 @@ RUN dnf install -y make
 RUN dnf install -y diffutils
 RUN dnf install -y libevent-devel
 RUN dnf install -y curl-devel libcurl-devel
-RUN dnf install -y boost-devel 
+RUN dnf install -y boost-devel
 RUN dnf install -y thrift-devel
 RUN dnf install -y xerces-c xerces-c-devel
 RUN dnf install -y java-11-openjdk java-11-openjdk-devel
@@ -134,11 +134,11 @@ RUN dnf install -y net-tools
 RUN dnf install -y openldap-devel
 RUN dnf install -y pinentry
 RUN dnf install -y rpm-build rpm-sign rpmdevtools
-RUN dnf install -y util-linux-ng
+RUN dnf install -y util-linux
 RUN dnf install -y tmux
 RUN dnf install -y screen
-#RUN dnf config-manager --set-enabled crb
-RUN dnf config-manager --set-enabled powertools
+# EL9 uses 'crb' instead of 'powertools'
+RUN dnf config-manager --set-enabled crb
 RUN dnf install -y libyaml libyaml-devel
 RUN dnf install -y libuv-devel
 RUN dnf install -y perl-IPC-Run
@@ -166,6 +166,5 @@ RUN mkdir ${GPDB_BUILD_DIR} ${GPDB_INSTALL_DIR} && chown gpadmin:gpadmin ${GPDB_
 # will create more work at this time. bsmith Apr 17, 2025
 # switch to gpadmin user, do not build as root
 #USER gpadmin
-
 
 
