@@ -177,19 +177,13 @@ SELECT count(DISTINCT ctid) FROM tsample2_@amname@;
 SELECT ctid FROM tsample2_@amname@ TABLESAMPLE BERNOULLI(0.001) REPEATABLE(15);
  ctid             
 ------------------
- (33554432,22587) 
- (33554432,28096) 
- (33554433,15970) 
- (33554434,26278) 
-(4 rows)
+ (33554432,32354) 
+(1 row)
 SELECT ctid FROM tsample2_@amname@ TABLESAMPLE BERNOULLI(0.001) REPEATABLE(15);
  ctid             
 ------------------
- (33554432,22587) 
- (33554432,28096) 
- (33554433,15970) 
- (33554434,26278) 
-(4 rows)
+ (33554432,32354) 
+(1 row)
 SELECT count(DISTINCT ctid) FROM tsample2_@amname@ TABLESAMPLE BERNOULLI(100);
  count 
 -------
@@ -199,12 +193,12 @@ SELECT count(DISTINCT ctid) FROM tsample2_@amname@ TABLESAMPLE BERNOULLI(100);
 SELECT count(DISTINCT ctid) FROM tsample2_@amname@ TABLESAMPLE SYSTEM(50) REPEATABLE(0);
  count 
 -------
- 65536 
+ 49152 
 (1 row)
 SELECT count(DISTINCT ctid) FROM tsample2_@amname@ TABLESAMPLE SYSTEM(50) REPEATABLE(0);
  count 
 -------
- 65536 
+ 49152 
 (1 row)
 SELECT count(DISTINCT ctid) FROM tsample2_@amname@ TABLESAMPLE SYSTEM(100);
  count 
@@ -218,19 +212,13 @@ CREATE INDEX
 SELECT ctid FROM tsample2_@amname@ TABLESAMPLE BERNOULLI(0.001) REPEATABLE(15);
  ctid             
 ------------------
- (33554432,22587) 
- (33554432,28096) 
- (33554433,15970) 
- (33554434,26278) 
-(4 rows)
+ (33554432,32354) 
+(1 row)
 SELECT ctid FROM tsample2_@amname@ TABLESAMPLE BERNOULLI(0.001) REPEATABLE(15);
  ctid             
 ------------------
- (33554432,22587) 
- (33554432,28096) 
- (33554433,15970) 
- (33554434,26278) 
-(4 rows)
+ (33554432,32354) 
+(1 row)
 SELECT count(DISTINCT ctid) FROM tsample2_@amname@ TABLESAMPLE BERNOULLI(100);
  count 
 -------
@@ -240,12 +228,12 @@ SELECT count(DISTINCT ctid) FROM tsample2_@amname@ TABLESAMPLE BERNOULLI(100);
 SELECT COUNT(DISTINCT ctid) FROM tsample2_@amname@ TABLESAMPLE SYSTEM(50) REPEATABLE(0);
  count 
 -------
- 65536 
+ 49152 
 (1 row)
 SELECT COUNT(DISTINCT ctid) FROM tsample2_@amname@ TABLESAMPLE SYSTEM(50) REPEATABLE(0);
  count 
 -------
- 65536 
+ 49152 
 (1 row)
 SELECT COUNT(DISTINCT ctid) FROM tsample2_@amname@ TABLESAMPLE SYSTEM(100);
  count 
@@ -280,30 +268,32 @@ SELECT right(split_part(ctid::text, ',', 1), -1) AS blknum, count(*) FROM tsampl
 SELECT right(split_part(ctid::text, ',', 1), -1) AS blknum, count(*) FROM tsample3_@amname@ TABLESAMPLE BERNOULLI(10) REPEATABLE(7) GROUP BY 1 ORDER BY 1;
  blknum   | count 
 ----------+-------
- 33554432 | 3335  
- 33554433 | 3221  
+ 33554432 | 3280  
+ 33554433 | 3309  
  33554434 | 13    
 (3 rows)
 SELECT right(split_part(ctid::text, ',', 1), -1) AS blknum, count(*) FROM tsample3_@amname@ TABLESAMPLE BERNOULLI(10) REPEATABLE(7) GROUP BY 1 ORDER BY 1;
  blknum   | count 
 ----------+-------
- 33554432 | 3335  
- 33554433 | 3221  
+ 33554432 | 3280  
+ 33554433 | 3309  
  33554434 | 13    
 (3 rows)
 
 SELECT right(split_part(ctid::text, ',', 1), -1) AS blknum, count(*) FROM tsample3_@amname@ TABLESAMPLE SYSTEM(50) REPEATABLE(7) GROUP BY 1 ORDER BY 1;
  blknum   | count 
 ----------+-------
- 33554433 | 32767 
+ 33554432 | 16383 
+ 33554433 | 32768 
  33554434 | 101   
-(2 rows)
+(3 rows)
 SELECT right(split_part(ctid::text, ',', 1), -1) AS blknum, count(*) FROM tsample3_@amname@ TABLESAMPLE SYSTEM(50) REPEATABLE(7) GROUP BY 1 ORDER BY 1;
  blknum   | count 
 ----------+-------
- 33554433 | 32767 
+ 33554432 | 16383 
+ 33554433 | 32768 
  33554434 | 101   
-(2 rows)
+(3 rows)
 SELECT count(DISTINCT ctid) FROM tsample3_@amname@ TABLESAMPLE SYSTEM(100);
  count 
 -------
@@ -321,30 +311,32 @@ SELECT count(DISTINCT ctid) FROM tsample3_@amname@ TABLESAMPLE BERNOULLI(100);
 SELECT right(split_part(ctid::text, ',', 1), -1) AS blknum, count(*) FROM tsample3_@amname@ TABLESAMPLE BERNOULLI(10) REPEATABLE(7) GROUP BY 1 ORDER BY 1;
  blknum   | count 
 ----------+-------
- 33554432 | 3335  
- 33554433 | 3221  
+ 33554432 | 3280  
+ 33554433 | 3309  
  33554434 | 13    
 (3 rows)
 SELECT right(split_part(ctid::text, ',', 1), -1) AS blknum, count(*) FROM tsample3_@amname@ TABLESAMPLE BERNOULLI(10) REPEATABLE(7) GROUP BY 1 ORDER BY 1;
  blknum   | count 
 ----------+-------
- 33554432 | 3335  
- 33554433 | 3221  
+ 33554432 | 3280  
+ 33554433 | 3309  
  33554434 | 13    
 (3 rows)
 
 SELECT right(split_part(ctid::text, ',', 1), -1) AS blknum, count(*) FROM tsample3_@amname@ TABLESAMPLE SYSTEM(50) REPEATABLE(7) GROUP BY 1 ORDER BY 1;
  blknum   | count 
 ----------+-------
- 33554433 | 32767 
+ 33554432 | 16383 
+ 33554433 | 32768 
  33554434 | 101   
-(2 rows)
+(3 rows)
 SELECT right(split_part(ctid::text, ',', 1), -1) AS blknum, count(*) FROM tsample3_@amname@ TABLESAMPLE SYSTEM(50) REPEATABLE(7) GROUP BY 1 ORDER BY 1;
  blknum   | count 
 ----------+-------
- 33554433 | 32767 
+ 33554432 | 16383 
+ 33554433 | 32768 
  33554434 | 101   
-(2 rows)
+(3 rows)
 SELECT count(DISTINCT ctid) FROM tsample3_@amname@ TABLESAMPLE SYSTEM(100);
  count 
 -------
@@ -395,16 +387,16 @@ SELECT right(split_part(ctid::text, ',', 1), -1) AS blknum, count(*) FROM tsampl
 ----------+-------
  33554432 | 1604  
  33554433 | 2     
- 33554434 | 3307  
- 33554435 | 5     
+ 33554434 | 3305  
+ 33554435 | 6     
 (4 rows)
 SELECT right(split_part(ctid::text, ',', 1), -1) AS blknum, count(*) FROM tsample4_@amname@ TABLESAMPLE BERNOULLI(10) REPEATABLE(0) GROUP BY 1 ORDER BY 1;
  blknum   | count 
 ----------+-------
  33554432 | 1604  
  33554433 | 2     
- 33554434 | 3307  
- 33554435 | 5     
+ 33554434 | 3305  
+ 33554435 | 6     
 (4 rows)
 
 SELECT count(DISTINCT ctid) FROM tsample4_@amname@ TABLESAMPLE BERNOULLI(100);
@@ -416,13 +408,13 @@ SELECT count(DISTINCT ctid) FROM tsample4_@amname@ TABLESAMPLE BERNOULLI(100);
 SELECT right(split_part(ctid::text, ',', 1), -1) AS blknum, count(*) FROM tsample4_@amname@ TABLESAMPLE SYSTEM(66) REPEATABLE(0) GROUP BY 1 ORDER BY 1;
  blknum   | count 
 ----------+-------
- 33554434 | 16319 
+ 33554434 | 32703 
  33554435 | 65    
 (2 rows)
 SELECT right(split_part(ctid::text, ',', 1), -1) AS blknum, count(*) FROM tsample4_@amname@ TABLESAMPLE SYSTEM(66) REPEATABLE(0) GROUP BY 1 ORDER BY 1;
  blknum   | count 
 ----------+-------
- 33554434 | 16319 
+ 33554434 | 32703 
  33554435 | 65    
 (2 rows)
 SELECT count(DISTINCT ctid) FROM tsample4_@amname@ TABLESAMPLE SYSTEM(100);
@@ -439,16 +431,16 @@ SELECT right(split_part(ctid::text, ',', 1), -1) AS blknum, count(*) FROM tsampl
 ----------+-------
  33554432 | 1604  
  33554433 | 2     
- 33554434 | 3307  
- 33554435 | 5     
+ 33554434 | 3305  
+ 33554435 | 6     
 (4 rows)
 SELECT right(split_part(ctid::text, ',', 1), -1) AS blknum, count(*) FROM tsample4_@amname@ TABLESAMPLE BERNOULLI(10) REPEATABLE(0) GROUP BY 1 ORDER BY 1;
  blknum   | count 
 ----------+-------
  33554432 | 1604  
  33554433 | 2     
- 33554434 | 3307  
- 33554435 | 5     
+ 33554434 | 3305  
+ 33554435 | 6     
 (4 rows)
 
 SELECT count(DISTINCT ctid) FROM tsample4_@amname@ TABLESAMPLE BERNOULLI(100);
@@ -460,13 +452,13 @@ SELECT count(DISTINCT ctid) FROM tsample4_@amname@ TABLESAMPLE BERNOULLI(100);
 SELECT right(split_part(ctid::text, ',', 1), -1) AS blknum, count(*) FROM tsample4_@amname@ TABLESAMPLE SYSTEM(66) REPEATABLE(0) GROUP BY 1 ORDER BY 1;
  blknum   | count 
 ----------+-------
- 33554434 | 16319 
+ 33554434 | 32703 
  33554435 | 65    
 (2 rows)
 SELECT right(split_part(ctid::text, ',', 1), -1) AS blknum, count(*) FROM tsample4_@amname@ TABLESAMPLE SYSTEM(66) REPEATABLE(0) GROUP BY 1 ORDER BY 1;
  blknum   | count 
 ----------+-------
- 33554434 | 16319 
+ 33554434 | 32703 
  33554435 | 65    
 (2 rows)
 SELECT count(DISTINCT ctid) FROM tsample4_@amname@ TABLESAMPLE SYSTEM(100);
@@ -512,22 +504,22 @@ SELECT count(DISTINCT ctid) FROM tsample5_@amname@;
 SELECT right(split_part(ctid::text, ',', 1), -1) AS blknum, count(*) FROM tsample5_@amname@ TABLESAMPLE BERNOULLI(10) REPEATABLE(0) GROUP BY 1 ORDER BY 1;
  blknum   | count 
 ----------+-------
- 33554432 | 3289  
- 33554433 | 3304  
- 33554434 | 3348  
- 67108864 | 3228  
- 67108865 | 3393  
- 67108866 | 3254  
+ 33554432 | 3235  
+ 33554433 | 3266  
+ 33554434 | 3347  
+ 67108864 | 3320  
+ 67108865 | 3266  
+ 67108866 | 3190  
 (6 rows)
 SELECT right(split_part(ctid::text, ',', 1), -1) AS blknum, count(*) FROM tsample5_@amname@ TABLESAMPLE BERNOULLI(10) REPEATABLE(0) GROUP BY 1 ORDER BY 1;
  blknum   | count 
 ----------+-------
- 33554432 | 3289  
- 33554433 | 3304  
- 33554434 | 3348  
- 67108864 | 3228  
- 67108865 | 3393  
- 67108866 | 3254  
+ 33554432 | 3235  
+ 33554433 | 3266  
+ 33554434 | 3347  
+ 67108864 | 3320  
+ 67108865 | 3266  
+ 67108866 | 3190  
 (6 rows)
 
 SELECT count(DISTINCT ctid) FROM tsample5_@amname@ TABLESAMPLE BERNOULLI(100);
@@ -539,21 +531,23 @@ SELECT count(DISTINCT ctid) FROM tsample5_@amname@ TABLESAMPLE BERNOULLI(100);
 SELECT right(split_part(ctid::text, ',', 1), -1) AS blknum, count(*) FROM tsample5_@amname@ TABLESAMPLE SYSTEM(50) REPEATABLE(0) GROUP BY 1 ORDER BY 1;
  blknum   | count 
 ----------+-------
- 33554433 | 32767 
- 33554434 | 32768 
- 33554435 | 1     
+ 33554432 | 16383 
+ 33554433 | 16385 
+ 33554434 | 16384 
  67108865 | 32767 
- 67108866 | 1     
-(5 rows)
+ 67108866 | 32768 
+ 67108867 | 1     
+(6 rows)
 SELECT right(split_part(ctid::text, ',', 1), -1) AS blknum, count(*) FROM tsample5_@amname@ TABLESAMPLE SYSTEM(50) REPEATABLE(0) GROUP BY 1 ORDER BY 1;
  blknum   | count 
 ----------+-------
- 33554433 | 32767 
- 33554434 | 32768 
- 33554435 | 1     
+ 33554432 | 16383 
+ 33554433 | 16385 
+ 33554434 | 16384 
  67108865 | 32767 
- 67108866 | 1     
-(5 rows)
+ 67108866 | 32768 
+ 67108867 | 1     
+(6 rows)
 SELECT count(DISTINCT ctid) FROM tsample5_@amname@ TABLESAMPLE SYSTEM(100);
  count  
 --------
@@ -566,22 +560,22 @@ CREATE INDEX
 SELECT right(split_part(ctid::text, ',', 1), -1) AS blknum, count(*) FROM tsample5_@amname@ TABLESAMPLE BERNOULLI(10) REPEATABLE(0) GROUP BY 1 ORDER BY 1;
  blknum   | count 
 ----------+-------
- 33554432 | 3289  
- 33554433 | 3304  
- 33554434 | 3348  
- 67108864 | 3228  
- 67108865 | 3393  
- 67108866 | 3254  
+ 33554432 | 3235  
+ 33554433 | 3266  
+ 33554434 | 3347  
+ 67108864 | 3320  
+ 67108865 | 3266  
+ 67108866 | 3190  
 (6 rows)
 SELECT right(split_part(ctid::text, ',', 1), -1) AS blknum, count(*) FROM tsample5_@amname@ TABLESAMPLE BERNOULLI(10) REPEATABLE(0) GROUP BY 1 ORDER BY 1;
  blknum   | count 
 ----------+-------
- 33554432 | 3289  
- 33554433 | 3304  
- 33554434 | 3348  
- 67108864 | 3228  
- 67108865 | 3393  
- 67108866 | 3254  
+ 33554432 | 3235  
+ 33554433 | 3266  
+ 33554434 | 3347  
+ 67108864 | 3320  
+ 67108865 | 3266  
+ 67108866 | 3190  
 (6 rows)
 
 SELECT count(DISTINCT ctid) FROM tsample5_@amname@ TABLESAMPLE BERNOULLI(100);
@@ -593,21 +587,23 @@ SELECT count(DISTINCT ctid) FROM tsample5_@amname@ TABLESAMPLE BERNOULLI(100);
 SELECT right(split_part(ctid::text, ',', 1), -1) AS blknum, count(*) FROM tsample5_@amname@ TABLESAMPLE SYSTEM(50) REPEATABLE(0) GROUP BY 1 ORDER BY 1;
  blknum   | count 
 ----------+-------
- 33554433 | 32767 
- 33554434 | 32768 
- 33554435 | 1     
+ 33554432 | 16383 
+ 33554433 | 16385 
+ 33554434 | 16384 
  67108865 | 32767 
- 67108866 | 1     
-(5 rows)
+ 67108866 | 32768 
+ 67108867 | 1     
+(6 rows)
 SELECT right(split_part(ctid::text, ',', 1), -1) AS blknum, count(*) FROM tsample5_@amname@ TABLESAMPLE SYSTEM(50) REPEATABLE(0) GROUP BY 1 ORDER BY 1;
  blknum   | count 
 ----------+-------
- 33554433 | 32767 
- 33554434 | 32768 
- 33554435 | 1     
+ 33554432 | 16383 
+ 33554433 | 16385 
+ 33554434 | 16384 
  67108865 | 32767 
- 67108866 | 1     
-(5 rows)
+ 67108866 | 32768 
+ 67108867 | 1     
+(6 rows)
 SELECT count(DISTINCT ctid) FROM tsample5_@amname@ TABLESAMPLE SYSTEM(100);
  count  
 --------

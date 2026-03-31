@@ -1858,6 +1858,7 @@ appendonly_beginrangescan_internal(Relation relation,
 	scan->totalBytesRead = 0;
 
 	scan->sampleTargetBlk = -1;
+	scan->sampleTuplesPerBlock = ao_compute_sample_tuples_per_block(relation);
 
 	return scan;
 }

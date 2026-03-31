@@ -2653,6 +2653,7 @@ aoco_scan_sample_next_block(TableScanDesc scan, SampleScanState *scanstate)
 	TsmRoutine 			*tsm = scanstate->tsmroutine;
 	AOCSScanDesc 		aoscan = (AOCSScanDesc) scan;
 	int64 				totalrows = AOCSScanDesc_TotalTupCount(aoscan);
+	int32				tuplesPerBlock = aoscan->sampleTuplesPerBlock;
 
 	/* return false immediately if relation is empty */
 	if (aoscan->targrow >= totalrows)
@@ -2660,7 +2661,7 @@ aoco_scan_sample_next_block(TableScanDesc scan, SampleScanState *scanstate)
 
 	if (tsm->NextSampleBlock)
 	{
-		int64 nblocks = (totalrows + (AO_MAX_TUPLES_PER_HEAP_BLOCK - 1)) / AO_MAX_TUPLES_PER_HEAP_BLOCK;
+		int64 nblocks = (totalrows + (tuplesPerBlock - 1)) / tuplesPerBlock;
 		int64 nextblk;
 
 		nextblk = tsm->NextSampleBlock(scanstate, nblocks);
@@ -2688,7 +2689,7 @@ aoco_scan_sample_next_block(TableScanDesc scan, SampleScanState *scanstate)
 			/* target the first row of the selected block */
 			Assert(aoscan->sampleTargetBlk < nblocks);
 
-			aoscan->targrow = aoscan->sampleTargetBlk * AO_MAX_TUPLES_PER_HEAP_BLOCK;
+			aoscan->targrow = aoscan->sampleTargetBlk * tuplesPerBlock;
 			return true;
 		}
 	}
@@ -2699,7 +2700,7 @@ aoco_scan_sample_next_block(TableScanDesc scan, SampleScanState *scanstate)
 
 		/* target the first row of the next block */
 		aoscan->sampleTargetBlk++;
-		aoscan->targrow = aoscan->sampleTargetBlk * AO_MAX_TUPLES_PER_HEAP_BLOCK;
+		aoscan->targrow = aoscan->sampleTargetBlk * tuplesPerBlock;
 
 		/* ran out of blocks, scan is done */
 		if (aoscan->targrow >= totalrows)
@@ -2715,7 +2716,8 @@ aoco_scan_sample_next_tuple(TableScanDesc scan, SampleScanState *scanstate,
 {
 	TsmRoutine 			*tsm = scanstate->tsmroutine;
 	AOCSScanDesc 		aoscan = (AOCSScanDesc) scan;
-	int64  				currblk = aoscan->targrow / AO_MAX_TUPLES_PER_HEAP_BLOCK;
+	int32				tuplesPerBlock = aoscan->sampleTuplesPerBlock;
+	int64  				currblk = aoscan->targrow / tuplesPerBlock;
 	int64 				totalrows = AOCSScanDesc_TotalTupCount(aoscan);
 
 	Assert(aoscan->sampleTargetBlk >= 0);
@@ -2732,12 +2734,12 @@ aoco_scan_sample_next_tuple(TableScanDesc scan, SampleScanState *scanstate,
 		 * Ask the tablesample method which rows to scan on this block. Refer
 		 * to AOCSScanDesc->sampleTargetBlk for our blocking scheme.
 		 *
-		 * Note: unlike heapam, we are guaranteed to have
-		 * AO_MAX_TUPLES_PER_HEAP_BLOCK tuples in this block (unless this is the
-		 * last such block in the relation)
+		 * Note: unlike heapam, we are guaranteed to have sampleTuplesPerBlock
+		 * tuples in this block (unless this is the last such block in the
+		 * relation)
 		 */
-		maxoffset = Min(AO_MAX_TUPLES_PER_HEAP_BLOCK,
-						totalrows - currblk * AO_MAX_TUPLES_PER_HEAP_BLOCK);
+		maxoffset = Min(tuplesPerBlock,
+						totalrows - currblk * tuplesPerBlock);
 		targetoffset = tsm->NextSampleTuple(scanstate,
 											currblk,
 											maxoffset);
@@ -2746,7 +2748,7 @@ aoco_scan_sample_next_tuple(TableScanDesc scan, SampleScanState *scanstate,
 		{
 			Assert(targetoffset <= maxoffset);
 
-			aoscan->targrow = currblk * AO_MAX_TUPLES_PER_HEAP_BLOCK + targetoffset - 1;
+			aoscan->targrow = currblk * tuplesPerBlock + targetoffset - 1;
 			Assert(aoscan->targrow < totalrows);
 
 			if (aocs_get_target_tuple(aoscan, aoscan->targrow, slot))
