@@ -63,7 +63,9 @@ static void build_EvalXFunc(LLVMBuilderRef b, LLVMModuleRef mod,
 							const char *funcname,
 							LLVMValueRef v_state, LLVMValueRef v_econtext,
 							ExprEvalStep *op);
+#if LLVM_VERSION_MAJOR < 22
 static LLVMValueRef create_LifetimeEnd(LLVMModuleRef mod);
+#endif
 
 
 /*
@@ -2702,13 +2704,10 @@ BuildV1Call(LLVMJitContext *context, LLVMBuilderRef b,
 			LLVMModuleRef mod, FunctionCallInfo fcinfo,
 			LLVMValueRef *v_fcinfo_isnull)
 {
-	LLVMContextRef lc;
 	LLVMValueRef v_fn;
 	LLVMValueRef v_fcinfo_isnullp;
 	LLVMValueRef v_retval;
 	LLVMValueRef v_fcinfo;
-
-	lc = LLVMGetModuleContext(mod);
 
 	v_fn = llvm_function_reference(context, b, mod, fcinfo);
 
@@ -2725,11 +2724,14 @@ BuildV1Call(LLVMJitContext *context, LLVMBuilderRef b,
 	if (v_fcinfo_isnull)
 		*v_fcinfo_isnull = l_load(b, TypeStorageBool, v_fcinfo_isnullp, "");
 
+#if LLVM_VERSION_MAJOR < 22
+
 	/*
 	 * Add lifetime-end annotation, signalling that writes to memory don't
 	 * have to be retained (important for inlining potential).
 	 */
 	{
+		LLVMContextRef lc = LLVMGetModuleContext(mod);
 		LLVMValueRef v_lifetime = create_LifetimeEnd(mod);
 		LLVMValueRef params[2];
 
@@ -2741,6 +2743,7 @@ BuildV1Call(LLVMJitContext *context, LLVMBuilderRef b,
 		params[1] = l_ptr_const(&fcinfo->isnull, l_ptr(LLVMInt8TypeInContext(lc)));
 		l_call(b, LLVMGetFunctionType(v_lifetime), v_lifetime, params, lengthof(params), "");
 	}
+#endif
 
 	return v_retval;
 }
@@ -2780,6 +2783,7 @@ build_EvalXFunc(LLVMBuilderRef b, LLVMModuleRef mod, const char *funcname,
 	l_call(b, LLVMGetFunctionType(v_fn), v_fn, params, lengthof(params), "");
 }
 
+#if LLVM_VERSION_MAJOR < 22
 static LLVMValueRef
 create_LifetimeEnd(LLVMModuleRef mod)
 {
@@ -2813,3 +2817,4 @@ create_LifetimeEnd(LLVMModuleRef mod)
 
 	return fn;
 }
+#endif
