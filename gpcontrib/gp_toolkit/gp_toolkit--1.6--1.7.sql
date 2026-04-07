@@ -1,7 +1,7 @@
 /* gpcontrib/gp_toolkit/gp_toolkit--1.6--1.7.sql */
 
 -- complain if script is sourced in psql, rather than via ALTER EXTENSION
-\echo Use "ALTER EXTENSION gp_toolkit UPDATE TO '1.8'" to load this file. \quit
+\echo Use "ALTER EXTENSION gp_toolkit UPDATE TO '1.7'" to load this file. \quit
 
 -- the fixed version for view pg_catalog.gp_distributed_xacts
 CREATE OR REPLACE FUNCTION gp_toolkit.gp_get_distributed_xacts()
