@@ -278,9 +278,18 @@ $$ LANGUAGE plpython3u;
     import os
 
     postgres = ctypes.CDLL(None)
+
     get_bdi_of_path = postgres['get_bdi_of_path']
+    get_bdi_of_path.argtypes = [ctypes.c_char_p]
+    get_bdi_of_path.restype = ctypes.c_uint64
+
     get_tablespace_path = postgres['get_tablespace_path']
+    get_tablespace_path.argtypes = [ctypes.c_uint32]
+    get_tablespace_path.restype = ctypes.c_char_p
+
     get_tablespace_oid = postgres['get_tablespace_oid']
+    get_tablespace_oid.argtypes = [ctypes.c_char_p, ctypes.c_bool]
+    get_tablespace_oid.restype = ctypes.c_uint32
 
     # get group oid
     sql = "select groupid from gp_toolkit.gp_resgroup_config where groupname = '%s'" % groupname
