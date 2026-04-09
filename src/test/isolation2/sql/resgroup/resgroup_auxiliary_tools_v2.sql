@@ -285,7 +285,7 @@ $$ LANGUAGE plpython3u;
 
     get_tablespace_path = postgres['get_tablespace_path']
     get_tablespace_path.argtypes = [ctypes.c_uint32]
-    get_tablespace_path.restype = ctypes.c_char_p
+    get_tablespace_path.restype = ctypes.c_void_p
 
     get_tablespace_oid = postgres['get_tablespace_oid']
     get_tablespace_oid.argtypes = [ctypes.c_char_p, ctypes.c_bool]
