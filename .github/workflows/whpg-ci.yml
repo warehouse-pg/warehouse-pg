@@ -194,13 +194,9 @@ jobs:
           chown -R gpadmin:gpadmin /usr/local/greenplum-db-devel
           chown -R gpadmin:gpadmin "${WHPG_SRC}"
 
-          # Setup gpadmin environment for login shells
-          cat >> /home/gpadmin/.bash_profile << 'EOF'
-          source /usr/local/greenplum-db-devel/greenplum_path.sh
-          [ -f ~/gpdb_src/gpAux/gpdemo/gpdemo-env.sh ] && source ~/gpdb_src/gpAux/gpdemo/gpdemo-env.sh
-          EOF
-          echo "export WHPG_SRC=${WHPG_SRC}" >> /home/gpadmin/.bash_profile
-          echo "export WHPG_MAJORVERSION=${WHPG_MAJORVERSION}" >> /home/gpadmin/.bash_profile
+          # Note: Environment variables (WHPG_SRC, WHPG_MAJORVERSION, etc.) are passed
+          # via export + su (without login shell). Scripts source greenplum_path.sh and
+          # gpdemo-env.sh explicitly rather than relying on .bash_profile.
 
       - name: Create demo cluster
         id: cluster

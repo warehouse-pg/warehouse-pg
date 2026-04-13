@@ -34,6 +34,11 @@ detect_whpg_version() {
     local ver
     ver=$(echo "$tag" | cut -d'.' -f1)
 
+    if [[ ! "$ver" =~ ^[0-9]+$ ]]; then
+        echo "::error::Extracted version '$ver' from tag '$tag' is not numeric." >&2
+        exit 1
+    fi
+
     echo "Found tag: $tag"
     echo "Detected WHPG major version: $ver"
     echo "$ver"

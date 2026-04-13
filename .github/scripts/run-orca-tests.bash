@@ -1,4 +1,4 @@
-#!/bin/bash -l
+#!/bin/bash
 
 # Run ORCA unit tests for WHPG
 # Wrapper around concourse/scripts/unit_tests_gporca.bash
@@ -9,6 +9,9 @@ set -eox pipefail
 : "${WHPG_SRC:?WHPG_SRC not set}"
 : "${EL_VERSION:?EL_VERSION not set}"
 : "${WHPG_MAJORVERSION:?WHPG_MAJORVERSION not set}"
+
+# Source environment explicitly (no login shell / .bash_profile dependency)
+source /usr/local/greenplum-db-devel/greenplum_path.sh
 
 function _main() {
     echo "========================================================================"

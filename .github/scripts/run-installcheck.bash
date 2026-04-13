@@ -1,4 +1,4 @@
-#!/bin/bash -l
+#!/bin/bash
 
 # Run installcheck tests for WHPG, collecting logs and diffs on failure.
 
@@ -9,6 +9,10 @@ set -eox pipefail
 : "${RESULTS_DIR:?RESULTS_DIR not set}"
 : "${MAKE_TEST_COMMAND:?MAKE_TEST_COMMAND not set}"
 : "${WHPG_MAJORVERSION:?WHPG_MAJORVERSION not set}"
+
+# Source environment explicitly (no login shell / .bash_profile dependency)
+source /usr/local/greenplum-db-devel/greenplum_path.sh
+[ -f ~/gpdb_src/gpAux/gpdemo/gpdemo-env.sh ] && source ~/gpdb_src/gpAux/gpdemo/gpdemo-env.sh
 
 # Source common functions
 source "${WHPG_SRC}/concourse/scripts/common.bash"
@@ -78,7 +82,6 @@ function run_installcheck() {
     # Set up error trap
     trap look4diffs ERR
 
-    # Environment sourced from ~/.bash_profile (greenplum_path.sh, gpdemo-env.sh)
     cd "${WHPG_SRC}"
 
     # Enable core dumps
@@ -121,15 +124,12 @@ function _main() {
 
 # Run as gpadmin if we're root
 if [ "$(id -u)" = "0" ]; then
-    # Get absolute path since login shell changes working directory
     SCRIPT_PATH="$(realpath ${BASH_SOURCE[0]})"
 
-    # Runtime variables to pass (not in .bash_profile)
-    # Note: Must be on single line for su -c to parse correctly
-    ENV_VARS="RESULTS_DIR='${RESULTS_DIR}' MAKE_TEST_COMMAND='${MAKE_TEST_COMMAND}'"
+    # Export all required variables so they're inherited by the su subshell
+    export RESULTS_DIR MAKE_TEST_COMMAND WHPG_MAJORVERSION WHPG_SRC
 
-    # Use login shell (-) to source .bash_profile (greenplum_path.sh, gpdemo-env.sh, WHPG_SRC, WHPG_MAJORVERSION)
-    su - gpadmin -c "${ENV_VARS} bash ${SCRIPT_PATH}"
+    su gpadmin -c "bash ${SCRIPT_PATH}"
 else
     _main "$@"
 fi
