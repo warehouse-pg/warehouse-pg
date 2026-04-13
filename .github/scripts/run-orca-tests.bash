@@ -10,9 +10,6 @@ set -eox pipefail
 : "${EL_VERSION:?EL_VERSION not set}"
 : "${WHPG_MAJORVERSION:?WHPG_MAJORVERSION not set}"
 
-# Source environment explicitly (no login shell / .bash_profile dependency)
-source /usr/local/greenplum-db-devel/greenplum_path.sh
-
 function _main() {
     echo "========================================================================"
     echo "Running ORCA unit tests"
