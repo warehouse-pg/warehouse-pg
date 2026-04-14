@@ -144,16 +144,10 @@ Supporting scripts are located in `.github/scripts/`:
 
 ### Environment Setup
 
-The `installcheck` job sets up gpadmin's `.bash_profile` with:
+Scripts source the required environment explicitly rather than relying on `.bash_profile`:
 
-```bash
-source /usr/local/greenplum-db-devel/greenplum_path.sh
-[ -f ~/gpdb_src/gpAux/gpdemo/gpdemo-env.sh ] && source ~/gpdb_src/gpAux/gpdemo/gpdemo-env.sh
-export WHPG_SRC=...
-export WHPG_MAJORVERSION=...
-```
-
-Scripts use `su - gpadmin` (login shell) to automatically source this environment.
+- `run-installcheck.bash` sources `greenplum_path.sh` and `gpdemo-env.sh` directly
+- Workflow variables (`WHPG_SRC`, `WHPG_MAJORVERSION`, etc.) are passed via `export` + `su gpadmin` (non-login shell)
 
 ## Container Images
 
