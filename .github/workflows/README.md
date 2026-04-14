@@ -75,7 +75,7 @@ The workflow uses multiple caches to speed up builds:
 
 **yum packages**
 - Caches downloaded RPM packages
-- Key based on workflow file hash (invalidates when packages change)
+- Key scoped per job, EL version, WHPG version, and workflow file hash
 - Reduces package download time on subsequent runs
 
 #### Job Summary
@@ -120,7 +120,7 @@ Configuration is centralized at the top of the workflow file (single source of t
 
 ```yaml
 env:
-  WHPG7_EL_VERSIONS: '["8"]'            # WHPG 7 supported EL versions
+  WHPG7_EL_VERSIONS: '["8","9"]'            # WHPG 7 supported EL versions
   WHPG6_EL_VERSIONS: '["7", "8", "9"]'  # WHPG 6 supported EL versions
   DEFAULT_EL_VERSION: '["8"]'           # Default for feature branches
   DEFAULT_INSTALLCHECK_TARGET: 'installcheck-small'  # Default installcheck target

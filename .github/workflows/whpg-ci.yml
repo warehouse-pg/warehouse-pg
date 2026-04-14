@@ -120,12 +120,13 @@ jobs:
           echo "Arch: $(uname -m)"
           echo "GCC: $(gcc --version | head -1)"
 
-      # Cache key format: {what}-{job}-{environment}-{version}
-      # ccache = compiler cache (ccache tool data from ~/.ccache)
-      # packages = downloaded RPM packages (/var/cache/dnf)
-      - name: Setup ccache
+      # Cache key formats:
+      # - ccache: ccache-{job}-el{el_version}-whpg{whpg_major}-{github.sha}
+      # - packages: packages-{job}-el{el_version}-whpg{whpg_major}-{workflow_hash}
+      - name: Create ccache directory
         run: mkdir -p ~/.ccache
-      - uses: actions/cache@v4
+      - name: Restore ccache
+        uses: actions/cache@v4
         with:
           path: ~/.ccache
           key: ccache-installcheck-el${{ matrix.el_version }}-whpg${{ env.WHPG_MAJORVERSION }}-${{ github.sha }}
@@ -136,7 +137,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /var/cache/dnf
-          key: packages-installcheck-el${{ matrix.el_version }}-${{ hashFiles('.github/workflows/whpg-ci.yml') }}
+          key: packages-installcheck-el${{ matrix.el_version }}-whpg${{ env.WHPG_MAJORVERSION }}-${{ hashFiles('.github/workflows/whpg-ci.yml') }}
 
       - name: Install required packages
         run: |
@@ -145,7 +146,9 @@ jobs:
           if [[ "${WHPG_MAJORVERSION}" == "6" ]]; then
             yum install -y --setopt=keepcache=1 python2-devel
           else
-            ln -sf /usr/bin/pytest-3 /usr/bin/pytest || true
+            if [[ ! -e /usr/bin/pytest && -e /usr/bin/pytest-3 ]]; then
+              ln -s /usr/bin/pytest-3 /usr/bin/pytest
+            fi
           fi
 
       - name: Configure ccache
@@ -301,9 +304,10 @@ jobs:
           echo "GCC: $(gcc --version | head -1)"
           echo "CMake: $(cmake --version | head -1)"
 
-      - name: Setup ccache
+      - name: Create ccache directory
         run: mkdir -p ~/.ccache
-      - uses: actions/cache@v4
+      - name: Restore ccache
+        uses: actions/cache@v4
         with:
           path: ~/.ccache
           key: ccache-orca-el${{ matrix.el_version }}-whpg${{ env.WHPG_MAJORVERSION }}-${{ github.sha }}
@@ -314,7 +318,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /var/cache/dnf
-          key: packages-orca-el${{ matrix.el_version }}-${{ hashFiles('.github/workflows/whpg-ci.yml') }}
+          key: packages-orca-el${{ matrix.el_version }}-whpg${{ env.WHPG_MAJORVERSION }}-${{ hashFiles('.github/workflows/whpg-ci.yml') }}
 
       - name: Install build dependencies
         run: |
