@@ -39,6 +39,9 @@ jobs:
       attestations: write
       id-token: write
 
+    env:
+      IMAGE_NAME: ghcr.io/warehouse-pg/whpg7-rocky${{ matrix.el_version }}-build
+
     steps:
       - name: Checkout source repo
         uses: actions/checkout@v4
@@ -59,12 +62,10 @@ jobs:
       - name: Docker Build
         run: |
           cd src/dockerfiles
-          IMAGE_NAME=ghcr.io/warehouse-pg/whpg7-rocky${{ matrix.el_version }}-build
-          docker build -t $IMAGE_NAME --file Dockerfile.rh${{ matrix.el_version }} .
+          docker build -t $IMAGE_NAME --file Dockerfile.el${{ matrix.el_version }} .
 
       - name: Validate Image
         run: |
-          IMAGE_NAME=ghcr.io/warehouse-pg/whpg7-rocky${{ matrix.el_version }}-build
           docker run --rm $IMAGE_NAME bash -c "
             cat /etc/os-release | grep PRETTY_NAME
             gcc --version | head -1
@@ -73,6 +74,4 @@ jobs:
 
       - name: Docker Push
         if: ${{ inputs.push }}
-        run: |
-          IMAGE_NAME=ghcr.io/warehouse-pg/whpg7-rocky${{ matrix.el_version }}-build
-          docker push $IMAGE_NAME
+        run: docker push $IMAGE_NAME

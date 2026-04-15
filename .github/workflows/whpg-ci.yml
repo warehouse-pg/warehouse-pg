@@ -142,7 +142,7 @@ jobs:
       - name: Install required packages
         run: |
           # All build and CI dependencies are pre-installed in the container image
-          # (see dockerfiles/Dockerfile.rh*). Only WHPG 6 needs additional packages.
+          # (see dockerfiles/Dockerfile.el*). Only WHPG 6 needs additional packages.
           if [[ "${WHPG_MAJORVERSION}" == "6" ]]; then
             yum install -y --setopt=keepcache=1 python2-devel
           else
@@ -323,7 +323,7 @@ jobs:
       - name: Install build dependencies
         run: |
           # All build and CI dependencies are pre-installed in the container image
-          # (see dockerfiles/Dockerfile.rh*). Only WHPG 6 needs additional packages.
+          # (see dockerfiles/Dockerfile.el*). Only WHPG 6 needs additional packages.
           if [[ "${WHPG_MAJORVERSION}" == "6" ]]; then
             yum install -y --setopt=keepcache=1 python2-devel
           fi

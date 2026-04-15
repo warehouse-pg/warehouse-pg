@@ -1,0 +1,92 @@
+# Dockerfile for building WarehousePG on Rocky Linux 8
+
+FROM rockylinux:8 AS build-stage
+
+# metadata
+LABEL maintainer="ads@pgug.de"
+LABEL description="Dockerfile to build WarehousePG from source"
+LABEL org.opencontainers.image.title="WarehousePG Database"
+LABEL org.opencontainers.image.description="WarehousePG Database image"
+LABEL org.opencontainers.image.authors="bill.smith@enterprisedb.com"
+
+ENV LANG=en_US.UTF-8
+ENV LC_ALL=en_US.UTF-8
+
+# install required packages for building WarehousePG
+RUN dnf update -y \
+    && dnf groupinstall -y "Development Tools" \
+    && dnf install -y epel-release \
+    && dnf update -y
+
+RUN dnf config-manager --set-enabled powertools
+
+RUN dnf install -y \
+    apr apr-devel \
+    autoconf automake \
+    bison \
+    boost-devel \
+    bzip2 bzip2-devel \
+    ccache \
+    cmake cmake3 \
+    createrepo_c \
+    curl-devel libcurl-devel \
+    diffutils \
+    ed \
+    flex \
+    gcc gcc-c++ \
+    git \
+    glibc-langpack-en \
+    initscripts \
+    iproute iputils \
+    java-11-openjdk java-11-openjdk-devel \
+    krb5-devel krb5-server krb5-workstation \
+    less \
+    libevent-devel \
+    libtool \
+    libuuid-devel \
+    libuv-devel \
+    libyaml libyaml-devel \
+    libxml2-devel \
+    libzstd-devel \
+    llvm-devel clang-devel \
+    lsof \
+    lz4 lz4-devel \
+    m4 \
+    make \
+    maven \
+    nc \
+    net-tools \
+    openldap-devel \
+    openssh-server openssh-clients \
+    openssl-devel \
+    pam-devel \
+    passwd \
+    perl perl-core perl-Env perl-ExtUtils-Embed perl-IPC-Run perl-Test-Simple \
+    pinentry \
+    pkgconfig \
+    procps \
+    python3-devel python3-lxml python3-psutil python3-psycopg2 python3-pytest python3-pyyaml \
+    readline-devel \
+    rpm-build rpm-sign rpmdevtools \
+    rsync \
+    screen \
+    sudo \
+    tar \
+    thrift-devel \
+    tmux \
+    util-linux-ng \
+    vim \
+    wget \
+    which \
+    xerces-c xerces-c-devel \
+    zip unzip \
+    zlib-devel \
+    && dnf clean all
+
+# add gpadmin user for building the database
+RUN groupadd gpadmin \
+    && useradd -m -d /home/gpadmin -s /bin/bash -c "WarehousePG Database" -g gpadmin gpadmin \
+    && echo "gpadmin ALL=(ALL) NOPASSWD: ALL" | sudo EDITOR='tee -a' visudo
+
+# WHPG ABI tests expect to run as root, so we don't switch to gpadmin here
+#USER gpadmin
