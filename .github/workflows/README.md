@@ -1,6 +1,6 @@
-# WHPG CI Workflows
+# CI Workflows
 
-[![WHPG CI](https://github.com/warehouse-pg/warehouse-pg/actions/workflows/whpg-ci.yml/badge.svg)](https://github.com/warehouse-pg/warehouse-pg/actions/workflows/whpg-ci.yml)
+[![WarehousePG CI](https://github.com/warehouse-pg/warehouse-pg/actions/workflows/whpg-ci.yml/badge.svg)](https://github.com/warehouse-pg/warehouse-pg/actions/workflows/whpg-ci.yml)
 
 ## Overview
 
@@ -8,7 +8,7 @@ This directory contains GitHub Actions workflows for the Warehouse-PG project.
 
 ## Workflows
 
-### WHPG CI (`whpg-ci.yml`)
+### WarehousePG CI (`whpg-ci.yml`)
 
 Main CI workflow that runs regression tests and ORCA unit tests.
 

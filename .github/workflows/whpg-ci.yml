@@ -1,4 +1,4 @@
-name: WHPG CI
+name: WarehousePG CI
 
 # =============================================================================
 # Configuration: EL versions for each WHPG major version
@@ -12,8 +12,10 @@ env:
 
 run-name: >-
   ${{ github.event_name == 'workflow_dispatch'
-      && format('[7x] Manual: {0} on {1}', inputs.test_type == 'all' && 'all tests' || inputs.test_type, inputs.el_version == 'all' && 'all EL versions' || format('el{0}', inputs.el_version))
-      || format('[7x] {0} on {1}', github.event_name, github.ref_name) }}
+      && format('Manual: {0} on {1}', inputs.test_type == 'all' && 'all tests' || inputs.test_type, inputs.el_version == 'all' && 'all EL versions' || format('EL{0}', inputs.el_version))
+      || github.event_name == 'pull_request'
+      && format('PR #{0}: {1}', github.event.pull_request.number, github.event.pull_request.title)
+      || format('Push: {0}', github.ref_name) }}
 
 on:
   workflow_dispatch:
