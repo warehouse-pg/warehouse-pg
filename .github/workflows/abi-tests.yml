@@ -1,5 +1,12 @@
 name: ABI Tests
 
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch'
+      && '[ABI] Manual run'
+      || github.event_name == 'pull_request'
+      && format('[ABI] PR #{0}: {1}', github.event.pull_request.number, github.event.pull_request.title)
+      || format('[ABI] Push {0}: {1}', github.ref_name, github.event.head_commit.message) }}
+
 on:
   workflow_dispatch:
   pull_request:

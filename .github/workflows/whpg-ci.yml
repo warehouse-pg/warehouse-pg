@@ -12,10 +12,10 @@ env:
 
 run-name: >-
   ${{ github.event_name == 'workflow_dispatch'
-      && format('Manual: {0} on {1}', inputs.test_type == 'all' && 'all tests' || inputs.test_type, inputs.el_version == 'all' && 'all EL versions' || format('EL{0}', inputs.el_version))
+      && format('[CI] Manual: {0} on {1}', inputs.test_type == 'all' && 'all tests' || inputs.test_type, inputs.el_version == 'all' && 'all EL versions' || format('EL{0}', inputs.el_version))
       || github.event_name == 'pull_request'
-      && format('PR #{0}: {1}', github.event.pull_request.number, github.event.pull_request.title)
-      || format('Push: {0}', github.ref_name) }}
+      && format('[CI] PR #{0}: {1}', github.event.pull_request.number, github.event.pull_request.title)
+      || format('[CI] Push {0}: {1}', github.ref_name, github.event.head_commit.message) }}
 
 on:
   workflow_dispatch:
