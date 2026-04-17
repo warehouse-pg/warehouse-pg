@@ -22,15 +22,168 @@ PostgreSQL documentation
  <refsynopsisdiv>
 <synopsis>
 
-ALTER RESOURCE GROUP name SET group_attribute value
-where group_attribute is one of:
-   CONCURRENCY integer
-   CPU_MAX_PERCENT integer
-   CPU_WEIGHT integer
-   CPUSET tuple
-   MEMORY_QUOTA integer
+ALTER RESOURCE GROUP <replaceable class="parameter">name</replaceable> SET group_attribute <replaceable class="parameter">value</replaceable>
+
+<phrase>where <replaceable class="parameter">group_attribute</replaceable> is one of:</phrase>
+
+    CONCURRENCY <replaceable class="parameter">integer</replaceable>
+    CPU_MAX_PERCENT <replaceable class="parameter">integer</replaceable>
+    CPU_WEIGHT <replaceable class="parameter">integer</replaceable>
+    CPUSET <replaceable class="parameter">tuple</replaceable>
+    MEMORY_QUOTA <replaceable class="parameter">integer</replaceable>
+    MIN_COST <replaceable class="parameter">integer</replaceable>
+    IO_LIMIT <replaceable class="parameter">string</replaceable>
+    NAME <replaceable class="parameter">new_name</replaceable>
 
 </synopsis>
  </refsynopsisdiv>
+
+ <refsect1>
+  <title>Description</title>
+
+  <para>
+   <command>ALTER RESOURCE GROUP</command> changes the limits of a resource group.
+  </para>
+ </refsect1>
+
+ <refsect1>
+  <title>Parameters</title>
+
+  <variablelist>
+   <varlistentry>
+    <term><replaceable class="parameter">name</replaceable></term>
+    <listitem>
+     <para>
+      The name of the resource group to alter.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>CONCURRENCY</literal> <replaceable class="parameter">integer</replaceable></term>
+    <listitem>
+     <para>
+      The maximum number of concurrent transactions permitted in the resource group.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>CPU_MAX_PERCENT</literal> <replaceable class="parameter">integer</replaceable></term>
+    <listitem>
+     <para>
+      The maximum percentage of CPU resources available to this resource group.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>CPU_WEIGHT</literal> <replaceable class="parameter">integer</replaceable></term>
+    <listitem>
+     <para>
+      The CPU weight for this resource group.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>CPUSET</literal> <replaceable class="parameter">tuple</replaceable></term>
+    <listitem>
+     <para>
+      The CPU cores to be used by this resource group.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>MEMORY_QUOTA</literal> <replaceable class="parameter">integer</replaceable></term>
+    <listitem>
+     <para>
+      The memory quota for this resource group.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>MIN_COST</literal> <replaceable class="parameter">integer</replaceable></term>
+    <listitem>
+     <para>
+      The minimum cost threshold for queries to be managed by this resource group.
+      Queries with an estimated cost below this value bypass resource group limits.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>IO_LIMIT</literal> <replaceable class="parameter">string</replaceable></term>
+    <listitem>
+     <para>
+      The I/O limit specification for this resource group. The format is a
+      tablespace-specific limit string that controls read and write bandwidth
+      and IOPS.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>NAME</literal> <replaceable class="parameter">new_name</replaceable></term>
+    <listitem>
+     <para>
+      The new name for the resource group.
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </refsect1>
+
+ <refsect1>
+  <title>Examples</title>
+
+  <para>
+   Change the concurrency limit of a resource group:
+<programlisting>
+ALTER RESOURCE GROUP mygroup SET CONCURRENCY 20;
+</programlisting>
+  </para>
+
+  <para>
+   Rename a resource group:
+<programlisting>
+ALTER RESOURCE GROUP oldname SET NAME newname;
+</programlisting>
+  </para>
+
+  <para>
+   Set the minimum cost threshold:
+<programlisting>
+ALTER RESOURCE GROUP mygroup SET MIN_COST 500;
+</programlisting>
+  </para>
+
+  <para>
+   Set I/O limits for a resource group:
+<programlisting>
+ALTER RESOURCE GROUP mygroup SET IO_LIMIT 'pg_default:rbps=1000,wbps=1000,riops=100,wiops=100';
+</programlisting>
+  </para>
+ </refsect1>
+
+ <refsect1>
+  <title>Compatibility</title>
+
+  <para>
+   There is no <command>ALTER RESOURCE GROUP</command> statement in the SQL
+   standard.
+  </para>
+ </refsect1>
+
+ <refsect1>
+  <title>See Also</title>
+
+  <simplelist type="inline">
+   <member><xref linkend="sql-createresourcegroup"/></member>
+   <member><xref linkend="sql-dropresourcegroup"/></member>
+  </simplelist>
+ </refsect1>
 
 </refentry>
