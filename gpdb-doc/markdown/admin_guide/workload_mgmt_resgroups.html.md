@@ -297,16 +297,16 @@ Complete the following tasks on each node in your Greenplum Database cluster to 
     ```
     reboot now
     ```
-1. Create the directory `/sys/fs/cgroup/gpdb`, add all the necessary controllers, and ensure `gpadmin` user has read and write permission on it.
+1. Create the directory `/sys/fs/cgroup/gpdb.service`, add all the necessary controllers, and ensure `gpadmin` user has read and write permission on it.
     ```
-    mkdir -p /sys/fs/cgroup/gpdb
+    mkdir -p /sys/fs/cgroup/gpdb.service
     echo "+cpuset +io +cpu +memory" | tee -a /sys/fs/cgroup/cgroup.subtree_control
-    chown -R gpadmin:gpadmin /sys/fs/cgroup/gpdb
+    chown -R gpadmin:gpadmin /sys/fs/cgroup/gpdb.service
     ```
 
 You may encounter the error `Invalid argument` after running the above commands. This is because cgroups v2 do not support control of real-time processes, and the `cpu` controller can only be enabled when all the real-time processes are in the root cgroup. In this situation, find all real-time processes and move them to the root cgroup before you re-enable the controllers. 
 
-1. Ensure that `gpadmin` has write permission on `/sys/fs/cgroup/cgroup.procs`. This is required to move the Greenplum processes from the user slices to `/sys/fs/cgroup/gpdb/` after the cluster is started in order to manage the postmaster services and all its auxiliary processes.
+1. Ensure that `gpadmin` has write permission on `/sys/fs/cgroup/cgroup.procs`. This is required to move the Greenplum processes from the user slices to `/sys/fs/cgroup/gpdb.service/` after the cluster is started in order to manage the postmaster services and all its auxiliary processes.
     ```
     chmod a+w /sys/fs/cgroup/cgroup.procs
     ```

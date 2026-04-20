@@ -39,14 +39,14 @@ class GpResGroup(object):
         return msg
 
     @staticmethod
-    def validate_v2():
+    def validate_v2(cgroup_parent):
         pool = base.WorkerPool()
         gp_array = GpArray.initFromCatalog(dbconn.DbURL(), utility=True)
         host_list = list(set(gp_array.get_hostlist(True)))
         msg = None
 
         for h in host_list:
-            cmd = Command(h, "gpcheckresgroupv2impl", REMOTE, h)
+            cmd = Command(h, "gpcheckresgroupv2impl --cgroup_parent={}".format(cgroup_parent), REMOTE, h)
             pool.addCommand(cmd)
         pool.join()
 

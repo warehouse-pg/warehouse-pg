@@ -166,7 +166,15 @@ class Guc:
                 if msg is not None:
                     return msg
             elif newval == "'group-v2'":
-                msg = GpResGroup().validate_v2()
+                cgroup_parent_guc = get_gucs_from_database("gp_resource_group_cgroup_parent")
+                if not cgroup_parent_guc or len(cgroup_parent_guc) == 0:
+                    return "cannot get value of guc 'gp_resource_group_cgroup_parent'"
+
+                cgroup_parent = cgroup_parent_guc[0].value
+                if not cgroup_parent:
+                    return "cannot get value of guc 'gp_resource_group_cgroup_parent'"
+
+                msg = GpResGroup().validate_v2(cgroup_parent)
                 if msg is not None:
                     return msg
             elif newval != "'queue'" and newval != "'none'":
