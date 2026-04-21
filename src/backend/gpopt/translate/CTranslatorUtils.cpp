@@ -2478,7 +2478,6 @@ CTranslatorUtils::CreateDatumFromCDXLDatumGeneric(BOOL passed_by_val, ULONG leng
 	Datum result = 0;
 	if (passed_by_val)
 	{
-		GPOS_ASSERT(length >= 0);
 		GPOS_ASSERT(length <= sizeof(Datum));
 		// make sure the length passed in equals to the result of datum_generic_dxl->Length()
 		GPOS_ASSERT(length == datum_generic_dxl->Length());
@@ -2487,9 +2486,9 @@ CTranslatorUtils::CreateDatumFromCDXLDatumGeneric(BOOL passed_by_val, ULONG leng
 	else
 	{
 		Datum val = gpdb::DatumFromPointer(datum_generic_dxl->GetByteArray());
-		length = (ULONG) gpdb::DatumSize(val, false, length);
-		BYTE *buffer = (BYTE *) gpdb::GPDBAlloc(length);
-		memcpy(buffer, datum_generic_dxl->GetByteArray(), length);
+		ULONG new_length = (ULONG) gpdb::DatumSize(val, false, length);
+		BYTE *buffer = (BYTE *) gpdb::GPDBAlloc(new_length);
+		memcpy(buffer, datum_generic_dxl->GetByteArray(), new_length);
 		result = gpdb::DatumFromPointer(buffer);
 	}
 	return result;
