@@ -566,4 +566,18 @@ AppendOnlyScanDesc_TotalTupCount(AppendOnlyScanDesc scan)
     return totalrows;
 }
 
+
+/*
+ * Compute the number of tuples per "logical block" for TABLESAMPLE.
+ *
+ * For tables with small tuples (e.g., integers), this returns the maximum
+ * value (AO_MAX_TUPLES_PER_HEAP_BLOCK = 32768). For tables with large tuples
+ * (e.g., vector types where each tuple is several KB), this returns a
+ * proportionally smaller value, making sampling more efficient.
+ *
+ * The result is clamped to fit in an OffsetNumber (max 32768) to comply
+ * with the TSM API.
+ */
+extern int32 ao_compute_sample_tuples_per_block(Relation rel);
+
 #endif   /* CDBAPPENDONLYAM_H */
