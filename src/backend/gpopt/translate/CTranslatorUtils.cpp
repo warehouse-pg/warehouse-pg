@@ -2487,8 +2487,9 @@ CTranslatorUtils::CreateDatumFromCDXLDatumGeneric(BOOL passed_by_val, ULONG leng
 	{
 		Datum val = gpdb::DatumFromPointer(datum_generic_dxl->GetByteArray());
 		ULONG new_length = (ULONG) gpdb::DatumSize(val, false, length);
-		BYTE *buffer = (BYTE *) gpdb::GPDBAlloc(new_length);
+		CHAR *buffer = (CHAR *) gpdb::GPDBAlloc(new_length + 1);
 		memcpy(buffer, datum_generic_dxl->GetByteArray(), new_length);
+		buffer[new_length] = '\0';
 		result = gpdb::DatumFromPointer(buffer);
 	}
 	return result;
