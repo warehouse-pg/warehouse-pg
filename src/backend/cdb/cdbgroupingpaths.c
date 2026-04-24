@@ -2878,11 +2878,8 @@ fetch_multi_dqas_info(PlannerInfo *root,
 					if (!found)
 					{
 						add_column_to_pathtarget(proj_target, (Expr *) var, 0);
-						if (proj_target->sortgrouprefs == NULL)
-							proj_target->sortgrouprefs = (Index *) palloc0(list_length(proj_target->exprs) * sizeof(Index));
-						else
-							proj_target->sortgrouprefs = (Index *) repalloc(proj_target->sortgrouprefs,
-																			list_length(proj_target->exprs) * sizeof(Index));
+						proj_target->sortgrouprefs = (Index *) repalloc(proj_target->sortgrouprefs,
+																	list_length(proj_target->exprs) * sizeof(Index));
 					}
 				}
 			}
