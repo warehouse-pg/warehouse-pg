@@ -722,4 +722,20 @@ SELECT count(*) FROM (
   HAVING sum(sale_amt) >= 100000 AND count(distinct sale_date) >= 5
 )as sub;
 
+-- Test Multi-DQA with having clause
+SET optimizer_enable_multiple_distinct_aggs=on;
+
+EXPLAIN (COSTS OFF, VERBOSE)
+SELECT count(*) FROM (
+  SELECT cust_no, sum(distinct sale_amt), count(distinct sale_date) 
+  FROM sales GROUP BY cust_no 
+  HAVING sum(sale_amt) >= 100000 AND count(distinct sale_date) >= 5
+)as sub;
+
+SELECT count(*) FROM (
+  SELECT cust_no, sum(distinct sale_amt), count(distinct sale_date)
+  FROM sales GROUP BY cust_no
+  HAVING sum(sale_amt) >= 100000 AND count(distinct sale_date) >= 5
+)as sub;
+
 DROP TABLE sales;

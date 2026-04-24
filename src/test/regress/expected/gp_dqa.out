@@ -3658,4 +3658,46 @@ SELECT count(*) FROM (
    236
 (1 row)
 
+-- Test Multi-DQA with having clause
+SET optimizer_enable_multiple_distinct_aggs=on;
+EXPLAIN (COSTS OFF, VERBOSE)
+SELECT count(*) FROM (
+  SELECT cust_no, sum(distinct sale_amt), count(distinct sale_date) 
+  FROM sales GROUP BY cust_no 
+  HAVING sum(sale_amt) >= 100000 AND count(distinct sale_date) >= 5
+)as sub;
+                                                            QUERY PLAN                                                            
+----------------------------------------------------------------------------------------------------------------------------------
+ Finalize Aggregate
+   Output: count(*)
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         Output: (PARTIAL count(*))
+         ->  Partial Aggregate
+               Output: PARTIAL count(*)
+               ->  Finalize HashAggregate
+                     Output: sales.cust_no, NULL::numeric, NULL::bigint
+                     Group Key: sales.cust_no
+                     Filter: ((sum(sales.sale_amt) >= '100000'::numeric) AND (count(sales.sale_date) >= 5))
+                     ->  Partial HashAggregate
+                           Output: sales.cust_no, sales.sale_amt, sales.sale_date, PARTIAL sum(sales.sale_amt)
+                           Group Key: sales.cust_no, sales.sale_date
+                           ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                                 Output: sales.cust_no, sales.sale_amt, sales.sale_date
+                                 Hash Key: sales.cust_no
+                                 ->  Seq Scan on public.sales
+                                       Output: sales.cust_no, sales.sale_amt, sales.sale_date
+ Optimizer: Postgres-based planner
+ Settings: gp_eager_two_phase_agg = 'on', gp_enable_agg_distinct_pruning = 'off', gp_motion_cost_per_row = '1', optimizer = 'off'
+(20 rows)
+
+SELECT count(*) FROM (
+  SELECT cust_no, sum(distinct sale_amt), count(distinct sale_date)
+  FROM sales GROUP BY cust_no
+  HAVING sum(sale_amt) >= 100000 AND count(distinct sale_date) >= 5
+)as sub;
+ count 
+-------
+   236
+(1 row)
+
 DROP TABLE sales;
