@@ -685,3 +685,57 @@ DROP TABLE part_f;
 DROP TABLE partsupp_f;
 
 RESET enable_groupagg;
+
+-- Test DQA with having clauses
+CREATE TABLE sales (
+  sale_key   varchar(50),
+  cust_no    varchar(11),
+  sale_date  date,
+  sale_amt   numeric(18,3)
+) DISTRIBUTED BY (sale_key);
+
+INSERT INTO sales (sale_date, sale_key, cust_no, sale_amt)
+SELECT 
+    '2026-04-01'::date + ((c + r) % (c % 7 + 1)) AS sale_date,
+    'KEY-' || i AS sale_key,
+    'C' || lpad((c + 1)::text, 4, '0') AS cust_no,
+    ((c % 20 + 1) * 1000)::numeric(18,3) AS sale_amt
+FROM (
+    SELECT 
+        i,
+        (i - 1) % 1000 AS c,
+        (i - 1) / 1000 AS r
+    FROM generate_series(1, 10000) s(i)
+) sub;
+
+EXPLAIN (COSTS OFF, VERBOSE)
+SELECT count(*) FROM (
+  SELECT cust_no, sum(sale_amt), count(distinct sale_date) 
+  FROM sales GROUP BY cust_no 
+  HAVING sum(sale_amt) >= 100000 AND count(distinct sale_date) >= 5
+)as sub;
+
+-- Without this patch, this SQL will output 78, which is not correct
+SELECT count(*) FROM (
+  SELECT cust_no, sum(sale_amt), count(distinct sale_date) 
+  FROM sales GROUP BY cust_no 
+  HAVING sum(sale_amt) >= 100000 AND count(distinct sale_date) >= 5
+)as sub;
+
+-- Test Multi-DQA with having clause
+SET optimizer_enable_multiple_distinct_aggs=on;
+
+EXPLAIN (COSTS OFF, VERBOSE)
+SELECT count(*) FROM (
+  SELECT cust_no, sum(distinct sale_amt), count(distinct sale_date) 
+  FROM sales GROUP BY cust_no 
+  HAVING sum(sale_amt) >= 100000 AND count(distinct sale_date) >= 5
+)as sub;
+
+SELECT count(*) FROM (
+  SELECT cust_no, sum(distinct sale_amt), count(distinct sale_date)
+  FROM sales GROUP BY cust_no
+  HAVING sum(sale_amt) >= 100000 AND count(distinct sale_date) >= 5
+)as sub;
+
+DROP TABLE sales;

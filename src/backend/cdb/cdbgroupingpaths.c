@@ -2381,6 +2381,18 @@ recognize_dqa_type(cdb_agg_planning_context *ctx)
 									   PVC_INCLUDE_AGGREGATES |
 									   PVC_INCLUDE_WINDOWFUNCS |
 									   PVC_INCLUDE_PLACEHOLDERS);
+		/*
+		 * Also check havingQual for non-DISTINCT aggregates.
+		 * Normal aggregates in HAVING clause also need special handling.
+		 */
+		if (ctx->havingQual)
+		{
+			List *having_aggs = pull_var_clause((Node *) ctx->havingQual,
+											   PVC_INCLUDE_AGGREGATES |
+											   PVC_INCLUDE_WINDOWFUNCS |
+											   PVC_INCLUDE_PLACEHOLDERS);
+			varnos = list_concat(varnos, having_aggs);
+		}
 		foreach (lc, varnos)
 		{
 			Node	   *node = lfirst(lc);
@@ -2831,16 +2843,56 @@ fetch_multi_dqas_info(PlannerInfo *root,
 	}
 
 	/*
+	 * For MULTI_DQAS_WITHAGG, ensure Vars from normal aggregates are in proj_target
+	 * before calling find_dqa_expr_by_normal_agg. This is important when normal
+	 * aggregates appear only in HAVING clause and not in SELECT list.
+	 */
+	if (ctx->type == MULTI_DQAS_WITHAGG)
+	{
+		foreach(lc, ctx->partial_grouping_target->exprs)
+		{
+			Node *expr = (Node *) lfirst(lc);
+
+			if (is_normal_agg(expr))
+			{
+				List *vars = pull_var_clause(expr,
+											 PVC_RECURSE_AGGREGATES |
+											 PVC_RECURSE_WINDOWFUNCS |
+											 PVC_RECURSE_PLACEHOLDERS);
+				ListCell *vlc;
+				foreach(vlc, vars)
+				{
+					Var *var = (Var *) lfirst(vlc);
+					bool found = false;
+					ListCell *tlc;
+
+					foreach(tlc, proj_target->exprs)
+					{
+						if (equal(var, lfirst(tlc)))
+						{
+							found = true;
+							break;
+						}
+					}
+
+					if (!found)
+						add_column_to_pathtarget(proj_target, (Expr *) var, 0);
+				}
+			}
+		}
+	}
+
+	/*
 	 * Find DQAExpr for vars in normal agg, if not found
 	 * then use the first DQAExpr for these vars.
 	 *
 	 * select count(distinct a), count(distinct b), sum(b+e), sum(c+d) from t1;
 	 * 				|					|
 	 * 			DQAExpr_1			DQAExpr_2
-	 * 
+	 *
 	 * for sum(b+e), `b` is the distinct var in DQAExpr_2, so `b` and `e` will
 	 * be assinged to DQAExpr_2, also include sum(b+e)
-	 * 
+	 *
 	 * for sum(c+d), we could not find a DQAExpr for `c` and `d`, we just assign
 	 * these unrelated vars to DQAExpr_1
 	 */
@@ -2999,6 +3051,54 @@ fetch_single_dqa_info(PlannerInfo *root,
 												   dqa_group_exprs,
 												   num_total_input_rows,
 												   NULL);
+
+	/*
+	 * For SINGLE_DQA_WITHAGG, we need to ensure that Vars used by normal
+	 * aggregates (non-DISTINCT) are included in the input projection target.
+	 * Otherwise, partial aggregation in intermediate stages won't have access
+	 * to these columns. This is particularly important when normal aggregates
+	 * appear only in HAVING clause and not in SELECT list.
+	 */
+	if (ctx->type == SINGLE_DQA_WITHAGG && ctx->partial_grouping_target)
+	{
+		ListCell *lc;
+		foreach(lc, ctx->partial_grouping_target->exprs)
+		{
+			Node *expr = (Node *) lfirst(lc);
+
+			if (is_normal_agg(expr))
+			{
+				/* Extract Vars from the normal aggregate's arguments */
+				List *vars = pull_var_clause(expr,
+											 PVC_RECURSE_AGGREGATES |
+											 PVC_RECURSE_WINDOWFUNCS |
+											 PVC_RECURSE_PLACEHOLDERS);
+				ListCell *vlc;
+				foreach(vlc, vars)
+				{
+					Var *var = (Var *) lfirst(vlc);
+					bool found = false;
+					int idx = 0;
+					ListCell *tlc;
+
+					/* Check if this Var is already in input_proj_target */
+					foreach(tlc, info->input_proj_target->exprs)
+					{
+						if (equal(var, lfirst(tlc)))
+						{
+							found = true;
+							break;
+						}
+						idx++;
+					}
+
+					/* Add if not found */
+					if (!found)
+						add_column_to_pathtarget(info->input_proj_target, (Expr *) var, 0);
+				}
+			}
+		}
+	}
 }
 
 /*
