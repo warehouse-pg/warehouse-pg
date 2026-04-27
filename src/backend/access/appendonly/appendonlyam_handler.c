@@ -20,6 +20,7 @@
 #include "access/appendonlywriter.h"
 #include "access/heapam.h"
 #include "access/multixact.h"
+#include "access/reloptions.h"
 #include "access/tableam.h"
 #include "access/tsmapi.h"
 #include "access/tuptoaster.h"
@@ -2500,6 +2501,14 @@ ao_compute_sample_tuples_per_block(Relation rel)
 {
 	int32	avg_tuple_width;
 	int32	tuples_per_block;
+	bool	is_compressed = false;
+
+	if (rel->rd_options != NULL)
+	{
+		StdRdOptions *relopts = (StdRdOptions *) rel->rd_options;
+		is_compressed = (relopts->compresslevel > 0 &&
+							strcmp(relopts->compresstype, "none") != 0);
+	}
 
 	/* Get average tuple width from relation statistics */
 	avg_tuple_width = get_rel_data_width(rel, NULL);
@@ -2512,11 +2521,13 @@ ao_compute_sample_tuples_per_block(Relation rel)
 
 	/*
 	 * Compute tuples per block based on BLCKSZ.
-	 * Use a multiplier of 2 to account for compression and provide margin.
-	 * The idea is to make a "logical block" roughly correspond to
-	 * a physical storage block's worth of data.
+	 * - For compressed tables multiply by 2 as a rough estimate of the
+	 * compression ratio so that a "logical block" covers roughly one
+	 * physical varblock worth of on-disk bytes.
+	 * - For uncompressed tables, physical and logical sizes match, so
+	 * no multiplier is needed.
 	 */
-	tuples_per_block = (BLCKSZ * 2) / avg_tuple_width;
+	tuples_per_block = is_compressed ? (BLCKSZ * 2) / avg_tuple_width : BLCKSZ / avg_tuple_width;
 
 	/* Ensure reasonable bounds */
 	tuples_per_block = Max(tuples_per_block, 32);
