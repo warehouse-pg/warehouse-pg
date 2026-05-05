@@ -4252,3 +4252,21 @@ PARTITION BY RANGE (year)
   DEFAULT PARTITION outlying_years );
 
 drop table p3_sales;
+
+-- Test TargetList Relabel when pulling equivalence up
+CREATE TABLE test_pullup_ec (id varchar(10), val int)
+DISTRIBUTED BY (id)
+PARTITION BY RANGE (val) (START (1) END (11) EVERY (5));
+
+INSERT INTO test_pullup_ec VALUES ('a', 1), ('a', 6), ('b', 2), ('b', 7), ('c', 3);
+
+-- Trigger: Casting the distribution key to text in the SELECT clause (a binary-compatible cast).
+-- After `apply_scanjoin_target_to_paths` pushes down `id::text`,
+-- the child partition's `reltarget` becomes `RelabelType(Var(id, varchar))`.
+-- Old logic: `IsA(tlistexpr, Var)` checks the `RelabelType` -> fails -> marks as Strewn.
+-- New logic: Strips the `RelabelType` -> finds the underlying `Var` -> Pull-Up succeeds -> retains Hashed(id).
+EXPLAIN (COSTS OFF) SELECT id::text, count(*) FROM test_pullup_ec GROUP BY id::text;
+
+SELECT id::text, count(*) FROM test_pullup_ec GROUP BY id::text ORDER BY 1;
+
+DROP TABLE test_pullup_ec;

@@ -119,6 +119,7 @@ pullUpExpr_mutator(Node *node, void *context)
 		{
 			ListCell   *cell;
 			Expr	   *tlistexpr = NULL;
+			Expr	   *naked_tlistexpr = NULL;
 			AttrNumber	targetattno = 1;
 
 			foreach(cell, ctx->targetlist)
@@ -128,10 +129,20 @@ pullUpExpr_mutator(Node *node, void *context)
 				/*
 				 * We don't use equal(), because we want to ignore typmod.
 				 * A projection sometimes loses typmod, and that's OK.
+				 *
+				 * Also strip RelabelType nodes, consistent with
+				 * cdbpullup_findEclassInTargetList(), to handle
+				 * binary-compatible casts (e.g. varchar->text) that appear
+				 * in reltarget->exprs after apply_scanjoin_target_to_paths()
+				 * pushes projections down to partition child rels.
 				 */
-				if (IsA(tlistexpr, Var))
+				naked_tlistexpr = tlistexpr;
+				while (IsA(naked_tlistexpr, RelabelType))
+					naked_tlistexpr = (Expr *) ((RelabelType *) naked_tlistexpr)->arg;
+
+				if (IsA(naked_tlistexpr, Var))
 				{
-					Var		   *tlistvar = (Var *) tlistexpr;
+					Var		   *tlistvar = (Var *) naked_tlistexpr;
 
 					if (var->varno == tlistvar->varno &&
 						var->varattno == tlistvar->varattno &&
@@ -143,16 +154,31 @@ pullUpExpr_mutator(Node *node, void *context)
 			if (!cell)
 				goto fail;
 
-			/* Substitute the corresponding entry from newvarlist, if given. */
+			/*
+			 * Substitute the corresponding entry from newvarlist, if given.
+			 *
+			 * Strip RelabelType from the newvarlist entry for the same
+			 * reason as above: we are substituting the inner Var node only.
+			 * expression_tree_mutator re-wraps the result in RelabelType at
+			 * the outer level, so returning the full cast expression here
+			 * would produce a double-cast and fail the type Assert below.
+			 */
 			if (ctx->newvarlist)
-				newnode = (Node *) copyObject(list_nth(ctx->newvarlist,
-													   targetattno - 1));
+			{
+				Expr	   *newvar_entry = (Expr *) list_nth(ctx->newvarlist,
+															  targetattno - 1);
+
+				while (IsA(newvar_entry, RelabelType))
+					newvar_entry = (Expr *) ((RelabelType *) newvar_entry)->arg;
+				newnode = (Node *) copyObject(newvar_entry);
+			}
 
 			/* Substitute a Var node referencing the targetlist entry. */
 			else
 				newnode = (Node *) cdbpullup_make_expr(ctx->newvarno,
 													   targetattno,
-													   tlistexpr, true);
+													   naked_tlistexpr,
+													   true);
 		}
 
 		/* Make sure we haven't inadvertently changed the data type. */
