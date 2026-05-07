@@ -10,7 +10,8 @@ This directory contains GitHub Actions workflows for the Warehouse-PG project.
 
 ### WarehousePG CI (`whpg-ci.yml`)
 
-Main CI workflow that runs regression tests and ORCA unit tests.
+Main CI workflow for **WHPG 6** that runs regression tests and ORCA unit tests.
+`WHPG_MAJORVERSION` is hardcoded to `6`; there is no version detection step.
 
 #### Triggers
 
@@ -95,14 +96,14 @@ On manual dispatch, you can customize:
 |--------|---------|---------|
 | Test type | `all`, `installcheck`, `orca-unit-tests` | `all` |
 | Installcheck target | `installcheck-small`, `installcheck-world` | `installcheck-small` |
-| EL version | `all`, `7`, `8`, `9` | `8` |
+| EL version | `all`, `8`, `9` | `8` |
 | Debug on failure | `true`, `false` | `false` |
 
 #### Jobs
 
 | Job | Description | Timeout |
 |-----|-------------|---------|
-| `detect-config` | Detects WHPG version and test configuration | - |
+| `detect-config` | Determines EL versions matrix and installcheck target | - |
 | `installcheck` | Runs PostgreSQL regression tests | 120 min |
 | `orca-unit-tests` | Runs ORCA optimizer unit tests (see below) | 60 min |
 
@@ -120,9 +121,8 @@ Configuration is centralized at the top of the workflow file (single source of t
 
 ```yaml
 env:
-  WHPG7_EL_VERSIONS: '["8","9"]'            # WHPG 7 supported EL versions
-  WHPG6_EL_VERSIONS: '["7", "8", "9"]'  # WHPG 6 supported EL versions
-  DEFAULT_EL_VERSION: '["8"]'           # Default for feature branches
+  EL_VERSIONS: '["8", "9"]'                          # Supported EL versions
+  DEFAULT_EL_VERSION: '["8"]'                        # Default for feature branches
   DEFAULT_INSTALLCHECK_TARGET: 'installcheck-small'  # Default installcheck target
 ```
 
@@ -138,7 +138,7 @@ Supporting scripts are located in `.github/scripts/`:
 
 | Script | Description |
 |--------|-------------|
-| `detect-config.bash` | Detects WHPG version and determines test configuration |
+| `detect-config.bash` | Determines EL versions matrix and installcheck target |
 | `run-installcheck.bash` | Runs installcheck tests with proper environment setup |
 | `run-orca-tests.bash` | Runs ORCA unit tests using concourse scripts |
 
@@ -151,47 +151,28 @@ Scripts source the required environment explicitly rather than relying on `.bash
 
 ## Container Images
 
-Tests run in pre-built container images from `ghcr.io/warehouse-pg/`:
+Tests run in pre-built container images from `ghcr.io/warehouse-pg/`, selected per matrix EL version:
 
-| Image Pattern | Example |
-|---------------|---------|
-| `whpg{major}-rocky{el}-build` | `whpg7-rocky8-build` |
+| Image | EL |
+|-------|----|
+| `ghcr.io/warehouse-pg/whpg7-rocky8-build` | 8 |
+| `ghcr.io/warehouse-pg/whpg7-rocky9-build` | 9 |
 
-The image is automatically selected based on detected WHPG version and matrix EL version.
+> **Note:** The image name retains the `whpg7-` prefix even though this workflow targets WHPG 6 — the same Rocky Linux base image is reused for both, with WHPG 6-specific packages (xerces-c 3.1, python2-devel) installed at job time.
 
-## Version Detection
+## WHPG 6 Build Configuration
 
-WHPG version is detected from git tags using `git describe --tags --abbrev=0`. The major version (first number before the dot) determines which EL versions to test.
+### Xerces-c 3.1
 
-Example: Tag `7.2.1` → WHPG major version `7` → Uses `WHPG7_EL_VERSIONS`
+ORCA on WHPG 6 requires xerces-c **3.1**, but the distro ships 3.2. The `Install required packages` step removes the system `xerces-c` / `xerces-c-devel`, and the `Build Xerces with Python 2` step builds 3.1 from `src/backend/gporca/concourse/xerces-c` (a Python-2-only build script, which is why `python2-devel` is installed).
 
-## WHPG 6 Configuration
+### Dual Python: Python 2 build + Python 3 PL/Python
 
-### Dual Python Version Support
+The workflow runs `configure` twice:
 
-The workflow now supports building WHPG 6 with dual Python versions:
+1. **First pass — Python 2** (`Configure` step): builds the full tree against Python 2. WHPG 6 ships PyGreSQL 4.0 (Python-2-only) and the gpdemo / cluster-setup scripts assume `python` is Python 2, so the initial `make` + `make install` must use Python 2.
+2. **Second pass — Python 3** (`Rebuild PL/Python with Python 3` step): re-runs `configure` with `PYTHON=/usr/bin/python3`, then `make clean && make install` only inside `src/pl/plpython`. The final install therefore has a Python-2 server with a Python 3 PL/Python module, which the regression tests exercise.
 
-**Build with Python 2:**
-- Python 2 is configured for the initial build to support PyGreSQL 4.0 (Python 2-only library)
-- This ensures successful compilation of all dependencies including xerces-c
-- Step: `Setup Python 2 for initial build` sets `alternatives --set python /usr/bin/python2`
-
-**PL/Python Rebuild with Python 3:**
-- Immediately after `make install`, PL/Python is reconfigured and rebuilt with Python 3 (`PYTHON=/usr/bin/python3`)
-- This step: `Rebuild PL/Python with Python 3` provides dual Python support in the final installation
-- Reconfigures the entire build system with Python 3, then cleans and rebuilds only the PL/Python module
-
-**Demo Cluster Creation with Python 2:**
-- Demo cluster is created with Python 2 (default from initial setup)
-- Ensures compatibility with Python 2 cluster creation scripts
-
-**Installcheck Tests with Python 3:**
-- After demo cluster creation, Python 3 is activated via `alternatives --set python /usr/bin/python3`
-- Installcheck tests run with Python 3 environment
-- Tests the new Python 3 PL/Python module
-
-**New Steps Added:**
-- `Build Xerces with Python 2 (WHPG 6 only)` - Builds xerces-c 3.1 using Python 2 (required for WHPG 6)
-- `Setup Python 2 for initial build` - Sets `alternatives --set python /usr/bin/python2`
-- `Rebuild PL/Python with Python 3` - Reconfigures with Python 3 and rebuilds PL/Python module
-- `Set up Python 3 for plpython test cases` - Switches to Python 3 before running installcheck tests
+The `python` alternative is flipped accordingly:
+- `Set up Python 2 for initial build` — `alternatives --set python /usr/bin/python2` before `configure` and `make_cluster`.
+- `Set up Python 3 for plpython test cases` — `alternatives --set python /usr/bin/python3` before `installcheck`.

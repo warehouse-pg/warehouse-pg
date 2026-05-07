@@ -1,13 +1,12 @@
 name: WarehousePG CI
 
 # =============================================================================
-# Configuration: EL versions for each WHPG major version
+# Configuration: EL versions tested
 # Change these values to update which EL versions are tested
 # =============================================================================
 env:
-  WHPG7_EL_VERSIONS: '["8", "9"]'            # WHPG 7 supported EL versions
-  WHPG6_EL_VERSIONS: '["8", "9"]'      # WHPG 6 supported EL versions
-  DEFAULT_EL_VERSION: '["8"]'           # Default for feature branches
+  EL_VERSIONS: '["8", "9"]'                          # Supported EL versions
+  DEFAULT_EL_VERSION: '["8"]'                        # Default for feature branches
   DEFAULT_INSTALLCHECK_TARGET: 'installcheck-small'  # Default installcheck target
 
 run-name: >-
@@ -41,7 +40,6 @@ on:
         type: choice
         options:
           - 'all'
-          - '7'
           - '8'
           - '9'
       debug_enabled:
@@ -70,21 +68,17 @@ jobs:
     name: detect-config
     runs-on: ubuntu-latest
     outputs:
-      whpg_major: ${{ steps.detect.outputs.ver }}
       el_versions: ${{ steps.detect.outputs.el_versions }}
       installcheck_target: ${{ steps.detect.outputs.installcheck_target }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - id: detect
         env:
           EVENT_NAME: ${{ github.event_name }}
           BRANCH_NAME: ${{ github.ref_name }}
           INPUT_EL_VERSION: ${{ inputs.el_version }}
           INPUT_INSTALLCHECK_TARGET: ${{ inputs.installcheck_target }}
-          WHPG7_EL_VERSIONS: ${{ env.WHPG7_EL_VERSIONS }}
-          WHPG6_EL_VERSIONS: ${{ env.WHPG6_EL_VERSIONS }}
+          EL_VERSIONS: ${{ env.EL_VERSIONS }}
           DEFAULT_EL_VERSION: ${{ env.DEFAULT_EL_VERSION }}
           DEFAULT_INSTALLCHECK_TARGET: ${{ env.DEFAULT_INSTALLCHECK_TARGET }}
         run: bash .github/scripts/detect-config.bash
@@ -103,7 +97,7 @@ jobs:
       image: ghcr.io/warehouse-pg/whpg7-${{ format('rocky{0}', matrix.el_version) }}-build
       options: --privileged
     env:
-      WHPG_MAJORVERSION: ${{ needs.detect-config.outputs.whpg_major }}
+      WHPG_MAJORVERSION: '6'
       EL_VERSION: ${{ matrix.el_version }}
       TEST_TARGET: ${{ needs.detect-config.outputs.installcheck_target }}
       WHPG_SRC: ${{ github.workspace }}
@@ -143,17 +137,11 @@ jobs:
 
       - name: Install required packages
         run: |
-          # All build and CI dependencies are pre-installed in the container image
-          # (see dockerfiles/Dockerfile.el*). Only WHPG 6 needs additional packages.
-          if [[ "${WHPG_MAJORVERSION}" == "6" ]]; then
-            # Removing xerces-c as we need xerces 3.1
-            yum remove -y xerces-c xerces-c-devel
-            yum install -y --setopt=keepcache=1 python2-devel
-          else
-            if [[ ! -e /usr/bin/pytest && -e /usr/bin/pytest-3 ]]; then
-              ln -s /usr/bin/pytest-3 /usr/bin/pytest
-            fi
-          fi
+          # WHPG 6 require xerces-c 3.1, but the distro ships a newer 3.2.
+          # Remove the system package so we can install our own 3.1 build below.
+          yum remove -y xerces-c xerces-c-devel
+          # python2-devel is needed to build xerces-c 3.1 (its build script is Python 2).
+          yum install -y --setopt=keepcache=1 python2-devel
 
       - name: Configure ccache
         run: |
@@ -161,8 +149,10 @@ jobs:
           ccache --set-config=compression=true
           ccache --zero-stats
 
-      - name: Build Xerces with Python 2 (WHPG 6 only)
-        if: ${{ env.WHPG_MAJORVERSION == '6' }}
+      - name: Build Xerces with Python 2
+        # Build xerces-c 3.1 from the in-tree concourse helper (driven by a
+        # Python 2 script). This produces /usr/local/lib/libxerces-c-3.1.so,
+        # which ORCA links against.
         run: |
             mkdir -p xerces_patch/concourse
             cp -r ${WHPG_SRC}/src/backend/gporca/concourse/xerces-c xerces_patch/concourse
@@ -171,16 +161,16 @@ jobs:
             ln -s /usr/local/lib/libxerces-c-3.1.so /usr/lib64/libxerces-c-3.1.so
             ldconfig
 
-      - name: Set up Python 2 for initial build (WHPG 6 only)
-        if: ${{ env.WHPG_MAJORVERSION == '6' }}
+      - name: Set up Python 2 for initial build
         run: |
           alternatives --set python /usr/bin/python2
           python --version
 
-      # Note: --enable-mapreduce and --with-pythonsrc-ext are recognized
-      # only in whpg6. They produce "unrecognized options" warnings in whpg7 but don't
-      # fail the build. Kept for compatibility with both versions using a single workflow.
       - name: Configure
+        # First configure pass: build the whole tree against Python 2.
+        # WHPG 6 ships PyGreSQL 4.0 (Python 2 only) and gpdemo/cluster setup
+        # scripts assume `python` is Python 2, so the initial build + install
+        # must use Python 2. PL/Python is rebuilt against Python 3 below.
         run: |
           CC='ccache gcc -m64' \
           CFLAGS='-O2 -g3' LDFLAGS='-Wl,--enable-new-dtags -Wl,--export-dynamic' \
@@ -202,12 +192,16 @@ jobs:
         id: install
         run: make install -j$(nproc)
 
-      - name: Rebuild PL/Python with Python 3 (WHPG 6 only)
-        if: ${{ env.WHPG_MAJORVERSION == '6' }}
+      - name: Rebuild PL/Python with Python 3
+        # Second configure pass: re-run configure with PYTHON=python3 so the
+        # generated Makefiles point at Python 3 headers/libs, then rebuild only
+        # src/pl/plpython. This gives us a final install where the rest of the
+        # tree is the Python 2 build from above, but plpython3 is available for
+        # the regression tests (which exercise PL/Python under Python 3).
         run: |
           PYTHON=/usr/bin/python3 \
           CC='ccache gcc -m64' \
-          CFLAGS='-O2 -g3' LDFLAGS='-Wl,--enable-new-dtags -Wl,--export-dynamic ' \
+          CFLAGS='-O2 -g3' LDFLAGS='-Wl,--enable-new-dtags -Wl,--export-dynamic' \
           ./configure --disable-gpperfmon --with-gssapi --enable-mapreduce --enable-orafce --enable-ic-proxy \
                       --enable-orca --with-libxml --with-pythonsrc-ext --with-uuid=e2fs --with-pgport=5432 --enable-tap-tests \
                       --enable-debug-extensions --with-perl --with-python --with-openssl --with-pam --with-ldap --with-includes="" \
@@ -224,8 +218,7 @@ jobs:
           ln -s . gpdb_src                          # For concourse scripts compatibility
           ln -s "${WHPG_SRC}" /workspace            # Easy to remember path
           ln -s "${WHPG_SRC}" /home/gpadmin/gpdb_src  # Accessible from gpadmin home
-          # We delete the gpadmin user for WHPG 6 compatibility as the setup script doesn't handle existing users.
-          # The userdel command is harmless in WHPG 7 as well since the setup script will recreate the user if it doesn't exist.
+          # Delete the gpadmin user since the setup script doesn't handle existing users.
           userdel gpadmin 2>/dev/null || true
 
           export TEST_OS=centos
@@ -245,8 +238,7 @@ jobs:
           export WITH_MIRRORS=false
           make_cluster
 
-      - name: Set up Python 3 for plpython test cases (WHPG 6 only)
-        if: ${{ env.WHPG_MAJORVERSION == '6' }}
+      - name: Set up Python 3 for plpython test cases
         run: |
           alternatives --set python /usr/bin/python3
           python --version
@@ -332,7 +324,7 @@ jobs:
       image: ghcr.io/warehouse-pg/whpg7-${{ format('rocky{0}', matrix.el_version) }}-build
       options: --privileged
     env:
-      WHPG_MAJORVERSION: ${{ needs.detect-config.outputs.whpg_major }}
+      WHPG_MAJORVERSION: '6'
       EL_VERSION: ${{ matrix.el_version }}
       WHPG_SRC: ${{ github.workspace }}
 
@@ -367,13 +359,13 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          # All build and CI dependencies are pre-installed in the container image
-          # (see dockerfiles/Dockerfile.el*). Only WHPG 6 needs additional packages.
-          if [[ "${WHPG_MAJORVERSION}" == "6" ]]; then
-            yum remove -y xerces-c xerces-c-devel
-            yum install -y --setopt=keepcache=1 python2-devel
-            alternatives --set python /usr/bin/python2
-          fi
+          # ORCA requires xerces-c 3.1; remove the distro's newer build so
+          # run-orca-tests.bash can compile and link against 3.1 from source.
+          yum remove -y xerces-c xerces-c-devel
+          # python2-devel + `python -> python2` are needed for the xerces-c 3.1
+          # build script (Python 2 only).
+          yum install -y --setopt=keepcache=1 python2-devel
+          alternatives --set python /usr/bin/python2
 
       - name: Configure ccache
         run: |
