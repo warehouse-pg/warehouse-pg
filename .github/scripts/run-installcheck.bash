@@ -99,7 +99,7 @@ function run_installcheck() {
     # Run tests based on version
     if [[ "${WHPG_MAJORVERSION}" == 6* ]]; then
         # WHPG 6: Test PL/Python3 first
-        make installcheck -C "${WHPG_SRC}/src/pl/plpython" python_majorversion=3 || true
+        make installcheck -C "${WHPG_SRC}/src/pl/plpython" python_majorversion=3
 
         export TEST_PGFDW=1
         make -s ${test_target}

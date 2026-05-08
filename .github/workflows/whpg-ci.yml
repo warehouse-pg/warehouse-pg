@@ -49,19 +49,17 @@ on:
         type: boolean
   push:
     branches:
-      - main
       - 'WHPG_*_STABLE'
       - 'ci/**'           # Opt-in CI for feature branches (e.g., ci/my-feature)
   pull_request:
     branches:
-      - main
       - 'WHPG_*_STABLE'
 
 # Cancel in-progress runs when new commits are pushed to the same branch
-# Exception: main and stable branch runs are never cancelled to ensure every merge is validated
+# Exception: stable branch runs are never cancelled to ensure every merge is validated
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/WHPG_') }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/heads/WHPG_') }}
 
 jobs:
   detect-config:
