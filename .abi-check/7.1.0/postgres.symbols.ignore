@@ -12,3 +12,4 @@ TableAmRoutine
 MainLWLockNames
 choose_setop_type
 gp_resgroup_print_operator_memory_limits
+pqFunctionCall3
