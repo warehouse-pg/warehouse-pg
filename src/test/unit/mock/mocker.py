@@ -18,6 +18,11 @@ class CFile(object):
     # __attribute__((XXX)): it gets difficult to match arguments.
     # Remove it as it's a noisy keyword for us.
     attribute_pat = re.compile(r'__attribute__\s*\(\((format\s*\([^\)]+\)\s*|format_arg\s*\(\d+\)\s*|.+?)\)\)')
+    # pg_noinline is not understood by func_pat's modifier list; worse, its
+    # "inline" suffix makes func_pat re-match in the middle of the keyword,
+    # leaving a dangling "static pg_no" in the output.  Remove it like
+    # __attribute__ above.
+    noinline_pat = re.compile(r'\bpg_noinline\b')
     # #include <filename>.c
     include_c_pat = re.compile(r'#include ".+\.c"')
 
@@ -63,6 +68,7 @@ class CFile(object):
         if 'be-secure' not in self.path and 'guc_gp.c' not in self.path:
             content = CFile.s_comment_pat.sub('', content)
         content = CFile.attribute_pat.sub('', content)
+        content = CFile.noinline_pat.sub('', content)
         # .c files included in other .c files can generally not be found from
         # where the mock files are located which leads to compilation failure.
         # Since we thus far arent interested in handling this anyways, let's

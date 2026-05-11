@@ -115,6 +115,18 @@
 #endif
 
 /*
+ * pg_nodiscard means the compiler should warn if the result of a function
+ * call is ignored.  The name "nodiscard" is chosen in alignment with
+ * (possibly future) C and C++ standards.  For maximum compatibility, use it
+ * as a function declaration specifier, so it goes before the return type.
+ */
+#ifdef __GNUC__
+#define pg_nodiscard __attribute__((warn_unused_result))
+#else
+#define pg_nodiscard
+#endif
+
+/*
  * Place this macro before functions that should be allowed to make misaligned
  * accesses.  Think twice before using it on non-x86-specific code!
  * Testing can be done with "-fsanitize=alignment -fsanitize-trap=alignment"
