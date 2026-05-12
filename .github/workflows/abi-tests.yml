@@ -1,4 +1,11 @@
-name: WarehousePG ABI Tests
+name: ABI Tests
+
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch'
+      && '[ABI] Manual run'
+      || github.event_name == 'pull_request'
+      && format('[ABI] PR #{0}: {1}', github.event.pull_request.number, github.event.pull_request.title)
+      || format('[ABI] Push {0}: {1}', github.ref_name, github.event.head_commit.message) }}
 
 on:
   workflow_dispatch:
@@ -29,11 +36,12 @@ jobs:
       ABI_LIBS: ${{ steps.vars.outputs.ABI_LIBS }}
       ABI_HEADERS: ${{ steps.vars.outputs.ABI_HEADERS }}
       EXCEPTION_LISTS_COUNT: ${{ steps.check_exception_lists.outputs.EXCEPTION_LISTS_COUNT }}
+      WHPG_MAJOR_VERSION: ${{ steps.vars.outputs.WHPG_MAJOR_VERSION }}
     steps:
       - name: Fetch source
         uses: actions/checkout@v3
 
-      - name: Get WarehousePG version variables
+      - name: Get version variables
         id: vars
         run: |
           remote_repo='https://github.com/warehouse-pg/warehouse-pg.git'
@@ -44,6 +52,7 @@ jobs:
           echo "BASELINE_VERSION=${baseline_version#'refs/tags/'}" | tee -a $GITHUB_OUTPUT
           echo "ABI_LIBS=postgres" | tee -a $GITHUB_OUTPUT
           echo "ABI_HEADERS=." | tee -a $GITHUB_OUTPUT
+          echo "WHPG_MAJOR_VERSION=${baseline_version#'refs/tags/'}" | cut -d. -f1 | tee -a $GITHUB_OUTPUT
 
       - name: Check if exception list exists
         id: check_exception_lists
@@ -86,7 +95,7 @@ jobs:
           cp uctags-2023.07.05-linux-x86_64/bin/* /usr/bin/
           which ctags
 
-      - name: Download WarehousePG source code
+      - name: Download source code
         uses: actions/checkout@v3
         with:
           repository: ${{ matrix.repo }}
@@ -98,12 +107,18 @@ jobs:
         run: |
           yum install -y epel-release
           yum install -y abi-dumper
-
-      - name: Build WarehousePG
-        run: |
           yum install -y python2-devel
-          [ ! -f /usr/bin/python ] && alternatives --set python /usr/bin/python2
 
+      - name: Set up Python 2 for build (WHPG 6 only)
+        if: ${{ needs.abi-dump-setup.outputs.WHPG_MAJOR_VERSION == '6' }}
+        run: |
+          alternatives --set python /usr/bin/python2
+          python --version
+
+      - name: Build
+        run: |
+          ## TODO: Since abi-dumper requires debug info and it's hard to inject CFLAGS via the release
+          ## script, we have to manually configure it here. Probably we can improve it in future.
           pushd gpdb_src
           ## Actually we should build a xerces-c with C++98 and link it instead
           ## of the system package, but for ABI comparison, simply go other way.

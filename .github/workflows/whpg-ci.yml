@@ -1,0 +1,432 @@
+name: WarehousePG CI
+
+# =============================================================================
+# Configuration: EL versions tested
+# Change these values to update which EL versions are tested
+# =============================================================================
+env:
+  EL_VERSIONS: '["8", "9"]'                          # Supported EL versions
+  DEFAULT_EL_VERSION: '["8"]'                        # Default for feature branches
+  DEFAULT_INSTALLCHECK_TARGET: 'installcheck-small'  # Default installcheck target
+
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch'
+      && format('[CI] Manual: {0} on {1}', inputs.test_type == 'all' && 'all tests' || inputs.test_type, inputs.el_version == 'all' && 'all EL versions' || format('EL{0}', inputs.el_version))
+      || github.event_name == 'pull_request'
+      && format('[CI] PR #{0}: {1}', github.event.pull_request.number, github.event.pull_request.title)
+      || format('[CI] Push {0}: {1}', github.ref_name, github.event.head_commit.message) }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_type:
+        description: 'Which tests to run'
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - installcheck
+          - orca-unit-tests
+      installcheck_target:
+        description: 'Installcheck target (if installcheck selected)'
+        default: 'installcheck-small'
+        type: choice
+        options:
+          - installcheck-small
+          - installcheck-world
+      el_version:
+        description: 'Enterprise Linux version'
+        default: '8'
+        type: choice
+        options:
+          - 'all'
+          - '8'
+          - '9'
+      debug_enabled:
+        description: 'Enable tmate debugging on failure'
+        required: false
+        default: false
+        type: boolean
+  push:
+    branches:
+      - 'WHPG_*_STABLE'
+      - 'ci/**'           # Opt-in CI for feature branches (e.g., ci/my-feature)
+  pull_request:
+    branches:
+      - 'WHPG_*_STABLE'
+
+# Cancel in-progress runs when new commits are pushed to the same branch
+# Exception: stable branch runs are never cancelled to ensure every merge is validated
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/heads/WHPG_') }}
+
+jobs:
+  detect-config:
+    name: detect-config
+    runs-on: ubuntu-latest
+    outputs:
+      el_versions: ${{ steps.detect.outputs.el_versions }}
+      installcheck_target: ${{ steps.detect.outputs.installcheck_target }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: detect
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BRANCH_NAME: ${{ github.ref_name }}
+          INPUT_EL_VERSION: ${{ inputs.el_version }}
+          INPUT_INSTALLCHECK_TARGET: ${{ inputs.installcheck_target }}
+          EL_VERSIONS: ${{ env.EL_VERSIONS }}
+          DEFAULT_EL_VERSION: ${{ env.DEFAULT_EL_VERSION }}
+          DEFAULT_INSTALLCHECK_TARGET: ${{ env.DEFAULT_INSTALLCHECK_TARGET }}
+        run: bash .github/scripts/detect-config.bash
+
+  installcheck:
+    name: ${{ needs.detect-config.outputs.installcheck_target }} / EL${{ matrix.el_version }}
+    needs: detect-config
+    if: github.event_name != 'workflow_dispatch' || inputs.test_type == 'all' || inputs.test_type == 'installcheck'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        el_version: ${{ fromJson(needs.detect-config.outputs.el_versions) }}
+    container:
+      image: ghcr.io/warehouse-pg/whpg7-${{ format('rocky{0}', matrix.el_version) }}-build
+      options: --privileged
+    env:
+      WHPG_MAJORVERSION: '6'
+      EL_VERSION: ${{ matrix.el_version }}
+      TEST_TARGET: ${{ needs.detect-config.outputs.installcheck_target }}
+      WHPG_SRC: ${{ github.workspace }}
+      RESULTS_DIR: /tmp/test-results
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Container info
+        run: |
+          echo "OS: $(cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"')"
+          echo "Arch: $(uname -m)"
+          echo "GCC: $(gcc --version | head -1)"
+
+      # Cache key formats:
+      # - ccache: ccache-{job}-el{el_version}-whpg{whpg_major}-{github.sha}
+      # - packages: packages-{job}-el{el_version}-whpg{whpg_major}-{workflow_hash}
+      - name: Create ccache directory
+        run: mkdir -p ~/.ccache
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-installcheck-el${{ matrix.el_version }}-whpg${{ env.WHPG_MAJORVERSION }}-${{ github.sha }}
+          restore-keys: |
+            ccache-installcheck-el${{ matrix.el_version }}-whpg${{ env.WHPG_MAJORVERSION }}-
+
+      - name: Cache yum packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/dnf
+          key: packages-installcheck-el${{ matrix.el_version }}-whpg${{ env.WHPG_MAJORVERSION }}-${{ hashFiles('.github/workflows/whpg-ci.yml') }}
+
+      - name: Install required packages
+        run: |
+          # WHPG 6 require xerces-c 3.1, but the distro ships a newer 3.2.
+          # Remove the system package so we can install our own 3.1 build below.
+          yum remove -y xerces-c xerces-c-devel
+          # python2-devel is needed to build xerces-c 3.1 (its build script is Python 2).
+          yum install -y --setopt=keepcache=1 python2-devel
+
+      - name: Configure ccache
+        run: |
+          ccache --set-config=max_size=1G
+          ccache --set-config=compression=true
+          ccache --zero-stats
+
+      - name: Build Xerces with Python 2
+        # Build xerces-c 3.1 from the in-tree concourse helper (driven by a
+        # Python 2 script). This produces /usr/local/lib/libxerces-c-3.1.so,
+        # which ORCA links against.
+        run: |
+            mkdir -p xerces_patch/concourse
+            cp -r ${WHPG_SRC}/src/backend/gporca/concourse/xerces-c xerces_patch/concourse
+            /usr/bin/python2 xerces_patch/concourse/xerces-c/build_xerces.py --output_dir="/usr/local"
+            rm -rf build xerces_patch
+            ln -s /usr/local/lib/libxerces-c-3.1.so /usr/lib64/libxerces-c-3.1.so
+            ldconfig
+
+      - name: Set up Python 2 for initial build
+        run: |
+          alternatives --set python /usr/bin/python2
+          python --version
+
+      - name: Configure
+        # First configure pass: build the whole tree against Python 2.
+        # WHPG 6 ships PyGreSQL 4.0 (Python 2 only) and gpdemo/cluster setup
+        # scripts assume `python` is Python 2, so the initial build + install
+        # must use Python 2. PL/Python is rebuilt against Python 3 below.
+        run: |
+          CC='ccache gcc -m64' \
+          CFLAGS='-O2 -g3' LDFLAGS='-Wl,--enable-new-dtags -Wl,--export-dynamic' \
+          ./configure --disable-gpperfmon --with-gssapi --enable-mapreduce --enable-orafce --enable-ic-proxy \
+                      --enable-orca --with-libxml --with-pythonsrc-ext --with-uuid=e2fs --with-pgport=5432 --enable-tap-tests \
+                      --enable-debug-extensions --with-perl --with-python --with-openssl --with-pam --with-ldap --with-includes="" \
+                      --with-libraries="" --disable-rpath \
+                      --prefix=/usr/local/greenplum-db-devel \
+                      --mandir=/usr/local/greenplum-db-devel/man
+
+      - name: Build
+        id: build
+        run: make -j$(nproc)
+
+      - name: Show ccache stats
+        run: ccache --show-stats
+
+      - name: Install
+        id: install
+        run: make install -j$(nproc)
+
+      - name: Rebuild PL/Python with Python 3
+        # Second configure pass: re-run configure with PYTHON=python3 so the
+        # generated Makefiles point at Python 3 headers/libs, then rebuild only
+        # src/pl/plpython. This gives us a final install where the rest of the
+        # tree is the Python 2 build from above, but plpython3 is available for
+        # the regression tests (which exercise PL/Python under Python 3).
+        run: |
+          PYTHON=/usr/bin/python3 \
+          CC='ccache gcc -m64' \
+          CFLAGS='-O2 -g3' LDFLAGS='-Wl,--enable-new-dtags -Wl,--export-dynamic' \
+          ./configure --disable-gpperfmon --with-gssapi --enable-mapreduce --enable-orafce --enable-ic-proxy \
+                      --enable-orca --with-libxml --with-pythonsrc-ext --with-uuid=e2fs --with-pgport=5432 --enable-tap-tests \
+                      --enable-debug-extensions --with-perl --with-python --with-openssl --with-pam --with-ldap --with-includes="" \
+                      --with-libraries="" \
+                      --prefix=/usr/local/greenplum-db-devel \
+                      --mandir=/usr/local/greenplum-db-devel/man
+
+          make clean -C src/pl/plpython
+          make -j$(nproc) install -C src/pl/plpython
+
+      - name: Setup gpadmin user
+        run: |
+          # Create symlinks for easier navigation
+          ln -s . gpdb_src                          # For concourse scripts compatibility
+          ln -s "${WHPG_SRC}" /workspace            # Easy to remember path
+          ln -s "${WHPG_SRC}" /home/gpadmin/gpdb_src  # Accessible from gpadmin home
+          # Delete the gpadmin user since the setup script doesn't handle existing users.
+          userdel gpadmin 2>/dev/null || true
+
+          export TEST_OS=centos
+          ./concourse/scripts/setup_gpadmin_user.bash
+          chown -h gpadmin:gpadmin /workspace /home/gpadmin/gpdb_src
+          chown -R gpadmin:gpadmin /usr/local/greenplum-db-devel
+          chown -R gpadmin:gpadmin "${WHPG_SRC}"
+
+          # Note: Environment variables (WHPG_SRC, WHPG_MAJORVERSION, etc.) are passed
+          # via export + su (without login shell). Scripts source greenplum_path.sh and
+          # gpdemo-env.sh explicitly rather than relying on .bash_profile.
+
+      - name: Create demo cluster
+        id: cluster
+        run: |
+          source concourse/scripts/common.bash
+          export WITH_MIRRORS=false
+          make_cluster
+
+      - name: Set up Python 3 for plpython test cases
+        run: |
+          alternatives --set python /usr/bin/python3
+          python --version
+
+      - name: Run installcheck tests
+        id: tests
+        run: |
+          export MAKE_TEST_COMMAND="${TEST_TARGET}"
+          bash .github/scripts/run-installcheck.bash
+
+      - name: Installcheck Summary
+        if: always()
+        run: |
+          echo "## Installcheck Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| WHPG Version | ${WHPG_MAJORVERSION} |" >> $GITHUB_STEP_SUMMARY
+          echo "| EL Version | ${EL_VERSION} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Test Target | ${TEST_TARGET} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Step Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Step | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Build | ${{ steps.build.outcome == 'success' && '✅ passed' || '❌ failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Install | ${{ steps.install.outcome == 'success' && '✅ passed' || steps.install.outcome == 'skipped' && '⏭️ skipped' || '❌ failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Demo Cluster | ${{ steps.cluster.outcome == 'success' && '✅ passed' || steps.cluster.outcome == 'skipped' && '⏭️ skipped' || '❌ failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tests | ${{ steps.tests.outcome == 'success' && '✅ passed' || steps.tests.outcome == 'skipped' && '⏭️ skipped' || '❌ failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ccache Statistics" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          { ccache --show-stats 2>/dev/null | grep -iE "hit|miss|cache size|files in cache" >> $GITHUB_STEP_SUMMARY; } || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-el${{ matrix.el_version }}
+          path: |
+            /tmp/test-results/
+            src/test/regress/regression.diffs
+            src/test/regress/results/
+          if-no-files-found: ignore
+
+      - name: Upload cluster logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cluster-logs-el${{ matrix.el_version }}
+          path: |
+            gpAux/gpdemo/datadirs/qddir/demoDataDir-1/log/
+            gpAux/gpdemo/datadirs/dbfast*/demoDataDir*/log/
+            /home/gpadmin/gpAdminLogs/
+          if-no-files-found: ignore
+
+      # action-tmate uses apt-get internally which doesn't work on Rocky Linux.
+      # Manual installation via yum is required for this container.
+      - name: Install tmate
+        if: ${{ failure() && inputs.debug_enabled }}
+        run: |
+          yum install -y --setopt=keepcache=1 epel-release
+          yum install -y --setopt=keepcache=1 tmate
+
+      - name: Setup tmate session
+        if: ${{ failure() && inputs.debug_enabled }}
+        uses: mxschmitt/action-tmate@v3
+        timeout-minutes: 30
+        with:
+          install-dependencies: false
+
+  orca-unit-tests:
+    name: orca-unit-tests / EL${{ matrix.el_version }}
+    needs: detect-config
+    if: github.event_name != 'workflow_dispatch' || inputs.test_type == 'all' || inputs.test_type == 'orca-unit-tests'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        el_version: ${{ fromJson(needs.detect-config.outputs.el_versions) }}
+    container:
+      image: ghcr.io/warehouse-pg/whpg7-${{ format('rocky{0}', matrix.el_version) }}-build
+      options: --privileged
+    env:
+      WHPG_MAJORVERSION: '6'
+      EL_VERSION: ${{ matrix.el_version }}
+      WHPG_SRC: ${{ github.workspace }}
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Container info
+        run: |
+          echo "OS: $(cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"')"
+          echo "Arch: $(uname -m)"
+          echo "GCC: $(gcc --version | head -1)"
+          echo "CMake: $(cmake --version | head -1)"
+
+      - name: Create ccache directory
+        run: mkdir -p ~/.ccache
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-orca-el${{ matrix.el_version }}-whpg${{ env.WHPG_MAJORVERSION }}-${{ github.sha }}
+          restore-keys: |
+            ccache-orca-el${{ matrix.el_version }}-whpg${{ env.WHPG_MAJORVERSION }}-
+
+      - name: Cache yum packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/dnf
+          key: packages-orca-el${{ matrix.el_version }}-whpg${{ env.WHPG_MAJORVERSION }}-${{ hashFiles('.github/workflows/whpg-ci.yml') }}
+
+      - name: Install build dependencies
+        run: |
+          # ORCA requires xerces-c 3.1; remove the distro's newer build so
+          # run-orca-tests.bash can compile and link against 3.1 from source.
+          yum remove -y xerces-c xerces-c-devel
+          # python2-devel + `python -> python2` are needed for the xerces-c 3.1
+          # build script (Python 2 only).
+          yum install -y --setopt=keepcache=1 python2-devel
+          alternatives --set python /usr/bin/python2
+
+      - name: Configure ccache
+        run: |
+          ccache --set-config=max_size=500M
+          ccache --set-config=compression=true
+          ccache --zero-stats
+
+      - name: Run ORCA unit tests
+        id: tests
+        run: bash .github/scripts/run-orca-tests.bash
+        env:
+          # For cmake builds (ORCA)
+          CMAKE_C_COMPILER_LAUNCHER: ccache
+          CMAKE_CXX_COMPILER_LAUNCHER: ccache
+          # For autotools builds (xerces)
+          CC: ccache gcc
+          CXX: ccache g++
+
+      - name: Show ccache stats
+        run: ccache --show-stats
+
+      - name: ORCA Unit Tests Summary
+        if: always()
+        run: |
+          echo "## ORCA Unit Tests Summary 🧪" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| WHPG Version | ${WHPG_MAJORVERSION} |" >> $GITHUB_STEP_SUMMARY
+          echo "| EL Version | ${EL_VERSION} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Step Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Step | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| ORCA Unit Tests | ${{ steps.tests.outcome == 'success' && '✅ passed' || '❌ failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ccache Statistics" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          { ccache --show-stats 2>/dev/null | grep -iE "hit|miss|cache size|files in cache" >> $GITHUB_STEP_SUMMARY; } || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: orca-test-results-el${{ matrix.el_version }}
+          path: |
+            src/backend/gporca/build*/Testing/
+            src/backend/gporca/build*/CMakeFiles/CMakeOutput.log
+            src/backend/gporca/build*/CMakeFiles/CMakeError.log
+          if-no-files-found: ignore
+
+      # action-tmate uses apt-get internally which doesn't work on Rocky Linux.
+      # Manual installation via yum is required for this container.
+      - name: Install tmate
+        if: ${{ failure() && inputs.debug_enabled }}
+        run: |
+          yum install -y --setopt=keepcache=1 epel-release
+          yum install -y --setopt=keepcache=1 tmate
+
+      - name: Setup tmate session
+        if: ${{ failure() && inputs.debug_enabled }}
+        uses: mxschmitt/action-tmate@v3
+        timeout-minutes: 30
+        with:
+          install-dependencies: false
