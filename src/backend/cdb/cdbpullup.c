@@ -101,10 +101,22 @@ pullUpExpr_mutator(Node *node, void *context)
 			if (!tle)
 				goto fail;
 
-			/* Substitute the corresponding entry from newvarlist, if given. */
+			/*
+			 * Substitute the corresponding entry from newvarlist, if given.
+			 *
+			 * Strip RelabelType for the same reason as the RelOptInfo branch
+			 * below: we substitute the inner Var only and rely on
+			 * expression_tree_mutator to re-wrap RelabelType at the outer
+			 * level, avoiding a double-cast that would fail the type Assert.
+			 */
 			if (ctx->newvarlist)
-				newnode = (Node *) copyObject(list_nth(ctx->newvarlist,
-													   tle->resno - 1));
+			{
+				Expr	*newvar_entry = (Expr *) list_nth(ctx->newvarlist,
+																tle->resno - 1);
+				while (IsA(newvar_entry, RelabelType))
+					newvar_entry = (Expr *) ((RelabelType *) newvar_entry)->arg;
+				newnode = (Node *) copyObject(newvar_entry);
+			}
 
 			/* Substitute a Var node referencing the targetlist entry. */
 			else
@@ -142,7 +154,7 @@ pullUpExpr_mutator(Node *node, void *context)
 
 				if (IsA(naked_tlistexpr, Var))
 				{
-					Var		   *tlistvar = (Var *) naked_tlistexpr;
+					Var	*tlistvar = (Var *) naked_tlistexpr;
 
 					if (var->varno == tlistvar->varno &&
 						var->varattno == tlistvar->varattno &&
@@ -165,9 +177,8 @@ pullUpExpr_mutator(Node *node, void *context)
 			 */
 			if (ctx->newvarlist)
 			{
-				Expr	   *newvar_entry = (Expr *) list_nth(ctx->newvarlist,
+				Expr	*newvar_entry = (Expr *) list_nth(ctx->newvarlist,
 															  targetattno - 1);
-
 				while (IsA(newvar_entry, RelabelType))
 					newvar_entry = (Expr *) ((RelabelType *) newvar_entry)->arg;
 				newnode = (Node *) copyObject(newvar_entry);
