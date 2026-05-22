@@ -5,7 +5,7 @@ name: WarehousePG CI
 # Change these values to update which EL versions are tested
 # =============================================================================
 env:
-  EL_VERSIONS: '["8", "9"]'                          # Supported EL versions
+  EL_VERSIONS: '["8"]'                               # EL8 only — WHPG 6 needs Python 2 which EL9 does not ship; EL9 is covered by warehouse-pg-packaging
   DEFAULT_EL_VERSION: '["8"]'                        # Default for feature branches
   DEFAULT_INSTALLCHECK_TARGET: 'installcheck-small'  # Default installcheck target
 
@@ -41,7 +41,6 @@ on:
         options:
           - 'all'
           - '8'
-          - '9'
       debug_enabled:
         description: 'Enable tmate debugging on failure'
         required: false
@@ -86,7 +85,7 @@ jobs:
     needs: detect-config
     if: github.event_name != 'workflow_dispatch' || inputs.test_type == 'all' || inputs.test_type == 'installcheck'
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -106,7 +105,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
-          fetch-depth: 0
+          fetch-depth: 1024
+          fetch-tags: true
+
+      - name: Configure Git safe directory
+        run: |
+          git config --global --add safe.directory /__w/warehouse-pg/warehouse-pg
+          git config --global --add safe.directory $WHPG_SRC
 
       - name: Container info
         run: |
@@ -139,7 +144,32 @@ jobs:
           # Remove the system package so we can install our own 3.1 build below.
           yum remove -y xerces-c xerces-c-devel
           # python2-devel is needed to build xerces-c 3.1 (its build script is Python 2).
-          yum install -y --setopt=keepcache=1 python2-devel
+          # python2-pip is needed so we can pre-install gpload installcheck deps as
+          # root in the next step (see "Pre-install gpload test Python 2 dependencies").
+          yum install -y --setopt=keepcache=1 python2-devel python2-pip
+          # Ensure pip is present and pinned to the last Python 2-compatible releases.
+          # (pip >= 21 and setuptools >= 45 dropped Python 2 support.)
+          python2 -m ensurepip --upgrade || true
+          python2 -m pip install --upgrade 'pip<21' 'setuptools<45'
+
+      - name: Pre-install gpload test Python 2 dependencies
+        # gpMgmt/bin/gpload_test/Makefile (installcheck target) runs
+        #   python2 -m pip install -r pytest_requirement.txt
+        #   python2 -m pip install pytest-order==0.11.0
+        #   python2 -m pip install lxml
+        # as part of `make installcheck-world`. By the time that runs, the build
+        # has dropped privileges to gpadmin (run-installcheck.bash does `su gpadmin`),
+        # so pip can no longer write to /usr/lib/python2.7/site-packages/ and fails
+        # with OSError: [Errno 13] Permission denied.
+        #
+        # Install the same packages here as root so the in-Makefile pip commands
+        # later become no-ops ("Requirement already satisfied") under gpadmin.
+        # site-packages is world-readable, so gpadmin can import them at test time.
+        working-directory: ${{ github.workspace }}/gpMgmt/bin/gpload_test
+        run: |
+          python2 -m pip install -r pytest_requirement.txt
+          python2 -m pip install pytest-order==0.11.0
+          python2 -m pip install lxml
 
       - name: Configure ccache
         run: |
@@ -233,18 +263,21 @@ jobs:
         id: cluster
         run: |
           source concourse/scripts/common.bash
-          export WITH_MIRRORS=false
+          export WITH_MIRRORS=true
           make_cluster
 
-      - name: Set up Python 3 for plpython test cases
+      - name: Configure Git safe directory for gpadmin
         run: |
-          alternatives --set python /usr/bin/python3
-          python --version
+          # Also run as gpadmin user since tests execute as that user
+          su - gpadmin -c "git config --global --add safe.directory /__w/warehouse-pg/warehouse-pg"
+          su - gpadmin -c "git config --global --add safe.directory $WHPG_SRC"
 
       - name: Run installcheck tests
         id: tests
         run: |
-          export MAKE_TEST_COMMAND="${TEST_TARGET}"
+          export TEST_TARGET=${TEST_TARGET}
+          export MAKE_FLAGS="-k"
+          export PGOPTIONS="-c optimizer=on"
           bash .github/scripts/run-installcheck.bash
 
       - name: Installcheck Summary
