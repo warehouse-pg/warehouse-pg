@@ -1003,7 +1003,7 @@ citerdissect(struct vars * v,
 		max_matches = t->max;
 	if (max_matches < min_matches)
 		max_matches = min_matches;
-	endpts = (chr **) MALLOC((max_matches + 1) * sizeof(chr *));
+	endpts = MALLOC_ARRAY(chr *, max_matches + 1);
 	if (endpts == NULL)
 		return REG_ESPACE;
 	endpts[0] = begin;
@@ -1204,7 +1204,7 @@ creviterdissect(struct vars * v,
 		max_matches = t->max;
 	if (max_matches < min_matches)
 		max_matches = min_matches;
-	endpts = (chr **) MALLOC((max_matches + 1) * sizeof(chr *));
+	endpts = MALLOC_ARRAY(chr *, max_matches + 1);
 	if (endpts == NULL)
 		return REG_ESPACE;
 	endpts[0] = begin;

@@ -85,6 +85,7 @@
 #include "catalog/pg_collation.h"
 #include "mb/pg_wchar.h"
 #include "parser/scansup.h"
+#include "storage/shmem.h"		/* for mul_size() */
 #include "utils/builtins.h"
 #include "utils/date.h"
 #include "utils/datetime.h"
@@ -3298,7 +3299,7 @@ datetime_to_char_body(TmToChar *tmtc, text *fmt, bool is_interval, Oid collid)
 	/*
 	 * Allocate workspace for result as C string
 	 */
-	result = palloc((fmt_len * DCH_MAX_ITEM_SIZ) + 1);
+	result = palloc(mul_size(fmt_len, DCH_MAX_ITEM_SIZ) + 1);
 	*result = '\0';
 
 	/*
@@ -3307,7 +3308,7 @@ datetime_to_char_body(TmToChar *tmtc, text *fmt, bool is_interval, Oid collid)
 	 */
 	if (fmt_len > DCH_CACHE_SIZE)
 	{
-		format = (FormatNode *) palloc((fmt_len + 1) * sizeof(FormatNode));
+		format = (FormatNode *) palloc(mul_size(fmt_len + 1, sizeof(FormatNode)));
 		incache = FALSE;
 
 		parse_format(format, fmt_str, DCH_keywords,
@@ -3568,7 +3569,7 @@ do_to_timestamp(text *date_txt, text *fmt,
 			 */
 			incache = FALSE;
 
-			format = (FormatNode *) palloc((fmt_len + 1) * sizeof(FormatNode));
+			format = (FormatNode *) palloc(mul_size(fmt_len + 1, sizeof(FormatNode)));
 
 			parse_format(format, fmt_str, DCH_keywords,
 						 DCH_suff, DCH_index, DCH_TYPE, NULL,
@@ -3994,7 +3995,7 @@ NUM_cache(int len, NUMDesc *Num, text *pars_str, bool *shouldFree)
 	 */
 	if (len > NUM_CACHE_SIZE)
 	{
-		format = (FormatNode *) palloc((len + 1) * sizeof(FormatNode));
+		format = (FormatNode *) palloc(mul_size(len + 1, sizeof(FormatNode)));
 
 		*shouldFree = true;
 
