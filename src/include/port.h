@@ -492,6 +492,13 @@ extern int	pqGethostbyname(const char *name,
 							struct hostent **result,
 							int *herrno);
 
+/*
+ * timingsafe_bcmp() compares len bytes from b1 and b2 in constant time.
+ * Returns 0 if equal, non-zero otherwise.  Used for password / token
+ * comparisons that must resist timing attacks.
+ */
+extern int	timingsafe_bcmp(const void *b1, const void *b2, size_t len);
+
 extern void pg_qsort(void *base, size_t nel, size_t elsize,
 					 int (*cmp) (const void *, const void *));
 extern int	pg_qsort_strcmp(const void *a, const void *b);
