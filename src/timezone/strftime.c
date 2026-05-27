@@ -118,6 +118,14 @@ static char *_fmt(const char *, const struct pg_tm *, char *, const char *,
 static char *_yconv(int, int, bool, bool, char *, char const *);
 
 
+/*
+ * Unlike standard strftime(), we guarantee to provide a null-terminated
+ * result even on failure, so long as maxsize > 0.  If we overrun the buffer,
+ * return an empty string rather than risking mis-encoded multibyte output.
+ * (Since this module only supports C locale, you might think multibyte
+ * characters are impossible --- but the time zone name printed by %Z comes
+ * from outside and could contain such.)
+ */
 size_t
 pg_strftime(char *s, size_t maxsize, const char *format, const struct pg_tm *t)
 {
@@ -126,7 +134,11 @@ pg_strftime(char *s, size_t maxsize, const char *format, const struct pg_tm *t)
 
 	p = _fmt(format, t, s, s + maxsize, &warn);
 	if (p == s + maxsize)
+	{
+		if (maxsize > 0)
+			*s = '\0';
 		return 0;
+	}
 	*p = '\0';
 	return p - s;
 }
