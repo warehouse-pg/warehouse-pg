@@ -440,32 +440,51 @@ boolop(PG_FUNCTION_ARGS)
 static void
 findoprnd(ITEM *ptr, int32 *pos)
 {
+	int32		mypos;
+
 	/* since this function recurses, it could be driven to stack overflow. */
 	check_stack_depth();
 
+	/* get the position this call is supposed to update */
+	mypos = *pos;
+	Assert(mypos >= 0);
+
+	/* in all cases, we should decrement *pos to advance over this item */
+	(*pos)--;
+
 #ifdef BS_DEBUG
-	elog(DEBUG3, (ptr[*pos].type == OPR) ?
-		 "%d  %c" : "%d  %d", *pos, ptr[*pos].val);
+	elog(DEBUG3, (ptr[mypos].type == OPR) ?
+		 "%d  %c" : "%d  %d", mypos, ptr[mypos].val);
 #endif
-	if (ptr[*pos].type == VAL)
+
+	if (ptr[mypos].type == VAL)
 	{
-		ptr[*pos].left = 0;
-		(*pos)--;
+		/* base case: a VAL has no operand, so just set its left to zero */
+		ptr[mypos].left = 0;
 	}
-	else if (ptr[*pos].val == (int32) '!')
+	else if (ptr[mypos].val == (int32) '!')
 	{
-		ptr[*pos].left = -1;
-		(*pos)--;
+		/* unary operator, likewise easy: operand is just before it */
+		ptr[mypos].left = -1;
+		/* recurse to scan operand */
 		findoprnd(ptr, pos);
 	}
 	else
 	{
-		ITEM	   *curitem = &ptr[*pos];
-		int32		tmp = *pos;
+		/* binary operator */
+		int32		delta;
 
-		(*pos)--;
+		/* recurse to scan right operand */
 		findoprnd(ptr, pos);
-		curitem->left = *pos - tmp;
+		/* fill left with offset to left operand's top */
+		delta = *pos - mypos;
+		Assert(delta < 0);
+		if (unlikely(delta < PG_INT16_MIN))
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("query_int expression is too complex")));
+		ptr[mypos].left = (int16) delta;
+		/* recurse to scan left operand */
 		findoprnd(ptr, pos);
 	}
 }
