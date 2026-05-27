@@ -2,6 +2,7 @@
 
 #include "fmgr.h"
 #include "hstore/hstore.h"
+#include "storage/shmem.h"		/* for mul_size() */
 #include "plperl.h"
 #include "plperl_helpers.h"
 
@@ -121,7 +122,7 @@ plperl_to_hstore(PG_FUNCTION_ARGS)
 
 	pcount = hv_iterinit(hv);
 
-	pairs = palloc(pcount * sizeof(Pairs));
+	pairs = (Pairs *) palloc(mul_size(pcount, sizeof(Pairs)));
 
 	i = 0;
 	while ((he = hv_iternext(hv)))
