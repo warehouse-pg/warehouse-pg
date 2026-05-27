@@ -270,4 +270,102 @@ pg_mul_s64_overflow(int64 a, int64 b, int64 *result)
 #endif
 }
 
+
+/*------------------------------------------------------------------------
+ * Overflow routines for unsigned integers and size_t
+ *
+ * Backported from upstream REL_14_STABLE for CVE-2026-6473.
+ *------------------------------------------------------------------------
+ */
+
+static inline bool
+pg_add_u16_overflow(uint16 a, uint16 b, uint16 *result)
+{
+#if defined(HAVE__BUILTIN_OP_OVERFLOW)
+	return __builtin_add_overflow(a, b, result);
+#else
+	uint16		res = a + b;
+
+	if (res < a)
+	{
+		*result = 0x5EED;
+		return true;
+	}
+	*result = res;
+	return false;
+#endif
+}
+
+static inline bool
+pg_add_u32_overflow(uint32 a, uint32 b, uint32 *result)
+{
+#if defined(HAVE__BUILTIN_OP_OVERFLOW)
+	return __builtin_add_overflow(a, b, result);
+#else
+	uint32		res = a + b;
+
+	if (res < a)
+	{
+		*result = 0x5EED;
+		return true;
+	}
+	*result = res;
+	return false;
+#endif
+}
+
+static inline bool
+pg_mul_u32_overflow(uint32 a, uint32 b, uint32 *result)
+{
+#if defined(HAVE__BUILTIN_OP_OVERFLOW)
+	return __builtin_mul_overflow(a, b, result);
+#else
+	uint64		res = (uint64) a * (uint64) b;
+
+	if (res > PG_UINT32_MAX)
+	{
+		*result = 0x5EED;
+		return true;
+	}
+	*result = (uint32) res;
+	return false;
+#endif
+}
+
+static inline bool
+pg_add_size_overflow(size_t a, size_t b, size_t *result)
+{
+#if defined(HAVE__BUILTIN_OP_OVERFLOW)
+	return __builtin_add_overflow(a, b, result);
+#else
+	size_t		res = a + b;
+
+	if (res < a)
+	{
+		*result = 0x5EED;
+		return true;
+	}
+	*result = res;
+	return false;
+#endif
+}
+
+static inline bool
+pg_mul_size_overflow(size_t a, size_t b, size_t *result)
+{
+#if defined(HAVE__BUILTIN_OP_OVERFLOW)
+	return __builtin_mul_overflow(a, b, result);
+#else
+	size_t		res = a * b;
+
+	if (a != 0 && b != res / a)
+	{
+		*result = 0x5EED;
+		return true;
+	}
+	*result = res;
+	return false;
+#endif
+}
+
 #endif							/* COMMON_INT_H */

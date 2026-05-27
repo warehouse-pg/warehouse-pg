@@ -76,6 +76,14 @@
 #ifndef FREE
 #define FREE(p)		free(VS(p))
 #endif
+#ifndef MALLOC_ARRAY
+/* we don't depend on calloc's zeroing behavior, we do need overflow check */
+#define MALLOC_ARRAY(type, n) ((type *) calloc(sizeof(type), n))
+#endif
+#ifndef REALLOC_ARRAY
+/* XXX this definition does not provide the desired overflow check */
+#define REALLOC_ARRAY(p, type, n) ((type *) REALLOC(p, sizeof(type) * (n)))
+#endif
 
 /* want size of a char in bits, and max value in bounded quantifiers */
 #ifndef _POSIX2_RE_DUP_MAX
