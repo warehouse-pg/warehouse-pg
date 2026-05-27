@@ -1038,6 +1038,10 @@ AddNewAttributeTuples(Oid new_rel_oid,
 
 		InsertPgAttributeTuple(rel, attr, indstate);
 
+		/* A dropped column has no datatype or collation to depend on */
+		if (attr->attisdropped)
+			continue;
+
 		/* Add dependency info */
 		myself.classId = RelationRelationId;
 		myself.objectId = new_rel_oid;
