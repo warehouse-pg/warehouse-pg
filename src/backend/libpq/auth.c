@@ -3313,7 +3313,7 @@ CheckRADIUSAuth(Port *port)
 		}
 		pfree(cryptvector);
 
-		if (memcmp(receivepacket->vector, encryptedpassword, RADIUS_VECTOR_LENGTH) != 0)
+		if (timingsafe_bcmp(receivepacket->vector, encryptedpassword, RADIUS_VECTOR_LENGTH) != 0)
 		{
 			ereport(LOG,
 					(errmsg("RADIUS response has incorrect MD5 signature")));
