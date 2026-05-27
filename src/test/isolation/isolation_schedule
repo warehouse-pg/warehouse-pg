@@ -51,3 +51,4 @@ test: ao-repeatable-read-vacuum
 test: vacuum-full-permissions
 
 test: ao-insert-eof create_index_hot udf-insert-deadlock heap-repeatable-read ao-repeatable-read
+test: ddl-dependency-locking

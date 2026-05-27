@@ -17,6 +17,8 @@
 #include "access/genam.h"
 #include "access/heapam.h"
 #include "access/htup_details.h"
+#include "access/sysattr.h"
+#include "catalog/catalog.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_constraint.h"
@@ -24,13 +26,18 @@
 #include "catalog/pg_extension.h"
 #include "commands/extension.h"
 #include "miscadmin.h"
+#include "storage/lmgr.h"
+#include "storage/lock.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "utils/syscache.h"
 #include "utils/tqual.h"
 
 
 static bool isObjectPinned(const ObjectAddress *object, Relation rel);
+static void dependencyLockAndCheckObject(Oid classId, Oid objectId);
+static bool dependencyLockHeldByMe(const LOCKTAG *tag);
 
 
 /*
@@ -91,6 +98,13 @@ recordMultipleDependencies(const ObjectAddress *depender,
 		 */
 		if (!isObjectPinned(referenced, dependDesc))
 		{
+			/*
+			 * Make sure the new referenced object doesn't go away while we
+			 * record the dependency.  DROP routines should lock the object
+			 * exclusively before they check dependencies.
+			 */
+			dependencyLockAndCheckObject(referenced->classId, referenced->objectId);
+
 			/*
 			 * Record the Dependency.  Note we don't bother to check for
 			 * duplicate dependencies; there's no harm in them.
@@ -396,6 +410,13 @@ changeDependencyFor(Oid classId, Oid objectId,
 
 	newIsPinned = isObjectPinned(&objAddr, depRel);
 
+	/*
+	 * Make sure the new referenced object doesn't go away while we record the
+	 * dependency.
+	 */
+	if (!newIsPinned)
+		dependencyLockAndCheckObject(refClassId, newRefObjectId);
+
 	/* Now search for dependency records */
 	ScanKeyInit(&key[0],
 				Anum_pg_depend_classid,
@@ -491,6 +512,152 @@ isObjectPinned(const ObjectAddress *object, Relation rel)
 	systable_endscan(scan);
 
 	return ret;
+}
+
+
+/*
+ * dependencyLockHeldByMe
+ *
+ * Does this backend hold a lock of any mode on the given object?  Every lock
+ * mode conflicts with the AccessExclusiveLock that DROP takes.
+ */
+static bool
+dependencyLockHeldByMe(const LOCKTAG *tag)
+{
+	LOCKMODE	mode;
+
+	for (mode = AccessShareLock; mode <= AccessExclusiveLock; mode++)
+	{
+		LOCALLOCKTAG localtag;
+		LOCALLOCK  *locallock;
+
+		MemSet(&localtag, 0, sizeof(localtag)); /* must clear padding */
+		localtag.lock = *tag;
+		localtag.mode = mode;
+
+		locallock = (LOCALLOCK *) hash_search(LockMethodLocalHash,
+											  (void *) &localtag,
+											  HASH_FIND, NULL);
+		if (locallock && locallock->nLocks > 0)
+			return true;
+	}
+	return false;
+}
+
+/*
+ * dependencyLockAndCheckObject
+ *
+ * Lock the object that we are about to record a dependency on.  After it's
+ * locked, verify that it hasn't been dropped while we weren't looking.  If it
+ * has been dropped, throw an an error.
+ *
+ * If the caller already holds a lock that conflicts with DROP
+ * (AccessShareLock or stronger), this does nothing.  Callers should acquire
+ * locks already when they look up the dependent objects, but many callers
+ * currently do not.  This is a backstop to make sure that we don't record a
+ * bogus reference permanently in the catalogs in that case.  In the future,
+ * after we have tightened up all the callers to acquire locks earlier, this
+ * could just verify that the object is already locked and throw an error if
+ * not.
+ */
+static void
+dependencyLockAndCheckObject(Oid classId, Oid objectId)
+{
+	LOCKTAG		tag;
+
+	if (classId != RelationRelationId)
+	{
+		int			cache;
+		Relation	rel;
+		SysScanDesc scan;
+		ScanKeyData skey;
+		HeapTuple	tuple;
+
+		SET_LOCKTAG_OBJECT(tag,
+						   MyDatabaseId,
+						   classId,
+						   objectId,
+						   0);
+
+		if (dependencyLockHeldByMe(&tag))
+			return;
+
+		/* Assume we should lock the whole object not a sub-object */
+		LockDatabaseObject(classId, objectId, 0, AccessShareLock);
+
+		/*
+		 * Without a description of the catalog we cannot look the object up;
+		 * the lock alone still keeps a DROP out.
+		 */
+		if (!is_objectclass_supported(classId))
+			return;
+
+		/*
+		 * Check that the object still exists.  If the catalog has a suitable
+		 * syscache, check that first.
+		 */
+		cache = get_object_catcache_oid(classId);
+		if (cache != -1)
+		{
+			if (SearchSysCacheExists1(cache, ObjectIdGetDatum(objectId)))
+				return;
+		}
+
+		/*
+		 * If it's not found in the syscache, or there's no suitable syscache
+		 * we can use, scan the catalog table using SnapshotSelf.  This
+		 * handles the case that it's an object we just created (for example,
+		 * if it's a composite type created as part of creating a table).
+		 */
+		rel = heap_open(classId, AccessShareLock);
+
+		ScanKeyInit(&skey,
+					ObjectIdAttributeNumber,
+					BTEqualStrategyNumber, F_OIDEQ,
+					ObjectIdGetDatum(objectId));
+
+		scan = systable_beginscan(rel, get_object_oid_index(classId),
+								  true, SnapshotSelf, 1, &skey);
+
+		tuple = systable_getnext(scan);
+		if (!HeapTupleIsValid(tuple))
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_OBJECT),
+					 errmsg("dependent object was concurrently dropped")));
+
+		systable_endscan(scan);
+		heap_close(rel, AccessShareLock);
+	}
+	else if (IsSharedRelation(objectId))
+	{
+		/* Shared relations are considered pinned, ignore them */
+	}
+	else
+	{
+		/*
+		 * Same logic for pg_class entries, but locking relations is handled
+		 * by different functions.
+		 *
+		 * Callers are more careful with locking relations than other objects,
+		 * so we should already have a lock on the relation, or on another
+		 * object that indirectly prevents the relation from being dropped.
+		 * For example, we might have a strong lock on a table while adding
+		 * dependency to its index.  However, we cannot detect the indirectly
+		 * protected case here easily.  To err on the safe side, acquire a
+		 * lock directly on the relation if we're not holding one already.
+		 */
+		SET_LOCKTAG_RELATION(tag, MyDatabaseId, objectId);
+
+		if (dependencyLockHeldByMe(&tag))
+			return;
+		LockRelationOid(objectId, AccessShareLock);
+
+		if (SearchSysCacheExists1(RELOID, ObjectIdGetDatum(objectId)))
+			return;
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("dependent relation was concurrently dropped")));
+	}
 }
 
 
