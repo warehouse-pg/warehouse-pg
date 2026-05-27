@@ -556,7 +556,7 @@ read_server_first_message(fe_scram_state *state, char *input)
 
 	/* Verify immediately that the server used our part of the nonce */
 	if (strlen(nonce) < strlen(state->client_nonce) ||
-		memcmp(nonce, state->client_nonce, strlen(state->client_nonce)) != 0)
+		timingsafe_bcmp(nonce, state->client_nonce, strlen(state->client_nonce)) != 0)
 	{
 		printfPQExpBuffer(&conn->errorMessage,
 						  libpq_gettext("invalid SCRAM response (nonce mismatch)\n"));
@@ -755,7 +755,8 @@ verify_server_signature(fe_scram_state *state)
 					  strlen(state->client_final_message_without_proof));
 	scram_HMAC_final(expected_ServerSignature, &ctx);
 
-	if (memcmp(expected_ServerSignature, state->ServerSignature, SCRAM_KEY_LEN) != 0)
+	if (timingsafe_bcmp(expected_ServerSignature, state->ServerSignature,
+						SCRAM_KEY_LEN) != 0)
 		return false;
 
 	return true;
