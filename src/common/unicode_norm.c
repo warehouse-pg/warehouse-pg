@@ -20,6 +20,11 @@
 
 #include "common/unicode_norm.h"
 #include "common/unicode_norm_table.h"
+#ifndef FRONTEND
+#include "utils/memutils.h"
+#else
+#define MaxAllocSize	((Size) 0x3fffffff)	/* 1GB-1; memutils.h is backend-only */
+#endif
 
 #ifndef FRONTEND
 #define ALLOC(size) palloc(size)
@@ -323,10 +328,28 @@ unicode_normalize_kc(const pg_wchar *input)
 
 	/*
 	 * Calculate how many characters long the decomposed version will be.
+	 *
+	 * Some characters decompose to quite a few code points, so that the
+	 * decomposed version's size could overrun MaxAllocSize, and even 32-bit
+	 * size_t, even though the input string presumably fits in that.  In
+	 * frontend we want to just return NULL in that case, so monitor the sum
+	 * and exit early once we'd need more than MaxAllocSize bytes.
 	 */
 	decomp_size = 0;
 	for (p = input; *p; p++)
+	{
 		decomp_size += get_decomposed_size(*p);
+		if (unlikely(decomp_size > MaxAllocSize / sizeof(pg_wchar)))
+		{
+#ifndef FRONTEND
+			/* Exit loop and let palloc() throw error below */
+			break;
+#else
+			/* Just return NULL with no explicit error */
+			return NULL;
+#endif
+		}
+	}
 
 	decomp_chars = (pg_wchar *) ALLOC((decomp_size + 1) * sizeof(pg_wchar));
 	if (decomp_chars == NULL)

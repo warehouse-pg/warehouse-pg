@@ -2895,6 +2895,13 @@ compact(struct nfa *nfa,
 					break;
 				case LACON:
 					assert(s->no != cnfa->pre);
+					assert(a->co >= 0);
+					/* make sure the modified color number will fit */
+					if (a->co > MAX_COLOR - cnfa->ncolors)
+					{
+						NERR(REG_ECOLORS);
+						return;
+					}
 					ca->co = (color) (cnfa->ncolors + a->co);
 					ca->to = a->to->no;
 					ca++;
