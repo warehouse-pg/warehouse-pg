@@ -4,6 +4,7 @@
 #include "plpython.h"
 #include "plpy_typeio.h"
 #include "hstore/hstore.h"
+#include "storage/shmem.h"		/* for mul_size() */
 
 PG_MODULE_MAGIC;
 
@@ -147,7 +148,7 @@ plpython_to_hstore(PG_FUNCTION_ARGS)
 		Py_ssize_t	i;
 		Pairs	   *pairs;
 
-		pairs = palloc(pcount * sizeof(*pairs));
+		pairs = (Pairs *) palloc(mul_size(pcount, sizeof(*pairs)));
 
 		for (i = 0; i < pcount; i++)
 		{

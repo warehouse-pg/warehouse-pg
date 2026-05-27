@@ -1953,8 +1953,8 @@ newlacon(struct vars *v,
 	else
 	{
 		n = v->nlacons;
-		newlacons = (struct subre *) REALLOC(v->lacons,
-											 (n + 1) * sizeof(struct subre));
+		/* better use REALLOC_ARRAY here, as struct subre is big */
+		newlacons = REALLOC_ARRAY(v->lacons, struct subre, n + 1);
 	}
 	if (newlacons == NULL)
 	{
