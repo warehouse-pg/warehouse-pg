@@ -14,7 +14,7 @@ step s2_drop_schema: DROP SCHEMA testschema;
 step s1_create_function_in_schema: CREATE FUNCTION testschema.foo() RETURNS int AS 'select 1' LANGUAGE sql; <waiting ...>
 step s2_commit: COMMIT;
 step s1_create_function_in_schema: <... completed>
-error in steps s2_commit s1_create_function_in_schema: ERROR:  dependent object was concurrently dropped
+error in steps s2_commit s1_create_function_in_schema: ERROR:  referenced object was concurrently dropped
 
 starting permutation: s1_begin s1_alter_function_schema s2_drop_alterschema s1_commit
 step s1_begin: BEGIN;
@@ -30,7 +30,7 @@ step s2_drop_alterschema: DROP SCHEMA alterschema;
 step s1_alter_function_schema: ALTER FUNCTION public.falter() SET SCHEMA alterschema; <waiting ...>
 step s2_commit: COMMIT;
 step s1_alter_function_schema: <... completed>
-error in steps s2_commit s1_alter_function_schema: ERROR:  dependent object was concurrently dropped
+error in steps s2_commit s1_alter_function_schema: ERROR:  referenced object was concurrently dropped
 
 starting permutation: s1_begin s1_create_function_with_argtype s2_drop_foo_type s1_commit
 step s1_begin: BEGIN;
@@ -46,7 +46,7 @@ step s2_drop_foo_type: DROP TYPE public.foo;
 step s1_create_function_with_argtype: CREATE FUNCTION fooargtype(num foo) RETURNS int AS 'select 1' LANGUAGE sql; <waiting ...>
 step s2_commit: COMMIT;
 step s1_create_function_with_argtype: <... completed>
-error in steps s2_commit s1_create_function_with_argtype: ERROR:  dependent object was concurrently dropped
+error in steps s2_commit s1_create_function_with_argtype: ERROR:  referenced object was concurrently dropped
 
 starting permutation: s1_begin s1_create_function_with_rettype s2_drop_foo_rettype s1_commit
 step s1_begin: BEGIN;
@@ -62,7 +62,7 @@ step s2_drop_foo_rettype: DROP DOMAIN id;
 step s1_create_function_with_rettype: CREATE FUNCTION footrettype() RETURNS id LANGUAGE sql AS 'select 1::id'; <waiting ...>
 step s2_commit: COMMIT;
 step s1_create_function_with_rettype: <... completed>
-error in steps s2_commit s1_create_function_with_rettype: ERROR:  dependent object was concurrently dropped
+error in steps s2_commit s1_create_function_with_rettype: ERROR:  referenced object was concurrently dropped
 
 starting permutation: s1_begin s1_create_domain_with_domain s2_drop_domain_id s1_commit
 step s1_begin: BEGIN;
@@ -78,7 +78,7 @@ step s2_drop_domain_id: DROP DOMAIN id;
 step s1_create_domain_with_domain: CREATE DOMAIN idid as id; <waiting ...>
 step s2_commit: COMMIT;
 step s1_create_domain_with_domain: <... completed>
-error in steps s2_commit s1_create_domain_with_domain: ERROR:  dependent object was concurrently dropped
+error in steps s2_commit s1_create_domain_with_domain: ERROR:  referenced object was concurrently dropped
 
 starting permutation: s1_begin s1_create_table_with_type s2_drop_footab_type s1_commit
 step s1_begin: BEGIN;
@@ -94,7 +94,7 @@ step s2_drop_footab_type: DROP TYPE public.footab;
 step s1_create_table_with_type: CREATE TABLE tabtype(a footab); <waiting ...>
 step s2_commit: COMMIT;
 step s1_create_table_with_type: <... completed>
-error in steps s2_commit s1_create_table_with_type: ERROR:  dependent object was concurrently dropped
+error in steps s2_commit s1_create_table_with_type: ERROR:  referenced object was concurrently dropped
 
 starting permutation: s1_begin s1_create_server_with_fdw_wrapper s2_drop_fdw_wrapper s1_commit
 step s1_begin: BEGIN;
@@ -110,7 +110,7 @@ step s2_drop_fdw_wrapper: DROP FOREIGN DATA WRAPPER fdw_wrapper RESTRICT;
 step s1_create_server_with_fdw_wrapper: CREATE SERVER srv_fdw_wrapper FOREIGN DATA WRAPPER fdw_wrapper; <waiting ...>
 step s2_commit: COMMIT;
 step s1_create_server_with_fdw_wrapper: <... completed>
-error in steps s2_commit s1_create_server_with_fdw_wrapper: ERROR:  dependent object was concurrently dropped
+error in steps s2_commit s1_create_server_with_fdw_wrapper: ERROR:  referenced object was concurrently dropped
 
 starting permutation: s1_begin s1_alter_function_owner s2_drop_role s1_commit
 step s1_begin: BEGIN;
