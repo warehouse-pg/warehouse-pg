@@ -227,6 +227,18 @@ bool		gp_resource_group_bypass_catalog_query;
 bool		gp_resource_group_bypass_direct_dispatch;
 char	   *gp_resource_group_cgroup_parent;
 
+/*
+ * ic-proxy TLS GUCs. When gp_interconnect_proxy_tls_enable is true,
+ * peer connections (daemon-to-daemon TCP) negotiate TLS-1.3 before
+ * exchanging any application bytes. Backend-to-daemon traffic stays
+ * on its Unix domain socket without TLS — the trust boundary is the
+ * local host. See ic_proxy_peer.c for the handshake hook points.
+ */
+bool		gp_interconnect_proxy_tls_enable = false;
+char	   *gp_interconnect_proxy_tls_cert_file;
+char	   *gp_interconnect_proxy_tls_key_file;
+char	   *gp_interconnect_proxy_tls_ca_file;
+
 /* Metrics collector debug GUC */
 bool		vmem_process_interrupt = false;
 bool		execute_pruned_plan = false;
@@ -2890,6 +2902,23 @@ struct config_bool ConfigureNamesBool_gp[] =
 		check_gp_resource_group_bypass, NULL, NULL
 	},
 
+#ifdef ENABLE_IC_PROXY
+	{
+		{"gp_interconnect_proxy_tls_enable", PGC_POSTMASTER, GP_ARRAY_TUNING,
+			gettext_noop("Encrypt ic-proxy peer (daemon-to-daemon) traffic with TLS-1.3."),
+			gettext_noop("When on, the proxy bgworker negotiates TLS over each peer TCP "
+						 "connection before exchanging any application bytes. Backend-to-"
+						 "daemon traffic stays on its local Unix domain socket without TLS. "
+						 "If gp_interconnect_proxy_tls_cert_file / key_file are unset, an "
+						 "ephemeral self-signed cert is generated per proxy at startup."),
+			GUC_GPDB_NO_SYNC
+		},
+		&gp_interconnect_proxy_tls_enable,
+		false,
+		NULL, NULL, NULL
+	},
+#endif  /* ENABLE_IC_PROXY */
+
 	{
 		{"gp_resource_group_bypass_catalog_query", PGC_USERSET, RESOURCES,
 			gettext_noop("Bypass all catalog only queries."),
@@ -4782,6 +4811,46 @@ struct config_string ConfigureNamesString_gp[] =
 			GUC_NO_SHOW_ALL | GUC_GPDB_NO_SYNC
 		},
 		&gp_interconnect_proxy_addresses,
+		"",
+		NULL, NULL, NULL
+	},
+
+	{
+		{"gp_interconnect_proxy_tls_cert_file", PGC_POSTMASTER, GP_ARRAY_TUNING,
+			gettext_noop("PEM-encoded certificate file used by the ic-proxy peer TLS handshake."),
+			gettext_noop("Loaded once at proxy bgworker startup. If empty (the default) "
+						 "and gp_interconnect_proxy_tls_enable is on, the proxy generates "
+						 "an ephemeral self-signed cert at startup — encrypted on the wire "
+						 "but not MITM-safe. Set this together with the key and ca files to "
+						 "anchor the handshake against a cluster CA."),
+			GUC_SUPERUSER_ONLY
+		},
+		&gp_interconnect_proxy_tls_cert_file,
+		"",
+		NULL, NULL, NULL
+	},
+
+	{
+		{"gp_interconnect_proxy_tls_key_file", PGC_POSTMASTER, GP_ARRAY_TUNING,
+			gettext_noop("PEM-encoded private key matching gp_interconnect_proxy_tls_cert_file."),
+			gettext_noop("Must be readable only by the OS user that runs postgres (mode 0600). "
+						 "Ignored unless cert_file is also set."),
+			GUC_SUPERUSER_ONLY
+		},
+		&gp_interconnect_proxy_tls_key_file,
+		"",
+		NULL, NULL, NULL
+	},
+
+	{
+		{"gp_interconnect_proxy_tls_ca_file", PGC_POSTMASTER, GP_ARRAY_TUNING,
+			gettext_noop("PEM-encoded CA bundle used to verify the peer's certificate during the ic-proxy TLS handshake."),
+			gettext_noop("When set together with cert_file and key_file, both peer ends require "
+						 "the remote to present a certificate chain that verifies against this "
+						 "CA — defeats man-in-the-middle on a compromised cluster network."),
+			GUC_SUPERUSER_ONLY
+		},
+		&gp_interconnect_proxy_tls_ca_file,
 		"",
 		NULL, NULL, NULL
 	},
