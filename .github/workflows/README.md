@@ -96,8 +96,15 @@ On manual dispatch, you can customize:
 |--------|---------|---------|
 | Test type | `all`, `installcheck`, `orca-unit-tests` | `all` |
 | Installcheck target | `installcheck-small`, `installcheck-world` | `installcheck-small` |
-| EL version | `all`, `8`, `9` | `8` |
+| EL version | `all`, `8` | `8` |
 | Debug on failure | `true`, `false` | `false` |
+
+> **Note:** Only EL8 is tested by this workflow. EL9 is intentionally not in
+> the matrix because the WHPG 6 build requires Python 2 (PyGreSQL 4.0,
+> gpdemo, and the xerces-c 3.1 build script are all Python-2-only), and
+> Python 2 is not available on EL9. EL9 build/package coverage is handled
+> separately in the `warehouse-pg-packaging` pipeline, so we do not
+> duplicate it here.
 
 #### Jobs
 
@@ -121,7 +128,7 @@ Configuration is centralized at the top of the workflow file (single source of t
 
 ```yaml
 env:
-  EL_VERSIONS: '["8", "9"]'                          # Supported EL versions
+  EL_VERSIONS: '["8"]'                               # EL8 only — WHPG 6 needs Python 2, which EL9 does not ship
   DEFAULT_EL_VERSION: '["8"]'                        # Default for feature branches
   DEFAULT_INSTALLCHECK_TARGET: 'installcheck-small'  # Default installcheck target
 ```
@@ -149,6 +156,24 @@ Scripts source the required environment explicitly rather than relying on `.bash
 - `run-installcheck.bash` sources `greenplum_path.sh` and `gpdemo-env.sh` directly
 - Workflow variables (`WHPG_SRC`, `WHPG_MAJORVERSION`, etc.) are passed via `export` + `su gpadmin` (non-login shell)
 
+### Intentionally Skipped Tests (CI only)
+
+A small number of `isolation2` tests are intentionally skipped on CI. The
+skip is applied to the runner's copy of `src/test/isolation2/isolation2_schedule`
+by the `apply_ci_test_skips()` function in `.github/scripts/run-installcheck.bash`
+(commented out with a `# CI-SKIP:` prefix). The in-repo schedule file is **not**
+modified, so a local `make installcheck-world` continues to run every test.
+
+| Test | Reason for CI skip |
+|------|--------------------|
+| `fts_segment_reset` | FTS (fault tolerance service) timing is flaky on shared ephemeral GitHub Actions runners — the test depends on heartbeat intervals and probe timing that the runner does not deliver reliably, producing false failures. |
+| `pg_rewind_fail_missing_xlog` | Exercises a forced-failure path in `pg_rewind` that is sensitive to xlog/WAL filesystem behavior; on the CI container's overlay filesystem the expected error condition does not reproduce deterministically, so the diff is noise rather than a real regression. |
+
+To add or remove a CI-only skip, edit the `skips=( ... )` array in
+`apply_ci_test_skips()` in `.github/scripts/run-installcheck.bash`. Do **not**
+comment out tests in the schedule file directly — that would also disable them
+for local developers.
+
 ## Container Images
 
 Tests run in pre-built container images from `ghcr.io/warehouse-pg/`, selected per matrix EL version:
@@ -156,9 +181,10 @@ Tests run in pre-built container images from `ghcr.io/warehouse-pg/`, selected p
 | Image | EL |
 |-------|----|
 | `ghcr.io/warehouse-pg/whpg7-rocky8-build` | 8 |
-| `ghcr.io/warehouse-pg/whpg7-rocky9-build` | 9 |
 
-> **Note:** The image name retains the `whpg7-` prefix even though this workflow targets WHPG 6 — the same Rocky Linux base image is reused for both, with WHPG 6-specific packages (xerces-c 3.1, python2-devel) installed at job time.
+> **Note:** The image name retains the `whpg7-` prefix even though this workflow targets WHPG 6 — the same Rocky Linux base image is reused, with WHPG 6-specific packages (xerces-c 3.1, python2-devel) installed at job time.
+>
+> **EL9:** Not in the matrix. WHPG 6 requires Python 2 (for PyGreSQL 4.0, gpdemo, and the xerces-c 3.1 build script), and Python 2 is not available on EL9, so this workflow cannot build WHPG 6 there. EL9 coverage is provided by the `warehouse-pg-packaging` pipeline instead.
 
 ## WHPG 6 Build Configuration
 
