@@ -138,7 +138,7 @@ function run_installcheck() {
 }
 
 function _main() {
-    echo "MAKE_TEST_COMMAND: ${MAKE_TEST_COMMAND}"
+    echo "TEST_TARGET: ${TEST_TARGET}"
     echo "WHPG_MAJORVERSION: ${WHPG_MAJORVERSION}"
     echo "WHPG_SRC: ${WHPG_SRC}"
 
@@ -151,7 +151,7 @@ if [ "$(id -u)" = "0" ]; then
     SCRIPT_PATH="$(realpath ${BASH_SOURCE[0]})"
 
     # Export all required variables so they're inherited by the su subshell
-    export RESULTS_DIR MAKE_TEST_COMMAND WHPG_MAJORVERSION WHPG_SRC
+    export RESULTS_DIR TEST_TARGET MAKE_FLAGS PGOPTIONS WHPG_MAJORVERSION WHPG_SRC
 
     su gpadmin -c "bash ${SCRIPT_PATH}"
 else
