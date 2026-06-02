@@ -38,10 +38,14 @@ On push or PR, tests run automatically with these defaults:
 | Branch Type | Tests | EL Versions | Installcheck Target |
 |-------------|-------|-------------|---------------------|
 | `main` / `WHPG_*_STABLE` (push) | All (installcheck + orca-unit-tests) | All configured | `installcheck-world` |
-| `ci/**` (push) | All (installcheck + orca-unit-tests) | Default only | `installcheck-small` |
-| PRs targeting `main` / `WHPG_*_STABLE` | All (installcheck + orca-unit-tests) | Default only | `installcheck-small` |
+| `ci/**` (push) | All (installcheck + orca-unit-tests) | Default only | `installcheck-good` |
+| PRs targeting `main` / `WHPG_*_STABLE` | All (installcheck + orca-unit-tests) | Default only | `installcheck-good` |
 
 > **Note:** Regular feature branch pushes (e.g., `feature/xyz`) do not trigger CI. Use `ci/` prefix or open a pull request.
+
+> **Optimizer:** every `installcheck` job runs twice — once with `optimizer=on`
+> (GPORCA) and once with `optimizer=off` (the Postgres planner) — via the
+> `optimizer` matrix dimension, so both planners are covered on every push and PR.
 
 #### Concurrency
 
@@ -94,7 +98,7 @@ On manual dispatch, you can customize:
 | Option | Choices | Default |
 |--------|---------|---------|
 | Test type | `all`, `installcheck`, `orca-unit-tests` | `all` |
-| Installcheck target | `installcheck-small`, `installcheck-world` | `installcheck-small` |
+| Installcheck target | `installcheck-small`, `installcheck-good`, `installcheck-world` | `installcheck-small` |
 | EL version | `all`, `7`, `8`, `9` | `8` |
 | Debug on failure | `true`, `false` | `false` |
 
@@ -102,8 +106,7 @@ On manual dispatch, you can customize:
 
 | Job | Description | Timeout |
 |-----|-------------|---------|
-| `detect-config` | Detects WHPG version and test configuration | - |
-| `installcheck` | Runs PostgreSQL regression tests | 120 min |
+| `installcheck` | Runs regression tests under both optimizers (GPORCA + Postgres planner) | 120 min |
 | `orca-unit-tests` | Runs ORCA optimizer unit tests (see below) | 60 min |
 
 **ORCA Unit Tests Details:**
@@ -116,15 +119,20 @@ This dual-build approach ensures the optimizer works correctly in both productio
 
 #### Configuration
 
-Configuration is centralized at the top of the workflow file (single source of truth). Scripts require these values from the workflow environment and will fail if not provided.
+This branch is WHPG 7, so the major version is fixed at `7` and the test
+configuration is computed inline in each job — there is no `detect-config`
+job. (GitHub Actions matrices cannot read `env`, so the EL lists are written
+as literals in the `matrix` / `env` expressions.)
 
-```yaml
-env:
-  WHPG7_EL_VERSIONS: '["8","9"]'            # WHPG 7 supported EL versions
-  WHPG6_EL_VERSIONS: '["7", "8", "9"]'  # WHPG 6 supported EL versions
-  DEFAULT_EL_VERSION: '["8"]'           # Default for feature branches
-  DEFAULT_INSTALLCHECK_TARGET: 'installcheck-small'  # Default installcheck target
-```
+| Trigger | EL versions | Installcheck target |
+|---------|-------------|---------------------|
+| push to `main` / `WHPG_*_STABLE` | `8`, `9` | `installcheck-world` |
+| PRs and `ci/**` pushes | `8` | `installcheck-good` |
+| `workflow_dispatch` | per `el_version` input | per `installcheck_target` input |
+
+Every `installcheck` run is multiplied by the `optimizer` matrix
+(`on` = GPORCA, `off` = Postgres planner), so both query optimizers are
+exercised on every push and PR.
 
 #### Debugging
 
@@ -138,7 +146,6 @@ Supporting scripts are located in `.github/scripts/`:
 
 | Script | Description |
 |--------|-------------|
-| `detect-config.bash` | Detects WHPG version and determines test configuration |
 | `run-installcheck.bash` | Runs installcheck tests with proper environment setup |
 | `run-orca-tests.bash` | Runs ORCA unit tests using concourse scripts |
 
@@ -157,10 +164,10 @@ Tests run in pre-built container images from `ghcr.io/warehouse-pg/`:
 |---------------|---------|
 | `whpg{major}-rocky{el}-build` | `whpg7-rocky8-build` |
 
-The image is automatically selected based on detected WHPG version and matrix EL version.
+The image is selected per matrix EL version; the WHPG major version is fixed at `7`.
 
-## Version Detection
+## WHPG Version
 
-WHPG version is detected from git tags using `git describe --tags --abbrev=0`. The major version (first number before the dot) determines which EL versions to test.
-
-Example: Tag `7.2.1` → WHPG major version `7` → Uses `WHPG7_EL_VERSIONS`
+This branch builds WHPG **7**. The major version is hardcoded in the workflow
+(`WHPG_MAJORVERSION: '7'` and the `whpg7-rocky{el}-build` image); it is no
+longer derived from git tags at runtime.

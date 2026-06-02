@@ -1,14 +1,19 @@
 name: WarehousePG CI
 
 # =============================================================================
-# Configuration: EL versions for each WHPG major version
-# Change these values to update which EL versions are tested
+# Test configuration
+# -----------------------------------------------------------------------------
+# main is WHPG 7, so there is no detect-config job: the major version is fixed
+# at 7, and the EL matrix / installcheck target are computed inline in each job
+# (GitHub Actions matrices cannot read `env`, so the EL lists are literals).
+#
+#   push to main / WHPG_*_STABLE : EL 8 + 9, installcheck-world
+#   PRs and ci/** branches       : EL 8,     installcheck-good
+#   workflow_dispatch            : honors the el_version / installcheck_target inputs
+#
+# Every installcheck job runs under BOTH query optimizers (matrix `optimizer`:
+# on = GPORCA, off = Postgres planner), forwarded to the sessions via PGOPTIONS.
 # =============================================================================
-env:
-  WHPG7_EL_VERSIONS: '["8","9"]'            # WHPG 7 supported EL versions
-  WHPG6_EL_VERSIONS: '["7", "8", "9"]'      # WHPG 6 supported EL versions
-  DEFAULT_EL_VERSION: '["8"]'           # Default for feature branches
-  DEFAULT_INSTALLCHECK_TARGET: 'installcheck-small'  # Default installcheck target
 
 run-name: >-
   ${{ github.event_name == 'workflow_dispatch'
@@ -34,6 +39,7 @@ on:
         type: choice
         options:
           - installcheck-small
+          - installcheck-good
           - installcheck-world
       el_version:
         description: 'Enterprise Linux version'
@@ -66,46 +72,26 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/WHPG_') }}
 
 jobs:
-  detect-config:
-    name: detect-config
-    runs-on: ubuntu-latest
-    outputs:
-      whpg_major: ${{ steps.detect.outputs.ver }}
-      el_versions: ${{ steps.detect.outputs.el_versions }}
-      installcheck_target: ${{ steps.detect.outputs.installcheck_target }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - id: detect
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          BRANCH_NAME: ${{ github.ref_name }}
-          INPUT_EL_VERSION: ${{ inputs.el_version }}
-          INPUT_INSTALLCHECK_TARGET: ${{ inputs.installcheck_target }}
-          WHPG7_EL_VERSIONS: ${{ env.WHPG7_EL_VERSIONS }}
-          WHPG6_EL_VERSIONS: ${{ env.WHPG6_EL_VERSIONS }}
-          DEFAULT_EL_VERSION: ${{ env.DEFAULT_EL_VERSION }}
-          DEFAULT_INSTALLCHECK_TARGET: ${{ env.DEFAULT_INSTALLCHECK_TARGET }}
-        run: bash .github/scripts/detect-config.bash
-
   installcheck:
-    name: ${{ needs.detect-config.outputs.installcheck_target }} / EL${{ matrix.el_version }}
-    needs: detect-config
+    name: installcheck / EL${{ matrix.el_version }} / optimizer=${{ matrix.optimizer }}
     if: github.event_name != 'workflow_dispatch' || inputs.test_type == 'all' || inputs.test_type == 'installcheck'
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
-        el_version: ${{ fromJson(needs.detect-config.outputs.el_versions) }}
+        # push to main/stable -> EL 8+9; PRs and ci/** -> EL 8; dispatch -> chosen version
+        el_version: ${{ fromJson((github.event_name == 'workflow_dispatch' && (inputs.el_version == 'all' && '["8","9"]' || format('["{0}"]', inputs.el_version))) || ((github.ref_name == 'main' || startsWith(github.ref_name, 'WHPG_')) && '["8","9"]' || '["8"]')) }}
+        # Run the suite under both optimizers: on = GPORCA, off = Postgres planner
+        optimizer: ['on', 'off']
     container:
-      image: ghcr.io/warehouse-pg/whpg${{ needs.detect-config.outputs.whpg_major }}-${{ format('rocky{0}', matrix.el_version) }}-build
+      image: ghcr.io/warehouse-pg/whpg7-${{ format('rocky{0}', matrix.el_version) }}-build
       options: --privileged
     env:
-      WHPG_MAJORVERSION: ${{ needs.detect-config.outputs.whpg_major }}
+      WHPG_MAJORVERSION: '7'
       EL_VERSION: ${{ matrix.el_version }}
-      TEST_TARGET: ${{ needs.detect-config.outputs.installcheck_target }}
+      # push to main/stable -> installcheck-world; PRs and ci/** -> installcheck-good; dispatch -> chosen target
+      TEST_TARGET: ${{ (inputs.installcheck_target != '' && inputs.installcheck_target) || ((github.ref_name == 'main' || startsWith(github.ref_name, 'WHPG_')) && 'installcheck-world' || 'installcheck-good') }}
       WHPG_SRC: ${{ github.workspace }}
       RESULTS_DIR: /tmp/test-results
 
@@ -114,7 +100,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
-          fetch-depth: 0
+          # Shallow clone, but fetch tags in the same pass so getversion's
+          # `git describe` resolves the version without a full-history clone.
+          fetch-depth: 1024
+          fetch-tags: true
 
       - name: Container info
         run: |
@@ -211,7 +200,9 @@ jobs:
       - name: Run installcheck tests
         id: tests
         run: |
-          export MAKE_TEST_COMMAND="${TEST_TARGET}"
+          export TEST_TARGET="${TEST_TARGET}"
+          export MAKE_FLAGS="-k"
+          export PGOPTIONS="-c optimizer=${{ matrix.optimizer }}"
           bash .github/scripts/run-installcheck.bash
 
       - name: Installcheck Summary
@@ -224,6 +215,7 @@ jobs:
           echo "| WHPG Version | ${WHPG_MAJORVERSION} |" >> $GITHUB_STEP_SUMMARY
           echo "| EL Version | ${EL_VERSION} |" >> $GITHUB_STEP_SUMMARY
           echo "| Test Target | ${TEST_TARGET} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Optimizer | ${{ matrix.optimizer }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Step Results" >> $GITHUB_STEP_SUMMARY
           echo "| Step | Status |" >> $GITHUB_STEP_SUMMARY
@@ -242,7 +234,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results-el${{ matrix.el_version }}
+          name: test-results-el${{ matrix.el_version }}-optimizer-${{ matrix.optimizer }}
           path: |
             /tmp/test-results/
             src/test/regress/regression.diffs
@@ -253,7 +245,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: cluster-logs-el${{ matrix.el_version }}
+          name: cluster-logs-el${{ matrix.el_version }}-optimizer-${{ matrix.optimizer }}
           path: |
             gpAux/gpdemo/datadirs/qddir/demoDataDir-1/log/
             gpAux/gpdemo/datadirs/dbfast*/demoDataDir*/log/
@@ -277,19 +269,19 @@ jobs:
 
   orca-unit-tests:
     name: orca-unit-tests / EL${{ matrix.el_version }}
-    needs: detect-config
     if: github.event_name != 'workflow_dispatch' || inputs.test_type == 'all' || inputs.test_type == 'orca-unit-tests'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        el_version: ${{ fromJson(needs.detect-config.outputs.el_versions) }}
+        # push to main/stable -> EL 8+9; PRs and ci/** -> EL 8; dispatch -> chosen version
+        el_version: ${{ fromJson((github.event_name == 'workflow_dispatch' && (inputs.el_version == 'all' && '["8","9"]' || format('["{0}"]', inputs.el_version))) || ((github.ref_name == 'main' || startsWith(github.ref_name, 'WHPG_')) && '["8","9"]' || '["8"]')) }}
     container:
-      image: ghcr.io/warehouse-pg/whpg${{ needs.detect-config.outputs.whpg_major }}-${{ format('rocky{0}', matrix.el_version) }}-build
+      image: ghcr.io/warehouse-pg/whpg7-${{ format('rocky{0}', matrix.el_version) }}-build
       options: --privileged
     env:
-      WHPG_MAJORVERSION: ${{ needs.detect-config.outputs.whpg_major }}
+      WHPG_MAJORVERSION: '7'
       EL_VERSION: ${{ matrix.el_version }}
       WHPG_SRC: ${{ github.workspace }}
 

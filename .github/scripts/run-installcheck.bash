@@ -7,7 +7,9 @@ set -eox pipefail
 # Required configuration (from workflow env)
 : "${WHPG_SRC:?WHPG_SRC not set}"
 : "${RESULTS_DIR:?RESULTS_DIR not set}"
-: "${MAKE_TEST_COMMAND:?MAKE_TEST_COMMAND not set}"
+: "${TEST_TARGET:?TEST_TARGET not set}"
+: "${MAKE_FLAGS:?MAKE_FLAGS not set}"
+: "${PGOPTIONS:?PGOPTIONS not set}"
 : "${WHPG_MAJORVERSION:?WHPG_MAJORVERSION not set}"
 
 # Source environment explicitly (no login shell / .bash_profile dependency)
@@ -72,7 +74,7 @@ function look4diffs() {
 }
 
 function run_installcheck() {
-    local test_target="${MAKE_TEST_COMMAND}"
+    local test_target="${TEST_TARGET}"
 
     echo "========================================================================"
     echo "Running installcheck: ${test_target}"
@@ -99,13 +101,13 @@ function run_installcheck() {
     # Run tests based on version
     if [[ "${WHPG_MAJORVERSION}" == 6* ]]; then
         # WHPG 6: Test PL/Python3 first
-        make installcheck -C "${WHPG_SRC}/src/pl/plpython" python_majorversion=3 || true
+        make installcheck -C "${WHPG_SRC}/src/pl/plpython" python_majorversion=3
 
         export TEST_PGFDW=1
-        make -s ${test_target}
+        make -s ${MAKE_FLAGS} PGOPTIONS="${PGOPTIONS}" ${test_target}
     else
         # WHPG 7+
-        PG_TEST_EXTRA="kerberos ssl" make -s ${test_target}
+        PG_TEST_EXTRA="kerberos ssl" make -s ${MAKE_FLAGS} PGOPTIONS="${PGOPTIONS}" ${test_target}
     fi
 
     echo "========================================================================"
@@ -114,7 +116,7 @@ function run_installcheck() {
 }
 
 function _main() {
-    echo "MAKE_TEST_COMMAND: ${MAKE_TEST_COMMAND}"
+    echo "TEST_TARGET: ${TEST_TARGET}"
     echo "WHPG_MAJORVERSION: ${WHPG_MAJORVERSION}"
     echo "WHPG_SRC: ${WHPG_SRC}"
 
@@ -127,7 +129,7 @@ if [ "$(id -u)" = "0" ]; then
     SCRIPT_PATH="$(realpath ${BASH_SOURCE[0]})"
 
     # Export all required variables so they're inherited by the su subshell
-    export RESULTS_DIR MAKE_TEST_COMMAND WHPG_MAJORVERSION WHPG_SRC
+    export RESULTS_DIR TEST_TARGET MAKE_FLAGS PGOPTIONS WHPG_MAJORVERSION WHPG_SRC
 
     su gpadmin -c "bash ${SCRIPT_PATH}"
 else
