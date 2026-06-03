@@ -497,6 +497,20 @@ redoDistributedCommitRecord(DistributedTransactionId gxid)
 	int			i;
 	bool 			is_hot_standby_qd = IS_HOT_STANDBY_QD();
 
+	/*
+	 * WHPG: gpexpand builds a new segment from a base backup of the
+	 * coordinator, and the coordinator may commit distributed transactions
+	 * while the backup is taken. The WAL copied from the coordinator may then
+	 * contain distributed commit records, which the new segment replays on its
+	 * first start with -M. Tracking them is useless on a segment and would
+	 * fail with FATAL, since max_tm_gxacts is 0 there. 81c8c009368 skips the
+	 * same information in the checkpoint record, in ReadCheckpointRecord().
+	 */
+	if (ConvertCoordinatorDataDirToSegment && !IS_QUERY_DISPATCHER())
+	{
+		return;
+	}
+
 	/* 
 	 * Only the startup process can be modifying shmNumCommittedGxacts
 	 * and shmCommittedGxidArray. So should be OK reading the value w/o lock.
