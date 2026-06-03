@@ -40,7 +40,7 @@ jobs:
       id-token: write
 
     env:
-      IMAGE_NAME: ghcr.io/warehouse-pg/whpg7-rocky${{ matrix.el_version }}-build
+      IMAGE_NAME: ghcr.io/warehouse-pg/whpg-rocky${{ matrix.el_version }}-build
 
     steps:
       - name: Checkout source repo
