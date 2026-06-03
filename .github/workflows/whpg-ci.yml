@@ -85,7 +85,7 @@ jobs:
         # Run the suite under both optimizers: on = GPORCA, off = Postgres planner
         optimizer: ['on', 'off']
     container:
-      image: ghcr.io/warehouse-pg/whpg7-${{ format('rocky{0}', matrix.el_version) }}-build
+      image: ghcr.io/warehouse-pg/whpg-${{ format('rocky{0}', matrix.el_version) }}-build
       options: --privileged
     env:
       WHPG_MAJORVERSION: '7'
@@ -278,7 +278,7 @@ jobs:
         # push to main/stable -> EL 8+9; PRs and ci/** -> EL 8; dispatch -> chosen version
         el_version: ${{ fromJson((github.event_name == 'workflow_dispatch' && (inputs.el_version == 'all' && '["8","9"]' || format('["{0}"]', inputs.el_version))) || ((github.ref_name == 'main' || startsWith(github.ref_name, 'WHPG_')) && '["8","9"]' || '["8"]')) }}
     container:
-      image: ghcr.io/warehouse-pg/whpg7-${{ format('rocky{0}', matrix.el_version) }}-build
+      image: ghcr.io/warehouse-pg/whpg-${{ format('rocky{0}', matrix.el_version) }}-build
       options: --privileged
     env:
       WHPG_MAJORVERSION: '7'

@@ -162,12 +162,12 @@ Tests run in pre-built container images from `ghcr.io/warehouse-pg/`:
 
 | Image Pattern | Example |
 |---------------|---------|
-| `whpg{major}-rocky{el}-build` | `whpg7-rocky8-build` |
+| `whpg-rocky{el}-build` | `whpg-rocky8-build` |
 
 The image is selected per matrix EL version; the WHPG major version is fixed at `7`.
 
 ## WHPG Version
 
 This branch builds WHPG **7**. The major version is hardcoded in the workflow
-(`WHPG_MAJORVERSION: '7'` and the `whpg7-rocky{el}-build` image); it is no
+(`WHPG_MAJORVERSION: '7'` and the `whpg-rocky{el}-build` image); it is no
 longer derived from git tags at runtime.
