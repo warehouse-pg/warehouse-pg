@@ -184,9 +184,9 @@ Tests run in pre-built container images from `ghcr.io/warehouse-pg/`, selected p
 
 | Image | EL |
 |-------|----|
-| `ghcr.io/warehouse-pg/whpg7-rocky8-build` | 8 |
+| `ghcr.io/warehouse-pg/whpg-rocky8-build` | 8 |
 
-> **Note:** The image name retains the `whpg7-` prefix even though this workflow targets WHPG 6 — the same Rocky Linux base image is reused, with WHPG 6-specific packages (xerces-c 3.1, python2-devel) installed at job time.
+> **Note:** The image is version-agnostic and shared with WHPG 7 — the same Rocky Linux base image is reused, with WHPG 6-specific packages (xerces-c 3.1, python2-devel) installed at job time.
 >
 > **EL9:** Not in the matrix. WHPG 6 requires Python 2 (for PyGreSQL 4.0, gpdemo, and the xerces-c 3.1 build script), and Python 2 is not available on EL9, so this workflow cannot build WHPG 6 there. EL9 coverage is provided by the `warehouse-pg-packaging` pipeline instead.
 
