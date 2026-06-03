@@ -39,10 +39,14 @@ On push or PR, tests run automatically with these defaults:
 | Branch Type | Tests | EL Versions | Installcheck Target |
 |-------------|-------|-------------|---------------------|
 | `main` / `WHPG_*_STABLE` (push) | All (installcheck + orca-unit-tests) | All configured | `installcheck-world` |
-| `ci/**` (push) | All (installcheck + orca-unit-tests) | Default only | `installcheck-small` |
-| PRs targeting `main` / `WHPG_*_STABLE` | All (installcheck + orca-unit-tests) | Default only | `installcheck-small` |
+| `ci/**` (push) | All (installcheck + orca-unit-tests) | Default only | `installcheck-good` |
+| PRs targeting `main` / `WHPG_*_STABLE` | All (installcheck + orca-unit-tests) | Default only | `installcheck-good` |
 
 > **Note:** Regular feature branch pushes (e.g., `feature/xyz`) do not trigger CI. Use `ci/` prefix or open a pull request.
+
+> **Optimizer:** every `installcheck` job runs twice — once with `optimizer=on`
+> (GPORCA) and once with `optimizer=off` (the Postgres planner) — via the
+> `optimizer` matrix dimension, so both planners are covered on every push and PR.
 
 #### Concurrency
 
@@ -95,7 +99,7 @@ On manual dispatch, you can customize:
 | Option | Choices | Default |
 |--------|---------|---------|
 | Test type | `all`, `installcheck`, `orca-unit-tests` | `all` |
-| Installcheck target | `installcheck-small`, `installcheck-world` | `installcheck-small` |
+| Installcheck target | `installcheck-small`, `installcheck-good`, `installcheck-world` | `installcheck-small` |
 | EL version | `all`, `8` | `8` |
 | Debug on failure | `true`, `false` | `false` |
 
@@ -110,8 +114,7 @@ On manual dispatch, you can customize:
 
 | Job | Description | Timeout |
 |-----|-------------|---------|
-| `detect-config` | Determines EL versions matrix and installcheck target | - |
-| `installcheck` | Runs PostgreSQL regression tests | 120 min |
+| `installcheck` | Runs regression tests under both optimizers (GPORCA + Postgres planner) | 180 min |
 | `orca-unit-tests` | Runs ORCA optimizer unit tests (see below) | 60 min |
 
 **ORCA Unit Tests Details:**
@@ -124,14 +127,16 @@ This dual-build approach ensures the optimizer works correctly in both productio
 
 #### Configuration
 
-Configuration is centralized at the top of the workflow file (single source of truth). Scripts require these values from the workflow environment and will fail if not provided.
+This branch is WHPG 6, so the major version is fixed at `6` and the CI matrix
+runs on EL 8; the installcheck target is computed inline per job (there is no
+`detect-config` job). Every `installcheck` job is multiplied by the `optimizer`
+matrix (`on` = GPORCA, `off` = Postgres planner).
 
-```yaml
-env:
-  EL_VERSIONS: '["8"]'                               # EL8 only — WHPG 6 needs Python 2, which EL9 does not ship
-  DEFAULT_EL_VERSION: '["8"]'                        # Default for feature branches
-  DEFAULT_INSTALLCHECK_TARGET: 'installcheck-small'  # Default installcheck target
-```
+| Trigger | EL | Installcheck target |
+|---------|----|---------------------|
+| push to `WHPG_*_STABLE` | 8 | `installcheck-world` |
+| PRs and `ci/**` pushes | 8 | `installcheck-good` |
+| `workflow_dispatch` | 8 | per `installcheck_target` input |
 
 #### Debugging
 
@@ -145,7 +150,6 @@ Supporting scripts are located in `.github/scripts/`:
 
 | Script | Description |
 |--------|-------------|
-| `detect-config.bash` | Determines EL versions matrix and installcheck target |
 | `run-installcheck.bash` | Runs installcheck tests with proper environment setup |
 | `run-orca-tests.bash` | Runs ORCA unit tests using concourse scripts |
 
