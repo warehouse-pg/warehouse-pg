@@ -71,7 +71,7 @@ jobs:
     needs: abi-dump-setup
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/warehouse-pg/whpg7-rocky8-build
+      image: ghcr.io/warehouse-pg/whpg-rocky8-build
     strategy:
       matrix:
         name:
@@ -152,7 +152,7 @@ jobs:
       - abi-dump
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/warehouse-pg/whpg7-rocky8-build
+      image: ghcr.io/warehouse-pg/whpg-rocky8-build
     steps:
       - name: Download baseline
         uses: actions/download-artifact@v4
