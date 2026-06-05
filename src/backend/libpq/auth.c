@@ -540,6 +540,71 @@ retrieve_conn_authentication(Port *port)
 static int
 internal_client_authentication(Port *port)
 {
+	/*
+	 * A connection over a Unix-domain socket is local to this node and trusted
+	 * by filesystem permissions; the postmaster declines SSL on AF_UNIX, so
+	 * there is no certificate to verify and mutual TLS is neither possible nor
+	 * meaningful.  This is the entry-DB / QE-at-coordinator path, which always
+	 * dials the local node over a Unix socket.  Trust it in every mode,
+	 * including "require"; the threat we defend against is a remote TCP peer
+	 * forging the protocol bit, not a local process that already has socket
+	 * access.
+	 */
+#ifdef HAVE_UNIX_SOCKETS
+	if (port->raddr.addr.ss_family == AF_UNIX)
+	{
+		FakeClientAuthentication(port);
+		return true;
+	}
+#endif
+
+	/*
+	 * Secure path: when gp_internal_tls is "verify-ca", a mutual-TLS client
+	 * certificate that verifies against the *internal* cluster CA IS the
+	 * authentication, and the magic protocol bit is demoted to a mere
+	 * connection-type hint.  The certificate is mandatory; anything else is
+	 * refused (there is no plaintext fallback).
+	 *
+	 * The TLS handshake already verified the peer certificate against the SSL
+	 * context's verify store, which be_tls_init() loads from *both*
+	 * gp_internal_tls_ca_file and the external ssl_ca_file so that a cluster
+	 * certificate is not rejected outright on a coordinator that also serves
+	 * external clients.  port->peer_cert_valid therefore only means "chained to
+	 * one of the trusted CAs".  To keep the two trust domains separate -- so a
+	 * leaf issued by the external ssl_ca_file cannot be used as a cluster
+	 * credential -- we re-verify the peer certificate specifically against
+	 * gp_internal_tls_ca_file here.
+	 *
+	 * This is what closes the historical hole where any host able to reach a
+	 * segment's port could obtain superuser access with zero credentials simply
+	 * by setting the protocol bit.
+	 */
+	if (gp_internal_tls == GP_INTERNAL_TLS_VERIFY_CA)
+	{
+#ifdef USE_SSL
+		if (port->ssl_in_use && port->peer_cert_valid &&
+			be_tls_verify_peer_against_internal_ca(port))
+		{
+			ereport(DEBUG1,
+					(errmsg("authenticated internal connection via client certificate \"%s\"",
+							port->peer_cn ? port->peer_cn : "")));
+			FakeClientAuthentication(port);
+			return true;
+		}
+#endif
+
+		ereport(FATAL,
+				(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
+				 errmsg("internal connection rejected: a verified client certificate is required"),
+				 errdetail("gp_internal_tls is set to \"verify-ca\"; QD-to-QE connections must authenticate with mutual TLS against the internal cluster CA (gp_internal_tls_ca_file).")));
+		return false;			/* not reached */
+	}
+
+	/*
+	 * Legacy trust (gp_internal_tls = disable): the connection is trusted based
+	 * on its origin.  Insecure on its own; operators move the cluster to
+	 * "verify-ca" once every node carries a cluster-CA-signed certificate.
+	 */
 	if (IS_QUERY_DISPATCHER())
 	{
 		/*

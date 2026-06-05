@@ -24,6 +24,7 @@
 #include "libpq-fe.h"
 #include "libpq-int.h"
 #include "access/xact.h"
+#include "cdb/cdbconn.h"
 #include "cdb/cdbfts.h"
 #include "cdb/cdbvars.h"
 #include "postmaster/fts.h"
@@ -164,9 +165,33 @@ ftsConnectStart(fts_segment_info *ftsInfo)
 				SEGMENT_IS_ACTIVE_PRIMARY(ftsInfo->primary_cdbinfo));
 
 	hostip = ftsInfo->primary_cdbinfo->config->hostip;
-	snprintf(conninfo, 1024, "host=%s port=%d gpconntype=%s",
-			 hostip ? hostip : "", ftsInfo->primary_cdbinfo->config->port,
-			 GPCONN_TYPE_FTS);
+
+	{
+		const char *sslmode;
+		const char *certfile;
+		const char *keyfile;
+		const char *rootcertfile;
+		char		certbuf[MAXPGPATH];
+		char		keybuf[MAXPGPATH];
+		char		rootbuf[MAXPGPATH];
+		int			n;
+
+		/* TLS for the internal FTS probe connection (see gp_internal_tls). */
+		sslmode = cdbconn_internal_tls_resolve(certbuf, keybuf, rootbuf,
+											   &certfile, &keyfile, &rootcertfile);
+
+		n = snprintf(conninfo, sizeof(conninfo),
+					 "host=%s port=%d gpconntype=%s sslmode=%s",
+					 hostip ? hostip : "", ftsInfo->primary_cdbinfo->config->port,
+					 GPCONN_TYPE_FTS, sslmode);
+		if (certfile)
+			n += snprintf(conninfo + n, sizeof(conninfo) - n, " sslcert=%s", certfile);
+		if (keyfile)
+			n += snprintf(conninfo + n, sizeof(conninfo) - n, " sslkey=%s", keyfile);
+		if (rootcertfile)
+			n += snprintf(conninfo + n, sizeof(conninfo) - n, " sslrootcert=%s", rootcertfile);
+	}
+
 	ftsInfo->conn = PQconnectStart(conninfo);
 
 	if (ftsInfo->conn == NULL)
