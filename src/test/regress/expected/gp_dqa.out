@@ -3653,7 +3653,7 @@ SELECT count(*) FROM (
   FROM sales GROUP BY cust_no
   HAVING sum(sale_amt) >= 100000 AND count(distinct sale_date) >= 5
 )as sub;
- count
+ count 
 -------
    236
 (1 row)
@@ -3695,7 +3695,7 @@ SELECT count(*) FROM (
   FROM sales GROUP BY cust_no
   HAVING sum(sale_amt) >= 100000 AND count(distinct sale_date) >= 5
 )as sub;
- count
+ count 
 -------
    236
 (1 row)
