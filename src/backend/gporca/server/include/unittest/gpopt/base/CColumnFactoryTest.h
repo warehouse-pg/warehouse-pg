@@ -31,6 +31,7 @@ public:
 	// actual unittests
 	static GPOS_RESULT EresUnittest();
 	static GPOS_RESULT EresUnittest_Basic();
+	static GPOS_RESULT EresUnittest_PcrCopyPreservesUsage();
 };
 }  // namespace gpopt
 

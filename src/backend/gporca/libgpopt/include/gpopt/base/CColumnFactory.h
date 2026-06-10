@@ -88,7 +88,7 @@ public:
 
 	// create a column reference given its type, attno, nullability and name
 	CColRef *PcrCreate(const IMDType *pmdtype, INT type_modifier,
-					   BOOL mark_as_used, IMDId *mdid_table, INT attno,
+					   CColRef::EUsedStatus usage, IMDId *mdid_table, INT attno,
 					   BOOL is_nullable, ULONG id, const CName &name,
 					   ULONG ulOpSource, BOOL isDistCol,
 					   ULONG ulWidth = gpos::ulong_max);

@@ -400,7 +400,7 @@ CStatisticsTest::EresUnittest_CStatisticsBasic()
 	{
 		// create column references for grouping columns
 		(void) col_factory->PcrCreate(
-			pmdtypeint4, default_type_modifier, true /*mark_as_used*/, nullptr,
+			pmdtypeint4, default_type_modifier, CColRef::EUsed, nullptr,
 			0 /* attno */, false /*IsNullable*/, 1 /* id */, CName(&strColA),
 			pexprGet->Pop()->UlOpId(), false /*IsDistCol*/
 		);
@@ -409,7 +409,7 @@ CStatisticsTest::EresUnittest_CStatisticsBasic()
 	if (nullptr == col_factory->LookupColRef(2 /*id*/))
 	{
 		(void) col_factory->PcrCreate(
-			pmdtypeint4, default_type_modifier, true /*mark_as_used*/, nullptr,
+			pmdtypeint4, default_type_modifier, CColRef::EUsed, nullptr,
 			1 /* attno */, false /*IsNullable*/, 2 /* id */, CName(&strColB),
 			pexprGet->Pop()->UlOpId(), false /*IsDistCol*/
 		);
@@ -418,7 +418,7 @@ CStatisticsTest::EresUnittest_CStatisticsBasic()
 	if (nullptr == col_factory->LookupColRef(10 /*id*/))
 	{
 		(void) col_factory->PcrCreate(
-			pmdtypeint4, default_type_modifier, true /*mark_as_used*/, nullptr,
+			pmdtypeint4, default_type_modifier, CColRef::EUsed, nullptr,
 			2 /* attno */, false /*IsNullable*/, 10 /* id */, CName(&strColC),
 			pexprGet->Pop()->UlOpId(), false /*IsDistCol*/
 		);

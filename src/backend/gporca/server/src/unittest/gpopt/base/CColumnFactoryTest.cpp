@@ -40,7 +40,8 @@ GPOS_RESULT
 CColumnFactoryTest::EresUnittest()
 {
 	CUnittest rgut[] = {
-		GPOS_UNITTEST_FUNC(CColumnFactoryTest::EresUnittest_Basic)};
+		GPOS_UNITTEST_FUNC(CColumnFactoryTest::EresUnittest_Basic),
+		GPOS_UNITTEST_FUNC(CColumnFactoryTest::EresUnittest_PcrCopyPreservesUsage)};
 
 	return CUnittest::EresExecute(rgut, GPOS_ARRAY_SIZE(rgut));
 }
@@ -87,6 +88,76 @@ CColumnFactoryTest::EresUnittest_Basic()
 	cf.Destroy(pcrThree);
 
 	cf.Destroy(pcrTwo);
+
+	return GPOS_OK;
+}
+
+
+//---------------------------------------------------------------------------
+//	@function:
+//		CColumnFactoryTest::EresUnittest_PcrCopyPreservesUsage
+//
+//	@doc:
+//		Verify that PcrCopy preserves the source colref's EUsedStatus
+//		tristate (EUsed / EUnused / EUnknown). Regression guard against
+//		re-introduction of the BOOL collapse: previously, an EUnused
+//		source colref was copied as EUnknown because PcrCopy passed a
+//		BOOL through PcrCreate.
+//
+//---------------------------------------------------------------------------
+GPOS_RESULT
+CColumnFactoryTest::EresUnittest_PcrCopyPreservesUsage()
+{
+	CAutoMemoryPool amp;
+	CMemoryPool *mp = amp.Pmp();
+
+	CMDProviderMemory *pmdp = CTestUtils::m_pmdpf;
+	pmdp->AddRef();
+	CMDAccessor mda(mp, CMDCache::Pcache());
+	mda.RegisterProvider(CTestUtils::m_sysidDefault, pmdp);
+
+	const IMDTypeInt4 *pmdtypeint4 = mda.PtMDType<IMDTypeInt4>();
+
+	CColumnFactory cf;
+
+	// Exercise all three EUsedStatus values through the PcrCopy round-trip.
+	const CColRef::EUsedStatus rgUsage[] = {
+		CColRef::EUsed,
+		CColRef::EUnused,
+		CColRef::EUnknown};
+
+	for (ULONG ul = 0; ul < GPOS_ARRAY_SIZE(rgUsage); ul++)
+	{
+		CWStringConst str(GPOS_WSZ_LIT("col"));
+
+		// Create a CColRefTable with the desired EUsedStatus. PcrCopy
+		// short-circuits computed colrefs, so we need the table variant
+		// to exercise the lossy code path that was fixed.
+		// Use large explicit ids to avoid colliding with PcrCopy's
+		// internal m_aul counter on the second/third iterations.
+		const ULONG ulId = 1000 + ul;
+		CColRef *pcrOriginal = cf.PcrCreate(
+			pmdtypeint4, default_type_modifier, rgUsage[ul],
+			nullptr /*mdid_table*/, ul /*attno*/, false /*is_nullable*/,
+			ulId /*id*/, CName(&str), 0 /*ulOpSource*/, false /*isDistCol*/);
+
+		// Sanity: original carries the requested usage.
+		GPOS_UNITTEST_ASSERT(rgUsage[ul] ==
+							 pcrOriginal->GetUsage(false /*system_eq_used*/,
+												   false /*dist_eq_used*/));
+
+		CColRef *pcrCopy = cf.PcrCopy(pcrOriginal);
+
+		// Contract: PcrCopy must preserve EUsedStatus. Previously this
+		// failed for EUnused (copy ends up as EUnknown because the BOOL
+		// collapse loses the distinction).
+		GPOS_UNITTEST_ASSERT(rgUsage[ul] ==
+							 pcrCopy->GetUsage(false /*system_eq_used*/,
+											   false /*dist_eq_used*/));
+
+		cf.Destroy(pcrCopy);
+		cf.Destroy(pcrOriginal);
+	}
 
 	return GPOS_OK;
 }
