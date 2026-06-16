@@ -10,7 +10,7 @@ BUILDNUMBER=dev
 # Call git describe, and convert it to a semi-semantic version, like
 # 5.0.0-alpha.0+dev.52.g123abc
 generate_dev_version() {
-    git describe | perl -pe 's/(.*)-([0-9]*)-(g[0-9a-f]*)/\1+dev.\2.\3/'
+    git describe --tags | perl -pe 's/(.*)-([0-9]*)-(g[0-9a-f]*)/\1+dev.\2.\3/'
 }
 
 # If we are in a Git repository and have git installed, build the version
@@ -22,7 +22,7 @@ if type git >/dev/null 2>&1 && [ -d '.git' ] ; then
 	# unreachable even if we have pulled the tags. If we can reach it,
 	# overwrite the VERSION from autoconf with the output, else append
 	# HEAD commit info
-	if git describe >/dev/null 2>&1 ; then
+	if git describe --tags >/dev/null 2>&1 ; then
 		VERSION=$(generate_dev_version)
 	else
 		VERSION+=+
