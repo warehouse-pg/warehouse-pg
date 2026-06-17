@@ -4,6 +4,7 @@
 # Copyright (c) Greenplum Inc 2010. All Rights Reserved. 
 #
 import os
+import shutil
 import sys
 import signal
 
@@ -510,8 +511,7 @@ def update_pg_hba_conf(options, array):
         current_user = unix.UserId.local('get userid')
         
         # back it up
-        os.system('cp %s/pg_hba.conf %s/%s' \
-                  % (coordinator_data_dir, coordinator_data_dir, PG_HBA_BACKUP))
+        shutil.copy(pg_hba_path, os.path.join(coordinator_data_dir, PG_HBA_BACKUP))
         
         # read in current pg_hba.conf file
         fp = open(pg_hba_path, 'r')
