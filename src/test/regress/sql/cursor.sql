@@ -431,3 +431,17 @@ LANGUAGE 'plpgsql';
 SELECT func_test_cursor();
 SELECT * FROM cursor_initplan ORDER BY a;
 DROP TABLE cursor_initplan;
+
+--
+-- WHERE CURRENT OF on a non-partitioned table evaluated in utility mode
+-- (Gp_role != GP_ROLE_EXECUTE).  Exercises the execCurrentOf() out-param
+-- contract: getCurrentOf() only writes *current_table_oid when the cursor
+-- carries tableoid junk metadata, which DECLARE CURSOR planning omits for
+-- non-partitioned tables.  Before this was fixed the local in
+-- execCurrentOf() was uninitialised, so the equality check against
+-- table_oid could read stack garbage.
+--
+-- Feed the SQL on stdin, not via psql -c: on PG12-era psql a multi-statement
+-- -c string runs as a single query and prints only the last command's result,
+-- which would hide the UPDATE/SELECT output below.
+\! echo "DROP TABLE IF EXISTS cursor_wco_nonpart; CREATE TABLE cursor_wco_nonpart (id int, v text); INSERT INTO cursor_wco_nonpart VALUES (1, 'a'); BEGIN; DECLARE c CURSOR FOR SELECT * FROM cursor_wco_nonpart FOR UPDATE; FETCH c; UPDATE cursor_wco_nonpart SET v = 'modified' WHERE CURRENT OF c; COMMIT; SELECT id, v FROM cursor_wco_nonpart; DROP TABLE cursor_wco_nonpart;" | PGOPTIONS='-c gp_role=utility' psql -X -d regression -h "$PGHOST" -p $PGPORT

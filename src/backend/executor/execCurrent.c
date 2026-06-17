@@ -53,7 +53,7 @@ execCurrentOf(CurrentOfExpr *cexpr,
 			  ItemPointer current_tid)
 {
 	int			current_gp_segment_id = -1;
-	Oid			current_table_oid;
+	Oid			current_table_oid = InvalidOid;
 
 	/*
 	 * In an executor node, the dispatcher should've included the current
