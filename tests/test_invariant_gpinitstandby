@@ -1,0 +1,70 @@
+#include <check.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/stat.h>
+
+START_TEST(test_gpinitstandby_rejects_shell_metacharacters)
+{
+    // Invariant: gpinitstandby must reject or sanitize paths containing shell metacharacters
+    const char *payloads[] = {
+        "/tmp/test; touch /tmp/pwned #",  // Command injection via semicolon
+        "/tmp/test$(id > /tmp/pwned)",    // Command substitution
+        "/tmp/valid_data_dir"             // Valid input (no metacharacters)
+    };
+    int num_payloads = sizeof(payloads) / sizeof(payloads[0]);
+
+    // Remove marker file if it exists
+    unlink("/tmp/pwned");
+
+    for (int i = 0; i < num_payloads; i++) {
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd),
+            "python gpMgmt/bin/gpinitstandby --help -D '%s' 2>&1 || true",
+            payloads[i]);
+        
+        int ret = system(cmd);
+        (void)ret;  // We don't care about return code for --help
+        
+        // Security invariant: shell metacharacters must never execute
+        struct stat st;
+        int pwned = (stat("/tmp/pwned", &st) == 0);
+        
+        ck_assert_msg(!pwned,
+            "Command injection detected with payload: %s", payloads[i]);
+        
+        unlink("/tmp/pwned");
+    }
+}
+END_TEST
+
+Suite *security_suite(void)
+{
+    Suite *s;
+    TCase *tc_core;
+
+    s = suite_create("Security");
+    tc_core = tcase_create("Core");
+
+    tcase_add_test(tc_core, test_gpinitstandby_rejects_shell_metacharacters);
+    suite_add_tcase(s, tc_core);
+
+    return s;
+}
+
+int main(void)
+{
+    int number_failed;
+    Suite *s;
+    SRunner *sr;
+
+    s = security_suite();
+    sr = srunner_create(s);
+
+    srunner_run_all(sr, CK_NORMAL);
+    number_failed = srunner_ntests_failed(sr);
+    srunner_free(sr);
+
+    return (number_failed == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
+}
