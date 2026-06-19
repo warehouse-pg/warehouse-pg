@@ -1910,7 +1910,7 @@ class gpload:
                 if has_seq == str('f') or has_seq==False:
                     has_seq_bool = False
                 if has_seq == str('t') or has_seq==True:
-                    has_sql_bool = True
+                    has_seq_bool = True
                 i = [name,ct,None, has_seq_bool]  
                 # i: [column name, column data type, mapping target, has_sequence]
                 self.into_columns.append(i)
