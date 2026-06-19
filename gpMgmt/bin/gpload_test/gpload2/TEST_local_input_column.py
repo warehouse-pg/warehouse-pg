@@ -184,3 +184,20 @@ def test_77_gpload_merge_capital_letters_standard_conforming_str_off():
     f.write("\\! gpload -f "+mkpath('config/config_file3')+"\n")
     f.write("\\! gpload -f "+mkpath('config/config_file4')+"\n")
     f.close()
+
+
+@prepare_before_test(num=78, times=1)
+def test_78_gpload_insert_target_table_with_serial_column():
+    "78 gpload insert into target table with a serial column"
+    psql_run(cmd='DROP TABLE IF EXISTS serial_column_table', dbname='reuse_gptest')
+    psql_run(cmd='CREATE TABLE serial_column_table(id serial, name text) DISTRIBUTED BY (id)', dbname='reuse_gptest')
+    write_config_file(
+        mode='insert',
+        file='data/external_file_78.txt',
+        table='serial_column_table',
+        delimiter="'|'",
+        preload=False,
+        reuse_tables=False)
+    f = open(mkpath('query78.sql'), 'a')
+    f.write("\\! psql -d reuse_gptest -c \"select count(*) from serial_column_table where id = 1 and name = 'serial-column-row';\"")
+    f.close()
