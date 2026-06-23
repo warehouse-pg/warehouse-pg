@@ -252,7 +252,8 @@ PartTbl-SPE-DynamicTableScan-Range-Cost1 PartTbl-SPE-DynamicTableScan-Range-Cost
 PartTbl-SPE-DynamicTableScan-Range-Cost3 PartTbl-SPE-DynamicTableScan-Range-Cost4
 PartTbl-SPE-DynamicTableScan-Range-Cost5 PartTbl-SPE-DynamicTableScan-List-Cost1
 PartTbl-SPE-DynamicTableScan-List-Cost2 PartTbl-SPE-DynamicTableScan-List-Cost3
-PartTbl-SPE-DynamicTableScan-List-Cost4 PartTbl-SPE-DynamicTableScan-List-Cost5;
+PartTbl-SPE-DynamicTableScan-List-Cost4 PartTbl-SPE-DynamicTableScan-List-Cost5
+ListPartTextKeyNoConstEval;
 
 CPartTblSPEBoolTest:
 PartTbl-SPE-Boolean1 PartTbl-SPE-Boolean2;

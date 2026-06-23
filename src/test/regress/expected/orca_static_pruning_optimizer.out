@@ -317,3 +317,79 @@ SELECT * FROM rp_insert;
  1 | 1
 (4 rows)
 
+-- Static partition pruning on LIST-partitioned tables with a
+-- non-numeric key type (text, varchar) when constant expression
+-- evaluation is disabled. The optimizer should plan and execute the
+-- query correctly.
+SET optimizer_enable_constant_expression_evaluation = off;
+-- text-keyed LIST partition
+CREATE TABLE lp_text (a int, b text) DISTRIBUTED BY (a) PARTITION BY LIST (b);
+CREATE TABLE lp_text_1 PARTITION OF lp_text FOR VALUES IN ('a');
+NOTICE:  table has parent, setting distribution columns to match parent table
+CREATE TABLE lp_text_2 PARTITION OF lp_text FOR VALUES IN ('b');
+NOTICE:  table has parent, setting distribution columns to match parent table
+CREATE TABLE lp_text_def PARTITION OF lp_text DEFAULT;
+NOTICE:  table has parent, setting distribution columns to match parent table
+INSERT INTO lp_text VALUES (1, 'a'), (2, 'b'), (3, 'c');
+EXPLAIN (COSTS OFF, VERBOSE) SELECT * FROM lp_text WHERE b = 'a';
+                            QUERY PLAN                             
+-------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   Output: a, b
+   ->  Dynamic Seq Scan on orca_static_pruning.lp_text
+         Output: a, b
+         Number of partitions to scan: 3 (out of 3)
+         Filter: (lp_text.b = 'a'::text)
+ Optimizer: GPORCA
+ Settings: optimizer_enable_constant_expression_evaluation = 'off'
+(8 rows)
+
+SELECT * FROM lp_text WHERE b = 'a';
+ a | b 
+---+---
+ 1 | a
+(1 row)
+
+-- varchar-keyed LIST partition
+CREATE TABLE lp_varchar (a int, b varchar(8)) DISTRIBUTED BY (a) PARTITION BY LIST (b);
+CREATE TABLE lp_varchar_1 PARTITION OF lp_varchar FOR VALUES IN ('x');
+NOTICE:  table has parent, setting distribution columns to match parent table
+CREATE TABLE lp_varchar_2 PARTITION OF lp_varchar FOR VALUES IN ('y');
+NOTICE:  table has parent, setting distribution columns to match parent table
+INSERT INTO lp_varchar VALUES (1, 'x'), (2, 'y');
+EXPLAIN (COSTS OFF, VERBOSE) SELECT * FROM lp_varchar WHERE b = 'x';
+                            QUERY PLAN                             
+-------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   Output: a, b
+   ->  Dynamic Seq Scan on orca_static_pruning.lp_varchar
+         Output: a, b
+         Number of partitions to scan: 2 (out of 2)
+         Filter: ((lp_varchar.b)::text = 'x'::text)
+ Optimizer: GPORCA
+ Settings: optimizer_enable_constant_expression_evaluation = 'off'
+(8 rows)
+
+SELECT * FROM lp_varchar WHERE b = 'x';
+ a | b 
+---+---
+ 1 | x
+(1 row)
+
+-- Negative control: same text-keyed table with the GUC ON.
+SET optimizer_enable_constant_expression_evaluation = on;
+EXPLAIN (COSTS OFF, VERBOSE) SELECT * FROM lp_text WHERE b = 'a';
+                      QUERY PLAN                       
+-------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   Output: a, b
+   ->  Dynamic Seq Scan on orca_static_pruning.lp_text
+         Output: a, b
+         Number of partitions to scan: 1 (out of 3)
+         Filter: (lp_text.b = 'a'::text)
+ Optimizer: GPORCA
+(7 rows)
+
+RESET optimizer_enable_constant_expression_evaluation;
+DROP TABLE lp_text;
+DROP TABLE lp_varchar;

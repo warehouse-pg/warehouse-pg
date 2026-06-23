@@ -149,3 +149,38 @@ INSERT INTO rp_insert VALUES (1, 1), (3, 3);
 EXPLAIN (COSTS OFF, VERBOSE) INSERT INTO rp_insert SELECT * FROM rp_insert;
 INSERT INTO rp_insert SELECT * FROM rp_insert;
 SELECT * FROM rp_insert;
+
+-- Static partition pruning on LIST-partitioned tables with a
+-- non-numeric key type (text, varchar) when constant expression
+-- evaluation is disabled. The optimizer should plan and execute the
+-- query correctly.
+
+SET optimizer_enable_constant_expression_evaluation = off;
+
+-- text-keyed LIST partition
+CREATE TABLE lp_text (a int, b text) DISTRIBUTED BY (a) PARTITION BY LIST (b);
+CREATE TABLE lp_text_1 PARTITION OF lp_text FOR VALUES IN ('a');
+CREATE TABLE lp_text_2 PARTITION OF lp_text FOR VALUES IN ('b');
+CREATE TABLE lp_text_def PARTITION OF lp_text DEFAULT;
+INSERT INTO lp_text VALUES (1, 'a'), (2, 'b'), (3, 'c');
+
+EXPLAIN (COSTS OFF, VERBOSE) SELECT * FROM lp_text WHERE b = 'a';
+SELECT * FROM lp_text WHERE b = 'a';
+
+-- varchar-keyed LIST partition
+CREATE TABLE lp_varchar (a int, b varchar(8)) DISTRIBUTED BY (a) PARTITION BY LIST (b);
+CREATE TABLE lp_varchar_1 PARTITION OF lp_varchar FOR VALUES IN ('x');
+CREATE TABLE lp_varchar_2 PARTITION OF lp_varchar FOR VALUES IN ('y');
+INSERT INTO lp_varchar VALUES (1, 'x'), (2, 'y');
+
+EXPLAIN (COSTS OFF, VERBOSE) SELECT * FROM lp_varchar WHERE b = 'x';
+SELECT * FROM lp_varchar WHERE b = 'x';
+
+-- Negative control: same text-keyed table with the GUC ON.
+SET optimizer_enable_constant_expression_evaluation = on;
+EXPLAIN (COSTS OFF, VERBOSE) SELECT * FROM lp_text WHERE b = 'a';
+
+RESET optimizer_enable_constant_expression_evaluation;
+
+DROP TABLE lp_text;
+DROP TABLE lp_varchar;
