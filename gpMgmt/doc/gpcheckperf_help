@@ -87,6 +87,12 @@ already.
 Note that gpcheckperf calls to gpssh and gpscp, so these 
 Greenplum utilities must also be in your $PATH.
 
+In addition to printing results to the screen, gpcheckperf writes
+all of its output, including the final RESULT block, to a log file
+in ~/gpAdminLogs/gpcheckperf_<date>.log. Running gpcheckperf more
+than once on the same day appends to the same dated log file. This
+provides a historical record of performance results for later review.
+
 *****************************************************
 OPTIONS
 *****************************************************

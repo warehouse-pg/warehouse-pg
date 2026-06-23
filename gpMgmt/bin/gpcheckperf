@@ -30,18 +30,24 @@ Usage: gpcheckperf <options>
     --duration : how long to run network test (default 5 seconds)
     --netperf  : use netperf instead of gpnetbenchServer/gpnetbenchClient
     --buffer-size : the size of the send buffer in kilobytes ( default 8 kilobytes)
+
+All output is also written to ~/gpAdminLogs/gpcheckperf_<date>.log
 """
 
 import datetime
+import logging
 import os
 import sys
 import re
+import builtins
 
 sys.path.append(sys.path[0] + '/lib')
 try:
     import getopt, math, io, stat, subprocess, signal
+    from gppylib import gplog
     from gppylib.gpparseopts import OptParser
     from gppylib.util import ssh_utils
+    from gppylib.commands.unix import getLocalHostname, getUserName
     from functools import reduce
 except ImportError as e:
     sys.exit('Error: unable to import module: ' + str(e))
@@ -53,6 +59,28 @@ if GPHOME is None:
 USER = os.getenv('USER')
 if USER is None or USER == ' ':
     sys.exit('Please set USER environment variable')
+
+
+# Keep a reference to the builtin print so we can mirror everything that is
+# printed to stdout into the gpAdminLogs logfile without changing stdout.
+_builtin_print = builtins.print
+
+
+def print(*args, **kwargs):
+    """Drop-in replacement for the builtin print.
+
+    Behaves exactly like the builtin print on stdout, but additionally mirrors
+    the message to the gpcheckperf logfile under ~/gpAdminLogs (file only, so
+    stdout is never written to twice). Logging to the file is a no-op until
+    setup_tool_logging() has been called in main().
+    """
+    _builtin_print(*args, **kwargs)
+    if kwargs.get('file', sys.stdout) not in (sys.stdout, None):
+        return
+    sep = kwargs.get('sep', ' ')
+    msg = sep.join(str(a) for a in args)
+    if msg:
+        gplog.log_to_file_only(msg)
 
 
 def usage(exitarg):
@@ -965,6 +993,11 @@ def printResult(title, result):
 
 
 def main():
+    # Set up logging to ~/gpAdminLogs/gpcheckperf_<date>.log,
+    # matching the convention used by gpstart/gpstop/gpcheckcat. This must
+    # happen before parseCommandLine() so the resolved command line is logged.
+    gplog.setup_tool_logging('gpcheckperf', getLocalHostname(), getUserName())
+
     try:
         parseCommandLine()
         runSetup()
@@ -1011,8 +1044,16 @@ def main():
 
             runTeardown()
 
+        print('Log file: %s' % gplog.get_logfile())
+
     except KeyboardInterrupt:
         print('[Abort] Keyboard Interrupt ...')
+    except SystemExit as e:
+        # Capture early-exit error messages (sys.exit('[Error] ...')) in the
+        # logfile before propagating; stdout/stderr behavior is unchanged.
+        if isinstance(e.code, str):
+            gplog.log_to_file_only(e.code, logging.ERROR)
+        raise
 
 if __name__ == '__main__':
      main()

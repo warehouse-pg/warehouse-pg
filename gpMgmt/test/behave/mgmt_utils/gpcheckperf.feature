@@ -94,3 +94,12 @@ Feature: Tests for gpcheckperf
     Then  gpcheckperf should return a return code of 0
     And   gpcheckperf should print "--buffer-size value is not specified or invalid. Using default \(8 kilobytes\)" to stdout
     And   gpcheckperf should print "avg = " to stdout
+
+    @concourse_cluster
+    Scenario: gpcheckperf writes output to gpAdminLogs
+      Given the database is running
+      When  the user runs "gpcheckperf -h cdw -r M -d /data/gpdata/ --duration=10s -v"
+      Then  gpcheckperf should return a return code of 0
+      And   verify that the utility gpcheckperf ever does logging into the user's "gpAdminLogs" directory
+      And   gpcheckperf should print "RESULT" to logfile
+      And   gpcheckperf should print "Log file:" to stdout

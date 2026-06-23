@@ -1,6 +1,7 @@
 import imp
 import os
 import sys
+import tempfile
 from mock import patch
 from gppylib.test.unit.gp_unittest import GpTestCase,run_tests
 
@@ -96,6 +97,25 @@ class GpCheckPerf(GpTestCase):
         self.assertEqual(mbps, exp_mbps)
         self.assertEqual(time, exp_time)
         self.assertEqual(bytes, exp_bytes)
+
+    def test_output_is_mirrored_to_logfile(self):
+        # gpcheckperf mirrors everything printed to stdout into a logfile under
+        # gpAdminLogs. Point logging at a temp dir and verify the logfile is
+        # created and captures the RESULT block.
+        logdir = tempfile.mkdtemp()
+        gplog = self.subject.gplog
+        gplog.setup_tool_logging('gpcheckperf', 'localhost', 'testuser', logdir=logdir)
+
+        self.subject.print('====================')
+        self.subject.print('==  RESULT 2026-06-23T00:00:00')
+        self.subject.print(' disk write tot bandwidth (MB/s): 123.45')
+
+        logfile = gplog.get_logfile()
+        self.assertTrue(logfile.startswith(logdir))
+        with open(logfile) as f:
+            contents = f.read()
+        self.assertIn('RESULT', contents)
+        self.assertIn('disk write tot bandwidth (MB/s): 123.45', contents)
 
 if __name__ == '__main__':
     run_tests()
