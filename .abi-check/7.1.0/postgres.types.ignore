@@ -8,3 +8,4 @@ struct AOCSWriteColumnDescData
 struct AppendOnlyFetchDescData
 struct AppendOnlyInsertDescData
 struct ResGroupCaps
+struct PlannerConfig
