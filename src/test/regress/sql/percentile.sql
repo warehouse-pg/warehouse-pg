@@ -45,6 +45,10 @@ select percentile_cont(0.5) within group (order by a),
 	median(a), percentile_disc(0.5) within group(order by a) from perct;
 select b, percentile_cont(0.5) within group (order by a),
 	median(a), percentile_disc(0.5) within group(order by a) from perct group by b order by b;
+-- mode() is the only ordered-set aggregate with no direct argument; ORCA must
+-- plan it as an ordered-set aggregate instead of crashing in preprocessing.
+select mode() within group (order by b) from perct;
+select b, mode() within group (order by a) from perct group by b order by b;
 select percentile_cont(0.2) within group (order by a) from generate_series(1, 100)a;
 select a / 10, percentile_cont(0.2) within group (order by a) from generate_series(1, 100)a
 	group by a / 10 order by a / 10;
