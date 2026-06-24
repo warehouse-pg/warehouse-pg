@@ -49,6 +49,11 @@ select b, percentile_cont(0.5) within group (order by a),
 -- plan it as an ordered-set aggregate instead of crashing in preprocessing.
 select mode() within group (order by b) from perct;
 select b, mode() within group (order by a) from perct group by b order by b;
+-- Mix mode() with a splittable percentile and a regular aggregate.
+select mode() within group (order by b),
+	percentile_cont(0.6) within group (order by a), count(*) from perct;
+select b, mode() within group (order by a),
+	percentile_cont(0.5) within group (order by a), count(*) from perct group by b order by b;
 select percentile_cont(0.2) within group (order by a) from generate_series(1, 100)a;
 select a / 10, percentile_cont(0.2) within group (order by a) from generate_series(1, 100)a
 	group by a / 10 order by a / 10;
