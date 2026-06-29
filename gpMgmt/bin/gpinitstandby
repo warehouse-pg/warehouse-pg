@@ -781,7 +781,8 @@ def undo_update_pg_hba_conf(array):
     
     logger.debug('Restoring pg_hba.conf file on coordinator...')
     coordinator_data_dir = array.coordinator.getSegmentDataDirectory()
-    os.system('mv %s/%s %s/pg_hba.conf' % (coordinator_data_dir, PG_HBA_BACKUP, coordinator_data_dir))
+    shutil.move(os.path.join(coordinator_data_dir, PG_HBA_BACKUP),
+                os.path.join(coordinator_data_dir, 'pg_hba.conf'))
     # make it effective
     pg.ReloadDbConf.local('pg_ctl reload', array.coordinator)
 
