@@ -1188,10 +1188,9 @@ c.statime
 FROM pg_resgroup a
 , (pg_authid
 b FULL JOIN pg_stat_last_shoperation c ON ((b.oid = c.stasysid)))
-WHERE ((a.oid = c.objid) AND (c.classid = (SELECT pg_class.oid FROM
-pg_class WHERE ((pg_class.relname = 'pg_resgroup'::name) AND
-(pg_class.relnamespace = (SELECT pg_namespace.oid FROM pg_namespace
-WHERE (pg_namespace.nspname = 'pg_catalog'::name)))))))  
+WHERE ((a.oid = c.objid) AND (c.classid IN (
+'pg_catalog.pg_resgroup'::regclass,
+'pg_catalog.pg_resgroupcapability'::regclass)))
 ORDER BY 9;
 
 -- MPP-7807: show all resqueue attributes
