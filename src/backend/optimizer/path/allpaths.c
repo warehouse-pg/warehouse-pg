@@ -161,6 +161,7 @@ static void remove_unused_subquery_outputs(Query *subquery, RelOptInfo *rel);
 
 static void bring_to_outer_query(PlannerInfo *root, RelOptInfo *rel, List *outer_quals);
 static void bring_to_singleQE(PlannerInfo *root, RelOptInfo *rel);
+static void bring_to_entry(PlannerInfo *root, RelOptInfo *rel);
 static bool is_query_contain_limit_groupby(Query *parse);
 static void handle_gen_seggen_volatile_path(PlannerInfo *root, RelOptInfo *rel);
 
@@ -646,6 +647,138 @@ bring_to_singleQE(PlannerInfo *root, RelOptInfo *rel)
 }
 
 /*
+ * The following function "steals" ideas and most of the code from the
+ * function bring_to_singleQE.
+ *
+ * Decorate the Paths of 'rel' with Motions to bring the relation's result to
+ * Entry (coordinator) locus.  This is used when the query references a
+ * correlated SubPlan that must execute on the coordinator -- it scans a
+ * coordinator-only (Entry) catalog and needs an outer correlation parameter,
+ * which cannot be passed across a Motion.  A correlated SubPlan runs in the
+ * slice that produces its parameter, so the rel that produces the parameter
+ * must be gathered to the coordinator here; the SubPlan, applied above this
+ * Motion, then runs on the coordinator where the catalog is local and the
+ * parameter is available.  See force_entry in distribute_restrictinfo_to_rels().
+ *
+ * Two kinds of quals must be evaluated above the Motion rather than at the
+ * scan (which is below the Motion, on the segments):
+ *
+ *  - A correlated SubPlan that sits in a WHERE qual lives in
+ *    rel->baserestrictinfo.  Pull the SubPlan-bearing quals out so they are
+ *    applied above the Motion; plain quals (no SubPlan) stay at the scan, where
+ *    they can still filter before the gather.  (SubPlans in the target list or
+ *    in HAVING are already evaluated above the scan, hence above this Motion,
+ *    so they need no special handling here.)
+ *
+ *  - Outer-correlated quals that rel_need_to_separate_outer_query_restrictinfos()
+ *    diverted to rel->upperrestrictinfo (e.g. an equivalence-class-derived
+ *    "t2.b = outer.x" filter on a distributed rel).  Normally bring_to_outer_query()
+ *    applies these above the Motion, but the force_entry branch in
+ *    set_rel_pathlist() runs in its place -- so we must apply them here too,
+ *    otherwise they are silently dropped and the subquery's join degenerates
+ *    into a Cartesian product.
+ *
+ * Both, like bring_to_outer_query() does with upperrestrictinfo, are re-applied
+ * in a Result node above the Motion (at Entry locus, where the outer parameter
+ * is available on the coordinator).
+ */
+static void
+bring_to_entry(PlannerInfo *root, RelOptInfo *rel)
+{
+	List	   *origpathlist;
+	List	   *above_motion_quals = NIL;
+	List	   *scan_quals = NIL;
+	ListCell   *lc;
+
+	foreach(lc, rel->baserestrictinfo)
+	{
+		RestrictInfo *ri = (RestrictInfo *) lfirst(lc);
+
+		if (contain_subplans((Node *) ri->clause))
+			above_motion_quals = lappend(above_motion_quals, ri);
+		else
+			scan_quals = lappend(scan_quals, ri);
+	}
+	rel->baserestrictinfo = scan_quals;
+
+	/* Correlated quals separated into upperrestrictinfo go above the Motion. */
+	above_motion_quals = list_concat(above_motion_quals,
+									 list_copy(rel->upperrestrictinfo));
+	rel->upperrestrictinfo = NIL;
+
+	origpathlist = rel->pathlist;
+	rel->cheapest_startup_path = NULL;
+	rel->cheapest_total_path = NULL;
+	rel->cheapest_unique_path = NULL;
+	rel->cheapest_parameterized_paths = NIL;
+	rel->pathlist = NIL;
+
+	foreach(lc, origpathlist)
+	{
+		Path	     *origpath = (Path *) lfirst(lc);
+		Path	     *path;
+		CdbPathLocus  target_locus;
+
+		if (CdbPathLocus_IsGeneral(origpath->locus) ||
+			CdbPathLocus_IsEntry(origpath->locus))
+			path = origpath;
+		else
+		{
+			/*
+			 * Cannot pass a param through motion, so if this is a parameterized
+			 * path, we can't use it.
+			 */
+			if (origpath->param_info)
+				continue;
+
+			/*
+			 * param_info cannot cover the case that an index path's orderbyclauses
+			 * See github issue: https://github.com/greenplum-db/gpdb/issues/9733
+			 */
+			if (IsA(origpath, IndexPath))
+			{
+				IndexPath *ipath = (IndexPath *) origpath;
+				if (contains_outer_params((Node *) ipath->indexorderbys,
+										  (void *) root))
+					continue;
+			}
+
+			CdbPathLocus_MakeEntry(&target_locus);
+
+			path = cdbpath_create_motion_path(root,
+											  origpath,
+											  NIL, // DESTROY pathkeys
+											  false,
+											  target_locus);
+
+			/*
+			 * Shield the Motion with an (unparameterized) Materialize, exactly
+			 * as bring_to_singleQE() does.  A correlated SubPlan is rescanned
+			 * once per outer row, and the lifted correlated qual we attach just
+			 * below makes the path above this Motion parameterized.  Without the
+			 * Materialize here -- whose subtree is just the Motion and therefore
+			 * has no parameter dependency -- a rescan would propagate down to
+			 * the Motion itself ("illegal rescan of motion node").  With it, the
+			 * Motion runs once and rescans replay the materialized tuples.
+			 */
+			path = (Path *) create_material_path(root, rel, path);
+		}
+
+		/* Evaluate the lifted quals (SubPlan-bearing + correlated) above the Motion. */
+		if (above_motion_quals)
+			path = (Path *) create_projection_path_with_quals(root,
+															  rel,
+															  path,
+															  path->parent->reltarget,
+															  above_motion_quals,
+															  true);
+
+		add_path(rel, path);
+	}
+	set_cheapest(rel);
+}
+
+/*
  * handle_gen_seggen_volatile_path
  *
  * Only use for base replicated rel.
@@ -767,7 +900,21 @@ set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
 	if (set_rel_pathlist_hook)
 		(*set_rel_pathlist_hook) (root, rel, rti, rte);
 
-	if (rel->upperrestrictinfo)
+	if (root->config->force_entry ||
+		bms_is_member(rti, root->config->force_entry_rels))
+	{
+		/*
+		 * CDB: gather this rel to Entry (coordinator) locus so a correlated
+		 * SubPlan over a coordinator-only Entry catalog runs on the coordinator.
+		 * force_entry forces every base rel of this query (used for the
+		 * SubPlan's own subquery, so its whole join stays on the coordinator);
+		 * force_entry_rels forces only the specific rel(s) that supply the
+		 * correlation parameter (used in the parent query, so unrelated base
+		 * rels stay distributed).  See distribute_restrictinfo_to_rels().
+		 */
+		bring_to_entry(root, rel);
+	}
+	else if (rel->upperrestrictinfo)
 		bring_to_outer_query(root, rel, rel->upperrestrictinfo);
 	else if (root->config->force_singleQE)
 	{

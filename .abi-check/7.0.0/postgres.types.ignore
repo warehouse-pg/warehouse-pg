@@ -8,3 +8,4 @@ struct AppendOnlyFetchDescData
 struct AppendOnlyInsertDescData
 struct CreateForeignTableStmt
 enum PMSignalReason
+struct PlannerConfig

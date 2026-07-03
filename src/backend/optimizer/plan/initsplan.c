@@ -38,6 +38,7 @@
 
 #include "access/heapam.h"
 #include "cdb/cdbmutate.h"
+#include "cdb/cdbvars.h"
 #include "nodes/makefuncs.h"
 #include "parser/parsetree.h"
 
@@ -2262,6 +2263,94 @@ check_redundant_nullability_qual(PlannerInfo *root, Node *clause)
 	return false;
 }
 
+/*
+ * Returns true if the query scans a distributed (partitioned or replicated)
+ * relation -- i.e. one that needs a Motion when joined with a coordinator-only
+ * (Entry) table.  Used to detect the Entry-correlated-SubPlan case that forces
+ * the outer query to Entry (coordinator) locus; see force_entry handling in
+ * distribute_restrictinfo_to_rels().
+ */
+static bool
+subquery_contains_distributed_rel(PlannerInfo *root)
+{
+	int			rti;
+
+	for (rti = 1; rti < root->simple_rel_array_size; rti++)
+	{
+		RelOptInfo *brel = root->simple_rel_array[rti];
+
+		if (brel == NULL || brel->reloptkind != RELOPT_BASEREL)
+			continue;
+
+		if (brel->rtekind == RTE_RELATION && brel->cdbpolicy != NULL &&
+			(GpPolicyIsPartitioned(brel->cdbpolicy) ||
+			 GpPolicyIsReplicated(brel->cdbpolicy)))
+			return true;
+	}
+
+	return false;
+}
+
+/* Collect the PARAM_EXEC parameter ids referenced anywhere in an expression. */
+static bool
+collect_param_exec_ids_walker(Node *node, Bitmapset **paramids)
+{
+	if (node == NULL)
+		return false;
+	if (IsA(node, Param))
+	{
+		Param	   *p = (Param *) node;
+
+		if (p->paramkind == PARAM_EXEC)
+			*paramids = bms_add_member(*paramids, p->paramid);
+	}
+	return expression_tree_walker(node, collect_param_exec_ids_walker,
+								  (void *) paramids);
+}
+
+/*
+ * For a subquery restriction 'clause' that references outer-query correlation
+ * parameters, mark -- on the parent query level -- exactly the base relations
+ * that supply those parameters, so only those rels are forced to Entry
+ * (coordinator) locus.  This keeps the fix narrow instead of dragging every
+ * base rel of the parent layer to the coordinator.
+ *
+ * The mapping from a PARAM_EXEC id back to the parent Var (whose varno is the
+ * parent RT index) lives in parent_root->plan_params, populated when the
+ * correlation Var was replaced by the parameter (see assign_param_for_var()).
+ */
+static void
+force_entry_param_source_rels(PlannerInfo *subroot, Node *clause)
+{
+	PlannerInfo *parent = subroot->parent_root;
+	Bitmapset  *paramids = NULL;
+	ListCell   *l;
+
+	if (parent == NULL)
+		return;
+
+	collect_param_exec_ids_walker(clause, &paramids);
+	if (bms_is_empty(paramids))
+		return;
+
+	foreach(l, parent->plan_params)
+	{
+		PlannerParamItem *pitem = (PlannerParamItem *) lfirst(l);
+
+		if (!bms_is_member(pitem->paramId, paramids))
+			continue;
+		if (IsA(pitem->item, Var))
+		{
+			Var		   *var = (Var *) pitem->item;
+
+			parent->config->force_entry_rels =
+				bms_add_member(parent->config->force_entry_rels, var->varno);
+		}
+	}
+
+	bms_free(paramids);
+}
+
 static bool
 rel_need_to_separate_outer_query_restrictinfos(PlannerInfo *root, RelOptInfo *rel)
 {
@@ -2343,8 +2432,81 @@ distribute_restrictinfo_to_rels(PlannerInfo *root,
 												 restrictinfo);
 			}
 			else
+			{
+				/*
+				 * GPDB: Detect a correlated restriction on a coordinator-only
+				 * (Entry) table inside a subquery that also scans a distributed
+				 * relation -- e.g. a correlated subquery joining
+				 * gp_segment_configuration with a distributed table.  Such a
+				 * SubPlan must execute entirely on the coordinator: it scans an
+				 * Entry catalog (whose rows only exist there) and it needs the
+				 * outer correlation parameter, which GPDB cannot pass across a
+				 * Motion.
+				 *
+				 * Two things must hold, so we force Entry (coordinator) locus:
+				 *
+				 * 1. The subquery itself must perform its join on the
+				 *    coordinator.  Otherwise the planner is free to Broadcast the
+				 *    Entry table to the segments and join there, pushing the
+				 *    correlated qual (and its parameter) below that Motion --
+				 *    which crashes the executor.  Forcing the subquery's
+				 *    distributed rels (e.g. gp_tmp) to Entry makes the join
+				 *    Entry-vs-Entry on the coordinator, with no Motion beneath
+				 *    the parameterized qual.  (force_entry, this subquery's
+				 *    config.)
+				 *
+				 * 2. The parent query must produce the correlation parameter on
+				 *    the coordinator, so the SubPlan is referenced above the outer
+				 *    gather Motion and runs there -- otherwise it runs in the
+				 *    segment slice that produced the parameter.  We force ONLY the
+				 *    parent rel(s) that actually supply the parameter, not every
+				 *    base rel of that layer (force_entry_rels, parent's config).
+				 *
+				 * See force_entry / force_entry_rels handling in
+				 * set_rel_pathlist() and bring_to_entry().
+				 */
+				if (Gp_role == GP_ROLE_DISPATCH &&
+					root->parent_root != NULL &&
+					restrictinfo->contain_outer_query_references &&
+					rel->rtekind == RTE_RELATION &&
+					(rel->cdbpolicy == NULL ||
+					 GpPolicyIsEntry(rel->cdbpolicy)) &&
+					subquery_contains_distributed_rel(root))
+				{
+					root->config->force_entry = true;
+					force_entry_param_source_rels(root,
+												  (Node *) restrictinfo->clause);
+				}
+
+				/*
+				 * If this rel will be gathered to Entry because it supplies a
+				 * correlated SubPlan's parameter (force_entry_rels was set, while
+				 * planning that SubPlan's subquery, above), and this qual carries
+				 * the SubPlan, then the parameter columns must survive the gather
+				 * Motion.  Add them to the targetlist now -- mirroring the
+				 * upperrestrictinfo branch above -- otherwise the qual, once
+				 * lifted above the Motion by bring_to_entry(), references a Var
+				 * that is absent from the Motion's output ("variable not found in
+				 * subplan target list"), e.g. for count(*) where no column of the
+				 * rel is otherwise selected.
+				 */
+				if (root->config->force_entry_rels != NULL &&
+					bms_is_member(rel->relid, root->config->force_entry_rels) &&
+					contain_subplans((Node *) restrictinfo->clause))
+				{
+					List	   *vars = pull_var_clause((Node *) restrictinfo->clause,
+													   PVC_RECURSE_AGGREGATES |
+													   PVC_RECURSE_PLACEHOLDERS);
+
+					add_vars_to_targetlist_x(root, vars, relids,
+											 false, /* create_new_ph */
+											 true /* force */);
+					list_free(vars);
+				}
+
 				rel->baserestrictinfo = lappend(rel->baserestrictinfo,
 												restrictinfo);
+			}
 			/* Update security level info */
 			rel->baserestrict_min_security = Min(rel->baserestrict_min_security,
 												 restrictinfo->security_level);

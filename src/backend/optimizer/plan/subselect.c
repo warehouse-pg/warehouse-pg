@@ -377,6 +377,23 @@ make_subplan(PlannerInfo *root, Query *orig_subquery,
 	if (Gp_role == GP_ROLE_DISPATCH)
 		config->is_under_subplan = true;
 
+	/*
+	 * Note: force_entry (the whole-query flag) is intentionally NOT cleared
+	 * here.  When this query level must run on the coordinator (Entry locus)
+	 * because it references a correlated SubPlan over a coordinator-only Entry
+	 * catalog, that constraint has to propagate into the SubPlan's own subquery
+	 * as well: its distributed rels must be gathered to Entry so the whole join
+	 * happens on the coordinator and the correlation parameter never crosses a
+	 * Motion.  The flag is also set directly on the subquery's config in
+	 * distribute_restrictinfo_to_rels() when the Entry-correlated pattern is
+	 * detected within it.
+	 *
+	 * force_entry_rels, on the other hand, MUST be cleared: it holds RT indexes
+	 * of the parent query level, which are meaningless (and would force the
+	 * wrong rels) in the subquery's own RT-index space.
+	 */
+	config->force_entry_rels = NULL;
+
 	if (Gp_role == GP_ROLE_DISPATCH)
 	{
 		/*

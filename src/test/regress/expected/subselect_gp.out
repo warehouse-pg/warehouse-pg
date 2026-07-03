@@ -4592,3 +4592,147 @@ select count(*) from foo where a > (select regr_count(x, y) from bar where foo.a
 
 drop table foo;
 drop table bar;
+--
+-- EntryDB path: a correlated subquery that joins a coordinator-only (Entry)
+-- catalog table (gp_segment_configuration) with a distributed table.  Such a
+-- SubPlan must execute on the coordinator: it scans an Entry catalog (whose
+-- rows only exist there) and needs the outer correlation parameter, which GPDB
+-- cannot pass across a Motion.  A correlated SubPlan runs in the slice that
+-- produces its parameter, so when the outer query scans the parameter-producing
+-- table on the segments, the SubPlan runs there too -- scanning the catalog on
+-- the segments (wrong/empty data) or crashing when the parameter crosses a
+-- Motion.  The planner now forces the outer query's base rels to Entry
+-- (coordinator) locus (force_entry, see distribute_restrictinfo_to_rels() and
+-- bring_to_entry()), so the parameter is produced on the coordinator and the
+-- SubPlan is evaluated above the gather Motion, where the catalog is local.
+-- This is exercised below with the SubPlan in the target list, in WHERE and in
+-- HAVING.
+--
+create table gp_entry_outer(x int) distributed by (x);
+insert into gp_entry_outer values (1), (2), (3);
+create table gp_tmp(a int, b int, c int) distributed by (a);
+insert into gp_tmp select i, i, i from generate_series(1, 10) i;
+create table gp_segment(a int, b text) distributed by (a);
+insert into gp_segment values (1, 'no_such_host');
+-- Correlated on dbid: for each outer x, count catalog rows whose dbid = x and
+-- whose dbid also appears in the distributed gp_tmp (1..10).  dbids 1, 2 and 3
+-- always exist, so each outer row yields exactly 1 -- deterministic regardless
+-- of the cluster's segment count.
+select x, (select count(*)
+           from gp_segment_configuration s
+           join gp_tmp t2 on s.dbid = t2.b
+           where s.dbid = gp_entry_outer.x) as cnt
+from gp_entry_outer order by x;
+ x | cnt 
+---+-----
+ 1 |   1
+ 2 |   1
+ 3 |   1
+(3 rows)
+
+-- The original report shape (correlated on hostname).  Use a hostname that does
+-- not exist so the count is a deterministic 0 on any cluster.
+select (select count(*)
+        from gp_segment_configuration s
+        join gp_tmp t2 on s.dbid = t2.b
+        where s.hostname = gp_segment.b) from gp_segment;
+ count 
+-------
+     0
+(1 row)
+
+-- Same correlated SubPlan in a WHERE clause: the SubPlan-bearing qual is lifted
+-- above the Entry gather.  All three outer rows qualify (count 1 > 0).
+select x from gp_entry_outer o
+where (select count(*)
+       from gp_segment_configuration s
+       join gp_tmp t2 on s.dbid = t2.b
+       where s.dbid = o.x) > 0
+order by x;
+ x 
+---
+ 1
+ 2
+ 3
+(3 rows)
+
+-- Same WHERE-clause SubPlan under a bare count(*), where no column of the outer
+-- rel is otherwise selected.  The correlation Var must still be carried through
+-- the gather Motion (regression: "variable not found in subplan target list").
+-- All three outer rows qualify, so the count is 3.
+--
+-- Also lock the plan shape so a future change that silently moves the SubPlan
+-- back below the Motion is caught even if it no longer errors.  The fix is in
+-- the Postgres planner, so scope the EXPLAIN to it with SET LOCAL inside a
+-- transaction (self-restoring); that way both the planner and the ORCA expected
+-- files show the same plan.  costs are omitted -- they are not stable across
+-- cluster sizes.
+begin;
+set local optimizer = off;
+explain (costs off)
+select count(*) from gp_entry_outer o
+where (select count(*)
+       from gp_segment_configuration s
+       join gp_tmp t2 on s.dbid = t2.b
+       where s.dbid = o.x) > 0;
+                                   QUERY PLAN                                   
+--------------------------------------------------------------------------------
+ Aggregate
+   ->  Result
+         Filter: ((SubPlan 1) > 0)
+         ->  Materialize
+               ->  Gather Motion 3:1  (slice1; segments: 3)
+                     ->  Seq Scan on gp_entry_outer o
+         SubPlan 1
+           ->  Aggregate
+                 ->  Nested Loop
+                       ->  Seq Scan on gp_segment_configuration s
+                             Filter: (dbid = o.x)
+                       ->  Materialize
+                             ->  Result
+                                   Filter: (t2.b = o.x)
+                                   ->  Materialize
+                                         ->  Gather Motion 3:1  (slice2; segments: 3)
+                                               ->  Seq Scan on gp_tmp t2
+ Optimizer: Postgres-based planner
+(18 rows)
+
+rollback;
+select count(*) from gp_entry_outer o
+where (select count(*)
+       from gp_segment_configuration s
+       join gp_tmp t2 on s.dbid = t2.b
+       where s.dbid = o.x) > 0;
+ count 
+-------
+     3
+(1 row)
+
+-- ... and in a HAVING clause, correlated on the grouping key.
+select o.x from gp_entry_outer o
+group by o.x
+having (select count(*)
+        from gp_segment_configuration s
+        join gp_tmp t2 on s.dbid = t2.b
+        where s.dbid = o.x) > 0
+order by o.x;
+ x 
+---
+ 1
+ 2
+ 3
+(3 rows)
+
+-- A correlated scan of the Entry catalog with no join (no Motion in the
+-- subplan) must keep working unchanged.
+select (select count(*)
+        from gp_segment_configuration s
+        where s.hostname = gp_segment.b) from gp_segment;
+ count 
+-------
+     0
+(1 row)
+
+drop table gp_entry_outer;
+drop table gp_segment;
+drop table gp_tmp;
