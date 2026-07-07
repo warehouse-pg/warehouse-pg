@@ -337,7 +337,26 @@ AppendOnlyBlockDirectory_Init_forUniqueChecks(
 
 	blockDirectory->blkdirIdx = index_open(blkdiridxid, AccessShareLock);
 
-	init_internal_proj(blockDirectory, NULL, blockDirectory->isAOCol);
+	/*
+	 * For CO tables, uniqueness checks only ever consult the block directory
+	 * entries of the designated unique-check column: the same column for
+	 * which insert commands persist their placeholder rows (see
+	 * AppendOnlyBlockDirectory_InsertPlaceholder()). We must not pick the
+	 * anchor column here: its choice depends on segfile eofs, which change
+	 * as data is inserted, so a reader could end up consulting a different
+	 * column than the one covered by a concurrent (or same-command) writer's
+	 * placeholder row and miss in-progress conflicts.
+	 */
+	if (blockDirectory->isAOCol)
+	{
+		bool	   *proj = palloc0(numColumnGroups * sizeof(bool));
+
+		proj[aocs_unique_check_col(aoRel)] = true;
+		init_internal_proj(blockDirectory, proj, false);
+		pfree(proj);
+	}
+	else
+		init_internal_proj(blockDirectory, NULL, false);
 
 	init_internal(blockDirectory);
 }
@@ -1054,15 +1073,21 @@ AppendOnlyBlockDirectory_GetEntryForPartialScan(AppendOnlyBlockDirectory *blockD
  * Note about AOCO tables:
  * For AOCO tables, there are multiple block directory entries for each tid.
  * However, it is currently sufficient to check the block directory entry for
- * just one of these columns. We do so for the "anchor column" which is
- * picked using the same logic as regular table scan. Note that if we write a 
- * placeholder row for the anchor column being picked, there is a
- * guarantee that if there is a conflict on the placeholder row, the covering
- * block directory entry will be based on the same column i (as columnar DDL
- * changes need exclusive locks and placeholder rows can't be seen after tx end)
- * (We could just have checked the covers condition for column 0, as block
- * directory entries are inserted even for dropped columns. But, this may change
- * one day, and we want our code to be future-proof)
+ * just one of these columns, which is whatever column ended up first in
+ * proj_atts during init:
+ *
+ * - For uniqueness checks, that is the unique-check column (see
+ *   aocs_unique_check_col()). It is vital that it matches the column for
+ *   which insert commands persist their placeholder rows, or we would miss
+ *   conflicts with in-progress inserts. This is guaranteed because the
+ *   choice is deterministic and independent of mutable state, and because
+ *   columnar DDL changes (which could change the choice) need exclusive
+ *   locks while placeholder rows can't be seen after tx end.
+ *
+ * - For index only scans, that is the "anchor column" which is picked using
+ *   the same logic as regular table scans. Only committed rows (with real,
+ *   all-column block directory entries) matter there, so any complete
+ *   column works.
  */
 bool
 AppendOnlyBlockDirectory_CoversTuple(
