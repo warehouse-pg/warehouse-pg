@@ -1,0 +1,78 @@
+-- @Description Tests that a concurrent VACUUM compaction does not break an
+-- already-running index fetch on the same table.
+--
+-- The reader opens a cursor over a nestloop join whose inner side fetches
+-- tuples through the btree index; the AO fetch descriptor (and its cached
+-- list of segfiles) is initialized at the first MOVE. The concurrent
+-- DELETE + VACUUM then compacts the table, moving the surviving tuples into
+-- a segfile that did not exist when the fetch descriptor was created, while
+-- the btree immediately contains entries pointing into that new segfile.
+-- Draining the cursor re-executes the inner index scan and must treat those
+-- entries as invisible ("not found") instead of raising the "out of scanning
+-- scope" error: none of the moved tuples can be visible to the reader's
+-- snapshot anyway.
+DROP TABLE IF EXISTS ao_lu;
+DROP TABLE
+DROP TABLE IF EXISTS ao_probe;
+DROP TABLE
+CREATE TABLE ao_lu (cust_no int, birth_y text, filler text) USING @amname@ DISTRIBUTED BY (cust_no);
+CREATE TABLE
+INSERT INTO ao_lu SELECT g, (1950 + g % 60)::text, repeat('x', 200) FROM generate_series(1, 300000) g;
+INSERT 0 300000
+CREATE INDEX ao_lu_cust_no_idx ON ao_lu (cust_no);
+CREATE INDEX
+CREATE TABLE ao_probe (cust_no int) DISTRIBUTED BY (cust_no);
+CREATE TABLE
+INSERT INTO ao_probe SELECT g FROM generate_series(1, 100000) g;
+INSERT 0 100000
+ANALYZE ao_lu;
+ANALYZE
+ANALYZE ao_probe;
+ANALYZE
+
+1: SET optimizer = off;
+SET
+1: SET enable_seqscan = off;
+SET
+1: SET enable_hashjoin = off;
+SET
+1: SET enable_mergejoin = off;
+SET
+1: SET enable_nestloop = on;
+SET
+1: BEGIN;
+BEGIN
+1: DECLARE cur CURSOR FOR SELECT a.cust_no, b.birth_y FROM ao_probe a JOIN ao_lu b ON a.cust_no = b.cust_no;
+DECLARE CURSOR
+-- pull one row through the cursor so the reader's fetch descriptor and its
+-- segfile list are initialized before the concurrent vacuum runs
+1: MOVE 1 IN cur;
+MOVE 1
+-- delete ~1/3 of the tuples and vacuum: compaction moves the surviving
+-- tuples into a brand-new segfile and marks the old one AWAITING_DROP (the
+-- reader's open snapshot prevents recycling it within this vacuum)
+2: DELETE FROM ao_lu WHERE cust_no % 3 = 0;
+DELETE 100000
+2: VACUUM ao_lu;
+VACUUM
+-- drain the cursor: the inner index scans now also return TIDs pointing
+-- into the new segfile; expect no error and the full pre-DELETE row count
+1: MOVE ALL IN cur;
+MOVE 99999
+1: CLOSE cur;
+CLOSE CURSOR
+1: COMMIT;
+COMMIT
+-- a fresh query sees the post-DELETE data
+1: SELECT count(*) FROM ao_probe a JOIN ao_lu b ON a.cust_no = b.cust_no;
+ count 
+-------
+ 66667 
+(1 row)
+1q: ... <quitting>
+2q: ... <quitting>
+
+DROP TABLE ao_lu;
+DROP TABLE
+DROP TABLE ao_probe;
+DROP TABLE

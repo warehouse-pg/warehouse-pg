@@ -2261,18 +2261,19 @@ aocs_fetch(AOCSFetchDesc aocsFetchDesc,
 
 	Assert(segmentFileNum >= 0);
 
-	if (aocsFetchDesc->lastSequence[segmentFileNum] == InvalidAORowNum)
-		ereport(ERROR,
-				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("Row No. %ld in segment file No. %d is out of scanning scope for target relfilenode %u.",
-				 		rowNum, segmentFileNum, aocsFetchDesc->relation->rd_node.relNode)));
-
 	/*
 	 * skip if the rowNum is not discoverable:
-	 * 1. rowNum is 0 which is invalid.
-	 * 2. rowNum bigger than lastsequence of the segment.
+	 * 1. the segment file was first used after this fetch descriptor was
+	 *    initialized (lastSequence is InvalidAORowNum): e.g. a concurrent
+	 *    VACUUM compaction picked a brand-new segfile as its insertion
+	 *    target and the index already contains entries for the moved
+	 *    tuples.  None of those tuples can be visible to our snapshot,
+	 *    so treat this as "not found" just like the cases below.
+	 * 2. rowNum is 0 which is invalid.
+	 * 3. rowNum bigger than lastsequence of the segment.
 	 */
-	if (rowNum == 0 || rowNum > aocsFetchDesc->lastSequence[segmentFileNum])
+	if (aocsFetchDesc->lastSequence[segmentFileNum] == InvalidAORowNum ||
+		rowNum == 0 || rowNum > aocsFetchDesc->lastSequence[segmentFileNum])
 	{
 		if (slot != NULL)
 			slot = ExecClearTuple(slot);
