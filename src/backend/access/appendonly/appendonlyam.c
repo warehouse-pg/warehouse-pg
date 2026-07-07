@@ -2595,12 +2595,6 @@ appendonly_fetch(AppendOnlyFetchDesc aoFetchDesc,
 
 	Assert(segmentFileNum >= 0);
 
-	if (aoFetchDesc->lastSequence[segmentFileNum] == InvalidAORowNum)
-		ereport(ERROR,
-				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("Row No. %ld in segment file No. %d is out of scanning scope for target relfilenode %u.",
-				 		rowNum, segmentFileNum, aoFetchDesc->relation->rd_node.relNode)));
-
 	/*
 	 * This is an improvement for brin. BRIN index stores ranges of TIDs in
 	 * terms of block numbers and not specific TIDs, so it's possible that the
@@ -2610,8 +2604,16 @@ appendonly_fetch(AppendOnlyFetchDesc aoFetchDesc,
 	 * miss will occur. And we need to search the btree on block directory
 	 * table. This is a vary slow operation. So a fast return path was added
 	 * here. If the rowNum is bigger than lastsequence, skip it.
+	 *
+	 * Likewise, if the segment file was first used only after this fetch
+	 * descriptor was initialized (lastSequence is InvalidAORowNum): e.g. a
+	 * concurrent VACUUM compaction picked a brand-new segfile as its
+	 * insertion target and the index already contains entries for the moved
+	 * tuples.  None of those tuples can be visible to our snapshot, so
+	 * treat this as "not found" as well.
 	 */
-	if (rowNum > aoFetchDesc->lastSequence[segmentFileNum])
+	if (aoFetchDesc->lastSequence[segmentFileNum] == InvalidAORowNum ||
+		rowNum > aoFetchDesc->lastSequence[segmentFileNum])
 	{
 		if (slot != NULL)
 		{
