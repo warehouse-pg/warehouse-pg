@@ -449,6 +449,16 @@ atomic_test(void)
 /*
  * Unit test for BufFile support of large files (greater than 4 GB).
  *
+ * What large-spill-file support depends on is the int64 offset arithmetic
+ * (fileno/offset normalization in BufFileSeek, block-number arithmetic in
+ * BufFileSeekBlock) and the rollover of writes into a new 1GiB physical
+ * segment file.  None of that requires storing 4GiB of data: BufFileSeek
+ * refuses to move past the last existing segment file, but within existing
+ * segments it does not check the physical file size, and the underlying
+ * pwrite leaves never-written ranges as filesystem holes.  So grow the
+ * file one segment at a time by writing a record across each 1GiB
+ * boundary, then place a marked record past the 4GiB mark: the file is
+ * logically >4GiB but occupies under 1MB of disk.
  */
 static bool
 buffile_large_file_test(void)
@@ -457,41 +467,53 @@ buffile_large_file_test(void)
 	elog(LOG, "Running test: buffile_large_file_test");
 	char *file_name = "Test_large_buff.dat";
 
+	/* buffile.c's MAX_PHYSICAL_FILESIZE: 1GiB per physical segment file */
+	const int64 seg_size = 0x40000000;
+
 	BufFile *bfile = BufFileCreateTempInSet(file_name,
 											true /* interXact */,
 											NULL /* workfile_set */);
 
 	int nchars = 100000;
-	/* 4.5 GBs */
-	int total_entries = 48319;
-	/* Entry that requires an int64 seek */
-	int test_entry = 45000;
+
+	/* Target record: a BLCKSZ-aligned byte offset just past 4GiB (2^32) */
+	int64 target_block = (INT64CONST(1) << 32) / BLCKSZ + 100;
+	int64 target_offset = target_block * BLCKSZ;
 
 	StringInfo test_string = create_text_stringinfo(nchars);
 
+	/*
+	 * Make the target record distinguishable from the filler records, so
+	 * reading the wrong offset after the seek actually fails the test.
+	 * Filler content is never verified; reuse one buffer for all of it.
+	 */
+	memcpy(test_string->data, "TARGET_ENTRY", 12);
+	StringInfo filler = create_text_stringinfo(nchars);
+
 	elog(LOG, "Running sub-test: Creating file %s", file_name);
 
-	for (int i = 0; i < total_entries; i++)
+	/* Grow to five segment files by writing across each 1GiB boundary. */
+	for (int seg = 0; seg < 4; seg++)
 	{
-		if (test_entry == i)
-		{
-			BufFileWrite(bfile, test_string->data , nchars*sizeof(char));
-		}
-		else
-		{
-			StringInfo text = create_text_stringinfo(nchars);
-
-			BufFileWrite(bfile, text->data , nchars*sizeof(char));
-
-			pfree(text->data);
-			pfree(text);
-		}
+		unit_test_result(BufFileSeek(bfile, seg, seg_size - BLCKSZ, SEEK_SET) == 0);
+		BufFileWrite(bfile, filler->data, nchars * sizeof(char));
 	}
+
+	/* Seeking past the last segment file must still be refused. */
+	unit_test_result(BufFileSeek(bfile, 5, BLCKSZ, SEEK_SET) == EOF);
+
+	/* Write the target record past the 4GiB mark. */
+	unit_test_result(BufFileSeek(bfile, 0, target_offset, SEEK_SET) == 0);
+	BufFileWrite(bfile, test_string->data, nchars * sizeof(char));
+
+	pfree(filler->data);
+	pfree(filler);
 	elog(LOG, "Running sub-test: Reading record %s", file_name);
 
 	char *buffer = palloc(nchars * sizeof(char));
 
-	BufFileSeek(bfile, 0 /* fileno */, (int64) ((int64)test_entry * (int64) nchars), SEEK_SET);
+	/* Read it back through the block-oriented seek API. */
+	unit_test_result(BufFileSeekBlock(bfile, target_block) == 0);
 
 	int nread = BufFileRead(bfile, buffer, nchars*sizeof(char));
 
@@ -518,12 +540,22 @@ logicaltape_test(void)
 
 	int max_tapes = 10;
 	int nchars = 100000;
-	/* 4.5 GBs */
-	int max_entries = 48319;
 
-	/* Target record values */
+	/*
+	 * Enough records for the tape to cross the underlying 1GiB
+	 * physical-segment-file boundary (10737 x 100KB), the tape-level
+	 * scenario worth exercising here.  The >4GiB int64 offset arithmetic
+	 * that large spill files depend on is covered by
+	 * buffile_large_file_test -- including BufFileSeekBlock, which is what
+	 * logical tape block I/O goes through -- so the tape itself does not
+	 * need to be grown past 4GiB (which, with the tape's strictly
+	 * sequential block allocation, would mean actually writing 4.3GB).
+	 */
+	int max_entries = 10800;
+
+	/* Target record values; past the 1GiB segment boundary */
 	int test_tape = 5;
-	int test_entry = 45000;
+	int test_entry = 10750;
 
 	LogicalTapeSet *tape_set = LogicalTapeSetCreate(max_tapes, false, NULL, NULL, -1);
 
@@ -532,6 +564,14 @@ logicaltape_test(void)
 	int offset = 0;
 
 	StringInfo test_string = create_text_stringinfo(nchars);
+
+	/*
+	 * Make the target record distinguishable from the filler records, so
+	 * reading the wrong position after the seek actually fails the test.
+	 * Filler content is never verified; reuse one buffer for all of it.
+	 */
+	memcpy(test_string->data, "TARGET_ENTRY", 12);
+	StringInfo filler = create_text_stringinfo(nchars);
 
 	elog(LOG, "Running sub-test: Creating LogicalTape");
 
@@ -554,27 +594,20 @@ logicaltape_test(void)
 				else
 				{
 					/* Add additional records */
-					StringInfo text = create_text_stringinfo(nchars);
-
-					LogicalTapeWrite(tape_set, work_tape, text->data, (size_t)text->len);
-
-					pfree(text->data);
-					pfree(text);
+					LogicalTapeWrite(tape_set, work_tape, filler->data, (size_t)filler->len);
 				}
 			}
 		}
 		else
 		{
 			/* Add additional records */
-			StringInfo text = create_text_stringinfo(nchars);
-
-			LogicalTapeWrite(tape_set, work_tape, text->data, (size_t)text->len);
-
-			pfree(text->data);
-			pfree(text);
+			LogicalTapeWrite(tape_set, work_tape, filler->data, (size_t)filler->len);
 		}
 
 	}
+
+	pfree(filler->data);
+	pfree(filler);
 
 	/* Set target LogicalTape */
 	work_tape = test_tape;
