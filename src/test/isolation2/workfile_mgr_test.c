@@ -415,7 +415,7 @@ atomic_test(void)
 
 		inc = 4;
 		result = 0;
-		expected_result = base + inc;
+		expected_result = base - inc;
 		elog(DEBUG1, "Before: base=%lld, inc=%lld, result=%lld", (long long int) base, (long long int) inc, (long long int) result);
 		result = pg_atomic_sub_fetch_u64((pg_atomic_uint64 *)&base, inc);
 		elog(DEBUG1, "After: base=%lld, inc=%lld, result=%lld", (long long int) base, (long long int) inc, (long long int) result);
@@ -435,7 +435,7 @@ atomic_test(void)
 		elog(LOG, "Running sub-test: pg_atomic_sub_fetch_u64 huge subtraction");
 		inc  = 32738246483234;
 		result = 0;
-		expected_result = base + inc;
+		expected_result = base - inc;
 		elog(DEBUG1, "Before: base=%lld, inc=%lld, result=%lld", (long long int) base, (long long int) inc, (long long int) result);
 		result = pg_atomic_sub_fetch_u64((pg_atomic_uint64 *)&base, inc);
 		elog(DEBUG1, "After: base=%lld, inc=%lld, result=%lld", (long long int) base, (long long int) inc, (long long int) result);
