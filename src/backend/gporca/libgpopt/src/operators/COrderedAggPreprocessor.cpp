@@ -370,7 +370,8 @@ COrderedAggPreprocessor::SplitPrjList(
 //	@doc:
 //		Split InputAgg expression into:
 //		- A GbAgg expression containing ordered aggs split to gp_percentile agg, and
-//		- A GbAgg expression containing all remaining non-ordered agg functions
+//		- A GbAgg expression containing all remaining non-ordered agg
+//		  functions, or NULL if there are no such functions
 //
 //---------------------------------------------------------------------------
 void
@@ -414,11 +415,16 @@ COrderedAggPreprocessor::SplitOrderedAggsPrj(
 	*ppexprOrderedGbAgg = pexpr;
 	if (0 == pdrgpexprOtherPrEl->Size())
 	{
-		// no remaining aggregate functions after excluding ordered aggs,
-		// reuse the original InputAggPrj child in this case
+		// no remaining aggregate functions after excluding ordered aggs;
+		// return NULL so that the caller does not create a join for a
+		// remaining-aggs GbAgg. Returning the original InputAggPrj child
+		// here would be wrong: if that child is itself a GbAgg (e.g. a
+		// grouped subquery), the caller could not tell it apart from a
+		// GbAgg computing remaining aggregate functions and would wrongly
+		// cross-join its rows with the ordered-agg result
 		pdrgpexprOtherPrEl->Release();
 		ppdrgpexprOrderedAggsPrEl->Release();
-		*ppexprRemainingAgg = pexprInputAggPrjChild;
+		*ppexprRemainingAgg = nullptr;
 
 		return;
 	}
@@ -607,8 +613,10 @@ COrderedAggPreprocessor::PexprInputAggPrj2Join(CMemoryPool *mp,
 	SplitOrderedAggsPrj(mp, pexprInputAggPrj, &pexprOrderedAgg, &pexprOtherAgg);
 
 	CExpression *pexprFinalJoin = nullptr;
-	if (COperator::EopLogicalGbAgg == pexprOtherAgg->Pop()->Eopid())
+	if (nullptr != pexprOtherAgg)
 	{
+		GPOS_ASSERT(COperator::EopLogicalGbAgg ==
+					pexprOtherAgg->Pop()->Eopid());
 		CExpression *pexprJoinCondition =
 			CUtils::PexprScalarConstBool(mp, true /*value*/);
 		pexprFinalJoin = CUtils::PexprLogicalJoin<CLogicalInnerJoin>(

@@ -216,6 +216,32 @@ from  mpp_22413
 where d2 ='55'
 group by d1, d2;
 
+-- Ordered-set aggregates over a grouped subquery: ORCA's ordered-agg split
+-- used to mistake the subquery's GbAgg for a remaining-aggregates GbAgg and
+-- cross-join its rows with the percentile result, duplicating the output row.
+create table perct_grpd (k1 int, m1 numeric, m2 numeric, m3 numeric) distributed by (k1);
+insert into perct_grpd values
+	(1, 0.10, 0.20, 0.30), (1, 0.12, 0.18, 0.25), (1, 0.15, 0.22, 0.28),
+	(2, 0.50, 0.60, 0.70), (2, 0.55, 0.58, 0.65), (3, 0.90, 0.10, 0.05);
+
+select percentile_disc(0.5) within group (order by m1) as p50_m1
+from (select k1, m1, m2, m3 from perct_grpd group by 1,2,3,4) s;
+
+select percentile_disc(0.5) within group (order by m1) as p50_m1,
+	percentile_disc(0.5) within group (order by m2) as p50_m2,
+	percentile_disc(0.5) within group (order by m3) as p50_m3
+from (select k1, m1, m2, m3 from perct_grpd group by 1,2,3,4) s;
+
+select percentile_cont(0.5) within group (order by m1) as p50_m1
+from (select distinct m1 from perct_grpd) s;
+
+-- with a regular aggregate alongside, the split already created a proper
+-- remaining-aggregates GbAgg; keep the case covered
+select percentile_disc(0.5) within group (order by m1) as p50_m1, count(*)
+from (select k1, m1, m2, m3 from perct_grpd group by 1,2,3,4) s;
+
+drop table perct_grpd;
+
 drop view percv2;
 drop view percv;
 drop table perct;

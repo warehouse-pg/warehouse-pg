@@ -38,11 +38,12 @@ private:
 
 	// split given InputAgg expression into:
 	//	- A GbAgg expression containing ordered aggs split to gp_percentile agg, and
-	//	- A GbAgg expression containing all other non-ordered agg functions
+	//	- A GbAgg expression containing all other non-ordered agg functions,
+	//	  or NULL if there are no non-ordered agg functions
 	static void SplitOrderedAggsPrj(CMemoryPool *mp,
 									CExpression *pexprInputAggPrj,
-									CExpression **ppexprGbAgg,
-									CExpression **ppexprOutputSeqPrj);
+									CExpression **ppexprOrderedGbAgg,
+									CExpression **ppexprRemainingAgg);
 
 	// create a CTE with two consumers using the child expression of Sequence
 	// Project
