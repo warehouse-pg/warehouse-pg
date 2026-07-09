@@ -1227,10 +1227,33 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 		 * against the partition key of parentRel, so it better have one.
 		 */
 		if (parent->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
+		{
+			/*
+			 * A common mistake is trying to attach a new partition to an
+			 * existing partition (e.g. the DEFAULT leaf) instead of to the
+			 * partitioned root. Detect that case and point the user at the
+			 * right relation.
+			 */
+			if (parent->rd_rel->relispartition)
+			{
+				Oid rootId = get_top_level_partition_root(parentId);
+
+				if (OidIsValid(rootId))
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+							 errmsg("\"%s\" is not partitioned",
+									RelationGetRelationName(parent)),
+							 errdetail("\"%s\" is itself a partition, not a partitioned table.",
+									   RelationGetRelationName(parent)),
+							 errhint("Attach the new partition to its partitioned ancestor \"%s\" instead.",
+									 get_rel_name(rootId))));
+			}
+
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
 					 errmsg("\"%s\" is not partitioned",
 							RelationGetRelationName(parent))));
+		}
 
 		classic_range_workflow = stmt->origin == ORIGIN_GP_CLASSIC_CREATE_GEN &&
 			stmt->partbound->strategy == PARTITION_STRATEGY_RANGE;
