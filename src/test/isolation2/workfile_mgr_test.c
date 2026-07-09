@@ -118,6 +118,8 @@ gp_workfile_mgr_test_harness(PG_FUNCTION_ARGS)
 		elog(LOG, "No tests match given name: %s", test_name);
 	}
 
+	pfree(test_name);
+
 	PG_RETURN_BOOL(ran_any_tests && result);
 }
 
@@ -153,6 +155,8 @@ gp_workfile_mgr_create_workset(PG_FUNCTION_ARGS)
 		if (closeFile)
 			BufFileClose(buffile);
 	}
+
+	pfree(worksetName);
 
 	PG_RETURN_VOID();
 }
@@ -335,6 +339,8 @@ buffile_size_test(void)
 	elog(LOG, "Running sub-test: Writing to new buffile and reading size > bufsize");
 	nchars = 1000000;
 	expected_size += nchars;
+	pfree(text->data);
+	pfree(text);
 	text = create_text_stringinfo(nchars);
 	BufFileWrite(testBf, text->data, nchars);
 	test_size = BufFileGetSize(testBf);
@@ -525,6 +531,7 @@ buffile_large_file_test(void)
 
 	pfree(test_string->data);
 	pfree(test_string);
+	pfree(buffer);
 
 	return unit_test_summary();
 }
@@ -625,6 +632,10 @@ logicaltape_test(void)
 	LogicalTapeSetClose(tape_set);
 
 	unit_test_result (strncmp(test_string->data, buffer, test_string->len) == 0);
+
+	pfree(test_string->data);
+	pfree(test_string);
+	pfree(buffer);
 
 	return unit_test_summary();
 }
@@ -751,6 +762,8 @@ workfile_create_and_set_cleanup(void)
 
 	unit_test_result(!work_set->active);
 
+	pfree(ewfiles);
+
 	return unit_test_summary();
 }
 
@@ -853,6 +866,8 @@ workfile_create_and_individual_cleanup(void)
 	/* the workfile_set should be freed since all it's files are closed */
 	unit_test_result(!work_set->active);
 
+	pfree(ewfiles);
+
 	return unit_test_summary();
 }
 
@@ -915,6 +930,8 @@ workfile_create_and_individual_cleanup_with_pinned_workfile_set(void)
 	workfile_mgr_close_set(work_set);
 
 	unit_test_result(!work_set->active);
+
+	pfree(ewfiles);
 
 	return unit_test_summary();
 }
