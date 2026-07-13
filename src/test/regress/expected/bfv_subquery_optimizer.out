@@ -608,3 +608,61 @@ select * from t1_15793 cross join t2_15793 where not ((t1_15793.c0)+(t1_15793.c0
 
 drop table t1_15793;
 drop table t2_15793;
+--
+-- Test NULL vs 0 semantics of scalar subqueries over count() aggregates.
+--
+-- A scalar subquery yields NULL when a row-eliminating operator (a
+-- correlated filter above the aggregate, or a join) eliminates the
+-- aggregate's output row; it yields 0 only when the count aggregate itself
+-- runs over empty input. ORCA used to wrap such subquery outputs in
+-- COALESCE(count, 0) whenever it could find a count() aggregate anywhere
+-- below, resurrecting eliminated rows as 0.
+--
+-- correlated filter above the aggregate: eliminated row must be NULL
+select v.c, (select cnt from (select count(*) cnt from generate_series(1,4)) s
+             where v.c) as cnt
+from (values (false),(true)) v(c) order by 1;
+ c | cnt 
+---+-----
+ f |    
+ t |   4
+(2 rows)
+
+-- same, phrased through HAVING over an empty grouping set
+select v.c, (select count(*) from generate_series(1,4) group by () having v.c) as cnt
+from (values (false),(true)) v(c) order by 1;
+ c | cnt 
+---+-----
+ f |    
+ t |   4
+(2 rows)
+
+-- control: correlated filter below the aggregate still yields count = 0
+select v.x, (select count(*) from generate_series(1,4) g where g < v.x) as cnt
+from (values (0),(3)) v(x) order by 1;
+ x | cnt 
+---+-----
+ 0 |   0
+ 3 |   2
+(2 rows)
+
+-- join above the aggregate, join input non-empty: count over empty input is 0
+select v.x, (select cnt from (select 1 z from generate_series(1,1) limit 1) t,
+             (select count(*) cnt from generate_series(1,4) g where g < v.x) y) as cnt
+from (values (0),(3)) v(x) order by 1;
+ x | cnt 
+---+-----
+ 0 |   0
+ 3 |   2
+(2 rows)
+
+-- join above the aggregate, join input empty: subquery must be NULL
+select v.x, (select cnt from (select 1 z from generate_series(1,0) limit 1) t,
+             (select count(*) cnt from generate_series(1,4) g where g < v.x) y) as cnt
+from (values (0),(3)) v(x) order by 1;
+ x | cnt 
+---+-----
+ 0 |    
+ 3 |    
+(2 rows)
+

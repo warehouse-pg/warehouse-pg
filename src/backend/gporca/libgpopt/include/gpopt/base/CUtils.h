@@ -268,10 +268,16 @@ public:
 	// check if given expression has a count(*)/count(Any) agg
 	static BOOL FHasCountAgg(CExpression *pexpr, CColRef **ppcrCount);
 
-	// check if given expression has count matching the given column, returns the Logical GroupBy Agg above
+	// check if the given column is a count aggregate output reachable from
+	// the given expression, returning the Logical GroupBy Agg producing it;
+	// with fThroughRowPreservingOpsOnly, only traverse operators that cannot
+	// eliminate the aggregate's output row (so a NULL count can only mean
+	// outer-join null-extension over empty aggregation input, which callers
+	// may fold to 0)
 	static BOOL FHasCountAggMatchingColumn(const CExpression *pexpr,
 										   const CColRef *colref,
-										   const CLogicalGbAgg **ppgbAgg);
+										   const CLogicalGbAgg **ppgbAgg,
+										   BOOL fThroughRowPreservingOpsOnly);
 
 	// generate a GbAgg with count(*) and sum(col) over the given expression
 	static CExpression *PexprCountStarAndSum(CMemoryPool *mp,

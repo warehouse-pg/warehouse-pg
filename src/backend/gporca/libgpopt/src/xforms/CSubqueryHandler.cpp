@@ -324,7 +324,8 @@ CSubqueryHandler::SSubqueryDesc::SetCorrelatedExecution()
 		m_returns_set ||  // subquery produces > 1 rows, we need correlated execution to check for cardinality at runtime
 		m_fHasVolatileFunctions ||	// volatile functions cannot be decorrelated
 		(m_fHasCountAgg &&
-		 m_fHasSkipLevelCorrelations);	// count() with skip-level correlations cannot be decorrelated due to their NULL semantics
+		 m_fHasSkipLevelCorrelations) ||  // count() with skip-level correlations cannot be decorrelated due to their NULL semantics
+		m_fCountAggBehindRowFilter;	 // count() behind a row-eliminating operator cannot be decorrelated due to their NULL semantics
 }
 
 
@@ -373,6 +374,25 @@ CSubqueryHandler::Psd(CMemoryPool *mp, CExpression *pexprSubquery,
 	{
 		psd->m_fProjectCount =
 			FProjectCountSubquery(pexprSubquery, psd->m_pcrCountAgg);
+	}
+
+	if (psd->m_fHasCountAgg && psd->m_fHasOuterRefs)
+	{
+		// If the subquery output is a count aggregate that a row-eliminating
+		// operator (filter/limit/join) can hide, outer-apply decorrelation
+		// cannot distinguish "aggregate row eliminated" (NULL) from
+		// "aggregate over empty input" (0): a single COALESCE at the
+		// subquery output is wrong for one of the two.  Require correlated
+		// execution for such subqueries.
+		const CLogicalGbAgg *pgbAggAnywhere = nullptr;
+		const CLogicalGbAgg *pgbAggRowPreserving = nullptr;
+		psd->m_fCountAggBehindRowFilter =
+			CUtils::FHasCountAggMatchingColumn(
+				pexprInner, pcrSubquery, &pgbAggAnywhere,
+				false /*fThroughRowPreservingOpsOnly*/) &&
+			!CUtils::FHasCountAggMatchingColumn(
+				pexprInner, pcrSubquery, &pgbAggRowPreserving,
+				true /*fThroughRowPreservingOpsOnly*/);
 	}
 
 	// set flag for using subquery in a value context
@@ -735,7 +755,8 @@ CSubqueryHandler::FCreateOuterApplyForScalarSubquery(
 
 	const CLogicalGbAgg *pgbAgg = nullptr;
 	BOOL fHasCountAggMatchingColumn = CUtils::FHasCountAggMatchingColumn(
-		(*pexprSubquery)[0], colref, &pgbAgg);
+		(*pexprSubquery)[0], colref, &pgbAgg,
+		true /*fThroughRowPreservingOpsOnly*/);
 
 	if (!fHasCountAggMatchingColumn)
 	{

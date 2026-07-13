@@ -78,7 +78,8 @@ select d from gstest2 group by grouping sets ((a,b), (a));
  1
 (4 rows)
 
--- Orca falls back due to HAVING clause with outer references
+-- Orca used to fall back here due to the HAVING clause with outer references,
+-- a spurious fallback caused by a use-after-free in query normalization
 select v.c, (select count(*) from gstest1 group by () having v.c) from (values (false),(true)) v(c);
  c | count 
 ---+-------

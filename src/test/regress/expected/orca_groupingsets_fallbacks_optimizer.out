@@ -86,10 +86,9 @@ DETAIL:  Query-to-DXL Translation: No attribute entry found due to incorrect nor
  1
 (4 rows)
 
--- Orca falls back due to HAVING clause with outer references
+-- Orca used to fall back here due to the HAVING clause with outer references,
+-- a spurious fallback caused by a use-after-free in query normalization
 select v.c, (select count(*) from gstest1 group by () having v.c) from (values (false),(true)) v(c);
-INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
-DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: {TARGETENTRY :expr {VAR :varno 1 :varattno 2 :vartype 20 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 2 :location -1} :resno 1 :resname count :ressortgroupref 0 :resorigtbl 0 :resorigcol 0 :resjunk false}
  c | count 
 ---+-------
  f |      

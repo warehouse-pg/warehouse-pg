@@ -74,6 +74,13 @@ private:
 		//  does subquery project a count expression
 		BOOL m_fProjectCount{false};
 
+		// the subquery returns a count aggregate that sits behind a
+		// row-eliminating operator (filter/limit/join above the aggregate);
+		// outer-join decorrelation cannot represent both count-over-empty
+		// -input = 0 and eliminated-row = NULL, so correlated execution is
+		// required
+		BOOL m_fCountAggBehindRowFilter{false};
+
 		// subquery is used in a value context
 		BOOL m_fValueSubquery{false};
 

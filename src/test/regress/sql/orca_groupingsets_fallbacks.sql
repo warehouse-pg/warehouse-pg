@@ -34,7 +34,8 @@ insert into gstest2 values (1, 1, 1, 1, 1);
 insert into gstest2 values (2, 2, 2, 2, 1);
 select d from gstest2 group by grouping sets ((a,b), (a));
 
--- Orca falls back due to HAVING clause with outer references
+-- Orca used to fall back here due to the HAVING clause with outer references,
+-- a spurious fallback caused by a use-after-free in query normalization
 select v.c, (select count(*) from gstest1 group by () having v.c) from (values (false),(true)) v(c);
 
 -- Orca falls back due to grouping function with multiple arguments
