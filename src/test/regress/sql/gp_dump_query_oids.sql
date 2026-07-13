@@ -4,6 +4,11 @@ CREATE FUNCTION dumptestfunc2(t text) RETURNS integer AS $$ SELECT 123 $$ LANGUA
 create table base(a int);
 create materialized view base_mv as select a from base;
 create view base_v as select a from base;
+create materialized view base_mv2 as select a from base_mv;
+create view base_v_over_mv as select a from base_mv;
+create table rule_tgt(a int);
+create table rule_log(a int);
+create rule tgt_log_rule as on insert to rule_tgt do also insert into rule_log select a from base_mv;
 CREATE SEQUENCE minirepro_test_b;
 CREATE TABLE minirepro_test(a serial, b int default nextval('minirepro_test_b'));
 
@@ -15,6 +20,10 @@ declare
   base_oid oid;
   base_mv_oid oid;
   base_v_oid oid;
+  base_mv2_oid oid;
+  base_v_over_mv_oid oid;
+  rule_tgt_oid oid;
+  rule_log_oid oid;
   minirepro_test_oid oid;
   minirepro_test_b_oid oid;
   minirepro_test_a_seq_oid oid;
@@ -24,6 +33,10 @@ begin
     base_oid = 'base'::regclass::oid;
     base_mv_oid = 'base_mv'::regclass::oid;
     base_v_oid = 'base_v'::regclass::oid;
+    base_mv2_oid = 'base_mv2'::regclass::oid;
+    base_v_over_mv_oid = 'base_v_over_mv'::regclass::oid;
+    rule_tgt_oid = 'rule_tgt'::regclass::oid;
+    rule_log_oid = 'rule_log'::regclass::oid;
     minirepro_test_oid = 'minirepro_test'::regclass::oid;
     minirepro_test_b_oid = 'minirepro_test_b'::regclass::oid;
     minirepro_test_a_seq_oid = 'minirepro_test_a_seq'::regclass::oid;
@@ -33,6 +46,10 @@ begin
     t := replace(t, base_oid::text, '<base_table>');
     t := replace(t, base_mv_oid::text, '<base_mv>');
     t := replace(t, base_v_oid::text, '<base_v>');
+    t := replace(t, base_mv2_oid::text, '<base_mv2>');
+    t := replace(t, base_v_over_mv_oid::text, '<base_v_over_mv>');
+    t := replace(t, rule_tgt_oid::text, '<rule_tgt>');
+    t := replace(t, rule_log_oid::text, '<rule_log>');
     t := replace(t, minirepro_test_oid::text, '<minirepro_test>');
     t := replace(t, minirepro_test_b_oid::text, '<minirepro_test_b>');
     t := replace(t, minirepro_test_a_seq_oid::text, '<minirepro_test_a_seq>');
@@ -105,6 +122,21 @@ SELECT sanitize_output(gp_dump_query_oids('EXPLAIN SELECT * FROM base_v'));
 -- gp_dump_query_oids should output relids of view/materialized view and used/accessed objects when query contains explain analyze command
 SELECT sanitize_output(gp_dump_query_oids('EXPLAIN ANALYZE SELECT * FROM base_mv'));
 SELECT sanitize_output(gp_dump_query_oids('EXPLAIN ANALYZE SELECT * FROM base_v'));
+-- materialized views must be expanded at any nesting depth, so that objects
+-- referenced transitively (here the base table) are always collected
+-- materialized view on top of another materialized view
+SELECT sanitize_output(gp_dump_query_oids('SELECT * FROM base_mv2'));
+SELECT sanitize_output(gp_dump_query_oids('EXPLAIN SELECT * FROM base_mv2'));
+-- materialized view inside a subquery
+SELECT sanitize_output(gp_dump_query_oids('SELECT * FROM (SELECT * FROM base_mv) x'));
+-- materialized view inside a sublink
+SELECT sanitize_output(gp_dump_query_oids('SELECT 1 WHERE EXISTS (SELECT 1 FROM base_mv)'));
+-- materialized view behind a regular view
+SELECT sanitize_output(gp_dump_query_oids('SELECT * FROM base_v_over_mv'));
+-- materialized view inside a CTE
+SELECT sanitize_output(gp_dump_query_oids('WITH c AS (SELECT * FROM base_mv) SELECT * FROM c'));
+-- materialized view inside a DO ALSO rule action fired by a DML statement
+SELECT sanitize_output(gp_dump_query_oids('INSERT INTO rule_tgt VALUES (1)'));
 -- gp_dump_query_oids should output relids of referenced sequences
 SELECT sanitize_output(gp_dump_query_oids('SELECT * FROM minirepro_test'));
 
@@ -115,6 +147,10 @@ DROP TABLE cctable;
 DROP TABLE ctable;
 DROP TABLE ptable;
 DROP TABLE minirepro_partition_test;
+DROP TABLE rule_tgt;
+DROP TABLE rule_log;
+DROP VIEW base_v_over_mv;
+DROP MATERIALIZED VIEW base_mv2;
 DROP MATERIALIZED VIEW base_mv;
 DROP VIEW base_v;
 DROP TABLE base;

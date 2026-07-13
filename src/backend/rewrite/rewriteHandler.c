@@ -65,6 +65,7 @@ typedef struct fireRIRonSubLink_context
 {
 	List	   *activeRIRs;
 	bool		hasRowSecurity;
+	bool		expandMatViews;
 } fireRIRonSubLink_context;
 
 static bool acquireLocksOnSubLinks(Node *node,
@@ -1929,6 +1930,7 @@ ApplyRetrieveRule(Query *parsetree,
 	 * OLD rangetable entries by the action below (in a recursive call of this
 	 * routine).
 	 */
+	rule_action->expandMatViews = parsetree->expandMatViews;
 	rule_action = fireRIRrules(rule_action, activeRIRs);
 
 	/*
@@ -2057,6 +2059,7 @@ fireRIRonSubLink(Node *node, fireRIRonSubLink_context *context)
 		SubLink    *sub = (SubLink *) node;
 
 		/* Do what we came for */
+		((Query *) sub->subselect)->expandMatViews = context->expandMatViews;
 		sub->subselect = (Node *) fireRIRrules((Query *) sub->subselect,
 											   context->activeRIRs);
 
@@ -2116,6 +2119,7 @@ fireRIRrules(Query *parsetree, List *activeRIRs)
 		 */
 		if (rte->rtekind == RTE_SUBQUERY || rte->rtekind == RTE_TABLEFUNCTION)
 		{
+			rte->subquery->expandMatViews = parsetree->expandMatViews;
 			rte->subquery = fireRIRrules(rte->subquery, activeRIRs);
 
 			/*
@@ -2145,7 +2149,10 @@ fireRIRrules(Query *parsetree, List *activeRIRs)
 		 *
 		 * In the minirepro utility in GPDB, we use the expandMatViews flag
 		 * to treat materialized views as regular views when dumping the
-		 * DDL in order to dump dependent objects
+		 * DDL in order to dump dependent objects.  The flag is propagated
+		 * to every child Query recursed into during rewrite (view rule
+		 * actions, subquery RTEs, CTEs and sublinks), so materialized views
+		 * are expanded at any nesting depth, like regular views.
 		 */
 		if (rte->relkind == RELKIND_MATVIEW && !parsetree->expandMatViews)
 			continue;
@@ -2239,6 +2246,7 @@ fireRIRrules(Query *parsetree, List *activeRIRs)
 	{
 		CommonTableExpr *cte = (CommonTableExpr *) lfirst(lc);
 
+		((Query *) cte->ctequery)->expandMatViews = parsetree->expandMatViews;
 		cte->ctequery = (Node *)
 			fireRIRrules((Query *) cte->ctequery, activeRIRs);
 
@@ -2259,6 +2267,7 @@ fireRIRrules(Query *parsetree, List *activeRIRs)
 
 		context.activeRIRs = activeRIRs;
 		context.hasRowSecurity = false;
+		context.expandMatViews = parsetree->expandMatViews;
 
 		query_tree_walker(parsetree, fireRIRonSubLink, (void *) &context,
 						  QTW_IGNORE_RC_SUBQUERIES);
@@ -2341,6 +2350,7 @@ fireRIRrules(Query *parsetree, List *activeRIRs)
 				 */
 				fire_context.activeRIRs = activeRIRs;
 				fire_context.hasRowSecurity = false;
+				fire_context.expandMatViews = parsetree->expandMatViews;
 
 				expression_tree_walker((Node *) securityQuals,
 									   fireRIRonSubLink, (void *) &fire_context);
@@ -4276,6 +4286,7 @@ QueryRewrite(Query *parsetree)
 	{
 		Query	   *query = (Query *) lfirst(l);
 
+		query->expandMatViews = parsetree->expandMatViews;
 		query = fireRIRrules(query, NIL);
 
 		query->queryId = input_query_id;
