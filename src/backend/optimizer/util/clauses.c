@@ -5644,7 +5644,15 @@ flatten_join_alias_var_optimizer(Query *query, int queryLevel)
 	if (NULL != havingQual)
 	{
 		queryNew->havingQual = flatten_join_alias_vars(queryNew, havingQual);
-		pfree(havingQual);
+		/*
+		 * flatten_join_alias_vars returns the input node itself, not a copy,
+		 * when the node is a Var that does not reference a JOIN output (see
+		 * flatten_join_alias_vars_mutator), e.g. a HAVING clause that is a
+		 * bare outer-reference boolean column.  Freeing the old qual would
+		 * then leave queryNew->havingQual pointing to freed memory.
+		 */
+		if (queryNew->havingQual != havingQual)
+			pfree(havingQual);
 	}
 
 	List *scatterClause = queryNew->scatterClause;
@@ -5658,7 +5666,9 @@ flatten_join_alias_var_optimizer(Query *query, int queryLevel)
 	if (NULL != limitOffset)
 	{
 		queryNew->limitOffset = flatten_join_alias_vars(queryNew, limitOffset);
-		pfree(limitOffset);
+		/* see the havingQual case above */
+		if (queryNew->limitOffset != limitOffset)
+			pfree(limitOffset);
 	}
 
 	List *windowClause = queryNew->windowClause;
@@ -5685,7 +5695,9 @@ flatten_join_alias_var_optimizer(Query *query, int queryLevel)
 	if (NULL != limitCount)
 	{
 		queryNew->limitCount = flatten_join_alias_vars(queryNew, limitCount);
-		pfree(limitCount);
+		/* see the havingQual case above */
+		if (queryNew->limitCount != limitCount)
+			pfree(limitCount);
 	}
 
     return queryNew;
