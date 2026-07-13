@@ -2050,7 +2050,8 @@ FCountAggMatchingColumn(CExpression *pexprPrjElem, const CColRef *colref)
 BOOL
 CUtils::FHasCountAggMatchingColumn(const CExpression *pexpr,
 								   const CColRef *colref,
-								   const CLogicalGbAgg **ppgbAgg)
+								   const CLogicalGbAgg **ppgbAgg,
+								   BOOL fThroughRowPreservingOpsOnly)
 {
 	COperator *pop = pexpr->Pop();
 	// base case, we have a logical agg operator
@@ -2070,18 +2071,33 @@ CUtils::FHasCountAggMatchingColumn(const CExpression *pexpr,
 				return true;
 			}
 		}
+		return false;
 	}
-	// recurse
-	else
+
+	// With fThroughRowPreservingOpsOnly, recurse only through operators that
+	// neither eliminate nor null-extend the aggregate's output row.  Callers
+	// use such a match to substitute COALESCE(count, 0) for the count column,
+	// which is only valid when a NULL count can arise solely from outer-join
+	// null-extension over an empty aggregation input.  A row-eliminating
+	// operator (e.g. a Select derived from a HAVING clause, a Limit, or a
+	// join) between the count aggregate and the subquery output produces
+	// genuine "no row" NULL semantics that must not be folded to 0.
+	if (fThroughRowPreservingOpsOnly &&
+		COperator::EopLogicalProject != pop->Eopid() &&
+		COperator::EopLogicalSequenceProject != pop->Eopid())
 	{
-		const ULONG arity = pexpr->Arity();
-		for (ULONG ul = 0; ul < arity; ul++)
+		return false;
+	}
+
+	// recurse
+	const ULONG arity = pexpr->Arity();
+	for (ULONG ul = 0; ul < arity; ul++)
+	{
+		const CExpression *pexprChild = (*pexpr)[ul];
+		if (FHasCountAggMatchingColumn(pexprChild, colref, ppgbAgg,
+									   fThroughRowPreservingOpsOnly))
 		{
-			const CExpression *pexprChild = (*pexpr)[ul];
-			if (FHasCountAggMatchingColumn(pexprChild, colref, ppgbAgg))
-			{
-				return true;
-			}
+			return true;
 		}
 	}
 	return false;
