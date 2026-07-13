@@ -71,13 +71,17 @@ DROP TABLESPACE
 1: CREATE TABLESPACE work_file_test_ts LOCATION '@testtablespace@/workfile_mgr';
 CREATE TABLESPACE
 
+-- WHPG: 't' is the meaningful expectation here.  The harness's two
+-- sub_fetch sub-tests used to compute their expected value with '+'
+-- instead of '-', so atomic_test always failed and the 'f' rows had
+-- been snapshotted as expected output since the test was added (2020).
 1: select gp_workfile_mgr_test('atomic_test', 0);
  gp_workfile_mgr_test 
 ----------------------
- f                    
- f                    
- f                    
- f                    
+ t                    
+ t                    
+ t                    
+ t                    
 (4 rows)
 1: select gp_workfile_mgr_test('buffile_size_test', 0);
  gp_workfile_mgr_test 
