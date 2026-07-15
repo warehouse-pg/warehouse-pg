@@ -77,3 +77,20 @@ from gp_dist_random('gp_distribution_policy') where localoid = 't2_17271'::regcl
 drop table t_17271;
 drop table t1_17271;
 drop table t2_17271;
+
+-- Append over a General-locus child (the VALUES arm) mixed with a distributed
+-- child, where the appendrel carries LATERAL parameterization: the projection
+-- path that restricts the General child to a single segment used to drop the
+-- child's param_info, tripping create_append_path's assertion that all Append
+-- children share the same parameterization (a crash on assert-enabled builds).
+-- The planner still cannot devise a plan for this query shape (outer Var in
+-- the LATERAL's target list over a distributed table), so the query must fail
+-- with the ordinary "could not devise a query plan" error rather than crash.
+create table t1_lateral_unionall (a int, b int) distributed by (a);
+create table t2_lateral_unionall (a int, b int) distributed by (a);
+select * from t1_lateral_unionall t1
+left join lateral
+  (select t1.b from t2_lateral_unionall t2 union all (values(1))) s
+on true limit 1;
+drop table t1_lateral_unionall;
+drop table t2_lateral_unionall;

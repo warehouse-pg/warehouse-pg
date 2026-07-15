@@ -1911,13 +1911,24 @@ set_append_path_locus(PlannerInfo *root, Path *pathnode, RelOptInfo *rel,
 												  NULL,		/* outer_relids */
 												  NULL);	/* nullable_relids */
 
+				/*
+				 * Keep the subpath's parameterization (need_param = true).
+				 * When the appendrel has LATERAL references, every child is
+				 * parameterized by the lateral rels (see build_simple_rel),
+				 * and create_append_path requires all children to share the
+				 * same parameterization; dropping param_info here tripped
+				 * that Assert for e.g.
+				 *   ... LEFT JOIN LATERAL (SELECT outer.col FROM t UNION ALL
+				 *       (VALUES (1))) ON true
+				 * where this projection wraps the General-locus VALUES arm.
+				 */
 				subpath = (Path *) create_projection_path_with_quals(
 					root,
 					subpath->parent,
 					subpath,
 					subpath->pathtarget,
 					list_make1(restrict_info),
-					false);
+					true);
 
 				/*
 				 * We use the skill of Result plannode with one time filter
