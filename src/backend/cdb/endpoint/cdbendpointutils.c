@@ -334,10 +334,15 @@ gp_get_endpoints(PG_FUNCTION_ARGS)
 				const		Endpoint *entry = get_endpointdesc_by_index(i);
 
 				/*
-				 * Only allow current user to get own endpoints. Or let
-				 * superuser get all endpoints.
+				 * Only report endpoints that live in the caller's database, and
+				 * only the current user's (or all, for superuser).  This predicate
+				 * MUST match the counting loop above: without the databaseID check
+				 * this loop writes more EndpointInfo entries than were counted into
+				 * cnt, overrunning the palloc'd all_info->infos buffer whenever a
+				 * coordinator endpoint exists in another database.
 				 */
-				if (!entry->empty && (superuser() || entry->userID == GetUserId()))
+				if (!entry->empty && entry->databaseID == MyDatabaseId &&
+					(superuser() || entry->userID == GetUserId()))
 				{
 					EndpointInfo *info = &all_info->infos[idx];
 

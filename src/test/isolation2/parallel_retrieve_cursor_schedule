@@ -14,3 +14,4 @@ test: parallel_retrieve_cursor/security
 test: parallel_retrieve_cursor/privilege
 test: parallel_retrieve_cursor/concurrency
 test: parallel_retrieve_cursor/unset
+test: parallel_retrieve_cursor/cross_db_endpoints

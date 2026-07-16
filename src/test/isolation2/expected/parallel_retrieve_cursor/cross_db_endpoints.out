@@ -1,0 +1,55 @@
+-- @Description gp_get_endpoints() must report only the endpoints that live in
+-- the caller's database.  The coordinator fill loop sizes its result buffer
+-- from a databaseID-filtered count of endpoints, so it must apply the same
+-- databaseID filter when it populates the buffer.  Without it, a
+-- coordinator-resident PARALLEL RETRIEVE CURSOR endpoint belonging to another
+-- database is written past the end of the buffer -> heap corruption and a
+-- coordinator crash whenever endpoints exist in more than one database.
+--
+CREATE DATABASE pce_db_a;
+CREATE DATABASE
+CREATE DATABASE pce_db_b;
+CREATE DATABASE
+
+1:@db_name pce_db_a: CREATE TABLE t (id int) DISTRIBUTED BY (id);
+CREATE TABLE
+2:@db_name pce_db_b: CREATE TABLE t (id int) DISTRIBUTED BY (id);
+CREATE TABLE
+
+-- A gathered plan (ORDER BY) puts the endpoint on the coordinator
+-- (gp_segment_id = -1).  Keep the declaring transaction open so the endpoint
+-- stays live in the cluster-wide shared endpoint array.
+1:@db_name pce_db_a: BEGIN;
+BEGIN
+1:@db_name pce_db_a: DECLARE ca PARALLEL RETRIEVE CURSOR FOR SELECT * FROM t ORDER BY id;
+DECLARE PARALLEL RETRIEVE CURSOR
+2:@db_name pce_db_b: BEGIN;
+BEGIN
+2:@db_name pce_db_b: DECLARE cb PARALLEL RETRIEVE CURSOR FOR SELECT * FROM t ORDER BY id;
+DECLARE PARALLEL RETRIEVE CURSOR
+
+-- Each database must see exactly its own coordinator endpoint and never the
+-- other database's.  Before the fix, either of these calls overran the result
+-- buffer and crashed the coordinator.
+1:@db_name pce_db_a: SELECT gp_segment_id, cursorname, state FROM gp_get_endpoints() ORDER BY cursorname;
+ gp_segment_id | cursorname | state 
+---------------+------------+-------
+ -1            | ca         | READY 
+(1 row)
+2:@db_name pce_db_b: SELECT gp_segment_id, cursorname, state FROM gp_get_endpoints() ORDER BY cursorname;
+ gp_segment_id | cursorname | state 
+---------------+------------+-------
+ -1            | cb         | READY 
+(1 row)
+
+1:@db_name pce_db_a: ROLLBACK;
+ROLLBACK
+2:@db_name pce_db_b: ROLLBACK;
+ROLLBACK
+1q: ... <quitting>
+2q: ... <quitting>
+
+DROP DATABASE pce_db_a;
+DROP DATABASE
+DROP DATABASE pce_db_b;
+DROP DATABASE
