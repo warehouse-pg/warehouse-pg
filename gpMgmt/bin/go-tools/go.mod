@@ -11,14 +11,14 @@ require (
 	github.com/spf13/viper v1.16.0
 	github.com/vbauerster/mpb/v8 v8.6.2
 	golang.org/x/exp v0.0.0-20231219180239-dc181d75b848
-	google.golang.org/grpc v1.79.3
+	google.golang.org/grpc v1.82.1
 )
 
 require (
 	github.com/acarl005/stripansi v0.0.0-20180116102854-5a71ef0e047d // indirect
 	github.com/mattn/go-runewidth v0.0.15 // indirect
 	github.com/rivo/uniseg v0.4.4 // indirect
-	google.golang.org/protobuf v1.36.10 // indirect
+	google.golang.org/protobuf v1.36.11 // indirect
 )
 
 require (
