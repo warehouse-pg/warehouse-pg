@@ -1715,6 +1715,92 @@ explain select * from t_14887 where a = 'a'::text;
  Optimizer: Postgres query optimizer
 (9 rows)
 
+-- A UNION ALL arm that gp_dist_random() forces to run on every segment
+-- (planned as a silent SubqueryScan/Result -- a "Strewn" data source) must
+-- not have its own dispatch requirement discarded just because a sibling
+-- arm narrows the slice to one segment.  The narrowing arm's content-id set
+-- used to win the merge and the Strewn arm's rows were silently dropped on
+-- the other segments.
+create table t_913(a int) distributed by (a);
+insert into t_913 values (100);
+create view v_913_fromless as select 1 as x;
+explain (costs off)
+select a from t_913 where a = 100
+union all
+select x from gp_dist_random('v_913_fromless');
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Append
+         ->  Seq Scan on t_913
+               Filter: (a = 100)
+         ->  Result
+ Optimizer: Postgres-based planner
+(6 rows)
+
+select * from (
+  select a from t_913 where a = 100
+  union all
+  select x from gp_dist_random('v_913_fromless')
+) s order by 1;
+  a  
+-----
+   1
+   1
+   1
+ 100
+(4 rows)
+
+drop view v_913_fromless;
+drop table t_913;
+-- The MergeAppend variant of the same bug: a UNION ALL whose branches are
+-- each independently sortable (an inner ORDER BY, plus a trivially-sorted
+-- single-row Strewn arm) makes the planner choose a MergeAppend instead of
+-- a plain Append, and create_merge_append_plan() needs the identical
+-- Strewn-locus veto create_append_plan() has: otherwise the narrowing
+-- sibling's target still wins the whole slice's direct dispatch and the
+-- Strewn arm's rows are silently dropped on the excluded segments.
+create table t_913b(a int, b int) distributed by (a);
+insert into t_913b select 100, i from generate_series(1,1000) i;
+create view v_913b_fromless as select 1 as x;
+explain (costs off)
+(select b from t_913b where a = 100 order by b)
+union all
+select x from gp_dist_random('v_913b_fromless')
+order by 1 limit 5;
+                    QUERY PLAN                     
+---------------------------------------------------
+ Limit
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         Merge Key: t_913b.b
+         ->  Limit
+               ->  Merge Append
+                     Sort Key: t_913b.b
+                     ->  Sort
+                           Sort Key: t_913b.b
+                           ->  Seq Scan on t_913b
+                                 Filter: (a = 100)
+                     ->  Sort
+                           Sort Key: (1)
+                           ->  Result
+ Optimizer: Postgres-based planner
+(14 rows)
+
+(select b from t_913b where a = 100 order by b)
+union all
+select x from gp_dist_random('v_913b_fromless')
+order by 1 limit 5;
+ b 
+---
+ 1
+ 1
+ 1
+ 1
+ 2
+(5 rows)
+
+drop view v_913b_fromless;
+drop table t_913b;
 begin;
 drop table if exists direct_test;
 drop table if exists direct_test_two_column;
