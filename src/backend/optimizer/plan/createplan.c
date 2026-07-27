@@ -1271,9 +1271,23 @@ create_append_plan(PlannerInfo *root, AppendPath *best_path, int flags)
 		 * this child's rows on every segment the sibling's target
 		 * excludes.  Veto direct dispatch here, from the Path's own
 		 * locus, before that ambiguity has a chance to arise downstream.
+		 *
+		 * Exception: set_append_path_locus() also tags a pinned General/
+		 * SegmentGeneral child (the "One-Time Filter:
+		 * gp_execution_segment() = N" trick, see the direct_dispath_
+		 * contentIds comment above) as Strewn -- that child is NOT an
+		 * unconstrained "runs everywhere" leaf, it is already confined to
+		 * one specific, known segment, and create_plan_recurse() (via
+		 * create_gating_plan()'s tail above) already merged that exact
+		 * content id into this slice's direct-dispatch info. Blanket-
+		 * vetoing here would clobber that correct, already-computed
+		 * narrowing, so skip the veto whenever the Path recorded a
+		 * specific pin.
 		 */
 		if (Gp_role == GP_ROLE_DISPATCH && root->config->gp_enable_direct_dispatch &&
-			CdbPathLocus_IsStrewn(subpath->locus))
+			CdbPathLocus_IsStrewn(subpath->locus) &&
+			!(IsA(subpath, ProjectionPath) &&
+			  ((ProjectionPath *) subpath)->direct_dispath_contentIds != NIL))
 		{
 			DirectDispatchInfo dispatchInfo;
 
@@ -1490,10 +1504,14 @@ create_merge_append_plan(PlannerInfo *root, MergeAppendPath *best_path,
 		 * MergeAppend arises here exactly like an Append does -- from a
 		 * UNION ALL whose branches happen to already be sorted (or
 		 * trivially sorted, as a single-row Result is) -- so it needs the
-		 * same veto.
+		 * same veto, with the same exception for an already-pinned
+		 * General/SegmentGeneral child (see the comment in
+		 * create_append_plan()).
 		 */
 		if (Gp_role == GP_ROLE_DISPATCH && root->config->gp_enable_direct_dispatch &&
-			CdbPathLocus_IsStrewn(subpath->locus))
+			CdbPathLocus_IsStrewn(subpath->locus) &&
+			!(IsA(subpath, ProjectionPath) &&
+			  ((ProjectionPath *) subpath)->direct_dispath_contentIds != NIL))
 		{
 			DirectDispatchInfo dispatchInfo;
 
