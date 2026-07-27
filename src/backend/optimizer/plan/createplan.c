@@ -1255,6 +1255,36 @@ create_append_plan(PlannerInfo *root, AppendPath *best_path, int flags)
 		subplan = create_plan_recurse(root, subpath, CP_EXACT_TLIST);
 
 		/*
+		 * A Strewn-locus child (e.g. gp_dist_random(...), which
+		 * CdbPathLocus_MakeStrewn()'s callers use precisely because there
+		 * is no known function tying rows to segments) must run on every
+		 * segment; there is no qual-based narrowing that could make it
+		 * safe to skip any of them.  But once such a child's plan is
+		 * built, its shape can collapse to a bare Result or a plain
+		 * SubqueryScan (e.g. a FROM-less view's contents get
+		 * constant-folded away), and
+		 * DirectDispatchUpdateContentIdsFromPlan()'s per-node-type walker
+		 * has no way to tell that collapsed shape apart from a harmless
+		 * one -- it silently contributes "no change" for both.  That
+		 * silence lets a sibling's correctly-computed narrow target win
+		 * the whole Append's direct-dispatch decision, silently dropping
+		 * this child's rows on every segment the sibling's target
+		 * excludes.  Veto direct dispatch here, from the Path's own
+		 * locus, before that ambiguity has a chance to arise downstream.
+		 */
+		if (Gp_role == GP_ROLE_DISPATCH && root->config->gp_enable_direct_dispatch &&
+			CdbPathLocus_IsStrewn(subpath->locus))
+		{
+			DirectDispatchInfo dispatchInfo;
+
+			dispatchInfo.isDirectDispatch = false;
+			dispatchInfo.contentIds = NIL;
+			dispatchInfo.haveProcessedAnyCalculations = true;
+
+			MergeDirectDispatchCalculationInfo(&root->curSlice->directDispatch, &dispatchInfo);
+		}
+
+		/*
 		 * For ordered Appends, we must insert a Sort node if subplan isn't
 		 * sufficiently ordered.
 		 */
@@ -1450,6 +1480,29 @@ create_merge_append_plan(PlannerInfo *root, MergeAppendPath *best_path,
 		/* Build the child plan */
 		/* Must insist that all children return the same tlist */
 		subplan = create_plan_recurse(root, subpath, CP_EXACT_TLIST);
+
+		/*
+		 * Same reasoning as the identical check in create_append_plan() --
+		 * a Strewn-locus child must run on every segment and can collapse
+		 * to a plan shape DirectDispatchUpdateContentIdsFromPlan() can't
+		 * distinguish from a harmless one, letting a sibling's narrower
+		 * target win the whole MergeAppend's direct-dispatch decision.  A
+		 * MergeAppend arises here exactly like an Append does -- from a
+		 * UNION ALL whose branches happen to already be sorted (or
+		 * trivially sorted, as a single-row Result is) -- so it needs the
+		 * same veto.
+		 */
+		if (Gp_role == GP_ROLE_DISPATCH && root->config->gp_enable_direct_dispatch &&
+			CdbPathLocus_IsStrewn(subpath->locus))
+		{
+			DirectDispatchInfo dispatchInfo;
+
+			dispatchInfo.isDirectDispatch = false;
+			dispatchInfo.contentIds = NIL;
+			dispatchInfo.haveProcessedAnyCalculations = true;
+
+			MergeDirectDispatchCalculationInfo(&root->curSlice->directDispatch, &dispatchInfo);
+		}
 
 		/* Compute sort column info, and adjust subplan's tlist as needed */
 		subplan = prepare_sort_from_pathkeys(subplan, pathkeys,
