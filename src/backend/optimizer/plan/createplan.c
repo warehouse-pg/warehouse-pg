@@ -1274,7 +1274,7 @@ create_append_plan(PlannerInfo *root, AppendPath *best_path, int flags)
 		 *
 		 * Exception: set_append_path_locus() also tags a pinned General/
 		 * SegmentGeneral child (the "One-Time Filter:
-		 * gp_execution_segment() = N" trick, see the direct_dispath_
+		 * gp_execution_segment() = N" trick, see the direct_dispatch_
 		 * contentIds comment above) as Strewn -- that child is NOT an
 		 * unconstrained "runs everywhere" leaf, it is already confined to
 		 * one specific, known segment, and create_plan_recurse() (via
@@ -1287,7 +1287,7 @@ create_append_plan(PlannerInfo *root, AppendPath *best_path, int flags)
 		if (Gp_role == GP_ROLE_DISPATCH && root->config->gp_enable_direct_dispatch &&
 			CdbPathLocus_IsStrewn(subpath->locus) &&
 			!(IsA(subpath, ProjectionPath) &&
-			  ((ProjectionPath *) subpath)->direct_dispath_contentIds != NIL))
+			  ((ProjectionPath *) subpath)->direct_dispatch_contentIds != NIL))
 		{
 			DirectDispatchInfo dispatchInfo;
 
@@ -1511,7 +1511,7 @@ create_merge_append_plan(PlannerInfo *root, MergeAppendPath *best_path,
 		if (Gp_role == GP_ROLE_DISPATCH && root->config->gp_enable_direct_dispatch &&
 			CdbPathLocus_IsStrewn(subpath->locus) &&
 			!(IsA(subpath, ProjectionPath) &&
-			  ((ProjectionPath *) subpath)->direct_dispath_contentIds != NIL))
+			  ((ProjectionPath *) subpath)->direct_dispatch_contentIds != NIL))
 		{
 			DirectDispatchInfo dispatchInfo;
 
@@ -2183,12 +2183,12 @@ create_projection_plan(PlannerInfo *root, ProjectionPath *best_path, int flags)
 	 * https://github.com/greenplum-db/gpdb/issues/9874 for more
 	 * detailed info.
 	 */
-	if (root->config->gp_enable_direct_dispatch && best_path->direct_dispath_contentIds)
+	if (root->config->gp_enable_direct_dispatch && best_path->direct_dispatch_contentIds)
 	{
 		DirectDispatchInfo dispatchInfo;
 
 		dispatchInfo.isDirectDispatch = true;
-		dispatchInfo.contentIds = best_path->direct_dispath_contentIds;
+		dispatchInfo.contentIds = best_path->direct_dispatch_contentIds;
 		dispatchInfo.haveProcessedAnyCalculations = true;
 
 		MergeDirectDispatchCalculationInfo(&root->curSlice->directDispatch, &dispatchInfo);
