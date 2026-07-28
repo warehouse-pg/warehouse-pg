@@ -1,5 +1,5 @@
 # gp_toolkit extension
 
 comment = 'various GPDB administrative views/functions'
-default_version = '1.8'
+default_version = '1.9'
 schema = gp_toolkit

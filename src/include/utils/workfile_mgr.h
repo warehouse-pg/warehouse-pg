@@ -91,13 +91,17 @@ typedef struct workfile_set
 	/* Average work file size */
 	uint64		avg_file_size;
 
+	/* PID of the process that created the workfile set */
+	int32		pid;
+
 	/*
 	 * GP_ABI_BUMP_FIXME
 	 *
 	 * Not used, just for ABI compatibility, remove this when we decide to bump
-	 * the ABI version.
+	 * the ABI version. (This is the remainder of a former 8-byte reserved
+	 * field, the first half of which is now used for 'pid' above.)
 	 */
-	uint64		abi_reserved;
+	int32		abi_reserved;
 
 	/* Total memory usage by compression buffer */
 	uint64		compression_buf_total;
@@ -120,6 +124,7 @@ extern workfile_set *workfile_mgr_create_set(const char *operator_name, const ch
 extern void workfile_mgr_close_set(workfile_set *work_set);
 
 extern Datum gp_workfile_mgr_cache_entries_internal(PG_FUNCTION_ARGS);
+extern Datum gp_workfile_mgr_cache_entries_v2_internal(PG_FUNCTION_ARGS);
 extern workfile_set *workfile_mgr_cache_entries_get_copy(int* num_actives);
 extern uint64 WorkfileSegspace_GetSize(void);
 

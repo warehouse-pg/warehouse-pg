@@ -125,3 +125,36 @@ language plpgsql volatile execute on all segments;
 -- "inter_xact_workset" entries show up in the output of
 -- gp_workfile_mgr_cache_entries().
 4: select * from report_workfile_entries();
+
+-- Test that gp_toolkit.gp_workfile_entries reports each workfile set exactly
+-- once, attributed to the pid of the process that created it.  The view used
+-- to join the workfile entries to gp_stat_activity on (sess_id, segid) only,
+-- fanning out each entry to every backend of the session on that segment and
+-- thereby inflating the workfile metrics.
+
+-- The test database may have been created with an older gp_toolkit; make
+-- sure we test the current version of the views.
+-- start_ignore
+6: alter extension gp_toolkit update;
+-- end_ignore
+5: set gp_vmem_idle_resource_timeout = 0;
+5: create table workfile_entries_fanout_t(a int, b int) distributed by (a);
+5: insert into workfile_entries_fanout_t select i, i from generate_series(1, 10) i;
+-- Run a multi-slice query, so that the session keeps more than one backend
+-- per segment around.
+5: select count(*) from workfile_entries_fanout_t t1 join workfile_entries_fanout_t t2 on t1.b = t2.b;
+-- Create an inter-transaction workset on all segments; it lives until the
+-- session exits.
+5: select gp_workfile_mgr_create_workset('fanout_check_workset', true, false, false);
+-- Sanity check: the session holds more than one backend per segment, i.e.
+-- the conditions for the old fan-out are present.
+6: select count(*) > 3 as more_than_one_backend_per_seg from gp_stat_activity where sess_id in (select sess_id from gp_toolkit.gp_workfile_entries where prefix like 'fanout_check_workset%') and gp_segment_id >= 0;
+-- The view must report exactly one entry per segment, with the pid matching
+-- a backend of the session on that segment (so the left join to
+-- gp_stat_activity found the creating backend and usename is not null).
+6: select count(*) from gp_toolkit.gp_workfile_entries where prefix like 'fanout_check_workset%';
+6: select count(*) from gp_toolkit.gp_workfile_entries where prefix like 'fanout_check_workset%' and usename is not null;
+6: drop table workfile_entries_fanout_t;
+5q:
+-- Wait until the workset of the exited session is cleaned up.
+6: select * from report_workfile_entries();
