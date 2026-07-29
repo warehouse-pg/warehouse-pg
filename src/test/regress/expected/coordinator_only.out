@@ -322,18 +322,95 @@ DISTRIBUTED BY (c1);
  c2     | integer |           |          |         | plain   |              | 
 Distributed by: (c1)
 
--- CTAS from a regular distributed table to coordinator-only, should fail
+-- CTAS from a regular distributed table to coordinator-only
 CREATE TABLE ctas_from_distributed AS
 SELECT * FROM distributed_table_aux
 WHERE c2 > 25
 DISTRIBUTED COORDINATOR ONLY;
-ERROR:  CTAS DISTRIBUTED COORDINATOR ONLY is not supported yet
--- CTAS from a coordinator-only table to coordinator-only, should fail
+\d+ ctas_from_distributed
+                           Table "public.ctas_from_distributed"
+ Column |  Type   | Collation | Nullable | Default | Storage | Stats target | Description 
+--------+---------+-----------+----------+---------+---------+--------------+-------------
+ c1     | integer |           |          |         | plain   |              | 
+ c2     | integer |           |          |         | plain   |              | 
+Distributed by: DISTRIBUTED COORDINATOR ONLY
+
+-- Verify the distribution policy in catalog
+SELECT policytype, numsegments, distkey, distclass
+FROM gp_distribution_policy
+WHERE localoid = 'ctas_from_distributed'::regclass;
+ policytype | numsegments | distkey | distclass 
+------------+-------------+---------+-----------
+ e          |          -1 |         | 
+(1 row)
+
+-- The relation must exist on every segment with the coordinator's OID,
+-- otherwise any distributed plan referencing it fails on the segments
+SELECT DISTINCT oid = 'ctas_from_distributed'::regclass::oid AS oid_matches
+FROM gp_dist_random('pg_class')
+WHERE relname = 'ctas_from_distributed';
+ oid_matches 
+-------------
+ t
+(1 row)
+
+-- Row count must match the equivalent plain SELECT
+SELECT count(*) FROM ctas_from_distributed;
+ count 
+-------
+    13
+(1 row)
+
+SELECT count(*) FROM distributed_table_aux WHERE c2 > 25;
+ count 
+-------
+    13
+(1 row)
+
+-- And the new table must be usable in a distributed join
+SELECT count(*)
+FROM ctas_from_distributed c JOIN distributed_table_aux d USING (c1);
+ count 
+-------
+    13
+(1 row)
+
+-- CTAS from a coordinator-only table to coordinator-only
 CREATE TABLE ctas_from_coordinator_only_to_only AS
 SELECT * FROM coordinator_only_heap
 WHERE c1 > 25
 DISTRIBUTED COORDINATOR ONLY;
-ERROR:  CTAS DISTRIBUTED COORDINATOR ONLY is not supported yet
+SELECT count(*) FROM ctas_from_coordinator_only_to_only;
+ count 
+-------
+   775
+(1 row)
+
+SELECT count(*) FROM coordinator_only_heap WHERE c1 > 25;
+ count 
+-------
+   775
+(1 row)
+
+-- CTAS WITH NO DATA to coordinator-only: table is created everywhere and
+-- empty, and can be populated with a regular INSERT ... SELECT afterwards
+CREATE TABLE ctas_coordinator_only_nodata AS
+SELECT * FROM distributed_table_aux
+WITH NO DATA
+DISTRIBUTED COORDINATOR ONLY;
+SELECT count(*) FROM ctas_coordinator_only_nodata;
+ count 
+-------
+     0
+(1 row)
+
+INSERT INTO ctas_coordinator_only_nodata SELECT * FROM distributed_table_aux;
+SELECT count(*) FROM ctas_coordinator_only_nodata;
+ count 
+-------
+    20
+(1 row)
+
 -- CTAS from coordinator-only table (should create hash-distributed table by default)
 CREATE TABLE ctas_from_coordinator_only_no_distribution AS
 SELECT * FROM coordinator_only_heap
@@ -432,7 +509,7 @@ WHERE c2 IN (SELECT c1 FROM coordinator_only_heap WHERE c1 < 500);
 CREATE MATERIALIZED VIEW mv_coordinator_only_explicit AS
 SELECT i FROM generate_series(1, 20) i
 DISTRIBUTED COORDINATOR ONLY;
-ERROR:  CTAS DISTRIBUTED COORDINATOR ONLY is not supported yet
+ERROR:  CREATE MATERIALIZED VIEW DISTRIBUTED COORDINATOR ONLY is not supported yet
 -- Matview from coordinator-only table (should infer hash distribution)
 CREATE MATERIALIZED VIEW mv_from_coordinator_only AS
 SELECT c1, c2 FROM coordinator_only_heap WHERE c1 BETWEEN 100 AND 200;
@@ -556,14 +633,16 @@ ERROR:  PARTITION BY clause cannot be used with DISTRIBUTED REPLICATED or COORDI
 SELECT gp_segment_id, count(*)
 FROM gp_dist_random('pg_class')
 WHERE relname IN ('coordinator_only_heap', 'coordinator_only_ao', 'coordinator_only_aoco',
-                  'like_coordinator_only', 'coordinator_only_constraints')
+                  'like_coordinator_only', 'coordinator_only_constraints',
+                  'ctas_from_distributed', 'ctas_from_coordinator_only_to_only',
+                  'ctas_coordinator_only_nodata')
 GROUP BY gp_segment_id
 ORDER BY gp_segment_id;
  gp_segment_id | count 
 ---------------+-------
-             0 |     5
-             1 |     5
-             2 |     5
+             0 |     8
+             1 |     8
+             2 |     8
 (3 rows)
 
 -- Left two coordinator-only tables for following pg_upgrade and gpcheckcat tests
@@ -572,6 +651,9 @@ DROP TABLE IF EXISTS coordinator_only_ao CASCADE;
 --  DROP TABLE IF EXISTS coordinator_only_aoco CASCADE;
 DROP TABLE IF EXISTS like_coordinator_only CASCADE;
 DROP TABLE IF EXISTS coordinator_only_constraints CASCADE;
+DROP TABLE IF EXISTS ctas_from_distributed CASCADE;
+DROP TABLE IF EXISTS ctas_from_coordinator_only_to_only CASCADE;
+DROP TABLE IF EXISTS ctas_coordinator_only_nodata CASCADE;
 DROP FUNCTION IF EXISTS get_coordinator_only_data() CASCADE;
 DROP FUNCTION IF EXISTS get_coordinator_only_data_on_coordinator() CASCADE;
 -- Extra cleanup for auxiliary and optional objects
@@ -581,7 +663,9 @@ DROP TABLE IF EXISTS distributed_table_aux_r CASCADE;
 SELECT gp_segment_id, count(*)
 FROM gp_dist_random('pg_class')
 WHERE relname IN ('coordinator_only_heap', 'coordinator_only_ao', 'coordinator_only_aoco',
-                  'like_coordinator_only', 'coordinator_only_constraints')
+                  'like_coordinator_only', 'coordinator_only_constraints',
+                  'ctas_from_distributed', 'ctas_from_coordinator_only_to_only',
+                  'ctas_coordinator_only_nodata')
 GROUP BY gp_segment_id
 ORDER BY gp_segment_id;
  gp_segment_id | count 

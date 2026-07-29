@@ -3080,10 +3080,16 @@ transformCreateTableAsStmt(ParseState *pstate, CreateTableAsStmt *stmt)
 	DistributedBy *distributedBy = (DistributedBy *)stmt->into->distributedBy;
 	if (distributedBy && (Gp_role == GP_ROLE_DISPATCH || IsBinaryUpgrade))
 	{
-		if (distributedBy->ptype == POLICYTYPE_ENTRY)
+		/*
+		 * CTAS into a DISTRIBUTED COORDINATOR ONLY table is supported.
+		 * Materialized views remain fenced: the REFRESH path does not
+		 * handle an ENTRY policy yet.
+		 */
+		if (distributedBy->ptype == POLICYTYPE_ENTRY &&
+			stmt->relkind != OBJECT_TABLE)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("CTAS DISTRIBUTED COORDINATOR ONLY is not supported yet")));
+					 errmsg("CREATE MATERIALIZED VIEW DISTRIBUTED COORDINATOR ONLY is not supported yet")));
 
 		setQryDistributionPolicy(pstate, stmt->into, (Query *) stmt->query);
 	}
