@@ -171,7 +171,13 @@ create_ctas_internal(List *attrList, IntoClause *into, QueryDesc *queryDesc, boo
 
 	if (Gp_role == GP_ROLE_DISPATCH)
 	{
-		queryDesc->ddesc->intoCreateStmt = create;
+		/*
+		 * ddesc is NULL when the CTAS plan runs entirely on the coordinator
+		 * and dispatches no gang (e.g. a POLICYTYPE_ENTRY target fed by a
+		 * VALUES or constant source), so guard the store.
+		 */
+		if (queryDesc->ddesc)
+			queryDesc->ddesc->intoCreateStmt = create;
 	}
 
 	/*
@@ -650,9 +656,15 @@ intorel_initplan(struct QueryDesc *queryDesc, int eflags)
 	 * case, dispatch the creation of the table immediately. Normally, the table
 	 * is created in the initialization of the plan in QEs, but with NO DATA, we
 	 * don't need to dispatch the plan during ExecutorStart().
+	 *
+	 * Also dispatch immediately for a coordinator-only (POLICYTYPE_ENTRY)
+	 * target: its top slice runs on the QD only, so no QE ever executes
+	 * intorel_initplan and the relation would otherwise exist solely on the QD.
 	 */
 	intoRelationAddr = create_ctas_internal(attrList, into, queryDesc,
-											into->skipData ? true : false);
+											into->skipData ||
+											(queryDesc->plannedstmt->intoPolicy &&
+											 queryDesc->plannedstmt->intoPolicy->ptype == POLICYTYPE_ENTRY));
 
 	/*
 	 * Finally we can open the target table

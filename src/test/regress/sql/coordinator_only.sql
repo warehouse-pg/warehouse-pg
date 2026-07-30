@@ -174,17 +174,51 @@ WHERE c2 > 25
 DISTRIBUTED BY (c1);
 \d+ ctas_from_distributed_to_distributed
 
--- CTAS from a regular distributed table to coordinator-only, should fail
+-- CTAS from a regular distributed table to coordinator-only
 CREATE TABLE ctas_from_distributed AS
 SELECT * FROM distributed_table_aux
 WHERE c2 > 25
 DISTRIBUTED COORDINATOR ONLY;
+\d+ ctas_from_distributed
 
--- CTAS from a coordinator-only table to coordinator-only, should fail
+-- Verify the distribution policy in catalog
+SELECT policytype, numsegments, distkey, distclass
+FROM gp_distribution_policy
+WHERE localoid = 'ctas_from_distributed'::regclass;
+
+-- The relation must exist on every segment with the coordinator's OID,
+-- otherwise any distributed plan referencing it fails on the segments
+SELECT DISTINCT oid = 'ctas_from_distributed'::regclass::oid AS oid_matches
+FROM gp_dist_random('pg_class')
+WHERE relname = 'ctas_from_distributed';
+
+-- Row count must match the equivalent plain SELECT
+SELECT count(*) FROM ctas_from_distributed;
+SELECT count(*) FROM distributed_table_aux WHERE c2 > 25;
+
+-- And the new table must be usable in a distributed join
+SELECT count(*)
+FROM ctas_from_distributed c JOIN distributed_table_aux d USING (c1);
+
+-- CTAS from a coordinator-only table to coordinator-only
 CREATE TABLE ctas_from_coordinator_only_to_only AS
 SELECT * FROM coordinator_only_heap
 WHERE c1 > 25
 DISTRIBUTED COORDINATOR ONLY;
+
+SELECT count(*) FROM ctas_from_coordinator_only_to_only;
+SELECT count(*) FROM coordinator_only_heap WHERE c1 > 25;
+
+-- CTAS WITH NO DATA to coordinator-only: table is created everywhere and
+-- empty, and can be populated with a regular INSERT ... SELECT afterwards
+CREATE TABLE ctas_coordinator_only_nodata AS
+SELECT * FROM distributed_table_aux
+WITH NO DATA
+DISTRIBUTED COORDINATOR ONLY;
+
+SELECT count(*) FROM ctas_coordinator_only_nodata;
+INSERT INTO ctas_coordinator_only_nodata SELECT * FROM distributed_table_aux;
+SELECT count(*) FROM ctas_coordinator_only_nodata;
 
 -- CTAS from coordinator-only table (should create hash-distributed table by default)
 CREATE TABLE ctas_from_coordinator_only_no_distribution AS
@@ -340,7 +374,9 @@ PARTITION BY RANGE (c2)
 SELECT gp_segment_id, count(*)
 FROM gp_dist_random('pg_class')
 WHERE relname IN ('coordinator_only_heap', 'coordinator_only_ao', 'coordinator_only_aoco',
-                  'like_coordinator_only', 'coordinator_only_constraints')
+                  'like_coordinator_only', 'coordinator_only_constraints',
+                  'ctas_from_distributed', 'ctas_from_coordinator_only_to_only',
+                  'ctas_coordinator_only_nodata')
 GROUP BY gp_segment_id
 ORDER BY gp_segment_id;
 
@@ -350,6 +386,9 @@ DROP TABLE IF EXISTS coordinator_only_ao CASCADE;
 --  DROP TABLE IF EXISTS coordinator_only_aoco CASCADE;
 DROP TABLE IF EXISTS like_coordinator_only CASCADE;
 DROP TABLE IF EXISTS coordinator_only_constraints CASCADE;
+DROP TABLE IF EXISTS ctas_from_distributed CASCADE;
+DROP TABLE IF EXISTS ctas_from_coordinator_only_to_only CASCADE;
+DROP TABLE IF EXISTS ctas_coordinator_only_nodata CASCADE;
 DROP FUNCTION IF EXISTS get_coordinator_only_data() CASCADE;
 DROP FUNCTION IF EXISTS get_coordinator_only_data_on_coordinator() CASCADE;
 
@@ -361,6 +400,8 @@ DROP TABLE IF EXISTS distributed_table_aux_r CASCADE;
 SELECT gp_segment_id, count(*)
 FROM gp_dist_random('pg_class')
 WHERE relname IN ('coordinator_only_heap', 'coordinator_only_ao', 'coordinator_only_aoco',
-                  'like_coordinator_only', 'coordinator_only_constraints')
+                  'like_coordinator_only', 'coordinator_only_constraints',
+                  'ctas_from_distributed', 'ctas_from_coordinator_only_to_only',
+                  'ctas_coordinator_only_nodata')
 GROUP BY gp_segment_id
 ORDER BY gp_segment_id;

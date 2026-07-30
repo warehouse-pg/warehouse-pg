@@ -1077,6 +1077,17 @@ CTranslatorQueryToDXL::TranslateCTASToDXL()
 			nullptr);
 	}
 
+	// ORCA cannot build a coordinator-only (DISTRIBUTED COORDINATOR ONLY) CTAS target;
+	// fall back to the Postgres planner, which materializes the ENTRY policy correctly
+	// (see cdbllize_adjust_top_path). Without this, a release build silently produces a
+	// hash-distributed table instead.
+	if (IMDRelation::EreldistrCoordinatorOnly == rel_distr_policy)
+	{
+		GPOS_RAISE(
+			gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLUnsupportedFeature,
+			GPOS_WSZ_LIT("CREATE TABLE AS ... DISTRIBUTED COORDINATOR ONLY"));
+	}
+
 	GPOS_ASSERT(IMDRelation::EreldistrCoordinatorOnly != rel_distr_policy);
 	m_context->m_has_distributed_tables = true;
 
