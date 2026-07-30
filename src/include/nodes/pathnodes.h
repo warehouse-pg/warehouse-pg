@@ -1975,10 +1975,16 @@ typedef struct ProjectionPath
 	List	   *cdb_restrict_clauses;
 
 	/*
-	 * CDB: projection with qual gp_execution_segment() = <segid>,
-	 * for such case we should consider update directdispatch info.
+	 * CDB: when this projection pins a General/SegmentGeneral child to a
+	 * single segment via a "gp_execution_segment() = <segid>" One-Time Filter,
+	 * this holds that pinned segid.  It marks the segment that the slice's
+	 * direct-dispatch calculation must not drop: create_projection_plan()
+	 * UNIONs it into the slice's direct-dispatch target set, and
+	 * create_append_plan() / create_mergeappend_plan() read it to skip vetoing
+	 * direct dispatch for such a deliberately-pinned (but Strewn-locus) child.
+	 * NIL when the projection pins nothing.
 	 */
-	List	   *direct_dispatch_contentIds;
+	List	   *pinned_direct_dispatch_contentIds;
 } ProjectionPath;
 
 /*
