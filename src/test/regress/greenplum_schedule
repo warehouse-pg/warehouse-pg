@@ -364,4 +364,7 @@ test: quicklz_fallback
 # run pg_hba raleted testing
 test: hba_conf
 
+# ALTER COLLATION ... REFRESH VERSION must update every node's pg_collation
+test: gp_collation_refresh
+
 # end of tests

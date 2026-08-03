@@ -398,6 +398,20 @@ AlterCollation(AlterCollationStmt *stmt)
 	heap_freetuple(tup);
 	table_close(rel, NoLock);
 
+	/*
+	 * Refresh the version recorded in every segment's pg_collation too;
+	 * each node derives the actual version from its own collation
+	 * provider, and collation version mismatch checks run wherever the
+	 * collation is used.
+	 */
+	if (Gp_role == GP_ROLE_DISPATCH)
+		CdbDispatchUtilityStatement((Node *) stmt,
+									DF_CANCEL_ON_ERROR|
+									DF_WITH_SNAPSHOT|
+									DF_NEED_TWO_PHASE,
+									NIL,
+									NULL);
+
 	return address;
 }
 
