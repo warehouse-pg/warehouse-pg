@@ -1,0 +1,14 @@
+--
+-- Verify that ALTER COLLATION ... REFRESH VERSION updates pg_collation on
+-- the coordinator and on every segment.  The collation version mismatch
+-- check runs on whichever node actually uses the collation, so a refresh
+-- must reach all of them.
+--
+-- Only ICU collations carry a version, so skip on builds without ICU (no
+-- ICU collations imported by initdb) or databases where ICU collations
+-- cannot be created.
+SELECT getdatabaseencoding() <> 'UTF8'
+       OR NOT EXISTS (SELECT 1 FROM pg_collation WHERE collname = 'en-x-icu')
+       AS skip_test \gset
+\if :skip_test
+\quit

@@ -3778,6 +3778,14 @@ _outSegfileMapNode(StringInfo str, const SegfileMapNode *node)
 
 
 static void
+_outAlterCollationStmt(StringInfo str, const AlterCollationStmt *node)
+{
+	WRITE_NODE_TYPE("ALTERCOLLATIONSTMT");
+
+	WRITE_NODE_FIELD(collname);
+}
+
+static void
 _outDefineStmt(StringInfo str, const DefineStmt *node)
 {
 	WRITE_NODE_TYPE("DEFINESTMT");
@@ -6133,6 +6141,10 @@ outNode(StringInfo str, const void *obj)
 				break;
 			case T_AlterFunctionStmt:
 				_outAlterFunctionStmt(str, obj);
+				break;
+
+			case T_AlterCollationStmt:
+				_outAlterCollationStmt(str, obj);
 				break;
 
 			case T_DefineStmt:

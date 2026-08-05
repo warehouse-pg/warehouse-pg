@@ -3867,6 +3867,16 @@ _readAlterFunctionStmt(void)
 	READ_DONE();
 }
 
+static AlterCollationStmt *
+_readAlterCollationStmt(void)
+{
+	READ_LOCALS(AlterCollationStmt);
+
+	READ_NODE_FIELD(collname);
+
+	READ_DONE();
+}
+
 static DefineStmt *
 _readDefineStmt(void)
 {
@@ -4742,6 +4752,8 @@ parseNodeString(void)
 		return_value = _readAConst();
 	else if (MATCHX("AEXPR"))
 		return_value = _readAExpr();
+	else if (MATCHX("ALTERCOLLATIONSTMT"))
+		return_value = _readAlterCollationStmt();
 	else if (MATCHX("ALTERDOMAINSTMT"))
 		return_value = _readAlterDomainStmt();
 	else if (MATCHX("ALTERFUNCTIONSTMT"))
