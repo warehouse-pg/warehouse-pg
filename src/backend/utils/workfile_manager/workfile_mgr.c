@@ -79,6 +79,7 @@
 #include "common/hashfn.h"
 #include "funcapi.h"
 #include "lib/ilist.h"
+#include "miscadmin.h"
 #include "storage/buffile.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
@@ -632,6 +633,7 @@ workfile_mgr_create_set_internal(const char *operator_name, const char *prefix)
 	work_set->session_id = gp_session_id;
 	work_set->command_count = gp_command_count;
 	work_set->slice_id = currentSliceId;
+	work_set->pid = MyProcPid;
 	work_set->perquery = perquery;
 	work_set->num_files = 0;
 	work_set->total_bytes = 0;
@@ -846,13 +848,23 @@ typedef struct
 } get_entries_cxt;
 
 /*
- * Function returning all workfile cache entries for one segment
+ * Guts of the workfile cache entries functions.
+ *
+ * The original version of the function returns NUM_CACHE_ENTRIES_ELEM
+ * columns. The v2 version appends a 'pid' column, so that callers can tell
+ * which process in the session's gang created a workfile set. Keep both
+ * output formats, since older versions of the gp_toolkit views specify the
+ * original format in their column definition lists.
  */
-Datum
-gp_workfile_mgr_cache_entries_internal(PG_FUNCTION_ARGS)
+#define NUM_CACHE_ENTRIES_ELEM		8
+#define NUM_CACHE_ENTRIES_ELEM_V2	(NUM_CACHE_ENTRIES_ELEM + 1)
+
+static Datum
+workfile_mgr_cache_entries_guts(FunctionCallInfo fcinfo, bool include_pid)
 {
 	FuncCallContext *funcctx;
 	get_entries_cxt *cxt;
+	int			natts = include_pid ? NUM_CACHE_ENTRIES_ELEM_V2 : NUM_CACHE_ENTRIES_ELEM;
 
 	if (SRF_IS_FIRSTCALL())
 	{
@@ -869,8 +881,7 @@ gp_workfile_mgr_cache_entries_internal(PG_FUNCTION_ARGS)
 		 * The number and type of attributes have to match the definition of the
 		 * view gp_workfile_mgr_cache_entries
 		 */
-#define NUM_CACHE_ENTRIES_ELEM 8
-		TupleDesc tupdesc = CreateTemplateTupleDesc(NUM_CACHE_ENTRIES_ELEM);
+		TupleDesc tupdesc = CreateTemplateTupleDesc(natts);
 
 		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "segid", INT4OID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "prefix", TEXTOID, -1, 0);
@@ -880,6 +891,8 @@ gp_workfile_mgr_cache_entries_internal(PG_FUNCTION_ARGS)
 		TupleDescInitEntry(tupdesc, (AttrNumber) 6, "sessionid", INT4OID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 7, "commandid", INT4OID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 8, "numfiles", INT4OID, -1, 0);
+		if (include_pid)
+			TupleDescInitEntry(tupdesc, (AttrNumber) 9, "pid", INT4OID, -1, 0);
 
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 
@@ -900,8 +913,8 @@ gp_workfile_mgr_cache_entries_internal(PG_FUNCTION_ARGS)
 	while (cxt->index < cxt->num_entries)
 	{
 		WorkFileSetSharedEntry *work_set = &cxt->copied_entries[cxt->index];
-		Datum		values[NUM_CACHE_ENTRIES_ELEM];
-		bool		nulls[NUM_CACHE_ENTRIES_ELEM];
+		Datum		values[NUM_CACHE_ENTRIES_ELEM_V2];
+		bool		nulls[NUM_CACHE_ENTRIES_ELEM_V2];
 		HeapTuple tuple;
 		Datum		result;
 
@@ -915,6 +928,8 @@ gp_workfile_mgr_cache_entries_internal(PG_FUNCTION_ARGS)
 		values[5] = UInt32GetDatum(work_set->session_id);
 		values[6] = UInt32GetDatum(work_set->command_count);
 		values[7] = UInt32GetDatum(work_set->num_files);
+		if (include_pid)
+			values[8] = Int32GetDatum(work_set->pid);
 
 		cxt->index++;
 
@@ -925,6 +940,25 @@ gp_workfile_mgr_cache_entries_internal(PG_FUNCTION_ARGS)
 	}
 
 	SRF_RETURN_DONE(funcctx);
+}
+
+/*
+ * Function returning all workfile cache entries for one segment
+ */
+Datum
+gp_workfile_mgr_cache_entries_internal(PG_FUNCTION_ARGS)
+{
+	return workfile_mgr_cache_entries_guts(fcinfo, false);
+}
+
+/*
+ * Same as gp_workfile_mgr_cache_entries_internal, but also returns the pid
+ * of the process that created each workfile set.
+ */
+Datum
+gp_workfile_mgr_cache_entries_v2_internal(PG_FUNCTION_ARGS)
+{
+	return workfile_mgr_cache_entries_guts(fcinfo, true);
 }
 
 /*

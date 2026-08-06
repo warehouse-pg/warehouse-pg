@@ -30,6 +30,7 @@
 PG_MODULE_MAGIC;
 
 Datum gp_workfile_mgr_cache_entries(PG_FUNCTION_ARGS);
+Datum gp_workfile_mgr_cache_entries_v2(PG_FUNCTION_ARGS);
 Datum gp_workfile_mgr_used_diskspace(PG_FUNCTION_ARGS);
 
 PG_FUNCTION_INFO_V1(gp_workfile_mgr_cache_entries);
@@ -43,6 +44,18 @@ Datum
 gp_workfile_mgr_cache_entries(PG_FUNCTION_ARGS)
 {
 	return gp_workfile_mgr_cache_entries_internal(fcinfo);
+}
+
+PG_FUNCTION_INFO_V1(gp_workfile_mgr_cache_entries_v2);
+
+/*
+ * Same as gp_workfile_mgr_cache_entries, but the result also includes the
+ * pid of the process that created each workfile set.
+ */
+Datum
+gp_workfile_mgr_cache_entries_v2(PG_FUNCTION_ARGS)
+{
+	return gp_workfile_mgr_cache_entries_v2_internal(fcinfo);
 }
 
 PG_FUNCTION_INFO_V1(gp_workfile_mgr_used_diskspace);
