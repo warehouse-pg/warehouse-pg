@@ -83,6 +83,13 @@ RUN dnf install -y \
     zlib-devel \
     && dnf clean all
 
+# Vanilla PostgreSQL 18 server, baked at image build.
+# It serves as the postgres_fdw gp2pg remote; PGDG installs to /usr/pgsql-18.
+RUN dnf install -y "https://download.postgresql.org/pub/repos/yum/reporpms/EL-8-$(uname -m)/pgdg-redhat-repo-latest.noarch.rpm" \
+    && dnf -qy module disable postgresql \
+    && dnf install -y postgresql18-server \
+    && dnf clean all
+
 # add gpadmin user for building the database
 RUN groupadd gpadmin \
     && useradd -m -d /home/gpadmin -s /bin/bash -c "WarehousePG Database" -g gpadmin gpadmin \
