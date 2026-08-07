@@ -743,7 +743,7 @@ find_rendezvous_variable(const char *varName)
 		rendezvousHash = hash_create("Rendezvous variable hash",
 									 16,
 									 &ctl,
-									 HASH_ELEM);
+									 HASH_ELEM | HASH_STRINGS);
 	}
 
 	/* Find or create the hashtable entry for this varName */

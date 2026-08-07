@@ -178,7 +178,8 @@ ResetUnloggedRelationsInDbspaceDir(const char *dbspacedirname, int op)
 		memset(&ctl, 0, sizeof(ctl));
 		ctl.keysize = sizeof(unlogged_relation_entry);
 		ctl.entrysize = sizeof(unlogged_relation_entry);
-		hash = hash_create("unlogged hash", 32, &ctl, HASH_ELEM);
+		hash = hash_create("unlogged hash", 32, &ctl,
+						   HASH_ELEM | HASH_STRINGS);
 
 		/* Scan the directory. */
 		dbspace_dir = AllocateDir(dbspacedirname);
