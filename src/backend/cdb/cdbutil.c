@@ -1485,7 +1485,8 @@ getDnsCachedAddress(char *name, int port, int elevel, bool use_cache)
 			hash_ctl.entrysize = sizeof(SegIpEntry);
 
 			segment_ip_cache_htab = hash_create("segment_dns_cache",
-												256, &hash_ctl, HASH_ELEM);
+												256, &hash_ctl,
+												HASH_ELEM | HASH_STRINGS);
 		}
 		else
 		{
@@ -1707,7 +1708,8 @@ hostPrimaryCountHashTableInit(void)
 	 */
 	info.hcxt = CdbComponentsContext;
 
-	return hash_create("HostSegs", 32, &info, HASH_ELEM | HASH_CONTEXT);
+	return hash_create("HostSegs", 32, &info,
+					   HASH_ELEM | HASH_STRINGS | HASH_CONTEXT);
 }
 
 /*

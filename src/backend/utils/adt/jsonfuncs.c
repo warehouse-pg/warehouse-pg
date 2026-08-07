@@ -3390,7 +3390,7 @@ get_json_object_as_hash(char *json, int len, const char *funcname)
 	tab = hash_create("json object hashtable",
 					  100,
 					  &ctl,
-					  HASH_ELEM | HASH_CONTEXT);
+					  HASH_ELEM | HASH_STRINGS | HASH_CONTEXT);
 
 	state = palloc0(sizeof(JHashState));
 	sem = palloc0(sizeof(JsonSemAction));
@@ -3782,7 +3782,7 @@ populate_recordset_object_start(void *state)
 	_state->json_hash = hash_create("json object hashtable",
 									100,
 									&ctl,
-									HASH_ELEM | HASH_CONTEXT);
+									HASH_ELEM | HASH_STRINGS | HASH_CONTEXT);
 }
 
 static void

@@ -126,7 +126,7 @@ EnablePortalManager(void)
 	 * create, initially
 	 */
 	PortalHashTable = hash_create("Portal hash", PORTALS_PER_USER,
-								  &ctl, HASH_ELEM);
+								  &ctl, HASH_ELEM | HASH_STRINGS);
 }
 
 /*

@@ -211,7 +211,7 @@ init_timezone_hashtable(void)
 	timezone_cache = hash_create("Timezones",
 								 4,
 								 &hash_ctl,
-								 HASH_ELEM);
+								 HASH_ELEM | HASH_STRINGS);
 	if (!timezone_cache)
 		return false;
 

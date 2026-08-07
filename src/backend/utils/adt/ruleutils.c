@@ -3447,7 +3447,7 @@ set_rtable_names(deparse_namespace *dpns, List *parent_namespaces,
 	names_hash = hash_create("set_rtable_names names",
 							 list_length(dpns->rtable),
 							 &hash_ctl,
-							 HASH_ELEM | HASH_CONTEXT);
+							 HASH_ELEM | HASH_STRINGS | HASH_CONTEXT);
 	/* Preload the hash table with names appearing in parent_namespaces */
 	foreach(lc, parent_namespaces)
 	{

@@ -1378,7 +1378,7 @@ validateColumnStorageEncodingClauses(List *aocoColumnEncoding,
 				memset(&cacheInfo, 0, sizeof(cacheInfo));
 				cacheInfo.keysize = NAMEDATALEN;
 				cacheInfo.entrysize = sizeof(*ce);
-				cacheFlags = HASH_ELEM;
+				cacheFlags = HASH_ELEM | HASH_STRINGS;
 
 				ht = hash_create("column info cache",
 								 list_length(tableElts),
