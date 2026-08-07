@@ -68,6 +68,46 @@ If you want to clean all generated files
 make distclean
 ```
 
+### Build with AddressSanitizer (ASan)
+
+To hunt memory bugs (out-of-bounds reads/writes, use-after-free, double
+free), build with `--enable-asan`. It instruments C and C++ (including
+GPORCA) alike, puts the sanitizer runtime on every link line, and defaults
+optimization to `-O1`; your own `CFLAGS`/`CXXFLAGS` still override.
+
+```
+./configure --enable-asan --enable-debug --enable-cassert --prefix=/usr/local/whpg-asan
+make -j8 && make -j8 install
+```
+
+Before creating a cluster or running anything, export the runtime options:
+
+```
+mkdir -p /tmp/asan
+export ASAN_OPTIONS="detect_leaks=0:log_path=/tmp/asan/asan:abort_on_error=1:disable_coredump=1:print_stacktrace=1"
+export PGCTLTIMEOUT=300
+```
+
+Notes:
+
+* `detect_leaks=0` is required: management tools run short-lived
+  `postgres --gp-version`-style commands whose leak-check exit code (23)
+  would otherwise fail `gpinitsystem`/`gpstart`. Leak hunting needs a
+  separately configured LeakSanitizer run.
+* Reports land in `log_path` files (`/tmp/asan/asan.<pid>`), one per
+  aborted process. A test run that "passes" while report files exist has
+  still found bugs — always check the directory.
+* For a single-host demo cluster the exported variables reach the server
+  processes automatically. On multi-host clusters ssh strips the
+  environment; either drop the exports into
+  `$GPHOME/etc/environment.d/50-asan.conf` (sourced by
+  `greenplum_path.sh` on every host) or start with
+  `gpstart --wrapper=env --wrapper-args="ASAN_OPTIONS=..."`.
+* Known limitations: the UDP interconnect's receive thread and GPORCA
+  run close to their configured stack budgets under ASan's larger stack
+  frames — for full test runs prefer `gp_interconnect_type=tcp` and the
+  Postgres planner (`optimizer=off`) until those budgets are raised.
+
 ## Disclaimer
 Greenplum® is a registered trademark of Broadcom Inc.<br>
 EDB and EDB Postgres AI are not affiliated with, endorsed by, or sponsored by Broadcom Inc.<br>
