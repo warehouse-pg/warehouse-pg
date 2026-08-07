@@ -1,0 +1,123 @@
+-- The autovacuum orphan-temp-namespace sweep must compare session ids as
+-- fixed-size binary keys.  If the alive-session hash table falls back to
+-- string hashing/comparison, the comparison stops at the first zero byte
+-- of the key: an orphaned namespace whose numeric suffix differs from a
+-- live session id only in bytes past that zero byte is mistaken for the
+-- live session's namespace and never cleaned up.
+--
+-- Scenario: take our own session id S and find the first zero byte below
+-- its top byte.  Adding 256^p (p = 1-based position of that zero byte)
+-- flips a byte that string comparison never reaches, so the orphan suffix
+-- S + 256^p reads as the same C string as S.  Under string comparison the
+-- sweep wrongly considers the orphan alive; under binary comparison the
+-- orphan is swept.  Our real temp table must survive either way.
+--
+-- NOTE: this test must run inside an enable_autovacuum schedule window
+-- (it relies on the launcher being up); it manages only naptime itself,
+-- like the other autovacuum-* tests.
+SET client_min_messages = warning;
+CREATE EXTENSION IF NOT EXISTS gp_inject_fault;
+RESET client_min_messages;
+
+-- speed up test
+ALTER SYSTEM SET autovacuum_naptime = 5;
+SELECT pg_reload_conf();
+
+-- The string-alias offset for this session: 256^p where the p'th byte
+-- (1-based, little-endian) of the session id is the first zero byte below
+-- the top byte.  Such a byte exists for every session id below 65536 (CI
+-- clusters) and for larger ids whose low bytes happen to contain a zero;
+-- if none exists, the alias is mathematically inexpressible and we bail
+-- out with an explanation rather than construct a vacuous test.
+CREATE OR REPLACE FUNCTION alias_offset() RETURNS bigint AS $$
+DECLARE sid int; ofs bigint;
+BEGIN
+  SELECT sess_id INTO sid FROM pg_stat_activity WHERE pid = pg_backend_pid();
+  IF sid <= 0 THEN
+    RAISE EXCEPTION 'invalid session id %', sid;
+  END IF;
+  FOR p IN 1..3 LOOP
+    IF (sid / (256^(p-1))::bigint) % 256 = 0 THEN
+      ofs := (256^p)::bigint;
+      IF sid + ofs > 2147483647 THEN
+        RAISE EXCEPTION 'alias suffix for session id % overflows int4', sid;
+      END IF;
+      RETURN ofs;
+    END IF;
+  END LOOP;
+  RAISE EXCEPTION 'session id % has no zero byte below its top byte; the string-alias cannot be constructed -- rerun on a younger cluster', sid;
+END $$ LANGUAGE plpgsql STABLE;
+
+-- positive control: a live session's real temp table
+CREATE TEMP TABLE alive_probe(a int) DISTRIBUTED BY (a);
+INSERT INTO alive_probe SELECT generate_series(1, 10);
+
+-- fabricate the orphan: a plain table rewritten into a temp table living
+-- in a namespace whose suffix string-aliases our session id.  The catalog
+-- UPDATEs below run on the coordinator only (catalog DML is not
+-- dispatched); the segments keep the schema under its original name, and
+-- cleanup at the end relies on that.
+CREATE SCHEMA orphan_probe_schema;
+CREATE TABLE orphan_probe_schema.t(a int) DISTRIBUTED BY (a);
+SET allow_system_table_mods = on;
+DO $$
+DECLARE sid int;
+BEGIN
+  SELECT sess_id INTO sid FROM pg_stat_activity WHERE pid = pg_backend_pid();
+  UPDATE pg_namespace SET nspname = 'pg_temp_' || (sid + alias_offset())
+   WHERE nspname = 'orphan_probe_schema';
+  UPDATE pg_class SET relpersistence = 't'
+   WHERE oid = ('pg_temp_' || (sid + alias_offset()) || '.t')::regclass;
+END $$;
+RESET allow_system_table_mods;
+
+-- wait for autovacuum workers to visit this database a few times
+SELECT gp_inject_fault('auto_vac_worker_before_do_autovacuum', 'skip', '', 'regression', '', 1, -1, 0, 1);
+SELECT gp_wait_until_triggered_fault('auto_vac_worker_before_do_autovacuum', 3, 1);
+SELECT gp_inject_fault('auto_vac_worker_before_do_autovacuum', 'reset', 1);
+
+-- the orphan must get swept (bounded poll; prints the final state)
+DO $$
+DECLARE sid int; gone boolean := false;
+BEGIN
+  SELECT sess_id INTO sid FROM pg_stat_activity WHERE pid = pg_backend_pid();
+  FOR i IN 1..150 LOOP
+    PERFORM 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE c.relname = 't' AND n.nspname = 'pg_temp_' || (sid + alias_offset());
+    gone := NOT FOUND;
+    EXIT WHEN gone;
+    PERFORM pg_sleep(0.2);
+  END LOOP;
+  IF gone THEN
+    RAISE NOTICE 'orphan temp table swept';
+  ELSE
+    RAISE NOTICE 'orphan temp table still present';
+  END IF;
+END $$;
+
+-- the live session's temp table must have survived the sweep
+SELECT count(*) FROM alive_probe;
+
+-- Cleanup, working in both outcomes.  The surgery above only renamed the
+-- coordinator's copy of the schema; the segments still have
+-- orphan_probe_schema.t.  Rename the coordinator's copy back (and restore
+-- relpersistence if the table survived), then drop the schema everywhere
+-- with ordinary dispatched DDL.
+SET allow_system_table_mods = on;
+DO $$
+DECLARE sid int;
+BEGIN
+  SELECT sess_id INTO sid FROM pg_stat_activity WHERE pid = pg_backend_pid();
+  UPDATE pg_namespace SET nspname = 'orphan_probe_schema'
+   WHERE nspname = 'pg_temp_' || (sid + alias_offset());
+  UPDATE pg_class SET relpersistence = 'p'
+   WHERE relname = 't'
+     AND relnamespace = (SELECT oid FROM pg_namespace
+                          WHERE nspname = 'orphan_probe_schema');
+END $$;
+RESET allow_system_table_mods;
+DROP SCHEMA orphan_probe_schema CASCADE;
+
+DROP FUNCTION alias_offset();
+ALTER SYSTEM RESET autovacuum_naptime;
+SELECT pg_reload_conf();

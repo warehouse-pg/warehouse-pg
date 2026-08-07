@@ -2156,7 +2156,8 @@ do_autovacuum(void)
 	MemSet(&ctl, 0, sizeof(ctl));
         ctl.keysize = sizeof(int);
         ctl.entrysize = sizeof(int);
-	sessionhash = hash_create("Running session IDs", 8, &ctl, HASH_ELEM);
+	sessionhash = hash_create("Running session IDs", 8, &ctl,
+							  HASH_ELEM | HASH_BLOBS);
 
 	sessionlist = GetRunningProcSessionIds();
 	foreach(lc, sessionlist)

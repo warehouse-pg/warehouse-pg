@@ -321,6 +321,7 @@ test: autovacuum-segment
 test: autovacuum-template0-segment
 test: autovacuum-catalog
 test: autovacuum-ao-aux
+test: autovacuum-alive-session
 
 # gpexpand introduce the partial tables, check them if they can run correctly
 test: gangsize gang_reuse
