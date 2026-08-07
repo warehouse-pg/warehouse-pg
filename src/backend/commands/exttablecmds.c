@@ -71,7 +71,7 @@ static List * GenerateExtTableEntryOptions(Oid tbloid,
 * to leave it intact and do another dispatch.
 * ----------------------------------------------------------------
 */
-void
+ObjectAddress
 DefineExternalRelation(CreateExternalStmt *createExtStmt)
 {
 	CreateForeignTableStmt *createForeignTableStmt;
@@ -290,6 +290,12 @@ DefineExternalRelation(CreateExternalStmt *createExtStmt)
 	else
 		reloid = RangeVarGetRelid(createExtStmt->relation, NoLock, true);
 
+	/*
+	 * Keep the address in step with the OID we actually work on below, so the
+	 * caller can hand it to ddl_command_end event triggers.
+	 */
+	ObjectAddressSet(objAddr, RelationRelationId, reloid);
+
 	entryOptions = GenerateExtTableEntryOptions(reloid,
 										   iswritable,
 										   issreh,
@@ -328,6 +334,8 @@ DefineExternalRelation(CreateExternalStmt *createExtStmt)
 									GetAssignedOidsForDispatch(),
 									NULL);
 	}
+
+	return objAddr;
 }
 
 /*
