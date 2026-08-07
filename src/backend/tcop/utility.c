@@ -1688,7 +1688,13 @@ ProcessUtilitySlow(ParseState *pstate,
 						Node	   *stmt = (Node *) lfirst(l);
 
 						if (IsA(stmt, CreateExternalStmt))
-							DefineExternalRelation((CreateExternalStmt *) stmt);
+						{
+							address = DefineExternalRelation((CreateExternalStmt *) stmt);
+
+							EventTriggerCollectSimpleCommand(address,
+															 secondaryObject,
+															 stmt);
+						}
 						else
 						{
 							PlannedStmt *wrapper;
@@ -1710,6 +1716,9 @@ ProcessUtilitySlow(ParseState *pstate,
 										   NULL);
 						}
 					}
+
+					/* commands are collected in the loop above */
+					commandCollected = true;
 				}
 				break;
 
