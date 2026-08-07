@@ -1156,7 +1156,7 @@ ProcessUtilitySlow(ParseState *pstate,
 	bool		isCompleteQuery = (context != PROCESS_UTILITY_SUBCOMMAND);
 	bool		needCleanup;
 	bool		commandCollected = false;
-	ObjectAddress address;
+	ObjectAddress address = InvalidObjectAddress;
 	ObjectAddress secondaryObject = InvalidObjectAddress;
 
 	List 		*deferredValidationParts = NIL;
