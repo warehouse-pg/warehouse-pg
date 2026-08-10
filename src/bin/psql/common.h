@@ -34,7 +34,7 @@ extern void ResetCancelConn(void);
 extern PGresult *PSQLexec(const char *query);
 extern int	PSQLexecWatch(const char *query, const printQueryOpt *opt);
 
-extern bool SendQuery(const char *query);
+extern bool SendQuery(const char *query, int num_copy_from_stdin);
 
 extern bool is_superuser(void);
 extern bool standard_strings(void);
