@@ -3110,6 +3110,10 @@ numeric_combine(PG_FUNCTION_ARGS)
 
 	if (state2 == NULL)
 	{
+		/*
+		 * NULL state2 is easy, just return state1, which we know is already
+		 * in the agg_context
+		 */
 		if (state1 == NULL)
 			PG_RETURN_NULL();
 		PG_RETURN_POINTER(state1);
@@ -3205,6 +3209,10 @@ numeric_avg_combine(PG_FUNCTION_ARGS)
 
 	if (state2 == NULL)
 	{
+		/*
+		 * NULL state2 is easy, just return state1, which we know is already
+		 * in the agg_context
+		 */
 		if (state1 == NULL)
 			PG_RETURN_NULL();
 		PG_RETURN_POINTER(state1);
@@ -3726,6 +3734,10 @@ numeric_poly_combine(PG_FUNCTION_ARGS)
 
 	if (state2 == NULL)
 	{
+		/*
+		 * NULL state2 is easy, just return state1, which we know is already
+		 * in the agg_context
+		 */
 		if (state1 == NULL)
 			PG_RETURN_NULL();
 		PG_RETURN_POINTER(state1);
@@ -3974,6 +3986,10 @@ int8_avg_combine(PG_FUNCTION_ARGS)
 
 	if (state2 == NULL)
 	{
+		/*
+		 * NULL state2 is easy, just return state1, which we know is already
+		 * in the agg_context
+		 */
 		if (state1 == NULL)
 			PG_RETURN_NULL();
 		PG_RETURN_POINTER(state1);
