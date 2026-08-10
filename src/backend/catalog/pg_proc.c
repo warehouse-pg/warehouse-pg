@@ -711,8 +711,11 @@ ProcedureCreate(const char *procedureName,
 
 	/* dependency on parameter default expressions */
 	if (parameterDefaults)
+	{
+		CheckUsageOnTypesInExpr((Node *) parameterDefaults, NIL, GetUserId());
 		recordDependencyOnExpr(&myself, (Node *) parameterDefaults,
 							   NIL, DEPENDENCY_NORMAL);
+	}
 
 	/* dependency on owner */
 	if (!is_update)

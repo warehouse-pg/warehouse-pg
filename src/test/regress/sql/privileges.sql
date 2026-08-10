@@ -504,8 +504,11 @@ CREATE CAST (testdomain1 AS testdomain3a) WITH FUNCTION castfunc(int);
 DROP FUNCTION castfunc(int) CASCADE;
 DROP DOMAIN testdomain3a;
 
+CREATE DOMAIN testdomain4a AS int CHECK (VALUE > ('(0,1)'::testtype1).a);
+
 CREATE FUNCTION testfunc5a(a testdomain1) RETURNS int LANGUAGE SQL AS $$ SELECT $1 $$;
 CREATE FUNCTION testfunc6a(b int) RETURNS testdomain1 LANGUAGE SQL AS $$ SELECT $1::testdomain1 $$;
+CREATE FUNCTION testfunc7a(a int DEFAULT ('(0,1)'::testtype1).a) RETURNS int LANGUAGE SQL AS $$ SELECT $1 $$;
 
 CREATE OPERATOR !+! (PROCEDURE = int4pl, LEFTARG = testdomain1, RIGHTARG = testdomain1);
 
@@ -516,6 +519,7 @@ CREATE TABLE test10a (a int[], b testtype1[]);
 CREATE TABLE test9a (a int, b int);
 ALTER TABLE test9a ADD COLUMN c testdomain1;
 ALTER TABLE test9a ALTER COLUMN b TYPE testdomain1;
+CREATE INDEX ON test9a ((a::testdomain1));
 
 CREATE TYPE test7a AS (a int, b testdomain1);
 
@@ -525,7 +529,12 @@ ALTER TYPE test8a ALTER ATTRIBUTE b TYPE testdomain1;
 
 CREATE TABLE test11a AS (SELECT 1::testdomain1 AS a);
 
+CREATE VIEW test16a AS SELECT ('(0,1)'::testtype1).a;
+
 REVOKE ALL ON TYPE testtype1 FROM PUBLIC;
+
+CREATE TABLE test12 (c int DEFAULT 0 CHECK (c > 0 AND '(0,1)'::testtype1 IS NOT NULL)) DISTRIBUTED RANDOMLY;
+CREATE TABLE test13 (c int DEFAULT ('(0,1)'::testtype1).a);
 
 SET SESSION AUTHORIZATION regressuser2;
 
@@ -539,8 +548,11 @@ CREATE DOMAIN testdomain3b AS int;
 CREATE FUNCTION castfunc(int) RETURNS testdomain3b AS $$ SELECT $1::testdomain3b $$ LANGUAGE SQL;
 CREATE CAST (testdomain1 AS testdomain3b) WITH FUNCTION castfunc(int);
 
+CREATE DOMAIN testdomain4b AS int CHECK (VALUE > ('(0,1)'::testtype1).a);
+
 CREATE FUNCTION testfunc5b(a testdomain1) RETURNS int LANGUAGE SQL AS $$ SELECT $1 $$;
 CREATE FUNCTION testfunc6b(b int) RETURNS testdomain1 LANGUAGE SQL AS $$ SELECT $1::testdomain1 $$;
+CREATE FUNCTION testfunc7b(a int DEFAULT ('(0,1)'::testtype1).a) RETURNS int LANGUAGE SQL AS $$ SELECT $1 $$;
 
 CREATE OPERATOR !! (PROCEDURE = testfunc5b, RIGHTARG = testdomain1);
 
@@ -551,6 +563,18 @@ CREATE TABLE test10b (a int[], b testtype1[]);
 CREATE TABLE test9b (a int, b int);
 ALTER TABLE test9b ADD COLUMN c testdomain1;
 ALTER TABLE test9b ALTER COLUMN b TYPE testdomain1;
+CREATE INDEX ON test9b ((a::testdomain1));
+-- index expressions are checked as the invoking user, not the table owner
+\c -
+CREATE TABLE test9c (a int);
+ALTER TABLE test9c OWNER TO regressuser1;
+GRANT regressuser1 TO regressuser2;
+SET SESSION AUTHORIZATION regressuser2;
+CREATE INDEX ON test9c ((a::testdomain1));
+\c -
+REVOKE regressuser1 FROM regressuser2;
+DROP TABLE test9c;
+SET SESSION AUTHORIZATION regressuser2;
 
 CREATE TYPE test7b AS (a int, b testdomain1);
 
@@ -560,14 +584,34 @@ ALTER TYPE test8b ALTER ATTRIBUTE b TYPE testdomain1;
 
 CREATE TABLE test11b AS (SELECT 1::testdomain1 AS a);
 
+CREATE VIEW test16b AS SELECT ('(0,1)'::testtype1).a;
+
 REVOKE ALL ON TYPE testtype1 FROM PUBLIC;
+
+CREATE TABLE test12 (c int DEFAULT 0 CHECK (c > 0 AND '(0,1)'::testtype1 IS NOT NULL)) DISTRIBUTED RANDOMLY;
+CREATE TABLE test13 (c int DEFAULT ('(0,1)'::testtype1).a);
+CREATE TABLE test18 (a int, b int DEFAULT ('(0,1)'::testtype1).a)
+  DISTRIBUTED BY (a) PARTITION BY RANGE (a) (START (0) END (4) EVERY (2));
+
+-- new stored expressions require USAGE on types, rebuilds do not
+\c -
+REVOKE USAGE ON TYPE testtype1 FROM regressuser2;
+SET SESSION AUTHORIZATION regressuser2;
+ALTER TABLE test12 ALTER COLUMN c TYPE bigint;
+ALTER TABLE test18 ADD PARTITION p2 START (4) END (6);
+ALTER TABLE test18 SPLIT PARTITION FOR (0) AT (1) INTO (PARTITION p0, PARTITION p1);
+ALTER TABLE test12 ALTER COLUMN c SET DEFAULT ('(0,1)'::testtype1).a;
+CREATE TABLE test14 (LIKE test12 INCLUDING CONSTRAINTS);
+CREATE TABLE test15 (LIKE test13 INCLUDING DEFAULTS);
 
 \c -
 DROP AGGREGATE testagg1b(testdomain1);
 DROP DOMAIN testdomain2b;
+DROP DOMAIN testdomain4b;
 DROP OPERATOR !! (NONE, testdomain1);
 DROP FUNCTION testfunc5b(a testdomain1);
 DROP FUNCTION testfunc6b(b int);
+DROP FUNCTION testfunc7b(a int);
 DROP TABLE test5b;
 DROP TABLE test6b;
 DROP TABLE test9b;
@@ -577,7 +621,11 @@ DROP TYPE test8b;
 DROP CAST (testdomain1 AS testdomain3b);
 DROP FUNCTION castfunc(int) CASCADE;
 DROP DOMAIN testdomain3b;
+DROP VIEW test16b;
 DROP TABLE test11b;
+DROP TABLE test12;
+DROP TABLE test13;
+DROP TABLE test18;
 
 DROP TYPE testtype1; -- ok
 DROP DOMAIN testdomain1; -- ok

@@ -760,6 +760,9 @@ UpdateIndexRelation(Oid indexoid,
  * is_internal: if true, post creation hook for new index
  *
  * Returns the OID of the created index.
+ *
+ * NB: Caller is responsible for ensuring the user has USAGE on all types
+ * indexInfo->ii_{Expressions,Predicate} depend on.
  */
 Oid
 index_create(Relation heapRelation,

@@ -43,6 +43,9 @@
  * Subsidiary records (such as triggers or indexes to implement the
  * constraint) are *not* created here.  But we do make dependency links
  * from the constraint to the things it depends on.
+ *
+ * NB: Caller is responsible for ensuring the user has USAGE on all types
+ * conExpr depends on.
  */
 Oid
 CreateConstraintEntry(const char *constraintName,

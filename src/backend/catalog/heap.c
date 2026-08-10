@@ -2526,6 +2526,9 @@ heap_drop_with_catalog(Oid relid)
 
 /*
  * Store a default expression for column attnum of relation rel.
+ *
+ * NB: Caller is responsible for ensuring the user has USAGE on all types expr
+ * depends on.
  */
 void
 StoreAttrDefault(Relation rel, AttrNumber attnum,
@@ -2639,6 +2642,9 @@ StoreAttrDefault(Relation rel, AttrNumber attnum,
  *
  * Caller is responsible for updating the count of constraints
  * in the pg_class entry for the relation.
+ *
+ * NB: Caller is responsible for ensuring the user has USAGE on all types expr
+ * depends on.
  */
 static void
 StoreRelCheck(Relation rel, char *ccname, Node *expr,
@@ -2878,6 +2884,13 @@ AddRelationNewConstraints(Relation rel,
 			(IsA(expr, Const) &&((Const *) expr)->constisnull))
 			continue;
 
+		/*
+		 * The below call to StoreAttrDefault() adds the dependencies on
+		 * types.  We are responsible for checking USAGE.
+		 */
+		if (!is_internal)
+			CheckUsageOnTypesInSingleRelExpr(expr, RelationGetRelid(rel), GetUserId());
+
 		StoreAttrDefault(rel, colDef->attnum, expr, is_internal);
 
 		cooked = (CookedConstraint *) palloc(sizeof(CookedConstraint));
@@ -2915,6 +2928,14 @@ AddRelationNewConstraints(Relation rel,
 			 */
 			expr = cookConstraint(pstate, cdef->raw_expr,
 								  RelationGetRelationName(rel));
+
+			/*
+			 * The below call to StoreRelCheck() calls CreateConstraintEntry(),
+			 * which adds the dependencies on types.  We are responsible for
+			 * checking USAGE.
+			 */
+			if (!is_internal)
+				CheckUsageOnTypesInSingleRelExpr(expr, RelationGetRelid(rel), GetUserId());
 		}
 		else
 		{

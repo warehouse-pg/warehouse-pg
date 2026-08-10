@@ -649,6 +649,9 @@ TypeCreate(Oid newTypeOid,
  * That means an extension can't absorb a shell type that is free-standing
  * or belongs to another extension, nor ALTER a type that is free-standing or
  * belongs to another extension.
+ *
+ * NB: Caller is responsible for ensuring the user has USAGE on all types
+ * defaultExpr depends on.
  */
 void
 GenerateTypeDependencies(Oid typeObjectId,
