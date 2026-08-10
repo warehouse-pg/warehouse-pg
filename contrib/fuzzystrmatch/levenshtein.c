@@ -76,8 +76,8 @@ levenshtein_internal(text *s, text *t,
 				n,
 				s_bytes,
 				t_bytes;
-	int		   *prev;
-	int		   *curr;
+	int64	   *prev;
+	int64	   *curr;
 	int		   *s_char_len = NULL;
 	int			i,
 				j;
@@ -86,6 +86,9 @@ levenshtein_internal(text *s, text *t,
 	const char *y;
 	const char *send;
 	const char *tend;
+	int64		ins_c_64 = ins_c;
+	int64		del_c_64 = del_c;
+	int64		sub_c_64 = sub_c;
 
 	/*
 	 * For levenshtein_less_equal_internal, we have real variables called
@@ -124,9 +127,9 @@ levenshtein_internal(text *s, text *t,
 	 * into an empty s with m deletions.
 	 */
 	if (!m)
-		return n * ins_c;
+		return levenshtein_result(n * ins_c_64);
 	if (!n)
-		return m * del_c;
+		return levenshtein_result(m * del_c_64);
 
 	/*
 	 * For security concerns, restrict excessive CPU+RAM usage. (This
@@ -152,20 +155,20 @@ levenshtein_internal(text *s, text *t,
 	 */
 	if (max_d >= 0)
 	{
-		int			min_theo_d; /* Theoretical minimum distance. */
-		int			max_theo_d; /* Theoretical maximum distance. */
+		int64		min_theo_d; /* Theoretical minimum distance. */
+		int64		max_theo_d; /* Theoretical maximum distance. */
 		int			net_inserts = n - m;
 
 		min_theo_d = net_inserts < 0 ?
-			-net_inserts * del_c : net_inserts * ins_c;
+			-net_inserts * del_c_64 : net_inserts * ins_c_64;
 		if (min_theo_d > max_d)
-			return max_d + 1;
-		if (ins_c + del_c < sub_c)
-			sub_c = ins_c + del_c;
-		max_theo_d = min_theo_d + sub_c * Min(m, n);
+			return levenshtein_result((int64) max_d + 1);
+		if (ins_c_64 + del_c_64 < sub_c_64)
+			sub_c_64 = ins_c_64 + del_c_64;
+		max_theo_d = min_theo_d + sub_c_64 * Min(m, n);
 		if (max_d >= max_theo_d)
 			max_d = -1;
-		else if (ins_c + del_c > 0)
+		else if (ins_c_64 + del_c_64 > 0)
 		{
 			/*
 			 * Figure out how much of the first row of the notional matrix we
@@ -179,12 +182,12 @@ levenshtein_internal(text *s, text *t,
 			 * column n - m.  If we do start further right, the best-case
 			 * total cost increases by ins_c + del_c for each move right.
 			 */
-			int			slack_d = max_d - min_theo_d;
+			int64		slack_d = max_d - min_theo_d;
 			int			best_column = net_inserts < 0 ? -net_inserts : 0;
+			int64		tmp;
 
-			stop_column = best_column + (slack_d / (ins_c + del_c)) + 1;
-			if (stop_column > m)
-				stop_column = m + 1;
+			tmp = best_column + (slack_d / (ins_c_64 + del_c_64)) + 1;
+			stop_column = Min(tmp, m + 1);
 		}
 	}
 #endif
@@ -216,7 +219,7 @@ levenshtein_internal(text *s, text *t,
 	++n;
 
 	/* Previous and current rows of notional array. */
-	prev = (int *) palloc(2 * m * sizeof(int));
+	prev = (int64 *) palloc(2 * m * sizeof(int64));
 	curr = prev + m;
 
 	/*
@@ -224,12 +227,12 @@ levenshtein_internal(text *s, text *t,
 	 * t, we must perform i deletions.
 	 */
 	for (i = START_COLUMN; i < STOP_COLUMN; i++)
-		prev[i] = i * del_c;
+		prev[i] = i * del_c_64;
 
 	/* Loop through rows of the notional array */
 	for (y = t_data, j = 1; j < n; j++)
 	{
-		int		   *temp;
+		int64	   *temp;
 		const char *x = s_data;
 		int			y_char_len = n != t_bytes + 1 ? pg_mblen_range(y, tend) : 1;
 
@@ -243,7 +246,7 @@ levenshtein_internal(text *s, text *t,
 		 */
 		if (stop_column < m)
 		{
-			prev[stop_column] = max_d + 1;
+			prev[stop_column] = (int64) max_d + 1;
 			++stop_column;
 		}
 
@@ -255,13 +258,13 @@ levenshtein_internal(text *s, text *t,
 		 */
 		if (start_column == 0)
 		{
-			curr[0] = j * ins_c;
+			curr[0] = j * ins_c_64;
 			i = 1;
 		}
 		else
 			i = start_column;
 #else
-		curr[0] = j * ins_c;
+		curr[0] = j * ins_c_64;
 		i = 1;
 #endif
 
@@ -276,9 +279,9 @@ levenshtein_internal(text *s, text *t,
 		{
 			for (; i < STOP_COLUMN; i++)
 			{
-				int			ins;
-				int			del;
-				int			sub;
+				int64		ins;
+				int64		del;
+				int64		sub;
 				int			x_char_len = s_char_len[i - 1];
 
 				/*
@@ -290,14 +293,14 @@ levenshtein_internal(text *s, text *t,
 				 * get past that test, then we compare the lengths and the
 				 * remaining bytes.
 				 */
-				ins = prev[i] + ins_c;
-				del = curr[i - 1] + del_c;
+				ins = prev[i] + ins_c_64;
+				del = curr[i - 1] + del_c_64;
 				if (x[x_char_len - 1] == y[y_char_len - 1]
 					&& x_char_len == y_char_len &&
 					(x_char_len == 1 || rest_of_char_same(x, y, x_char_len)))
 					sub = prev[i - 1];
 				else
-					sub = prev[i - 1] + sub_c;
+					sub = prev[i - 1] + sub_c_64;
 
 				/* Take the one with minimum cost. */
 				curr[i] = Min(ins, del);
@@ -311,14 +314,14 @@ levenshtein_internal(text *s, text *t,
 		{
 			for (; i < STOP_COLUMN; i++)
 			{
-				int			ins;
-				int			del;
-				int			sub;
+				int64		ins;
+				int64		del;
+				int64		sub;
 
 				/* Calculate costs for insertion, deletion, and substitution. */
-				ins = prev[i] + ins_c;
-				del = curr[i - 1] + del_c;
-				sub = prev[i - 1] + ((*x == *y) ? 0 : sub_c);
+				ins = prev[i] + ins_c_64;
+				del = curr[i - 1] + del_c_64;
+				sub = prev[i - 1] + ((*x == *y) ? 0 : sub_c_64);
 
 				/* Take the one with minimum cost. */
 				curr[i] = Min(ins, del);
@@ -364,8 +367,8 @@ levenshtein_internal(text *s, text *t,
 				int			ii = stop_column - 1;
 				int			net_inserts = ii - zp;
 
-				if (prev[ii] + (net_inserts > 0 ? net_inserts * ins_c :
-								-net_inserts * del_c) <= max_d)
+				if (prev[ii] + (net_inserts > 0 ? net_inserts * ins_c_64 :
+								-net_inserts * del_c_64) <= max_d)
 					break;
 				stop_column--;
 			}
@@ -376,8 +379,8 @@ levenshtein_internal(text *s, text *t,
 				int			net_inserts = start_column - zp;
 
 				if (prev[start_column] +
-					(net_inserts > 0 ? net_inserts * ins_c :
-					 -net_inserts * del_c) <= max_d)
+					(net_inserts > 0 ? net_inserts * ins_c_64 :
+					 -net_inserts * del_c_64) <= max_d)
 					break;
 
 				/*
@@ -385,8 +388,8 @@ levenshtein_internal(text *s, text *t,
 				 * there's nothing here that could confuse any future
 				 * iteration of the outer loop.
 				 */
-				prev[start_column] = max_d + 1;
-				curr[start_column] = max_d + 1;
+				prev[start_column] = (int64) max_d + 1;
+				curr[start_column] = (int64) max_d + 1;
 				if (start_column != 0)
 					s_data += (s_char_len != NULL) ? s_char_len[start_column - 1] : 1;
 				start_column++;
@@ -394,7 +397,7 @@ levenshtein_internal(text *s, text *t,
 
 			/* If they cross, we're going to exceed the bound. */
 			if (start_column >= stop_column)
-				return max_d + 1;
+				return levenshtein_result((int64) max_d + 1);
 		}
 #endif
 	}
@@ -403,5 +406,5 @@ levenshtein_internal(text *s, text *t,
 	 * Because the final value was swapped from the previous row to the
 	 * current row, that's where we'll find it.
 	 */
-	return prev[m - 1];
+	return levenshtein_result(prev[m - 1]);
 }
