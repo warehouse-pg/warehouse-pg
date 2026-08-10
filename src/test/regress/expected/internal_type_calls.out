@@ -1,6 +1,8 @@
 --
 -- Test that functions taking or returning type "internal" cannot be
--- called or constructed from SQL.  (CVE-2026-14680)
+-- called or constructed from SQL, and that aggregate combine functions
+-- (which WarehousePG exercises heavily via multi-stage aggregation)
+-- still work correctly.  (CVE-2026-14680)
 --
 -- functions returning type internal must not be callable from SQL
 SELECT internal_in('foo');
@@ -33,3 +35,45 @@ SELECT CAST(123 AS internal);
 ERROR:  cannot cast type integer to internal
 LINE 1: SELECT CAST(123 AS internal);
                ^
+-- multi-stage aggregation still works: the planner and executor invoke
+-- the internal-typed transition/combine functions themselves
+CREATE TABLE internal_calls_t(a int, b numeric) DISTRIBUTED BY (a);
+INSERT INTO internal_calls_t SELECT g, g * 1.5 FROM generate_series(1, 1000) g;
+INSERT INTO internal_calls_t VALUES (1001, NULL);
+-- numeric_combine / numeric_avg_combine paths
+SELECT avg(b), sum(b), count(b), stddev(b), var_samp(b) FROM internal_calls_t;
+         avg          |   sum    | count |      stddev      |      var_samp       
+----------------------+----------+-------+------------------+---------------------
+ 750.7500000000000000 | 750750.0 |  1000 | 433.229154143624 | 187687.500000000000
+(1 row)
+
+-- all-NULL input: combine functions must return honest NULL states
+SELECT avg(b), sum(b) FROM internal_calls_t WHERE b IS NULL;
+ avg | sum 
+-----+-----
+     |    
+(1 row)
+
+SELECT a % 3 AS grp, avg(b), sum(b) FROM internal_calls_t GROUP BY 1 ORDER BY 1;
+ grp |         avg          |   sum    
+-----+----------------------+----------
+   0 | 751.5000000000000000 | 250249.5
+   1 | 750.7500000000000000 | 250750.5
+   2 | 750.0000000000000000 | 249750.0
+(3 rows)
+
+-- int8_avg_combine / numeric_poly_combine paths
+SELECT avg(a::int8), sum(a::int8), avg(a::int2), var_pop(a::int8) FROM internal_calls_t;
+         avg          |  sum   |         avg          |      var_pop       
+----------------------+--------+----------------------+--------------------
+ 501.0000000000000000 | 501501 | 501.0000000000000000 | 83500.000000000000
+(1 row)
+
+-- array_agg_combine path
+SELECT array_agg(a ORDER BY a) FROM internal_calls_t WHERE a <= 3;
+ array_agg 
+-----------
+ {1,2,3}
+(1 row)
+
+DROP TABLE internal_calls_t;
