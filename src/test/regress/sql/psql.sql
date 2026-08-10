@@ -921,6 +921,8 @@ select \if false \\ (bogus \else \\ 42 \endif \\ forty_two;
 \endif
 
 -- test that begin/end matching ignores to-be-ignored text
+-- (WHPG: the server has no BEGIN ATOMIC, so this fails with a single
+-- syntax error; the point is that psql sends it all as one statement)
 create function silly_function(int) returns int
 begin atomic select $1;
 \if false
@@ -1066,6 +1068,15 @@ select 1/(15-g) from generate_series(1, 1000000) g;
 \echo 'last error code:' :LAST_ERROR_SQLSTATE
 
 \unset FETCH_COUNT
+
+-- \copy must skip in-line data, even if the issued COPY command fails.
+\copy no_such_table from stdin
+foo
+\echo this should not get output
+bar
+\echo this should not get output
+\.
+\echo this should get output
 
 create schema testpart;
 create role regress_partitioning_role;
