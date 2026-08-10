@@ -22,6 +22,7 @@
 #include "access/tupconvert.h"
 #include "access/xact.h"
 #include "catalog/catalog.h"
+#include "catalog/dependency.h"
 #include "catalog/index.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_constraint.h"
@@ -785,6 +786,22 @@ DefineIndex(Oid relationId,
 					  stmt->excludeOpNames, relationId,
 					  accessMethodName, accessMethodId,
 					  amcanorder, stmt->isconstraint);
+
+	/*
+	 * The below call to index_create() creates the dependencies on types.  We
+	 * are responsible for checking USAGE.
+	 */
+	if (check_rights)
+	{
+		if (indexInfo->ii_Expressions)
+			CheckUsageOnTypesInSingleRelExpr((Node *) indexInfo->ii_Expressions,
+											 relationId,
+											 root_save_userid);
+		if (indexInfo->ii_Predicate)
+			CheckUsageOnTypesInSingleRelExpr((Node *) indexInfo->ii_Predicate,
+											 relationId,
+											 root_save_userid);
+	}
 
 	/*
 	 * Extra checks when creating a PRIMARY KEY index.

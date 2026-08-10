@@ -750,6 +750,14 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId, char relstorage, boo
 	}
 
 	/*
+	 * NB: The defaults and constraints we just inherited are already cooked,
+	 * so they don't get the USAGE checks that AddRelationNewConstraints()
+	 * applies to raw ones.  That's intentional: the parent's own catalog
+	 * entries already depend on those types, so copying them pins nothing
+	 * new, and creating a child requires owning the parent, anyway.
+	 */
+
+	/*
 	 * Create a tuple descriptor from the relation schema.  Note that this
 	 * deals with column names, types, and NOT NULL constraints, but not
 	 * default values or CHECK constraints; we handle those below.

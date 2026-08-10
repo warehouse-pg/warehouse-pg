@@ -1039,6 +1039,21 @@ transformTableLikeClause(CreateStmtContext *cxt, TableLikeClause *table_like_cla
 			 * but it can't; so default is ready to apply to child.
 			 */
 
+			/*
+			 * Copying a default adds new references.  Since it arrives
+			 * pre-cooked, it bypasses the checks in
+			 * AddRelationNewConstraints(), so we must check for USAGE on
+			 * types here.  Statements the server builds itself are exempt,
+			 * like inherited definitions: partition children created along
+			 * with their parent (is_part_child) and the copies it makes of
+			 * an existing table on behalf of that table's owner, such as ADD
+			 * or SPLIT PARTITION (ownerid is set), only duplicate definitions
+			 * that already pin these types.
+			 */
+			if (stmt == NULL ||
+				!(stmt->is_part_child || OidIsValid(stmt->ownerid)))
+				CheckUsageOnTypesInExpr(this_default, NIL, GetUserId());
+
 			def->cooked_default = this_default;
 		}
 
@@ -1083,6 +1098,18 @@ transformTableLikeClause(CreateStmtContext *cxt, TableLikeClause *table_like_cla
 			Constraint *n = makeNode(Constraint);
 			Node	   *ccbin_node;
 			bool		found_whole_row;
+
+			/*
+			 * Copying a CHECK constraint adds new references.  Since the
+			 * constraint arrives pre-cooked, it bypasses the checks in
+			 * AddRelationNewConstraints(), so we must check for USAGE on
+			 * types here.  (Server-built statements are exempt, as above.)
+			 */
+			if (stmt == NULL ||
+				!(stmt->is_part_child || OidIsValid(stmt->ownerid)))
+				CheckUsageOnTypesInSingleRelExpr(stringToNode(ccbin),
+												 RelationGetRelid(relation),
+												 GetUserId());
 
 			ccbin_node = map_variable_attnos(stringToNode(ccbin),
 											 1, 0,

@@ -1069,6 +1069,13 @@ DefineDomain(CreateDomainStmt *stmt)
 	}
 
 	/*
+	 * The below call to TypeCreate() calls GenerateTypeDependencies(), which
+	 * adds the dependencies on types.  We are responsible for checking USAGE.
+	 */
+	if (defaultValueBin)
+		CheckUsageOnTypesInExpr(stringToNode(defaultValueBin), NIL, GetUserId());
+
+	/*
 	 * Have TypeCreate do all the real work.
 	 */
 	domainoid =
@@ -2309,6 +2316,12 @@ AlterDomainDefault(List *names, Node *defaultRaw)
 		else
 		{
 			/*
+			 * The below call to GenerateTypeDependencies() creates the
+			 * dependencies on types.  We are responsible for checking USAGE.
+			 */
+			CheckUsageOnTypesInExpr(defaultExpr, NIL, GetUserId());
+
+			/*
 			 * Expression must be stored as a nodeToString result, but we also
 			 * require a valid textual representation (mainly to make life
 			 * easier for pg_dump).
@@ -3149,6 +3162,12 @@ domainAddConstraint(Oid domainOid, Oid domainNamespace, Oid baseTypeOid,
 	 * Fix up collation information.
 	 */
 	assign_expr_collations(pstate, expr);
+
+	/*
+	 * The below call to CreateConstraintEntry() creates the dependencies on
+	 * types.  We are responsible for checking USAGE.
+	 */
+	CheckUsageOnTypesInExpr(expr, NIL, GetUserId());
 
 	/*
 	 * Domains don't allow variables (this is probably dead code now that
