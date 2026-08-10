@@ -1246,8 +1246,8 @@ FillPortalStore(Portal portal, bool isTopLevel)
 									portal->holdStore,
 									portal->holdContext,
 									false,
-									NULL,
-									NULL);
+									portal->tupDesc,
+									gettext_noop("query result type does not match portal result type"));
 
 	completionTag[0] = '\0';
 
