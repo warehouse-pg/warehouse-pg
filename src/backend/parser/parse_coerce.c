@@ -594,6 +594,10 @@ can_coerce_type(int nargs, const Oid *input_typeids, const Oid *target_typeids,
 		if (inputTypeId == targetTypeId)
 			continue;
 
+		/* reject all cases of casting something else to/from "internal" */
+		if (inputTypeId == INTERNALOID || targetTypeId == INTERNALOID)
+			return false;
+
 		/* 
 		 * ANYTABLE is a special case that can occur when a function is 
 		 * called with a TableValue expression.  A table value expression
@@ -2210,6 +2214,10 @@ find_coercion_pathway(Oid targetTypeId, Oid sourceTypeId,
 	/* Domains are always coercible to and from their base type */
 	if (sourceTypeId == targetTypeId)
 		return COERCION_PATH_RELABELTYPE;
+
+	/* Reject all cases of casting something else to/from "internal" */
+	if (sourceTypeId == INTERNALOID || targetTypeId == INTERNALOID)
+		return COERCION_PATH_NONE;
 
 	/* Look in pg_cast */
 	tuple = SearchSysCache2(CASTSOURCETARGET,
