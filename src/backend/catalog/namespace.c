@@ -1329,7 +1329,7 @@ MatchNamedCall(HeapTuple proctup, int nargs, List *argnames,
 	Oid		   *p_argtypes;
 	char	  **p_argnames;
 	char	   *p_argmodes;
-	bool		arggiven[FUNC_MAX_ARGS];
+	bool	   *arggiven;
 	bool		isnull;
 	int			ap;				/* call args position */
 	int			pp;				/* proargs position */
@@ -1351,8 +1351,8 @@ MatchNamedCall(HeapTuple proctup, int nargs, List *argnames,
 	Assert(p_argnames != NULL);
 
 	/* initialize state for matching */
-	*argnumbers = (int *) palloc(pronargs * sizeof(int));
-	memset(arggiven, false, pronargs * sizeof(bool));
+	*argnumbers = palloc_array(int, pronargs);
+	arggiven = palloc0_array(bool, pronallargs);
 
 	/* there are numposargs positional args before the named args */
 	for (ap = 0; ap < numposargs; ap++)
