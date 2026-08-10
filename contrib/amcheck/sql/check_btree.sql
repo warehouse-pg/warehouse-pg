@@ -78,6 +78,33 @@ CREATE INDEX bttest_a_expr_idx ON bttest_a ((ifun(id) + ifun(0)))
 
 SELECT bt_index_check('bttest_a_expr_idx');
 
+-- amcheck 1.0 never evaluates index expressions; the owner-run code it does
+-- reach is the opclass support function, so exercise that on the segments.
+CREATE FUNCTION bt_cmp_sp(int8, int8) RETURNS int4 AS $$
+BEGIN
+	IF current_setting('search_path') LIKE '%preempt%' THEN
+		RAISE EXCEPTION 'bt_cmp_sp called with search_path %', current_setting('search_path');
+	END IF;
+	RETURN btint8cmp($1, $2);
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+CREATE OPERATOR CLASS bttest_sp_ops FOR TYPE int8 USING btree AS
+	OPERATOR 1 <, OPERATOR 2 <=, OPERATOR 3 =, OPERATOR 4 >=, OPERATOR 5 >,
+	FUNCTION 1 bt_cmp_sp(int8, int8);
+CREATE TABLE bttest_sp(id int8);
+INSERT INTO bttest_sp SELECT * FROM generate_series(1, 1000);
+CREATE INDEX bttest_sp_idx ON bttest_sp (id bttest_sp_ops);
+ALTER TABLE bttest_sp OWNER TO regress_bttest_role;
+BEGIN;
+CREATE SCHEMA preempt;
+SET LOCAL search_path = preempt, pg_catalog, public;
+SELECT bt_index_check_on_all('bttest_sp_idx');
+SELECT bt_index_parent_check_on_all('bttest_sp_idx');
+ROLLBACK;
+DROP TABLE bttest_sp;
+DROP OPERATOR CLASS bttest_sp_ops USING btree;
+DROP FUNCTION bt_cmp_sp(int8, int8);
+
 -- cleanup
 DROP TABLE bttest_a;
 DROP TABLE bttest_b;
