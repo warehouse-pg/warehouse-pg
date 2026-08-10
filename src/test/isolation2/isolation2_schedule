@@ -380,3 +380,7 @@ test: uao/brin_chain_row uao/brin_chain_column
 
 # test for sharedsnapshot's subtransaction handling
 test: sharedsnapshot_subxact
+
+# CVE-2026-14666: role changes must invalidate RLS-dependent cached
+# plans on the coordinator and inside QE backends
+test: rls_plancache_role_inval

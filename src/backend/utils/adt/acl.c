@@ -76,6 +76,7 @@ static Oid	cached_privs_role = InvalidOid;
 static List *cached_privs_roles = NIL;
 static Oid	cached_member_role = InvalidOid;
 static List *cached_membership_roles = NIL;
+uint32		cached_db_hash;
 
 
 static const char *getid(const char *s, char *n);
@@ -4846,6 +4847,10 @@ initialize_acl(void)
 		CacheRegisterSyscacheCallback(AUTHOID,
 									  RoleMembershipCacheCallback,
 									  (Datum) 0);
+
+		/* Remember our own database's pg_database hash value (see plancache.c) */
+		cached_db_hash = GetSysCacheHashValue1(DATABASEOID,
+											   ObjectIdGetDatum(MyDatabaseId));
 	}
 }
 
