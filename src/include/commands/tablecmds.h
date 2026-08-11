@@ -31,7 +31,7 @@
 
 extern const char *synthetic_sql;
 
-extern void	DefineExternalRelation(CreateExternalStmt *stmt);
+extern ObjectAddress DefineExternalRelation(CreateExternalStmt *stmt);
 
 extern ObjectAddress DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 									ObjectAddress *typaddress, const char *queryString, bool dispatch,
