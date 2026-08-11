@@ -46,16 +46,31 @@ create event trigger regress_event_trigger_end on ddl_command_end
    execute procedure test_event_trigger_end();
 CREATE EXTERNAL WEB TABLE endtest_ext (x text) EXECUTE 'echo foo;' FORMAT 'text';
 CREATE TABLE endtest_heap (x text) DISTRIBUTED BY (x);
+-- the other two GPDB-specific commands that reach the tail collect
+CREATE OR REPLACE FUNCTION write_to_file() RETURNS integer as '$libdir/gpextprotocol.so', 'demoprot_export' LANGUAGE C STABLE NO SQL;
+NOTICE:  specifying "NO SQL" acts as no operation.
+CREATE OR REPLACE FUNCTION read_from_file() RETURNS integer as '$libdir/gpextprotocol.so', 'demoprot_import' LANGUAGE C STABLE NO SQL;
+NOTICE:  specifying "NO SQL" acts as no operation.
+CREATE PROTOCOL demoprot_end_test (readfunc = 'read_from_file', writefunc = 'write_to_file');
+CREATE DOMAIN endtest_domain AS int;
+ALTER TYPE endtest_domain SET DEFAULT ENCODING (compresstype=zlib);
 drop event trigger regress_event_trigger_end;
 -- both the external and the regular table must be here
 SELECT tag, identity, objtype FROM regress_ddl_history ORDER BY id;
-          tag          |      identity       |    objtype    
------------------------+---------------------+---------------
- CREATE EXTERNAL TABLE | public.endtest_ext  | foreign table
- CREATE TABLE          | public.endtest_heap | table
-(2 rows)
+          tag          |        identity         |      objtype      
+-----------------------+-------------------------+-------------------
+ CREATE EXTERNAL TABLE | public.endtest_ext      | foreign table
+ CREATE TABLE          | public.endtest_heap     | table
+ CREATE FUNCTION       | public.write_to_file()  | function
+ CREATE FUNCTION       | public.read_from_file() | function
+ CREATE PROTOCOL       | demoprot_end_test       | external protocol
+ CREATE DOMAIN         | public.endtest_domain   | type
+ ALTER TYPE            | public.endtest_domain   | type
+(7 rows)
 
 DROP EXTERNAL TABLE endtest_ext;
 DROP TABLE endtest_heap;
+DROP PROTOCOL demoprot_end_test;
+DROP DOMAIN endtest_domain;
 DROP TABLE regress_ddl_history;
 DROP FUNCTION test_event_trigger_end();

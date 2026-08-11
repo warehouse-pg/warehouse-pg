@@ -3855,9 +3855,10 @@ AlterTypeNamespaceInternal(Oid typeOid, Oid nspOid,
  *
  * ALTER TYPE <typname> SET DEFAULT ENCODING (...)
  */
-void
+ObjectAddress
 AlterType(AlterTypeStmt *stmt)
 {
+	ObjectAddress address;
 	TypeName   *typname;
 	Oid			typid;
 	Oid			arrtypid;
@@ -3905,6 +3906,10 @@ AlterType(AlterTypeStmt *stmt)
 									DF_NEED_TWO_PHASE,
 									NIL,
 									NULL);
+
+	ObjectAddressSet(address, TypeRelationId, typid);
+
+	return address;
 }
 
 /*
