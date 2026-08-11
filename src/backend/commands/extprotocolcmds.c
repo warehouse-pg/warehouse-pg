@@ -42,9 +42,10 @@
 /*
  *	DefineExtprotocol
  */
-void
+ObjectAddress
 DefineExtProtocol(List *name, List *parameters, bool trusted)
 {
+	ObjectAddress address;
 	char	   *protName;
 	List	   *readfuncName = NIL;
 	List	   *writefuncName = NIL;
@@ -110,6 +111,10 @@ DefineExtProtocol(List *name, List *parameters, bool trusted)
 									GetAssignedOidsForDispatch(),
 									NULL);
 	}
+
+	ObjectAddressSet(address, ExtprotocolRelationId, protOid);
+
+	return address;
 }
 
 /*

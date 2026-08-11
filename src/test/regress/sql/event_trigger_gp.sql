@@ -49,6 +49,14 @@ create event trigger regress_event_trigger_end on ddl_command_end
 CREATE EXTERNAL WEB TABLE endtest_ext (x text) EXECUTE 'echo foo;' FORMAT 'text';
 CREATE TABLE endtest_heap (x text) DISTRIBUTED BY (x);
 
+-- the other two GPDB-specific commands that reach the tail collect
+CREATE OR REPLACE FUNCTION write_to_file() RETURNS integer as '$libdir/gpextprotocol.so', 'demoprot_export' LANGUAGE C STABLE NO SQL;
+CREATE OR REPLACE FUNCTION read_from_file() RETURNS integer as '$libdir/gpextprotocol.so', 'demoprot_import' LANGUAGE C STABLE NO SQL;
+CREATE PROTOCOL demoprot_end_test (readfunc = 'read_from_file', writefunc = 'write_to_file');
+
+CREATE DOMAIN endtest_domain AS int;
+ALTER TYPE endtest_domain SET DEFAULT ENCODING (compresstype=zlib);
+
 drop event trigger regress_event_trigger_end;
 
 -- both the external and the regular table must be here
@@ -56,5 +64,7 @@ SELECT tag, identity, objtype FROM regress_ddl_history ORDER BY id;
 
 DROP EXTERNAL TABLE endtest_ext;
 DROP TABLE endtest_heap;
+DROP PROTOCOL demoprot_end_test;
+DROP DOMAIN endtest_domain;
 DROP TABLE regress_ddl_history;
 DROP FUNCTION test_event_trigger_end();
