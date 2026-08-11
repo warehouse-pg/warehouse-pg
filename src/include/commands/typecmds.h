@@ -55,7 +55,7 @@ extern Oid AlterTypeNamespaceInternal(Oid typeOid, Oid nspOid,
 									  bool isImplicitArray,
 									  bool errorOnTableType,
 									  ObjectAddresses *objsMoved);
-extern void AlterType(AlterTypeStmt *stmt);
+extern ObjectAddress AlterType(AlterTypeStmt *stmt);
 extern void AlterAMAddArrayType(Form_pg_class oldRelForm);
 extern void AlterAMRemoveArrayType(Form_pg_class oldRelForm);
 

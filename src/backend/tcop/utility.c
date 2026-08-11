@@ -1653,8 +1653,10 @@ ProcessUtilitySlow(ParseState *pstate,
 							break;
 						case OBJECT_EXTPROTOCOL:
 							Assert(stmt->args == NIL);
-							DefineExtProtocol(stmt->defnames, stmt->definition, stmt->trusted);
-							break;						
+							address = DefineExtProtocol(stmt->defnames,
+														stmt->definition,
+														stmt->trusted);
+							break;
 						default:
 							elog(ERROR, "unrecognized define stmt type: %d",
 								 (int) stmt->kind);
@@ -2071,7 +2073,7 @@ ProcessUtilitySlow(ParseState *pstate,
 				break;
 
 			case T_AlterTypeStmt:
-				AlterType((AlterTypeStmt *) parsetree);
+				address = AlterType((AlterTypeStmt *) parsetree);
 				break;
 
 			case T_DropStmt:
