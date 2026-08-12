@@ -2169,6 +2169,10 @@ readNodeBinary(void)
 				return_value = _readAlterCollationStmt();
 				break;
 
+			case T_AlterOperatorStmt:
+				return_value = _readAlterOperatorStmt();
+				break;
+
 			case T_DefineStmt:
 				return_value = _readDefineStmt();
 				break;

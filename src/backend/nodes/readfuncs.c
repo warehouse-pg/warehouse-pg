@@ -3877,6 +3877,17 @@ _readAlterCollationStmt(void)
 	READ_DONE();
 }
 
+static AlterOperatorStmt *
+_readAlterOperatorStmt(void)
+{
+	READ_LOCALS(AlterOperatorStmt);
+
+	READ_NODE_FIELD(opername);
+	READ_NODE_FIELD(options);
+
+	READ_DONE();
+}
+
 static DefineStmt *
 _readDefineStmt(void)
 {
@@ -4760,6 +4771,8 @@ parseNodeString(void)
 		return_value = _readAlterFunctionStmt();
 	else if (MATCHX("ALTEROBJECTSCHEMASTMT"))
 		return_value = _readAlterObjectSchemaStmt();
+	else if (MATCHX("ALTEROPERATORSTMT"))
+		return_value = _readAlterOperatorStmt();
 	else if (MATCHX("ALTEROWNERSTMT"))
 		return_value = _readAlterOwnerStmt();
 	else if (MATCHX("ALTEROPFAMILYSTMT"))
