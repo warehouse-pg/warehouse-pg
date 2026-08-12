@@ -228,6 +228,32 @@ segment_failure_due_to_missing_writer(const char *error_message)
 	return false;
 }
 
+/*
+ * Check if the segment failure is a dispatch topology dbid mismatch.
+ * Such a failure is permanent for the current topology file, so gang
+ * creation must not retry it.
+ */
+bool
+segment_failure_due_to_dispatch_topology(const char *error_message)
+{
+	char	   *fatal = NULL,
+			   *ptr = NULL;
+	int			fatal_len = 0;
+
+	if (error_message == NULL)
+		return false;
+
+	fatal = _("FATAL");
+	fatal_len = strlen(fatal);
+
+	ptr = strstr(error_message, fatal);
+	if ((ptr != NULL) && ptr[fatal_len] == ':' &&
+		strstr(error_message, _(DISPATCH_TOPOLOGY_DBID_MISMATCH_MSG)))
+		return true;
+
+	return false;
+}
+
 #ifdef FAULT_INJECTOR
 bool
 segment_failure_due_to_fault_injector(const char *error_message)
@@ -481,7 +507,8 @@ makeOptions(char **options, char **diff_options)
  */
 bool
 build_gpqeid_param(char *buf, int bufsz,
-				   bool is_writer, int identifier, int hostSegs, int icHtabSize)
+				   bool is_writer, int identifier, int hostSegs, int icHtabSize,
+				   int expectedDbid)
 {
 	int		len;
 #ifdef HAVE_INT64_TIMESTAMP
@@ -498,7 +525,26 @@ build_gpqeid_param(char *buf, int bufsz,
 				   gp_session_id, PgStartTime,
 				   (is_writer ? "true" : "false"), identifier, hostSegs, icHtabSize);
 
-	return (len > 0 && len < bufsz);
+	if (len <= 0 || len >= bufsz)
+		return false;
+
+	/*
+	 * The dbid this dispatch expects to reach, appended only while a
+	 * dispatch topology file is active, so the wire format is unchanged
+	 * otherwise.  The QE refuses the connection when its own dbid
+	 * differs (see cdbgang_parse_gpqeid_params).
+	 */
+	if (expectedDbid > 0)
+	{
+		int		len2;
+
+		len2 = snprintf(buf + len, bufsz - len, ";%d", expectedDbid);
+		if (len2 <= 0 || len2 >= bufsz - len)
+			return false;
+		len += len2;
+	}
+
+	return true;
 }
 
 static bool
@@ -568,6 +614,27 @@ cdbgang_parse_gpqeid_params(struct Port *port pg_attribute_unused(),
 	if (gpqeid_next_param(&cp, &np))
 	{
 		ic_htab_size = (int) strtol(cp, NULL, 10);
+	}
+
+	/*
+	 * Optional seventh field: the dbid this dispatch expects to reach,
+	 * present only when the dispatcher runs with a dispatch topology
+	 * file.  A mismatch means the file routed this connection to the
+	 * wrong data directory; refuse it instead of running queries as the
+	 * wrong segment.
+	 */
+	if (cp && np)
+	{
+		if (gpqeid_next_param(&cp, &np))
+		{
+			int			expected_dbid = (int) strtol(cp, NULL, 10);
+
+			if (expected_dbid != GpIdentity.dbid)
+				ereport(FATAL,
+						(errmsg(DISPATCH_TOPOLOGY_DBID_MISMATCH_MSG),
+						 errdetail("Dispatched for dbid %d, but this segment is dbid %d.",
+								   expected_dbid, GpIdentity.dbid)));
+		}
 	}
 
 	/* Too few items, or too many? */

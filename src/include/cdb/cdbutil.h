@@ -111,6 +111,9 @@ struct CdbComponentDatabases
 	int			numIdleQEs;
 	int			qeCounter;
 	List		*freeCounterList;
+	char	   *topology_signature; /* dispatch topology file identity this
+									 * table was built with; "" when the
+									 * feature is off */
 };
 
 //

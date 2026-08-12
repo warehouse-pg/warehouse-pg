@@ -40,6 +40,7 @@
 #include "catalog/gp_id.h"
 #include "catalog/indexing.h"
 #include "cdb/cdbhash.h"
+#include "cdb/cdbdispatchtopology.h"
 #include "cdb/cdbutil.h"
 #include "cdb/cdbmotion.h"
 #include "cdb/cdbvars.h"
@@ -333,6 +334,101 @@ readGpSegConfigFromCatalog(int *total_dbs)
 /*
  *  Internal function to initialize each component info
  */
+/*
+ * Replace the rows read from gp_segment_configuration with the rows of
+ * the dispatch topology file: exactly one primary row per content.
+ *
+ * The file's content set must equal the catalog's content set — a
+ * catalog content without a file row, or a file row for a content the
+ * catalog does not know, is an error.  Dispatch never falls back to
+ * catalog row selection while the file is active; a fallback would
+ * reintroduce, at unpredictable moments, exactly the stale-catalog
+ * misrouting the file exists to end.
+ *
+ * Runs inside CdbComponentsContext; the synthesized rows and the strings
+ * they point to live as long as the component table itself.
+ */
+static GpSegConfigEntry *
+applyDispatchTopology(GpSegConfigEntry *catalog_configs, int *total_dbs)
+{
+	DispatchTopology *topology = dispatch_topology_load();
+	GpSegConfigEntry *configs;
+	int			i;
+	int			j;
+
+	/* every catalog content must have a topology entry */
+	for (i = 0; i < *total_dbs; i++)
+	{
+		bool		found = false;
+
+		for (j = 0; j < topology->nentries; j++)
+		{
+			if (topology->entries[j].content == catalog_configs[i].segindex)
+			{
+				found = true;
+				break;
+			}
+		}
+		if (!found)
+		{
+			dispatch_topology_set_error();
+			ereport(ERROR,
+					(errcode(ERRCODE_CONFIG_FILE_ERROR),
+					 errmsg("dispatch topology file \"%s\" has no entry for content %d",
+							whpg_dispatch_topology_file,
+							catalog_configs[i].segindex)));
+		}
+	}
+
+	/* and no topology entry may name a content the catalog does not know */
+	for (j = 0; j < topology->nentries; j++)
+	{
+		bool		found = false;
+
+		for (i = 0; i < *total_dbs; i++)
+		{
+			if (catalog_configs[i].segindex == topology->entries[j].content)
+			{
+				found = true;
+				break;
+			}
+		}
+		if (!found)
+		{
+			dispatch_topology_set_error();
+			ereport(ERROR,
+					(errcode(ERRCODE_CONFIG_FILE_ERROR),
+					 errmsg("dispatch topology file \"%s\" has an entry for content %d which does not exist in %s",
+							whpg_dispatch_topology_file,
+							topology->entries[j].content,
+							GpSegmentConfigRelationName)));
+		}
+	}
+
+	configs = (GpSegConfigEntry *)
+		palloc0(topology->nentries * sizeof(GpSegConfigEntry));
+
+	for (j = 0; j < topology->nentries; j++)
+	{
+		DispatchTopologyEntry *entry = &topology->entries[j];
+		GpSegConfigEntry *config = &configs[j];
+
+		config->dbid = entry->dbid;
+		config->segindex = entry->content;
+		config->role = GP_SEGMENT_CONFIGURATION_ROLE_PRIMARY;
+		config->preferred_role = GP_SEGMENT_CONFIGURATION_ROLE_PRIMARY;
+		config->mode = GP_SEGMENT_CONFIGURATION_MODE_INSYNC;
+		config->status = GP_SEGMENT_CONFIGURATION_STATUS_UP;
+		config->port = entry->port;
+		config->hostname = entry->hostname;
+		config->address = entry->address;
+		config->datadir = entry->datadir;
+	}
+
+	*total_dbs = topology->nentries;
+	return configs;
+}
+
 static CdbComponentDatabases *
 getCdbComponentInfo(void)
 {
@@ -362,6 +458,18 @@ getCdbComponentInfo(void)
 		configs = readGpSegConfigFromCatalog(&total_dbs);
 	else
 		configs = readGpSegConfigFromFTSFiles(&total_dbs);
+
+	/*
+	 * With a dispatch topology file active, the catalog rows only supply
+	 * the authoritative content set; every address, port and dbid comes
+	 * from the file.  FTS keeps operating on the raw catalog rows.
+	 */
+	if (Gp_role == GP_ROLE_DISPATCH && !am_ftsprobe &&
+		dispatch_topology_enabled())
+	{
+		configs = applyDispatchTopology(configs, &total_dbs);
+		ELOG_DISPATCHER_DEBUG("dispatch topology applied to component table");
+	}
 
 	component_databases = palloc0(sizeof(CdbComponentDatabases));
 
@@ -570,6 +678,9 @@ getCdbComponentInfo(void)
 
 	hash_destroy(hostPrimaryCountHash);
 
+	/* remember which topology configuration this table was built with */
+	component_databases->topology_signature = dispatch_topology_signature();
+
 	MemoryContextSwitchTo(oldContext);
 
 	return component_databases;
@@ -680,7 +791,8 @@ cdbcomponent_updateCdbComponents(void)
 			cdb_component_dbs->expand_version = GetGpExpandVersion();
 		}
 		else if ((cdb_component_dbs->fts_version != ftsVersion ||
-				 cdb_component_dbs->expand_version != expandVersion))
+				 cdb_component_dbs->expand_version != expandVersion ||
+				 !dispatch_topology_signature_matches(cdb_component_dbs->topology_signature)))
 		{
 			if (TempNamespaceOidIsValid())
 			{
@@ -691,7 +803,9 @@ cdbcomponent_updateCdbComponents(void)
 			}
 			else
 			{
-				ELOG_DISPATCHER_DEBUG("FTS rescanned, get new component databases info.");
+				ELOG_DISPATCHER_DEBUG("component table rebuilt (fts %d->%d, topo sig %s)",
+									  cdb_component_dbs->fts_version, ftsVersion,
+									  dispatch_topology_signature_matches(cdb_component_dbs->topology_signature) ? "same" : "changed");
 				cdbcomponent_destroyCdbComponents();
 				cdb_component_dbs = getCdbComponentInfo();
 				cdb_component_dbs->fts_version = ftsVersion;

@@ -249,6 +249,9 @@ test: ao_partial_scan
 test: terminate_in_gang_creation
 test: prepare_limit
 
+# reconfigures dispatch cluster-wide via gpconfig/gpstop -u, keep alone
+test: dispatch_topology
+
 test: add_column_after_vacuum_skip_drop_column
 test: vacuum_after_vacuum_skip_drop_column
 # test workfile_mgr
