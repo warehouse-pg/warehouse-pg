@@ -6,5 +6,5 @@ if [ ! -z "$GPHOME_LOADERS" ]; then
     . $GPHOME_LOADERS/greenplum_loaders_path.sh
 fi
 
-exec gpload.py $*
+exec gpload.py "$@"
 
