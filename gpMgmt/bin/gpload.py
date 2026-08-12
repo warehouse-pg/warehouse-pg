@@ -1177,18 +1177,46 @@ class gpload:
 
         # default to gpAdminLogs for a log file, may be overwritten
         if self.options.l is None:
-            self.options.l = os.path.join(os.environ.get('HOME', '.'),'gpAdminLogs')
-            if not os.path.isdir(self.options.l):
-                os.mkdir(self.options.l)
-
-            self.options.l = os.path.join(self.options.l, 'gpload_' + \
+            self.options.l = os.path.join(os.environ.get('HOME', '.'), 'gpAdminLogs',
+                                          'gpload_' + \
                                           datetime.date.today().strftime('%Y%m%d') + '.log')
 
-        try:
-            self.logfile = open(self.options.l,'a')
-        except Exception as e:
-            self.log(self.ERROR, "could not open logfile %s: %s" % \
-                      (self.options.l, e))
+        # Make sure we always end up with an open log file. The path given to -l
+        # is used as it stands: a directory we were not asked to create is not
+        # created for us, so a typo does not quietly leave one behind. When that
+        # path cannot be opened, reopen the same file name under
+        # $HOME/gpAdminLogs, which gpload creates for itself anyway, so that the
+        # error output is never silently lost.
+        self.logfile = None
+        requested = self.options.l
+        base = os.path.basename(requested) or \
+               ('gpload_' + datetime.date.today().strftime('%Y%m%d') + '.log')
+        fallback = os.path.join(os.environ.get('HOME', '.'), 'gpAdminLogs', base)
+
+        candidates = [requested]
+        if fallback != requested:
+            candidates.append(fallback)
+
+        for logpath in candidates:
+            try:
+                if logpath == fallback:
+                    os.makedirs(os.path.dirname(fallback), exist_ok=True)
+                self.logfile = open(logpath, 'a')
+                self.options.l = logpath
+                break
+            except Exception as e:
+                sys.stderr.write("gpload: could not open logfile %s: %s\n" %
+                                 (logpath, e))
+
+        if self.logfile is None:
+            self.log(self.ERROR, "could not open logfile %s" % requested)
+
+        # Name both paths, so that this is just as clear on stdout as it is
+        # to whoever reads the log file we did manage to open.
+        if self.options.l != requested:
+            self.log(self.WARN, "could not use requested log file %s, "
+                                "logging to %s instead"
+                                % (requested, self.options.l))
 
         if seenv and seenq:
             self.log(self.ERROR, "-q conflicts with -v and -V")
