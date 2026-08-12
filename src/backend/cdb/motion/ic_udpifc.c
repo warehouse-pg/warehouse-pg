@@ -7021,7 +7021,7 @@ ConvertToIPv4MappedAddr(struct sockaddr_storage *sockaddr, socklen_t *o_len)
 
 	((uint16 *) &in6_new->sin6_addr)[5] = 0xffff;
 
-	in6_new->sin6_addr.s6_addr32[3] = in->sin_addr.s_addr;
+	((uint32 *) &in6_new->sin6_addr)[3] = in->sin_addr.s_addr;
 	in6_new->sin6_scope_id = 0;
 
 	/* copy it back */
