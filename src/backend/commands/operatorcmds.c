@@ -571,5 +571,20 @@ AlterOperator(AlterOperatorStmt *stmt)
 
 	table_close(catalog, NoLock);
 
+	/*
+	 * Update every segment's pg_operator too, or QE-local planning (SPI in
+	 * EXECUTE ON ALL SEGMENTS functions, utility-mode connections) keeps
+	 * using the stale oprrest/oprjoin.  The sibling DefineOperator()
+	 * dispatches via CdbDispatchUtilityStatement too.  ALTER assigns no new
+	 * OIDs, so pass NIL for the OID list.
+	 */
+	if (Gp_role == GP_ROLE_DISPATCH)
+		CdbDispatchUtilityStatement((Node *) stmt,
+									DF_CANCEL_ON_ERROR|
+									DF_WITH_SNAPSHOT|
+									DF_NEED_TWO_PHASE,
+									NIL,
+									NULL);
+
 	return address;
 }

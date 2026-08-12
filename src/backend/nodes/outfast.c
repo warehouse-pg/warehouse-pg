@@ -1380,6 +1380,10 @@ _outNode(StringInfo str, void *obj)
 				_outAlterCollationStmt(str, obj);
 				break;
 
+			case T_AlterOperatorStmt:
+				_outAlterOperatorStmt(str, obj);
+				break;
+
 			case T_DefineStmt:
 				_outDefineStmt(str,obj);
 				break;

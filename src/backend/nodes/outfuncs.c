@@ -3788,6 +3788,15 @@ _outAlterCollationStmt(StringInfo str, const AlterCollationStmt *node)
 }
 
 static void
+_outAlterOperatorStmt(StringInfo str, const AlterOperatorStmt *node)
+{
+	WRITE_NODE_TYPE("ALTEROPERATORSTMT");
+
+	WRITE_NODE_FIELD(opername);
+	WRITE_NODE_FIELD(options);
+}
+
+static void
 _outDefineStmt(StringInfo str, const DefineStmt *node)
 {
 	WRITE_NODE_TYPE("DEFINESTMT");
@@ -6147,6 +6156,10 @@ outNode(StringInfo str, const void *obj)
 
 			case T_AlterCollationStmt:
 				_outAlterCollationStmt(str, obj);
+				break;
+
+			case T_AlterOperatorStmt:
+				_outAlterOperatorStmt(str, obj);
 				break;
 
 			case T_DefineStmt:

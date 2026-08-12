@@ -367,4 +367,7 @@ test: hba_conf
 # ALTER COLLATION ... REFRESH VERSION must update every node's pg_collation
 test: gp_collation_refresh
 
+# ALTER OPERATOR ... SET (RESTRICT/JOIN) must update every node's pg_operator
+test: gp_alter_operator
+
 # end of tests
