@@ -1946,15 +1946,36 @@ simplify_EXISTS_query(PlannerInfo *root, Query *query)
 	/*
 	 * Delete GROUP BY if no aggregates.
 	 *
-	 * Note: It's important that we don't clear hasAggs, even though we
-	 * removed any possible aggregates from the targetList! If you have a
-	 * subquery like "SELECT SUM(foo) ...", we don't need to compute the sum,
-	 * but we must still aggregate all the rows, and return a single row,
-	 * regardless of how many input rows there are. (In particular, even
-	 * if there are no input rows).
+	 * Note: If the subquery has aggregates, it's usually important that we
+	 * don't clear hasAggs. For an uncorrelated sublink we kept the
+	 * targetlist above, so any aggregates are still in it; and even for a
+	 * correlated sublink, whose targetlist we threw away, a subquery like
+	 * "SELECT SUM(foo) ..." without GROUP BY must still aggregate all the
+	 * rows and return a single row, regardless of how many input rows there
+	 * are. (In particular, even if there are no input rows). Only for a
+	 * correlated sublink that also has a GROUP BY clause can the aggregation
+	 * be discarded along with it; see below.
 	 */
 	if (!query->hasAggs)
 		query->groupClause = NIL;
+	else if (is_correlated && query->groupClause)
+	{
+		/*
+		 * Since we threw away the targetlist of this correlated sublink, we
+		 * can throw away the GROUP BY and the aggregation altogether: a
+		 * grouped query (without grouping sets, which we refused above)
+		 * returns one row per group, so it returns at least one row iff its
+		 * FROM/WHERE clauses yield at least one row.  No aggregates remain
+		 * anywhere in the query: the targetlist is empty, HAVING was demoted
+		 * to WHERE (or we gave up), and the other clauses that could contain
+		 * aggregate references are discarded here as well.  Keeping a GROUP
+		 * BY clause whose sortgroup references point into the discarded
+		 * targetlist would trigger "ORDER/GROUP BY expression not found in
+		 * targetlist" errors later in the planner.
+		 */
+		query->groupClause = NIL;
+		query->hasAggs = false;
+	}
 
 	/*
 	 * Those clauses could be throwed in correlated and uncorrelated sublinks,

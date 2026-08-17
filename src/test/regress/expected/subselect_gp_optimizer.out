@@ -2679,6 +2679,60 @@ select * from simplify_sub t1 where not exists (select sum(t2.i) from simplify_s
 (0 rows)
 
 drop table if exists simplify_sub;
+-- Correlated EXISTS sublink with an aggregate and GROUP BY. simplify_EXISTS_query
+-- used to throw away the subquery's targetlist but keep the GROUP BY clause, which
+-- caused an "ORDER/GROUP BY expression not found in targetlist" error when the
+-- sublink couldn't be pulled up as a join (correlation outside the WHERE clause).
+drop table if exists simplify_grp_foo, simplify_grp_bar, simplify_grp_buz;
+NOTICE:  table "simplify_grp_foo" does not exist, skipping
+NOTICE:  table "simplify_grp_bar" does not exist, skipping
+NOTICE:  table "simplify_grp_buz" does not exist, skipping
+create table simplify_grp_foo (a int, b int) distributed by (a);
+create table simplify_grp_bar (c int, d int) distributed by (c);
+create table simplify_grp_buz (x int, y int) distributed by (x);
+insert into simplify_grp_foo values (1, 10);
+insert into simplify_grp_bar values (1, 5), (1, 7);
+insert into simplify_grp_buz values (99, 99);
+-- foo.b = 10 matches no bar row in the join clause, so EXISTS is false
+select * from simplify_grp_foo foo
+where exists (select max(d) from simplify_grp_bar bar
+              join simplify_grp_buz buz on bar.c = foo.b
+              where foo.a = bar.c group by d);
+ a | b 
+---+---
+(0 rows)
+
+-- ... and NOT EXISTS is true
+select * from simplify_grp_foo foo
+where not exists (select max(d) from simplify_grp_bar bar
+                  join simplify_grp_buz buz on bar.c = foo.b
+                  where foo.a = bar.c group by d);
+ a | b  
+---+----
+ 1 | 10
+(1 row)
+
+update simplify_grp_foo set b = 1;
+-- now the subquery's join produces rows, so EXISTS is true
+select * from simplify_grp_foo foo
+where exists (select max(d) from simplify_grp_bar bar
+              join simplify_grp_buz buz on bar.c = foo.b
+              where foo.a = bar.c group by d);
+ a | b 
+---+---
+ 1 | 1
+(1 row)
+
+-- an aggregate without GROUP BY always returns one row, so EXISTS must remain
+-- true even though no bar row satisfies the correlated qual
+select * from simplify_grp_foo foo
+where exists (select max(d) from simplify_grp_bar bar where foo.a = bar.c + 100);
+ a | b 
+---+---
+ 1 | 1
+(1 row)
+
+drop table simplify_grp_foo, simplify_grp_bar, simplify_grp_buz;
 --
 -- Test a couple of cases where a SubPlan is used in a Motion's hash key.
 --
