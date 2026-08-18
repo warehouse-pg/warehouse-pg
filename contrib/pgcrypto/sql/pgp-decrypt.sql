@@ -339,3 +339,19 @@ ww0EBAMC8wIKbtvzJtxi0jABUleCwFJWGCkYKcsNdABqdtXaU2VjcmV0LtMUlnPH3A2QBmZrcucm
 =6aqD
 -----END PGP MESSAGE-----
 '), 'wrong key', 'ignore-cipher-failure=1');
+
+-- Check that an error thrown from inside the PGP pipeline does not leave
+-- the debug handler installed.  Decrypt the broken-bf message from above
+-- with debug=1: if Blowfish is unsupported, cipher setup ereports from
+-- the middle of the pipeline; otherwise decryption fails normally.
+select pgp_sym_decrypt(dearmor('
+-----BEGIN PGP MESSAGE-----
+
+ww0EBAMC8wIKbtvzJtxi0jABUleCwFJWGCkYKcsNdABqdtXaU2VjcmV0LtMUlnPH3A2QBmZrcucm
+1GPb/s2Bkdg=
+=6aqD
+-----END PGP MESSAGE-----
+'), 'wrong key', 'debug=1');
+
+-- This must not emit any "dbg:" NOTICE, since it doesn't ask for debug.
+select pgp_sym_decrypt('\xdeadbeef01020304'::bytea, 'key');
