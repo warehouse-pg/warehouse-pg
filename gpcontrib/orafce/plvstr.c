@@ -82,10 +82,6 @@ if (VARSIZE_ANY_EXHDR(str) == 0) \
 		 errdetail(detail)));
 
 
-#ifndef _pg_mblen
-#define _pg_mblen	pg_mblen
-#endif
-
 typedef enum
 {
 	POSITION,
@@ -116,7 +112,7 @@ ora_mb_strlen(text *str, char **sizes, int **positions)
 
 	while (cur < r_len)
 	{
-		sz = _pg_mblen(p);
+		sz = pg_mblen_with_len(p, r_len - cur);
 		if (sizes)
 			(*sizes)[cur_size] = sz;
 		if (positions)
@@ -148,7 +144,7 @@ ora_mb_strlen1(text *str)
 	{
 		int sz;
 
-		sz = _pg_mblen(p);
+		sz = pg_mblen_with_len(p, r_len);
 		p += sz;
 		r_len -= sz;
 		c += 1;
@@ -305,6 +301,7 @@ plvstr_normalize(PG_FUNCTION_ARGS)
 	text *str = PG_GETARG_TEXT_PP(0);
 	text *result;
 	char *aux, *aux_cur;
+	const char *end;
 	int i;
 
 #if defined(_MSC_VER) && (defined(_M_X64) || defined(__amd64__))
@@ -330,6 +327,7 @@ plvstr_normalize(PG_FUNCTION_ARGS)
 
 	write_spc = false;
 	cur = VARDATA_ANY(str);
+	end = cur + l;
 
 	for (i = 0; i < l; i++)
 	{
@@ -346,7 +344,7 @@ plvstr_normalize(PG_FUNCTION_ARGS)
 
 				if (mb_encode)
 				{
-					sz = _pg_mblen(cur);
+					sz = pg_mblen_range(cur, end);
 					if (sz > 1 || (sz == 1 && c > 32))
 					{
 						int j;
@@ -1051,7 +1049,8 @@ plvchr_is_kind_a (PG_FUNCTION_ARGS)
 	NON_EMPTY_CHECK(str);
 	if (pg_database_encoding_max_length() > 1)
 	{
-		if (_pg_mblen(VARDATA_ANY(str)) > 1)
+		if (pg_mblen_with_len(VARDATA_ANY(str),
+							  VARSIZE_ANY_EXHDR(str)) > 1)
 			PG_RETURN_INT32( (k == 5) );
 	}
 
