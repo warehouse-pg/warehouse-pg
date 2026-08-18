@@ -45,6 +45,7 @@ orafce_lpad(PG_FUNCTION_ARGS)
 	text	*string2 = PG_GETARG_TEXT_PP(2);
 	text	*ret;
 	char	*ptr1,
+			*ptr1end,
 			*ptr2 = NULL,
 			*ptr2start = NULL,
 			*ptr2end = NULL,
@@ -86,8 +87,11 @@ orafce_lpad(PG_FUNCTION_ARGS)
 		output_width = 0;	/* same behavior as Oracle database */
 	}
 
+	/* end of string1, for bounds checks below (s1blen is consumed) */
+	ptr1end = VARDATA_ANY(string1) + s1blen;
+
 	/* byte-length of half-width space */
-	hslen = pg_mblen(spc);
+	hslen = pg_mblen_cstr(spc);
 
 	/*
 	 * Calculate the length of the portion of string1 to include in
@@ -97,7 +101,7 @@ orafce_lpad(PG_FUNCTION_ARGS)
 	while (s1blen > 0)
 	{
 		/* byte-length and display length per character of string1 */
-		mlen = pg_mblen(ptr1);
+		mlen = pg_mblen_with_len(ptr1, s1blen);
 		dsplen = pg_dsplen(ptr1);
 
 		/* accumulate display length of string1 */
@@ -157,7 +161,7 @@ orafce_lpad(PG_FUNCTION_ARGS)
 		while (s2_add_width > 0)
 		{
 			/*  byte-length and display length per character of string2 */
-			mlen = pg_mblen(ptr2);
+			mlen = pg_mblen_range(ptr2, ptr2end);
 			dsplen = pg_dsplen(ptr2);
 
 			/*
@@ -216,7 +220,7 @@ orafce_lpad(PG_FUNCTION_ARGS)
 			ptr2 = ptr2start;
 		}
 
-		mlen = pg_mblen(ptr2);
+		mlen = pg_mblen_range(ptr2, ptr2end);
 		if ( s2_add_blen < mlen )
 			break;
 
@@ -244,7 +248,15 @@ orafce_lpad(PG_FUNCTION_ARGS)
 			ptr1 = VARDATA_ANY(string1);
 		}
 
-		mlen = pg_mblen(ptr1);
+		/*
+		 * s1_add_blen can outlast string1 itself, because it also covers the
+		 * half-width space accounted for above, so stop here rather than read
+		 * a character that starts at or past the end of string1.
+		 */
+		if (ptr1 >= ptr1end)
+			break;
+
+		mlen = pg_mblen_range(ptr1, ptr1end);
 
 		if( s1_add_blen < mlen )
 			break;
@@ -276,6 +288,7 @@ orafce_rpad(PG_FUNCTION_ARGS)
 	text	*string2 = PG_GETARG_TEXT_PP(2);
 	text	*ret;
 	char	*ptr1,
+			*ptr1end,
 			*ptr2 = NULL,
 			*ptr2start = NULL,
 			*ptr2end = NULL,
@@ -317,8 +330,11 @@ orafce_rpad(PG_FUNCTION_ARGS)
 		output_width = 0;	/* same behavior as Oracle database */
 	}
 
+	/* end of string1, for bounds checks below (s1blen is consumed) */
+	ptr1end = VARDATA_ANY(string1) + s1blen;
+
 	/* byte-length of half-width space */
-	hslen = pg_mblen(spc);
+	hslen = pg_mblen_cstr(spc);
 
 	/*
 	 * Calculate the length of the portion of string1 to include in
@@ -328,7 +344,7 @@ orafce_rpad(PG_FUNCTION_ARGS)
 	while (s1blen > 0)
 	{
 		/* byte-length and display length per character of string1 */
-		mlen = pg_mblen(ptr1);
+		mlen = pg_mblen_with_len(ptr1, s1blen);
 		dsplen = pg_dsplen(ptr1);
 
 		/* accumulate display length of string1 */
@@ -388,7 +404,7 @@ orafce_rpad(PG_FUNCTION_ARGS)
 		while (s2_add_width > 0)
 		{
 			/*  byte-length and display length per character of string2 */
-			mlen = pg_mblen(ptr2);
+			mlen = pg_mblen_range(ptr2, ptr2end);
 			dsplen = pg_dsplen(ptr2);
 
 			/*
@@ -434,7 +450,15 @@ orafce_rpad(PG_FUNCTION_ARGS)
 			ptr1 = VARDATA_ANY(string1);
 		}
 
-		mlen = pg_mblen(ptr1);
+		/*
+		 * s1_add_blen can outlast string1 itself, because it also covers the
+		 * half-width space accounted for above, so stop here rather than read
+		 * a character that starts at or past the end of string1.
+		 */
+		if (ptr1 >= ptr1end)
+			break;
+
+		mlen = pg_mblen_range(ptr1, ptr1end);
 
 		if( s1_add_blen < mlen )
 			break;
@@ -459,7 +483,7 @@ orafce_rpad(PG_FUNCTION_ARGS)
 			ptr2 = ptr2start;
 		}
 
-		mlen = pg_mblen(ptr2);
+		mlen = pg_mblen_range(ptr2, ptr2end);
 		if ( s2_add_blen < mlen )
 			break;
 

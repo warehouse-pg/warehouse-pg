@@ -264,7 +264,7 @@ charlen_to_bytelen(const char *p, int n)
 		const char *s;
 
 		for (s = p; n > 0; n--)
-			s += pg_mblen(s);
+			s += pg_mblen_unbounded(s); /* caller verified encoding */
 
 		return s - p;
 	}
@@ -905,7 +905,8 @@ parse_re_flags(pg_re_flags *flags, text *opts)
 					ereport(ERROR,
 							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 							 errmsg("invalid regular expression option: \"%.*s\"",
-									pg_mblen(opt_p + i), opt_p + i)));
+									pg_mblen_range(opt_p + i, opt_p + opt_len),
+									opt_p + i)));
 					break;
 			}
 		}
@@ -1137,7 +1138,9 @@ orafce_textregexreplace(PG_FUNCTION_ARGS)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("invalid regular expression option: \"%.*s\"",
-							pg_mblen(opt_p), opt_p),
+							pg_mblen_range(opt_p,
+										   opt_p + VARSIZE_ANY_EXHDR(opt)),
+							opt_p),
 					 errhint("If you meant to use regexp_replace() with a start parameter, cast the fourth argument to integer explicitly.")));
 	}
 
