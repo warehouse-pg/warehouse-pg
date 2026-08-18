@@ -400,69 +400,82 @@ encrypt_internal(int is_pubenc, int is_text,
 
 	init_work(&ctx, is_text, args, &ex);
 
-	if (is_text && pgp_get_unicode_mode(ctx))
+	/*
+	 * The PGP pipeline can ereport() directly (e.g. on cipher init failure),
+	 * bypassing the px_set_debug_handler(NULL) resets on the regular exit
+	 * paths below.  Guard the whole pipeline so the global debug handler
+	 * installed by init_work() cannot outlive this call.
+	 */
+	PG_TRY();
 	{
-		tmp_data = convert_to_utf8(data);
-		if (tmp_data == data)
-			tmp_data = NULL;
+		if (is_text && pgp_get_unicode_mode(ctx))
+		{
+			tmp_data = convert_to_utf8(data);
+			if (tmp_data == data)
+				tmp_data = NULL;
+			else
+				data = tmp_data;
+		}
+
+		src = create_mbuf_from_vardata(data);
+		dst = mbuf_create(VARSIZE_ANY(data) + 128);
+
+		/*
+		 * reserve room for header
+		 */
+		mbuf_append(dst, tmp, VARHDRSZ);
+
+		/*
+		 * set key
+		 */
+		if (is_pubenc)
+		{
+			MBuf	   *kbuf = create_mbuf_from_vardata(key);
+
+			err = pgp_set_pubkey(ctx, kbuf,
+								 NULL, 0, 0);
+			mbuf_free(kbuf);
+		}
 		else
-			data = tmp_data;
-	}
+			err = pgp_set_symkey(ctx, (uint8 *) VARDATA_ANY(key),
+								 VARSIZE_ANY_EXHDR(key));
 
-	src = create_mbuf_from_vardata(data);
-	dst = mbuf_create(VARSIZE_ANY(data) + 128);
+		/*
+		 * encrypt
+		 */
+		if (err >= 0)
+			err = pgp_encrypt(ctx, src, dst);
 
-	/*
-	 * reserve room for header
-	 */
-	mbuf_append(dst, tmp, VARHDRSZ);
+		/*
+		 * check for error
+		 */
+		if (err)
+		{
+			if (tmp_data)
+				clear_and_pfree(tmp_data);
+			pgp_free(ctx);
+			mbuf_free(src);
+			mbuf_free(dst);
+			px_THROW_ERROR(err);
+		}
 
-	/*
-	 * set key
-	 */
-	if (is_pubenc)
-	{
-		MBuf	   *kbuf = create_mbuf_from_vardata(key);
+		/* res_len includes VARHDRSZ */
+		res_len = mbuf_steal_data(dst, &restmp);
+		res = (bytea *) restmp;
+		SET_VARSIZE(res, res_len);
 
-		err = pgp_set_pubkey(ctx, kbuf,
-							 NULL, 0, 0);
-		mbuf_free(kbuf);
-	}
-	else
-		err = pgp_set_symkey(ctx, (uint8 *) VARDATA_ANY(key),
-							 VARSIZE_ANY_EXHDR(key));
-
-	/*
-	 * encrypt
-	 */
-	if (err >= 0)
-		err = pgp_encrypt(ctx, src, dst);
-
-	/*
-	 * check for error
-	 */
-	if (err)
-	{
-		if (ex.debug)
-			px_set_debug_handler(NULL);
 		if (tmp_data)
 			clear_and_pfree(tmp_data);
 		pgp_free(ctx);
 		mbuf_free(src);
 		mbuf_free(dst);
-		px_THROW_ERROR(err);
 	}
-
-	/* res_len includes VARHDRSZ */
-	res_len = mbuf_steal_data(dst, &restmp);
-	res = (bytea *) restmp;
-	SET_VARSIZE(res, res_len);
-
-	if (tmp_data)
-		clear_and_pfree(tmp_data);
-	pgp_free(ctx);
-	mbuf_free(src);
-	mbuf_free(dst);
+	PG_CATCH();
+	{
+		px_set_debug_handler(NULL);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 
 	px_set_debug_handler(NULL);
 
@@ -487,76 +500,91 @@ decrypt_internal(int is_pubenc, int need_text, text *data,
 
 	init_work(&ctx, need_text, args, &ex);
 
-	src = mbuf_create_from_data((uint8 *) VARDATA_ANY(data),
-								VARSIZE_ANY_EXHDR(data));
-	dst = mbuf_create(VARSIZE_ANY(data) + 2048);
-
 	/*
-	 * reserve room for header
+	 * As in encrypt_internal(), guard the whole pipeline so the global
+	 * debug handler installed by init_work() cannot survive an error
+	 * thrown from inside the PGP code (including secret-key decryption
+	 * in pgp_set_pubkey()).
 	 */
-	mbuf_append(dst, tmp, VARHDRSZ);
-
-	/*
-	 * set key
-	 */
-	if (is_pubenc)
+	PG_TRY();
 	{
-		uint8	   *psw = NULL;
-		int			psw_len = 0;
-		MBuf	   *kbuf;
+		src = mbuf_create_from_data((uint8 *) VARDATA_ANY(data),
+									VARSIZE_ANY_EXHDR(data));
+		dst = mbuf_create(VARSIZE_ANY(data) + 2048);
 
-		if (keypsw)
+		/*
+		 * reserve room for header
+		 */
+		mbuf_append(dst, tmp, VARHDRSZ);
+
+		/*
+		 * set key
+		 */
+		if (is_pubenc)
 		{
-			psw = (uint8 *) VARDATA_ANY(keypsw);
-			psw_len = VARSIZE_ANY_EXHDR(keypsw);
+			uint8	   *psw = NULL;
+			int			psw_len = 0;
+			MBuf	   *kbuf;
+
+			if (keypsw)
+			{
+				psw = (uint8 *) VARDATA_ANY(keypsw);
+				psw_len = VARSIZE_ANY_EXHDR(keypsw);
+			}
+			kbuf = create_mbuf_from_vardata(key);
+			err = pgp_set_pubkey(ctx, kbuf, psw, psw_len, 1);
+			mbuf_free(kbuf);
 		}
-		kbuf = create_mbuf_from_vardata(key);
-		err = pgp_set_pubkey(ctx, kbuf, psw, psw_len, 1);
-		mbuf_free(kbuf);
+		else
+			err = pgp_set_symkey(ctx, (uint8 *) VARDATA_ANY(key),
+								 VARSIZE_ANY_EXHDR(key));
+
+		/* decrypt */
+		if (err >= 0)
+		{
+			err = pgp_decrypt(ctx, src, dst);
+
+			if (ex.expect)
+				check_expect(ctx, &ex);
+
+			/* remember the setting */
+			got_unicode = pgp_get_unicode_mode(ctx);
+		}
+
+		mbuf_free(src);
+		pgp_free(ctx);
+
+		if (err)
+		{
+			mbuf_free(dst);
+			px_THROW_ERROR(err);
+		}
+
+		res_len = mbuf_steal_data(dst, &restmp);
+		mbuf_free(dst);
+
+		/* res_len includes VARHDRSZ */
+		res = (bytea *) restmp;
+		SET_VARSIZE(res, res_len);
+
+		if (need_text && got_unicode)
+		{
+			text	   *utf = convert_from_utf8(res);
+
+			if (utf != res)
+			{
+				clear_and_pfree(res);
+				res = utf;
+			}
+		}
 	}
-	else
-		err = pgp_set_symkey(ctx, (uint8 *) VARDATA_ANY(key),
-							 VARSIZE_ANY_EXHDR(key));
-
-	/* decrypt */
-	if (err >= 0)
-	{
-		err = pgp_decrypt(ctx, src, dst);
-
-		if (ex.expect)
-			check_expect(ctx, &ex);
-
-		/* remember the setting */
-		got_unicode = pgp_get_unicode_mode(ctx);
-	}
-
-	mbuf_free(src);
-	pgp_free(ctx);
-
-	if (err)
+	PG_CATCH();
 	{
 		px_set_debug_handler(NULL);
-		mbuf_free(dst);
-		px_THROW_ERROR(err);
+		PG_RE_THROW();
 	}
+	PG_END_TRY();
 
-	res_len = mbuf_steal_data(dst, &restmp);
-	mbuf_free(dst);
-
-	/* res_len includes VARHDRSZ */
-	res = (bytea *) restmp;
-	SET_VARSIZE(res, res_len);
-
-	if (need_text && got_unicode)
-	{
-		text	   *utf = convert_from_utf8(res);
-
-		if (utf != res)
-		{
-			clear_and_pfree(res);
-			res = utf;
-		}
-	}
 	px_set_debug_handler(NULL);
 
 	return res;
