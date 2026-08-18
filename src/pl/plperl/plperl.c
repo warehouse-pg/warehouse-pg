@@ -1145,7 +1145,7 @@ get_perl_array_ref(SV *sv)
 {
 	dTHX;
 
-	if (SvOK(sv) && SvROK(sv))
+	if (sv && SvOK(sv) && SvROK(sv))
 	{
 		if (SvTYPE(SvRV(sv)) == SVt_PVAV)
 			return sv;
