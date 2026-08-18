@@ -21,6 +21,22 @@ SELECT count(*) FROM (
      5
 (1 row)
 
+-- Same as above, but with gp_cte_sharing at its default (off): a
+-- multiply-referenced CTE must still be evaluated only once regardless
+-- of the sharing GUC.
+set gp_cte_sharing to off;
+SELECT count(*) FROM (
+  WITH q1(x) AS (SELECT random() FROM generate_series(1, 5))
+    SELECT * FROM q1
+  UNION
+    SELECT * FROM q1
+) ss;
+ count 
+-------
+     5
+(1 row)
+
+set gp_cte_sharing to on;
 -- WITH RECURSIVE
 -- sum of 1..100
 WITH RECURSIVE t(n) AS (

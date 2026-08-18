@@ -3095,8 +3095,17 @@ set_cte_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 			is_shared = true;
 			break;
 		default:
-			/* if plan sharing is enabled and contains volatile functions in the CTE query, also generate a shared scan plan */
-			is_shared =  root->config->gp_cte_sharing && (cte->cterefcount > 1 || contain_volatile_function);
+			/*
+			 * Force sharing when the CTE is both multiply-referenced and
+			 * volatile, regardless of gp_cte_sharing: a volatile CTE with
+			 * more than one reference must be evaluated exactly once, or
+			 * results would depend on how many references there happen to
+			 * be. Otherwise, fall back to the original gp_cte_sharing-gated
+			 * behavior.
+			 */
+			is_shared = (cte->cterefcount > 1 && contain_volatile_function) ||
+				(root->config->gp_cte_sharing &&
+				 (cte->cterefcount > 1 || contain_volatile_function));
 
 	}
 
