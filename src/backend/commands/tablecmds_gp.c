@@ -700,6 +700,7 @@ AtExecGPSplitPartition(Relation rel, AlterTableCmd *cmd)
 		partname_comp       partcomp    = {.tablename=NULL, .level=0, .partnum=0};
 		List                *ancestors  = get_partition_ancestors(RelationGetRelid(rel));
 		GpPartDefElem       *elem;
+		GpPartDefElem       *elem_new;
 		PartitionBoundSpec  *boundspec1;
 		PartitionBoundSpec  *boundspec2 = boundspec;
 		PartitionKey        partkey     = RelationRetrievePartitionKey(rel);
@@ -991,8 +992,48 @@ AtExecGPSplitPartition(Relation rel, AlterTableCmd *cmd)
 		elem->colencs = p_colencs;
 		elem->options = p_reloptions;
 
+		elem_new = elem;
+		if (defaultpartname)
+		{
+			/*
+			 * Splitting the DEFAULT partition: the new sibling is a brand
+			 * new range, unrelated to the default partition's own storage
+			 * choice, so it should inherit the root table's storage
+			 * (matching CREATE TABLE ... PARTITION OF <root> behavior),
+			 * not the default partition's. The recreated default half
+			 * below keeps using the default partition's own storage, via
+			 * "elem", since it's logically the same partition, just
+			 * re-bounded.
+			 */
+			HeapTuple	roottuple;
+
+			elem_new = makeNode(GpPartDefElem);
+			elem_new->tablespacename = get_tablespace_name(rel->rd_rel->reltablespace);
+			elem_new->accessMethod = get_am_name(rel->rd_rel->relam);
+			elem_new->colencs = rel_get_column_encodings(rel);
+
+			roottuple = SearchSysCache1(RELOID, RelationGetRelid(rel));
+			if (HeapTupleIsValid(roottuple))
+			{
+				Datum		rootdatum;
+				bool		rootisnull;
+
+				rootdatum = SysCacheGetAttr(RELOID, roottuple,
+											 Anum_pg_class_reloptions,
+											 &rootisnull);
+				elem_new->options = rootisnull ? NIL : untransformRelOptions(rootdatum);
+				ReleaseSysCache(roottuple);
+			}
+			else
+				elog(ERROR, "pg_class tuple not found for relation %s",
+					 RelationGetRelationName(rel));
+
+			/* new (non-default) half keeps its literal user-given name */
+			partcomp.tablename = partname1;
+		}
+
 		/* create first partition stmt */
-		stmts = lappend(stmts, makePartitionCreateStmt(rel, partname1, boundspec1, NULL, elem, &partcomp, ORIGIN_GP_CLASSIC_ALTER_GEN));
+		stmts = lappend(stmts, makePartitionCreateStmt(rel, partname1, boundspec1, NULL, elem_new, &partcomp, ORIGIN_GP_CLASSIC_ALTER_GEN));
 
 		/* create second partition stmt */
 		if (defaultpartname)
