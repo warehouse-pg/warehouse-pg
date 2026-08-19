@@ -1028,8 +1028,21 @@ AtExecGPSplitPartition(Relation rel, AlterTableCmd *cmd)
 				elog(ERROR, "pg_class tuple not found for relation %s",
 					 RelationGetRelationName(rel));
 
-			/* new (non-default) half keeps its literal user-given name */
-			partcomp.tablename = partname1;
+			/*
+			 * NOTE: the new (non-default) half intentionally keeps the
+			 * legacy "<root>_<level>_prt_<name>" naming here (i.e.
+			 * partcomp.tablename is left unset), even though the user gave
+			 * an explicit name in the INTO clause. Giving it the literal
+			 * name instead breaks anything that addresses a split-off
+			 * partition by its generated name -- both GPDB-classic by-name
+			 * partition maintenance (GpFindTargetPartition has no
+			 * literal-name fallback) and, as it turns out, a wide swath of
+			 * this project's own regression suite and presumably customer
+			 * scripts, which either reference the generated name directly
+			 * or rely on it being prefixed with "<root>_" for LIKE-based
+			 * catalog queries. See PR discussion for the concrete CI
+			 * failures this caused when the literal name was used here.
+			 */
 		}
 
 		/* create first partition stmt */
