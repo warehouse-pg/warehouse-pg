@@ -148,7 +148,6 @@ allDone(fts_context *context)
 static bool
 ftsConnectStart(fts_segment_info *ftsInfo)
 {
-	char conninfo[1024];
 	char *hostip;
 
 	/*
@@ -167,6 +166,9 @@ ftsConnectStart(fts_segment_info *ftsInfo)
 	hostip = ftsInfo->primary_cdbinfo->config->hostip;
 
 	{
+		const char *keywords[16];
+		const char *values[16];
+		char		portstr[16];
 		const char *sslmode;
 		const char *certfile;
 		const char *keyfile;
@@ -174,25 +176,56 @@ ftsConnectStart(fts_segment_info *ftsInfo)
 		char		certbuf[MAXPGPATH];
 		char		keybuf[MAXPGPATH];
 		char		rootbuf[MAXPGPATH];
-		int			n;
+		int			n = 0;
 
-		/* TLS for the internal FTS probe connection (see gp_internal_tls). */
+		/*
+		 * Build the connection parameters in keyword/value form (rather than a
+		 * conninfo string) so cert/key/CA paths -- which can be long and may
+		 * contain spaces -- need no length accounting or quoting.  TLS for the
+		 * internal FTS probe connection follows gp_internal_tls; see
+		 * cdbconn_internal_tls_resolve().
+		 */
 		sslmode = cdbconn_internal_tls_resolve(certbuf, keybuf, rootbuf,
 											   &certfile, &keyfile, &rootcertfile);
 
-		n = snprintf(conninfo, sizeof(conninfo),
-					 "host=%s port=%d gpconntype=%s sslmode=%s",
-					 hostip ? hostip : "", ftsInfo->primary_cdbinfo->config->port,
-					 GPCONN_TYPE_FTS, sslmode);
+		keywords[n] = "host";
+		values[n] = hostip ? hostip : "";
+		n++;
+		snprintf(portstr, sizeof(portstr), "%d", ftsInfo->primary_cdbinfo->config->port);
+		keywords[n] = "port";
+		values[n] = portstr;
+		n++;
+		keywords[n] = GPCONN_TYPE;
+		values[n] = GPCONN_TYPE_FTS;
+		n++;
+		keywords[n] = "sslmode";
+		values[n] = sslmode;
+		n++;
 		if (certfile)
-			n += snprintf(conninfo + n, sizeof(conninfo) - n, " sslcert=%s", certfile);
+		{
+			keywords[n] = "sslcert";
+			values[n] = certfile;
+			n++;
+		}
 		if (keyfile)
-			n += snprintf(conninfo + n, sizeof(conninfo) - n, " sslkey=%s", keyfile);
+		{
+			keywords[n] = "sslkey";
+			values[n] = keyfile;
+			n++;
+		}
 		if (rootcertfile)
-			n += snprintf(conninfo + n, sizeof(conninfo) - n, " sslrootcert=%s", rootcertfile);
-	}
+		{
+			keywords[n] = "sslrootcert";
+			values[n] = rootcertfile;
+			n++;
+		}
+		keywords[n] = NULL;
+		values[n] = NULL;
 
-	ftsInfo->conn = PQconnectStart(conninfo);
+		Assert(n < lengthof(keywords));
+
+		ftsInfo->conn = PQconnectStartParams(keywords, values, false);
+	}
 
 	if (ftsInfo->conn == NULL)
 	{
