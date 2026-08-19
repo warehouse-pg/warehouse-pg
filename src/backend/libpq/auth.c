@@ -593,6 +593,32 @@ internal_client_authentication(Port *port)
 		}
 #endif
 
+		/*
+		 * No verified certificate.  The one connection that legitimately lacks
+		 * one is the coordinator's own entry-DB connection when PGHOST/PGHOSTADDR
+		 * forces it over TCP instead of the Unix socket (see
+		 * cdbconn_doConnectStart(), which cannot present a certificate on what it
+		 * assumes is a local socket).  Trust it by same-host locality, exactly
+		 * as the AF_UNIX path above does -- a same-host peer can already reach
+		 * the Unix socket, so this grants no additional access.  Everything else
+		 * -- a real segment, or any cross-host peer -- must present a
+		 * certificate.
+		 */
+		if (IS_QUERY_DISPATCHER() &&
+			(port->raddr.addr.ss_family == AF_INET
+#ifdef HAVE_IPV6
+			 || port->raddr.addr.ss_family == AF_INET6
+#endif
+			) &&
+			check_same_host_or_net(&port->raddr, ipCmpSameHost))
+		{
+			ereport(DEBUG1,
+					(errmsg("trusting same-host internal connection to the coordinator over TCP/IP without a certificate"),
+					 errdetail("gp_internal_tls is \"verify-ca\"; check if PGHOST or PGHOSTADDR is set in the coordinator environment.")));
+			FakeClientAuthentication(port);
+			return true;
+		}
+
 		ereport(FATAL,
 				(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
 				 errmsg("internal connection rejected: a verified client certificate is required"),
