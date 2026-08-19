@@ -37,6 +37,8 @@
 #endif
 
 #include "cdb/cdbvars.h"
+#include "common/string.h"
+#include "lib/stringinfo.h"
 #include "libpq/libpq.h"
 #include "miscadmin.h"
 #include "pgstat.h"
@@ -62,6 +64,10 @@ static bool initialize_ecdh(SSL_CTX *context, bool isServerStart);
 static const char *SSLerrmessage(unsigned long ecode);
 
 static char *X509_NAME_to_cstring(X509_NAME *name);
+static char *prepare_cert_name(char *name);
+
+/* for passing data back from verify_cb() */
+static const char *cert_errdetail;
 
 static SSL_CTX *SSL_context = NULL;
 static bool SSL_initialized = false;
@@ -511,7 +517,9 @@ aloop:
 				ereport(COMMERROR,
 						(errcode(ERRCODE_PROTOCOL_VIOLATION),
 						 errmsg("could not accept SSL connection: %s",
-								SSLerrmessage(ecode))));
+								SSLerrmessage(ecode)),
+						 cert_errdetail ? errdetail_internal("%s", cert_errdetail) : 0));
+				cert_errdetail = NULL;
 				break;
 			case SSL_ERROR_ZERO_RETURN:
 				ereport(COMMERROR,
@@ -998,39 +1006,119 @@ dummy_ssl_passwd_cb(char *buf, int size, int rwflag, void *userdata)
 static int
 verify_cb(int ok, X509_STORE_CTX *ctx)
 {
-	/*
-	 * On failure, log the offending certificate's subject, issuer, chain depth
-	 * and the reason.  OpenSSL's default behavior (and ours, since we return
-	 * "ok" unchanged) is still to reject the handshake; this only adds a
-	 * diagnostic line to the server log.  Without it a misconfiguration -- most
-	 * commonly a peer certificate signed by the wrong CA, e.g. mixing the
-	 * external server SSL trust domain with the internal cluster CA used for
-	 * QD<->QE mutual TLS -- surfaces only as an opaque "certificate verify
-	 * failed", which is very hard to diagnose in the field.
-	 */
-	if (!ok)
+	int			depth;
+	int			errcode;
+	const char *errstring;
+	StringInfoData str;
+	X509	   *cert;
+
+	if (ok)
 	{
-		X509	   *cert = X509_STORE_CTX_get_current_cert(ctx);
-		int			err = X509_STORE_CTX_get_error(ctx);
-		int			depth = X509_STORE_CTX_get_error_depth(ctx);
-		char		subject[256];
-		char		issuer[256];
-
-		subject[0] = issuer[0] = '\0';
-		if (cert != NULL)
-		{
-			X509_NAME_oneline(X509_get_subject_name(cert), subject, sizeof(subject));
-			X509_NAME_oneline(X509_get_issuer_name(cert), issuer, sizeof(issuer));
-		}
-
-		ereport(COMMERROR,
-				(errmsg("SSL certificate verification failed at depth %d: %s",
-						depth, X509_verify_cert_error_string(err)),
-				 errdetail("Failing certificate: subject \"%s\", issuer \"%s\".",
-						   subject, issuer)));
+		/* Nothing to do for the successful case. */
+		return ok;
 	}
 
+	/*
+	 * On failure, build a detail message describing the offending certificate
+	 * and store it in cert_errdetail for be_tls_open_server() to emit once, as
+	 * errdetail on the connection failure it is already going to report.  We do
+	 * not ereport() here: verify_cb() fires for every failing certificate at
+	 * every chain depth and on every handshake (including the external port), so
+	 * logging directly would flood the log with attacker-influenced data.  We
+	 * still return "ok" unchanged, so OpenSSL rejects the handshake as before.
+	 */
+	depth = X509_STORE_CTX_get_error_depth(ctx);
+	errcode = X509_STORE_CTX_get_error(ctx);
+	errstring = X509_verify_cert_error_string(errcode);
+
+	initStringInfo(&str);
+	appendStringInfo(&str,
+					 _("Client certificate verification failed at depth %d: %s."),
+					 depth, errstring);
+
+	cert = X509_STORE_CTX_get_current_cert(ctx);
+	if (cert)
+	{
+		char	   *subject,
+				   *issuer;
+		char	   *sub_prepared,
+				   *iss_prepared;
+		char	   *serialno;
+		ASN1_INTEGER *sn;
+		BIGNUM	   *b;
+
+		/*
+		 * Get the Subject and Issuer for logging, but don't let maliciously
+		 * huge certs flood the logs, and don't reflect non-ASCII bytes into it
+		 * either.
+		 */
+		subject = X509_NAME_to_cstring(X509_get_subject_name(cert));
+		sub_prepared = prepare_cert_name(subject);
+
+		issuer = X509_NAME_to_cstring(X509_get_issuer_name(cert));
+		iss_prepared = prepare_cert_name(issuer);
+
+		/*
+		 * Pull the serial number, too, in case a Subject is still ambiguous.
+		 * This mirrors be_tls_get_peer_serial().
+		 */
+		sn = X509_get_serialNumber(cert);
+		b = ASN1_INTEGER_to_BN(sn, NULL);
+		serialno = BN_bn2dec(b);
+
+		appendStringInfoChar(&str, '\n');
+		appendStringInfo(&str,
+						 _("Failed certificate data (unverified): subject \"%s\", serial number %s, issuer \"%s\"."),
+						 sub_prepared, serialno ? serialno : _("unknown"),
+						 iss_prepared);
+
+		BN_free(b);
+		OPENSSL_free(serialno);
+		pfree(issuer);
+		pfree(subject);
+	}
+
+	/* Store our detail message to be logged later. */
+	cert_errdetail = str.data;
+
 	return ok;
+}
+
+/*
+ * Sanitize a certificate distinguished name for logging: truncate it (keeping
+ * the most-specific trailing fields) and replace any non-ASCII bytes, so that a
+ * maliciously large or non-UTF8 name from an unauthenticated peer cannot flood
+ * or corrupt the server log.  Returns a pointer into the supplied buffer.
+ */
+static char *
+prepare_cert_name(char *name)
+{
+	size_t		namelen = strlen(name);
+	char	   *truncated = name;
+
+	/*
+	 * Common Names are 64 chars max, so for a common case where the CN is the
+	 * last field, we can still print the longest possible CN with a 7-character
+	 * prefix (".../CN=[64 chars]"), for a reasonable limit of 71 characters.
+	 */
+#define MAXLEN 71
+
+	if (namelen > MAXLEN)
+	{
+		/*
+		 * Keep the end of the name, not the beginning, since the most specific
+		 * field is likely to give users the most information.
+		 */
+		truncated = name + namelen - MAXLEN;
+		truncated[0] = truncated[1] = truncated[2] = '.';
+		namelen = MAXLEN;
+	}
+
+#undef MAXLEN
+
+	pg_clean_ascii(truncated);
+
+	return truncated;
 }
 
 /*
