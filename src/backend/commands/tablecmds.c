@@ -5908,10 +5908,27 @@ ATExecCmd(List **wqueue, AlteredTableInfo *tab, Relation rel,
 				 (int) cmd->subtype);
 			break;
 
+		case AT_PartSplit:
+			ATExecGPPartCmds(rel, cmd);
+
+			/*
+			 * ATExecGPPartCmds()/AtExecGPSplitPartition() create/rename/drop
+			 * the split-off relations via nested ProcessUtility() calls,
+			 * each of which reports its own object correctly to
+			 * ddl_command_end. But this SPLIT subcommand itself must also
+			 * carry a valid address here, or EventTriggerCollectAlterTableSubcmd()
+			 * below records it with InvalidObjectAddress -- an extra,
+			 * malformed entry that can confuse event-trigger consumers
+			 * (e.g. extensions that track per-relation storage via
+			 * ddl_command_end). Use the root partitioned table's own
+			 * address, since that's the object this subcommand acted on.
+			 */
+			ObjectAddressSet(address, RelationRelationId, RelationGetRelid(rel));
+			break;
+
 		case AT_PartAdd:
 		case AT_PartDrop:
 		case AT_PartAlter:
-		case AT_PartSplit:
 		case AT_PartRename:
 		case AT_PartTruncate:
 		case AT_PartExchange:

@@ -2109,6 +2109,33 @@ pg_event_trigger_ddl_commands(PG_FUNCTION_ARGS)
 					else if (cmd->type == SCT_AlterTSConfig)
 						addr = cmd->d.atscfg.address;
 
+					/*
+					 * A command collected earlier in this transaction may
+					 * reference an object that no longer exists by the time
+					 * this function runs -- e.g. GPDB's SPLIT DEFAULT
+					 * PARTITION renames a partition out of the way and later
+					 * drops that same relation within the same top-level
+					 * statement. getObjectTypeDescription()/getObjectIdentity()
+					 * do a hard catalog lookup and error out for a vanished
+					 * object, so skip such rows instead, the same way the
+					 * IF-NOT-EXISTS/invalid-OID case above is skipped: there
+					 * is nothing coherent left to report about it.
+					 */
+					if (is_objectclass_supported(addr.classId))
+					{
+						Relation	checkcat;
+						HeapTuple	checktup;
+
+						checkcat = table_open(addr.classId, AccessShareLock);
+						checktup = get_catalog_object_by_oid(checkcat,
+															 get_object_attnum_oid(addr.classId),
+															 addr.objectId);
+						table_close(checkcat, AccessShareLock);
+
+						if (!HeapTupleIsValid(checktup))
+							continue;
+					}
+
 					type = getObjectTypeDescription(&addr);
 					identity = getObjectIdentity(&addr);
 
