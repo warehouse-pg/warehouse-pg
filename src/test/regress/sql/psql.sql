@@ -1067,6 +1067,15 @@ select 1/(15-g) from generate_series(1, 1000000) g;
 
 \unset FETCH_COUNT
 
+-- \copy must skip in-line data, even if the issued COPY command fails.
+\copy no_such_table from stdin
+foo
+\echo this should not get output
+bar
+\echo this should not get output
+\.
+\echo this should get output
+
 create schema testpart;
 create role regress_partitioning_role;
 
