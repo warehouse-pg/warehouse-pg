@@ -19,6 +19,7 @@
 #include "ic_proxy_packet.h"
 #include "ic_proxy_pkt_cache.h"
 #include "ic_proxy_server.h"
+#include "ic_proxy_tls.h"
 
 
 typedef struct ICProxyWriteReq ICProxyWriteReq;
@@ -58,6 +59,53 @@ struct ICProxyLoopback
 
 
 static ICProxyLoopback ic_proxy_router_loopback;
+
+/*
+ * Process-wide freelist of ICProxyWriteReq structs.
+ *
+ * ic_proxy_router_write allocates one ICProxyWriteReq per uv_write
+ * call (carrying uv_write_t + the user callback + opaque). On a busy
+ * proxy the rate is roughly one per motion packet routed to a local
+ * client (UDS) — plus, in non-TLS deployments, one per peer (TCP)
+ * write too. Each is a small struct (~100 B) but the palloc/pfree
+ * pair adds up in the hot path.
+ *
+ * Bounded at IC_PROXY_ROUTER_WREQ_FREELIST_CAP so a long-idle proxy
+ * doesn't pin memory after a traffic spike. The bound only applies
+ * to the freelist; if the cap is hit we still pfree the struct,
+ * just don't keep it for recycling.
+ */
+#define IC_PROXY_ROUTER_WREQ_FREELIST_CAP	256
+
+static List	   *ic_proxy_router_wreq_freelist = NIL;
+
+static ICProxyWriteReq *
+ic_proxy_router_wreq_get(void)
+{
+	ICProxyWriteReq *wreq;
+
+	if (ic_proxy_router_wreq_freelist != NIL)
+	{
+		wreq = (ICProxyWriteReq *) linitial(ic_proxy_router_wreq_freelist);
+		ic_proxy_router_wreq_freelist =
+			list_delete_first(ic_proxy_router_wreq_freelist);
+		return wreq;
+	}
+	return ic_proxy_new(ICProxyWriteReq);
+}
+
+static void
+ic_proxy_router_wreq_put(ICProxyWriteReq *wreq)
+{
+	if (list_length(ic_proxy_router_wreq_freelist)
+		>= IC_PROXY_ROUTER_WREQ_FREELIST_CAP)
+	{
+		ic_proxy_free(wreq);
+		return;
+	}
+	ic_proxy_router_wreq_freelist =
+		lcons(wreq, ic_proxy_router_wreq_freelist);
+}
 
 
 /*
@@ -193,6 +241,12 @@ ic_proxy_router_uninit(void)
 	}
 
 	list_free(queue);
+
+	/* Drain the per-process WriteReq freelist. */
+	foreach(cell, ic_proxy_router_wreq_freelist)
+		ic_proxy_free(lfirst(cell));
+	list_free(ic_proxy_router_wreq_freelist);
+	ic_proxy_router_wreq_freelist = NIL;
 }
 
 /*
@@ -274,7 +328,7 @@ ic_proxy_router_on_write(uv_write_t *req, int status)
 		wreq->callback(wreq->opaque, pkt, status);
 
 	ic_proxy_pkt_cache_free(pkt);
-	ic_proxy_free(req);
+	ic_proxy_router_wreq_put(wreq);
 }
 
 /*
@@ -305,7 +359,25 @@ ic_proxy_router_write(uv_stream_t *stream, ICProxyPkt *pkt, int32 offset,
 	elogif(gp_log_interconnect >= GPVARS_VERBOSITY_DEBUG, DEBUG5,
 		   "ic-proxy: router: sending %s", ic_proxy_pkt_to_str(pkt));
 
-	wreq = ic_proxy_new(ICProxyWriteReq);
+	/*
+	 * If the destination is a peer (TCP) whose TLS handshake has
+	 * completed, encrypt before writing. Backend (client) writes go
+	 * over UV_NAMED_PIPE and are not encrypted — the trust boundary
+	 * is the local host.
+	 */
+	if (uv_handle_get_type((uv_handle_t *) stream) == UV_TCP)
+	{
+		ICProxyPeer *peer = CONTAINER_OF((void *) stream, ICProxyPeer, tcp);
+
+		if (peer->tls != NULL &&
+			ic_proxy_tls_conn_handshake_done(peer->tls))
+		{
+			ic_proxy_peer_tls_queue_write(peer, pkt, offset, callback, opaque);
+			return;
+		}
+	}
+
+	wreq = ic_proxy_router_wreq_get();
 
 	wreq->req.data = pkt;
 	wreq->callback = callback;
