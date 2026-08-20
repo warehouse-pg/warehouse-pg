@@ -921,6 +921,8 @@ select \if false \\ (bogus \else \\ 42 \endif \\ forty_two;
 \endif
 
 -- test that begin/end matching ignores to-be-ignored text
+-- (WHPG: the server has no BEGIN ATOMIC, so this fails with a single
+-- syntax error; the point is that psql sends it all as one statement)
 create function silly_function(int) returns int
 begin atomic select $1;
 \if false

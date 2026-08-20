@@ -557,6 +557,7 @@ COPY copy_regression_newline from stdin with delimiter '|' newline 'cr' csv;
 
 -- negative: invalid newline
 COPY copy_regression_newline from stdin with delimiter '|' newline 'blah';
+\.
 -- negative: newline not yet supported for COPY TO
 COPY copy_regression_newline to stdout with delimiter '|' newline 'blah';
 
@@ -673,6 +674,7 @@ SELECT * FROM segment_reject_limit_from;
 
 -- STDIN is not support by copy from on segment and copy program
 COPY segment_reject_limit_from from STDIN on segment;
+\.
 COPY segment_reject_limit_from from PROGRAM STDIN;
 SELECT * FROM segment_reject_limit_from;
 
@@ -1332,6 +1334,7 @@ RESET allow_system_table_mods;
 
 -- cannot copy to a catalog table with allow_system_table_mods=off;
 COPY gp_configuration_history from stdin with delimiter '|';
+\.
 ABORT;
 
 -- GPDB makes the database name, and many other things, available

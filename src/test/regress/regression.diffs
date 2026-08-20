@@ -1,0 +1,537 @@
+diff -I HINT: -I CONTEXT: -I GP_IGNORE: -U3 /home/smart/workspace/gpdb/src/test/regress/expected/psql.out /home/smart/workspace/gpdb/src/test/regress/results/psql.out
+--- /home/smart/workspace/gpdb/src/test/regress/expected/psql.out	2026-08-20 02:47:51.376564459 +0000
++++ /home/smart/workspace/gpdb/src/test/regress/results/psql.out	2026-08-20 02:47:51.428564819 +0000
+@@ -4459,14 +4459,13 @@
+ \endif
+ ;
+ end;
++ERROR:  syntax error at or near "begin"
++LINE 2: begin atomic select $1;
++        ^
+ \sf silly_function(int)
+-CREATE OR REPLACE FUNCTION public.silly_function(integer)
+- RETURNS integer
+- LANGUAGE sql
+-BEGIN ATOMIC
+- SELECT $1;
+-END
++ERROR:  function "silly_function(int)" does not exist
+ drop function silly_function(int);
++ERROR:  function silly_function(integer) does not exist
+ -- :{?...} defined variable test
+ \set i 1
+ \if :{?i}
+@@ -4661,35 +4660,15 @@
+ -- check row count for a cursor-fetched query
+ \set FETCH_COUNT 10
+ select unique2 from tenk1 order by unique2 limit 19;
+- unique2 
+----------
+-       0
+-       1
+-       2
+-       3
+-       4
+-       5
+-       6
+-       7
+-       8
+-       9
+-      10
+-      11
+-      12
+-      13
+-      14
+-      15
+-      16
+-      17
+-      18
+-(19 rows)
+-
++ERROR:  relation "tenk1" does not exist
++LINE 2: select unique2 from tenk1 order by unique2 limit 19;
++                            ^
+ \echo 'error:' :ERROR
+-error: false
++error: true
+ \echo 'error code:' :SQLSTATE
+-error code: 00000
++error code: 42P01
+ \echo 'number of rows:' :ROW_COUNT
+-number of rows: 19
++number of rows: 0
+ -- cursor-fetched query with an error after the first group. In GPDB, the
+ -- query used in PostgreSQL errors out too early in the segments. Use a
+ -- different query that behaves the way this is intended.
+diff -I HINT: -I CONTEXT: -I GP_IGNORE: -U3 /home/smart/workspace/gpdb/src/test/regress/expected/privileges.out /home/smart/workspace/gpdb/src/test/regress/results/privileges.out
+--- /home/smart/workspace/gpdb/src/test/regress/expected/privileges.out	2026-08-20 02:47:57.057603785 +0000
++++ /home/smart/workspace/gpdb/src/test/regress/results/privileges.out	2026-08-20 02:47:57.087603993 +0000
+@@ -521,14 +521,18 @@
+    union all
+    (select b.q2 as x from int8_tbl b offset 0)) ss
+ where false;
+-ERROR:  permission denied for table int8_tbl
++ERROR:  relation "int8_tbl" does not exist
++LINE 2:   ((select a.q1 as x from int8_tbl a offset 0)
++                                  ^
+ set constraint_exclusion = on;
+ select * from
+   ((select a.q1 as x, random() from int8_tbl a where q1 > 0)
+    union all
+    (select b.q2 as x, random() from int8_tbl b where q2 > 0)) ss
+ where x < 0;
+-ERROR:  permission denied for table int8_tbl
++ERROR:  relation "int8_tbl" does not exist
++LINE 2:   ((select a.q1 as x, random() from int8_tbl a where q1 > 0)
++                                            ^
+ reset constraint_exclusion;
+ CREATE VIEW atestv4 AS SELECT * FROM atestv3; -- nested view
+ SELECT * FROM atestv4; -- ok
+diff -I HINT: -I CONTEXT: -I GP_IGNORE: -U3 /home/smart/workspace/gpdb/src/test/regress/expected/alter_table.out /home/smart/workspace/gpdb/src/test/regress/results/alter_table.out
+--- /home/smart/workspace/gpdb/src/test/regress/expected/alter_table.out	2026-08-20 02:48:11.684705132 +0000
++++ /home/smart/workspace/gpdb/src/test/regress/results/alter_table.out	2026-08-20 02:48:11.747705569 +0000
+@@ -227,10 +227,12 @@
+ ALTER INDEX IF EXISTS __onek_unique1 RENAME TO attmp_onek_unique1;
+ ALTER INDEX IF EXISTS __attmp_onek_unique1 RENAME TO onek_unique1;
+ ALTER INDEX onek_unique1 RENAME TO attmp_onek_unique1;
++ERROR:  relation "onek_unique1" does not exist
+ ALTER INDEX attmp_onek_unique1 RENAME TO onek_unique1;
++ERROR:  relation "attmp_onek_unique1" does not exist
+ SET ROLE regress_alter_table_user1;
+ ALTER INDEX onek_unique1 RENAME TO fail;  -- permission denied
+-ERROR:  must be owner of index onek_unique1
++ERROR:  relation "onek_unique1" does not exist
+ RESET ROLE;
+ -- rename statements with mismatching statement and object types
+ CREATE TABLE alter_idx_rename_test (a INT);
+@@ -282,49 +284,57 @@
+ DROP TABLE alter_idx_rename_test_2;
+ -- renaming views
+ CREATE VIEW attmp_view (unique1) AS SELECT unique1 FROM tenk1;
++ERROR:  relation "tenk1" does not exist
++LINE 1: ...EATE VIEW attmp_view (unique1) AS SELECT unique1 FROM tenk1;
++                                                                 ^
+ ALTER TABLE attmp_view RENAME TO attmp_view_new;
++ERROR:  relation "attmp_view" does not exist
+ SET ROLE regress_alter_table_user1;
+ ALTER VIEW attmp_view_new RENAME TO fail;  -- permission denied
+-ERROR:  must be owner of view attmp_view_new
++ERROR:  relation "attmp_view_new" does not exist
+ RESET ROLE;
+ -- hack to ensure we get an indexscan here
+ set enable_seqscan to off;
+ set enable_bitmapscan to off;
+ -- 5 values, sorted
+ SELECT unique1 FROM tenk1 WHERE unique1 < 5 ORDER BY 1;
+- unique1 
+----------
+-       0
+-       1
+-       2
+-       3
+-       4
+-(5 rows)
+-
++ERROR:  relation "tenk1" does not exist
++LINE 1: SELECT unique1 FROM tenk1 WHERE unique1 < 5 ORDER BY 1;
++                            ^
+ reset enable_seqscan;
+ reset enable_bitmapscan;
+ DROP VIEW attmp_view_new;
++ERROR:  view "attmp_view_new" does not exist
+ -- toast-like relation name
+ alter table stud_emp rename to pg_toast_stud_emp;
++ERROR:  relation "stud_emp" does not exist
+ alter table pg_toast_stud_emp rename to stud_emp;
++ERROR:  relation "pg_toast_stud_emp" does not exist
+ -- renaming index should rename constraint as well
+ ALTER TABLE onek ADD CONSTRAINT onek_unique1_constraint UNIQUE (unique1);
++ERROR:  relation "onek" does not exist
+ ALTER INDEX onek_unique1_constraint RENAME TO onek_unique1_constraint_foo;
++ERROR:  relation "onek_unique1_constraint" does not exist
+ ALTER TABLE onek DROP CONSTRAINT onek_unique1_constraint_foo;
++ERROR:  relation "onek" does not exist
+ -- renaming constraint
+ ALTER TABLE onek ADD CONSTRAINT onek_check_constraint CHECK (unique1 >= 0);
++ERROR:  relation "onek" does not exist
+ ALTER TABLE onek RENAME CONSTRAINT onek_check_constraint TO onek_check_constraint_foo;
++ERROR:  relation "onek" does not exist
+ ALTER TABLE onek DROP CONSTRAINT onek_check_constraint_foo;
++ERROR:  relation "onek" does not exist
+ -- renaming constraint should rename index as well
+ ALTER TABLE onek ADD CONSTRAINT onek_unique1_constraint UNIQUE (unique1);
++ERROR:  relation "onek" does not exist
+ DROP INDEX onek_unique1_constraint;  -- to see whether it's there
+-ERROR:  cannot drop index onek_unique1_constraint because constraint onek_unique1_constraint on table onek requires it
+-HINT:  You can drop constraint onek_unique1_constraint on table onek instead.
++ERROR:  index "onek_unique1_constraint" does not exist
+ ALTER TABLE onek RENAME CONSTRAINT onek_unique1_constraint TO onek_unique1_constraint_foo;
++ERROR:  relation "onek" does not exist
+ DROP INDEX onek_unique1_constraint_foo;  -- to see whether it's there
+-ERROR:  cannot drop index onek_unique1_constraint_foo because constraint onek_unique1_constraint_foo on table onek requires it
+-HINT:  You can drop constraint onek_unique1_constraint_foo on table onek instead.
++ERROR:  index "onek_unique1_constraint_foo" does not exist
+ ALTER TABLE onek DROP CONSTRAINT onek_unique1_constraint_foo;
++ERROR:  relation "onek" does not exist
+ -- renaming constraints vs. inheritance
+ CREATE TABLE constraint_rename_test (a int CONSTRAINT con1 CHECK (a > 0), b int, c int);
+ \d constraint_rename_test
+@@ -2995,12 +3006,9 @@
+ 	for each row
+ 	execute procedure
+ 	ttdummy (1, 1);
++ERROR:  function ttdummy() does not exist
+ select * from my_locks order by 1;
+-  relname  |     max_lockmode      
+------------+-----------------------
+- alterlock | ShareRowExclusiveLock
+-(1 row)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ rollback;
+ begin;
+ select * from my_locks order by 1;
+@@ -4259,44 +4267,75 @@
+ 	a int,
+ 	b int
+ ) PARTITION BY HASH (a part_test_int4_ops);
++ERROR:  operator class "part_test_int4_ops" does not exist for access method "hash"
+ CREATE TABLE hpart_1 PARTITION OF hash_parted FOR VALUES WITH (MODULUS 4, REMAINDER 0);
++ERROR:  relation "hash_parted" does not exist
+ CREATE TABLE fail_part (LIKE hpart_1);
++ERROR:  relation "hpart_1" does not exist
++LINE 1: CREATE TABLE fail_part (LIKE hpart_1);
++                                     ^
+ ALTER TABLE hash_parted ATTACH PARTITION fail_part FOR VALUES WITH (MODULUS 8, REMAINDER 4);
+-ERROR:  partition "fail_part" would overlap partition "hpart_1"
++ERROR:  relation "hash_parted" does not exist
+ ALTER TABLE hash_parted ATTACH PARTITION fail_part FOR VALUES WITH (MODULUS 8, REMAINDER 0);
+-ERROR:  partition "fail_part" would overlap partition "hpart_1"
++ERROR:  relation "hash_parted" does not exist
+ DROP TABLE fail_part;
++ERROR:  table "fail_part" does not exist
+ -- check validation when attaching hash partitions
+ -- check that violating rows are correctly reported
+ CREATE TABLE hpart_2 (LIKE hash_parted);
++ERROR:  relation "hash_parted" does not exist
++LINE 1: CREATE TABLE hpart_2 (LIKE hash_parted);
++                                   ^
+ INSERT INTO hpart_2 VALUES (3, 0);
++ERROR:  relation "hpart_2" does not exist
++LINE 1: INSERT INTO hpart_2 VALUES (3, 0);
++                    ^
+ ALTER TABLE hash_parted ATTACH PARTITION hpart_2 FOR VALUES WITH (MODULUS 4, REMAINDER 1);
+-ERROR:  partition constraint is violated by some row
++ERROR:  relation "hash_parted" does not exist
+ -- should be ok after deleting the bad row
+ DELETE FROM hpart_2;
++ERROR:  relation "hpart_2" does not exist
++LINE 1: DELETE FROM hpart_2;
++                    ^
+ ALTER TABLE hash_parted ATTACH PARTITION hpart_2 FOR VALUES WITH (MODULUS 4, REMAINDER 1);
++ERROR:  relation "hash_parted" does not exist
+ -- check that leaf partitions are scanned when attaching a partitioned
+ -- table
+ CREATE TABLE hpart_5 (
+ 	LIKE hash_parted
+ ) PARTITION BY LIST (b);
++ERROR:  relation "hash_parted" does not exist
++LINE 2:  LIKE hash_parted
++              ^
+ -- check that violating rows are correctly reported
+ CREATE TABLE hpart_5_a PARTITION OF hpart_5 FOR VALUES IN ('1', '2', '3');
++ERROR:  relation "hpart_5" does not exist
+ INSERT INTO hpart_5_a (a, b) VALUES (7, 1);
++ERROR:  relation "hpart_5_a" does not exist
++LINE 1: INSERT INTO hpart_5_a (a, b) VALUES (7, 1);
++                    ^
+ ALTER TABLE hash_parted ATTACH PARTITION hpart_5 FOR VALUES WITH (MODULUS 4, REMAINDER 2);
+-ERROR:  partition constraint is violated by some row
++ERROR:  relation "hash_parted" does not exist
+ -- should be ok after deleting the bad row
+ DELETE FROM hpart_5_a;
++ERROR:  relation "hpart_5_a" does not exist
++LINE 1: DELETE FROM hpart_5_a;
++                    ^
+ ALTER TABLE hash_parted ATTACH PARTITION hpart_5 FOR VALUES WITH (MODULUS 4, REMAINDER 2);
++ERROR:  relation "hash_parted" does not exist
+ -- check that the table being attach is with valid modulus and remainder value
+ CREATE TABLE fail_part(LIKE hash_parted);
++ERROR:  relation "hash_parted" does not exist
++LINE 1: CREATE TABLE fail_part(LIKE hash_parted);
++                                    ^
+ ALTER TABLE hash_parted ATTACH PARTITION fail_part FOR VALUES WITH (MODULUS 0, REMAINDER 1);
+-ERROR:  modulus for hash partition must be an integer value greater than zero
++ERROR:  relation "hash_parted" does not exist
+ ALTER TABLE hash_parted ATTACH PARTITION fail_part FOR VALUES WITH (MODULUS 8, REMAINDER 8);
+-ERROR:  remainder for hash partition must be less than modulus
++ERROR:  relation "hash_parted" does not exist
+ ALTER TABLE hash_parted ATTACH PARTITION fail_part FOR VALUES WITH (MODULUS 3, REMAINDER 2);
+-ERROR:  every hash partition modulus must be a factor of the next larger modulus
++ERROR:  relation "hash_parted" does not exist
+ DROP TABLE fail_part;
++ERROR:  table "fail_part" does not exist
+ -- fails with incorrect object type
+ CREATE VIEW at_v1 AS SELECT 1 as a;
+ ALTER TABLE at_v1 ATTACH PARTITION dummy default;
+@@ -4314,7 +4353,7 @@
+ ALTER TABLE list_parted2 DETACH PARTITION part_4;
+ ERROR:  relation "part_4" does not exist
+ ALTER TABLE hash_parted DETACH PARTITION hpart_4;
+-ERROR:  relation "hpart_4" does not exist
++ERROR:  relation "hash_parted" does not exist
+ -- check that the partition being detached is actually a partition of the parent
+ CREATE TABLE not_a_part (a int);
+ ALTER TABLE list_parted2 DETACH PARTITION not_a_part;
+@@ -4322,7 +4361,7 @@
+ ALTER TABLE list_parted2 DETACH PARTITION part_1;
+ ERROR:  relation "part_1" is not a partition of relation "list_parted2"
+ ALTER TABLE hash_parted DETACH PARTITION not_a_part;
+-ERROR:  relation "not_a_part" is not a partition of relation "hash_parted"
++ERROR:  relation "hash_parted" does not exist
+ DROP TABLE not_a_part;
+ -- check that, after being detached, attinhcount/coninhcount is dropped to 0 and
+ -- attislocal/conislocal is set to true
+@@ -4429,6 +4468,7 @@
+ DROP TABLE list_parted, list_parted2, range_parted;
+ DROP TABLE fail_def_part;
+ DROP TABLE hash_parted;
++ERROR:  table "hash_parted" does not exist
+ -- more tests for certain multi-level partitioning scenarios
+ create table p (a int, b int) partition by range (a, b);
+ alter table p set distributed by (b);
+diff -I HINT: -I CONTEXT: -I GP_IGNORE: -U3 /home/smart/workspace/gpdb/src/test/regress/expected/sreh.out /home/smart/workspace/gpdb/src/test/regress/results/sreh.out
+--- /home/smart/workspace/gpdb/src/test/regress/expected/sreh.out	2026-08-20 02:48:49.055964661 +0000
++++ /home/smart/workspace/gpdb/src/test/regress/results/sreh.out	2026-08-20 02:48:49.069964758 +0000
+@@ -254,23 +254,13 @@
+ FORMAT 'text' (delimiter '|')
+ SEGMENT REJECT LIMIT 10000;
+ SELECT * FROM sreh_ext;
+-NOTICE:  found 10 data formatting errors (10 or more input rows), rejected related input data
+- a  | b  | c  
+-----+----+----
+-  1 |  1 |  1
+-  5 |  5 |  5
+-  6 |  6 |  6
+-  9 |  9 |  9
+- 10 | 10 | 10
+- 14 | 14 | 14
+-(6 rows)
+-
++ERROR:  connection failed dummy_protocol://DUMMY_LOCATION
+ INSERT INTO sreh_target SELECT * FROM sreh_ext;
+-NOTICE:  found 10 data formatting errors (10 or more input rows), rejected related input data
++ERROR:  connection failed dummy_protocol://DUMMY_LOCATION
+ SELECT count(*) FROM sreh_target;
+  count 
+ -------
+-     6
++     0
+ (1 row)
+ 
+ TRUNCATE sreh_target;
+@@ -283,13 +273,9 @@
+ FORMAT 'text' (delimiter '|')
+ SEGMENT REJECT LIMIT 2;
+ SELECT * FROM sreh_ext ORDER BY a;
+-DETAIL:  Last error was: invalid input syntax for type integer: "", column b
+-ERROR:  segment reject limit reached, aborting operation
+-CONTEXT:  External table sreh_ext, line 3 of gpfdist://whpg7:8080/bad_data1.data: "3|"
++ERROR:  connection failed dummy_protocol://DUMMY_LOCATION
+ INSERT INTO sreh_target SELECT * FROM sreh_ext;
+-DETAIL:  Last error was: invalid input syntax for type integer: "", column b
+-ERROR:  segment reject limit reached, aborting operation
+-CONTEXT:  External table sreh_ext, line 3 of gpfdist://whpg7:8080/bad_data1.data: "3|"
++ERROR:  connection failed dummy_protocol://DUMMY_LOCATION
+ SELECT count(*) FROM sreh_target;
+  count 
+ -------
+@@ -309,33 +295,13 @@
+ HINT:  Use gp_read_error_log() and gp_truncate_error_log() to view and manage the internal error log associated with your table.
+ WARNING:  error table is not supported
+ SELECT * FROM sreh_ext_err_tbl ORDER BY a;
+-NOTICE:  found 10 data formatting errors (10 or more input rows), rejected related input data
+- a  | b  | c  
+-----+----+----
+-  1 |  1 |  1
+-  5 |  5 |  5
+-  6 |  6 |  6
+-  9 |  9 |  9
+- 10 | 10 | 10
+- 14 | 14 | 14
+-(6 rows)
+-
++ERROR:  connection failed dummy_protocol://DUMMY_LOCATION
+ -- Verify the fields that we easily can.
+ WITH error_log AS (SELECT * FROM gp_read_error_log('sreh_ext_err_tbl'))
+   SELECT relname, filename LIKE 'gpfdist://whpg7:8080/bad_data1.data [%]' as filename_ok, linenum, errmsg from error_log;
+-     relname      | filename_ok | linenum |                           errmsg                           
+-------------------+-------------+---------+------------------------------------------------------------
+- sreh_ext_err_tbl | t           |       2 | missing data for column "b"
+- sreh_ext_err_tbl | t           |       3 | invalid input syntax for type integer: "", column b
+- sreh_ext_err_tbl | t           |       4 | extra data after last expected column, column b
+- sreh_ext_err_tbl | t           |       7 | invalid input syntax for type integer: "bad", column c
+- sreh_ext_err_tbl | t           |       8 | invalid input syntax for type integer: "bad", column a
+- sreh_ext_err_tbl | t           |      11 | invalid input syntax for type integer: "eleven", column a
+- sreh_ext_err_tbl | t           |      12 | extra data after last expected column, column a
+- sreh_ext_err_tbl | t           |      13 | invalid input syntax for type integer: ",13,", column b
+- sreh_ext_err_tbl | t           |      15 | missing data for column "b"
+- sreh_ext_err_tbl | t           |      16 | invalid input syntax for type integer: "sixteen", column a
+-(10 rows)
++ relname | filename_ok | linenum | errmsg 
++---------+-------------+---------+--------
++(0 rows)
+ 
+ CREATE EXTERNAL TABLE sreh_ext(a int, b int, c int)
+ LOCATION ('gpfdist://whpg7:8080/bad_data1.data' )
+@@ -343,29 +309,19 @@
+ LOG ERRORS
+ SEGMENT REJECT LIMIT 1000;
+ SELECT * FROM sreh_ext ORDER BY a;
+-NOTICE:  found 10 data formatting errors (10 or more input rows), rejected related input data
+- a  | b  | c  
+-----+----+----
+-  1 |  1 |  1
+-  5 |  5 |  5
+-  6 |  6 |  6
+-  9 |  9 |  9
+- 10 | 10 | 10
+- 14 | 14 | 14
+-(6 rows)
+-
++ERROR:  connection failed dummy_protocol://DUMMY_LOCATION
+ WITH error_log AS (SELECT gp_read_error_log('sreh_ext')) select count(*) from error_log;
+  count 
+ -------
+-    10
++     0
+ (1 row)
+ 
+ INSERT INTO sreh_target SELECT * FROM sreh_ext;
+-NOTICE:  found 10 data formatting errors (10 or more input rows), rejected related input data
++ERROR:  connection failed dummy_protocol://DUMMY_LOCATION
+ SELECT count(*) FROM sreh_target;
+  count 
+ -------
+-     6
++     0
+ (1 row)
+ 
+ TRUNCATE sreh_target;
+@@ -373,58 +329,18 @@
+ -- error logs - do the same thing again. this time error logs exist and should get data appended
+ --
+ SELECT * FROM sreh_ext ORDER BY a;
+-NOTICE:  found 10 data formatting errors (10 or more input rows), rejected related input data
+- a  | b  | c  
+-----+----+----
+-  1 |  1 |  1
+-  5 |  5 |  5
+-  6 |  6 |  6
+-  9 |  9 |  9
+- 10 | 10 | 10
+- 14 | 14 | 14
+-(6 rows)
+-
++ERROR:  connection failed dummy_protocol://DUMMY_LOCATION
+ SELECT linenum, rawdata FROM gp_read_error_log('sreh_ext') ORDER BY linenum;
+  linenum | rawdata 
+ ---------+---------
+-       2 | 2
+-       2 | 2
+-       2 | 2
+-       3 | 3|
+-       3 | 3|
+-       3 | 3|
+-       4 | 4|4|4|4
+-       4 | 4|4|4|4
+-       4 | 4|4|4|4
+-       7 | 7|7|bad
+-       7 | 7|7|bad
+-       7 | 7|7|bad
+-       8 | bad|8|8
+-       8 | bad|8|8
+-       8 | bad|8|8
+-      11 | eleven
+-      11 | eleven
+-      11 | eleven
+-      12 | 12||||
+-      12 | 12||||
+-      12 | 12||||
+-      13 | 13|,13,
+-      13 | 13|,13,
+-      13 | 13|,13,
+-      15 | 15
+-      15 | 15
+-      15 | 15
+-      16 | sixteen
+-      16 | sixteen
+-      16 | sixteen
+-(30 rows)
++(0 rows)
+ 
+ INSERT INTO sreh_target SELECT * FROM sreh_ext;
+-NOTICE:  found 10 data formatting errors (10 or more input rows), rejected related input data
++ERROR:  connection failed dummy_protocol://DUMMY_LOCATION
+ SELECT count(*) FROM sreh_target;
+  count 
+ -------
+-     6
++     0
+ (1 row)
+ 
+ TRUNCATE sreh_target;
+@@ -440,8 +356,7 @@
+ LOG ERRORS
+ SEGMENT REJECT LIMIT 1000;
+ INSERT INTO sreh_constr SELECT * FROM sreh_ext;
+-DETAIL:  Failing row contains (#####).
+-ERROR:  new row for relation "sreh_constr" violates check constraint "sreh_constr_c_check"
++ERROR:  connection failed dummy_protocol://DUMMY_LOCATION
+ SELECT linenum, rawdata FROM gp_read_error_log('sreh_constr') ORDER BY linenum;
+  linenum | rawdata 
+ ---------+---------
+@@ -467,39 +382,25 @@
+ FORMAT 'text' (delimiter '|')
+ SEGMENT REJECT LIMIT 10 PERCENT;
+ SELECT count(*) FROM sreh_ext_10percent; -- pass
+-NOTICE:  found 9 data formatting errors (9 or more input rows), rejected related input data
+- count 
+--------
+-   291
+-(1 row)
+-
++ERROR:  connection failed dummy_protocol://DUMMY_LOCATION
+ CREATE EXTERNAL TABLE sreh_ext_2percent(a int, b int, c int)
+ LOCATION ('gpfdist://whpg7:8080/bad_data3.data' )
+ FORMAT 'text' (delimiter '|')
+ SEGMENT REJECT LIMIT 2 PERCENT;
+ SELECT count(*) FROM sreh_ext_2percent; -- fail
+-DETAIL:  Last error was: invalid input syntax for type integer: "BAD", column a
+-ERROR:  segment reject limit reached, aborting operation
+-CONTEXT:  External table sreh_ext_2percent, line 107 of gpfdist://whpg7:8080/bad_data3.data, column a
++ERROR:  connection failed dummy_protocol://DUMMY_LOCATION
+ --
+ -- test PERCENT reject limit logic with custom threshold 10 (only practical for test purposes)
+ --
+ set gp_reject_percent_threshold = 10;
+ SELECT count(*) FROM sreh_ext_10percent; -- fail
+-DETAIL:  Last error was: invalid input syntax for type integer: "BAD", column a
+-ERROR:  segment reject limit reached, aborting operation
+-CONTEXT:  External table sreh_ext_10percent, line 15 of gpfdist://whpg7:8080/bad_data3.data, column a
++ERROR:  connection failed dummy_protocol://DUMMY_LOCATION
+ CREATE EXTERNAL TABLE sreh_ext_20percent(a int, b int, c int)
+ LOCATION ('gpfdist://whpg7:8080/bad_data3.data' )
+ FORMAT 'text' (delimiter '|')
+ SEGMENT REJECT LIMIT 20 PERCENT;
+ SELECT count(*) FROM sreh_ext_20percent; -- pass
+-NOTICE:  found 9 data formatting errors (9 or more input rows), rejected related input data
+- count 
+--------
+-   291
+-(1 row)
+-
++ERROR:  connection failed dummy_protocol://DUMMY_LOCATION
+ set gp_reject_percent_threshold = 300; -- reset
+ -- cleanup
+ select * from gpfdist_sreh_stop;

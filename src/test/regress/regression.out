@@ -1,0 +1,11 @@
+Optimizer disabled. Using planner answer files
+Resource group disabled. Using default answer files
+test psql                         ... FAILED      730 ms
+test copy2                        ... ok          557 ms
+test copyselect                   ... ok          170 ms
+test generated                    ... ok         1819 ms
+test privileges                   ... FAILED     2716 ms
+test rowsecurity                  ... ok         3800 ms
+test alter_table                  ... FAILED    10366 ms
+test gpcopy                       ... ok         5023 ms
+test sreh                         ... FAILED    32082 ms

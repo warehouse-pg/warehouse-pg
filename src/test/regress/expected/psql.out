@@ -4448,6 +4448,8 @@ bar 'bar' "bar"
 should print #8-1
 \endif
 -- test that begin/end matching ignores to-be-ignored text
+-- (WHPG: the server has no BEGIN ATOMIC, so this fails with a single
+-- syntax error; the point is that psql sends it all as one statement)
 create function silly_function(int) returns int
 begin atomic select $1;
 \if false
@@ -4455,14 +4457,13 @@ end
 \endif
 ;
 end;
+ERROR:  syntax error at or near "begin"
+LINE 2: begin atomic select $1;
+        ^
 \sf silly_function(int)
-CREATE OR REPLACE FUNCTION public.silly_function(integer)
- RETURNS integer
- LANGUAGE sql
-BEGIN ATOMIC
- SELECT $1;
-END
+ERROR:  function "silly_function(int)" does not exist
 drop function silly_function(int);
+ERROR:  function silly_function(integer) does not exist
 -- :{?...} defined variable test
 \set i 1
 \if :{?i}
