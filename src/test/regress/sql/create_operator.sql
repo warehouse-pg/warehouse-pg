@@ -179,3 +179,37 @@ CREATE OPERATOR #*# (
    procedure = fn_op6
 );
 ROLLBACK;
+
+-- Should fail. Only superuser may install a non-built-in restriction estimator
+-- (CVE-2026-2004).  fn_restrict_op7 gets a normal, user-space OID, so a
+-- non-superuser must be refused even though the estimator is otherwise valid.
+BEGIN TRANSACTION;
+CREATE ROLE regress_rol_op7;
+CREATE FUNCTION fn_restrict_op7(internal, oid, internal, integer)
+RETURNS float8 LANGUAGE internal AS 'eqsel';
+SET ROLE regress_rol_op7;
+CREATE OPERATOR #!# (
+   leftarg = int4,
+   rightarg = int4,
+   procedure = int4eq,
+   RESTRICT = fn_restrict_op7,
+   JOIN = eqjoinsel
+);
+ROLLBACK;
+
+-- Should fail. Only superuser may install a non-built-in join estimator
+-- (CVE-2026-2004).  A built-in restriction estimator is accepted, but the
+-- non-built-in join estimator is refused.
+BEGIN TRANSACTION;
+CREATE ROLE regress_rol_op8;
+CREATE FUNCTION fn_join_op8(internal, oid, internal, int2, internal)
+RETURNS float8 LANGUAGE internal AS 'eqjoinsel';
+SET ROLE regress_rol_op8;
+CREATE OPERATOR @!@ (
+   leftarg = int4,
+   rightarg = int4,
+   procedure = int4eq,
+   RESTRICT = eqsel,
+   JOIN = fn_join_op8
+);
+ROLLBACK;

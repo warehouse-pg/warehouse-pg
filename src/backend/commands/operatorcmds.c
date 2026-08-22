@@ -250,11 +250,32 @@ DefineOperator(List *names, List *parameters)
 					 errmsg("restriction estimator function %s must return type \"float8\"",
 							NameListToString(restrictionName))));
 
-		/* Require EXECUTE rights for the estimator */
-		aclresult = pg_proc_aclcheck(restrictionOid, GetUserId(), ACL_EXECUTE);
-		if (aclresult != ACLCHECK_OK)
-			aclcheck_error(aclresult, ACL_KIND_PROC,
-						   NameListToString(restrictionName));
+		/*
+		 * If the estimator is not a built-in function, require superuser
+		 * privilege to install it.  This protects against using something
+		 * that is not a restriction estimator or has hard-wired assumptions
+		 * about what data types it is working with.  (Built-in estimators are
+		 * required to defend themselves adequately against unexpected data
+		 * type choices, but it seems impractical to expect that of
+		 * extensions' estimators.)
+		 *
+		 * If it is built-in, only require EXECUTE rights.
+		 */
+		if (restrictionOid >= FirstNormalObjectId)
+		{
+			if (!superuser())
+				ereport(ERROR,
+						(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+						 errmsg("must be superuser to specify a non-built-in restriction estimator function")));
+		}
+		else
+		{
+			/* Require EXECUTE rights for the estimator */
+			aclresult = pg_proc_aclcheck(restrictionOid, GetUserId(), ACL_EXECUTE);
+			if (aclresult != ACLCHECK_OK)
+				aclcheck_error(aclresult, ACL_KIND_PROC,
+							   NameListToString(restrictionName));
+		}
 	}
 	else
 		restrictionOid = InvalidOid;
@@ -289,11 +310,22 @@ DefineOperator(List *names, List *parameters)
 			 errmsg("join estimator function %s must return type \"float8\"",
 					NameListToString(joinName))));
 
-		/* Require EXECUTE rights for the estimator */
-		aclresult = pg_proc_aclcheck(joinOid, GetUserId(), ACL_EXECUTE);
-		if (aclresult != ACLCHECK_OK)
-			aclcheck_error(aclresult, ACL_KIND_PROC,
-						   NameListToString(joinName));
+		/* privilege checks are the same as for the restriction estimator */
+		if (joinOid >= FirstNormalObjectId)
+		{
+			if (!superuser())
+				ereport(ERROR,
+						(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+						 errmsg("must be superuser to specify a non-built-in join estimator function")));
+		}
+		else
+		{
+			/* Require EXECUTE rights for the estimator */
+			aclresult = pg_proc_aclcheck(joinOid, GetUserId(), ACL_EXECUTE);
+			if (aclresult != ACLCHECK_OK)
+				aclcheck_error(aclresult, ACL_KIND_PROC,
+							   NameListToString(joinName));
+		}
 	}
 	else
 		joinOid = InvalidOid;
