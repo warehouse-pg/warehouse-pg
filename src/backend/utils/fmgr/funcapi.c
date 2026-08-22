@@ -951,7 +951,7 @@ get_func_arg_info(HeapTuple procTup,
 			ARR_ELEMTYPE(arr) != OIDOID)
 			elog(ERROR, "proallargtypes is not a 1-D Oid array");
 		Assert(numargs >= procStruct->pronargs);
-		*p_argtypes = (Oid *) palloc(numargs * sizeof(Oid));
+		*p_argtypes = palloc_array(Oid, numargs);
 		memcpy(*p_argtypes, ARR_DATA_PTR(arr),
 			   numargs * sizeof(Oid));
 	}
@@ -960,7 +960,7 @@ get_func_arg_info(HeapTuple procTup,
 		/* If no proallargtypes, use proargtypes */
 		numargs = procStruct->proargtypes.dim1;
 		Assert(numargs == procStruct->pronargs);
-		*p_argtypes = (Oid *) palloc(numargs * sizeof(Oid));
+		*p_argtypes = palloc_array(Oid, numargs);
 		memcpy(*p_argtypes, procStruct->proargtypes.values,
 			   numargs * sizeof(Oid));
 	}
@@ -1038,8 +1038,8 @@ get_func_trftypes(HeapTuple procTup,
 			nelems < 0 ||
 			ARR_HASNULL(arr) ||
 			ARR_ELEMTYPE(arr) != OIDOID)
-			elog(ERROR, "protrftypes is not a 1-D Oid array");
-		*p_trftypes = (Oid *) palloc(nelems * sizeof(Oid));
+			elog(ERROR, "protrftypes is not a 1-D Oid array or it contains nulls");
+		*p_trftypes = palloc_array(Oid, nelems);
 		memcpy(*p_trftypes, ARR_DATA_PTR(arr),
 			   nelems * sizeof(Oid));
 
