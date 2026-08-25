@@ -2313,7 +2313,9 @@ static QueryDesc *build_querydesc(Portal portal, char *sql)
 	SetTuplestoreDestReceiverParams(destReceiver,
 									portal->holdStore,
 									portal->holdContext,
-									false);
+									false,
+									NULL,
+									NULL);
 
 	/*
 	 * Parse the SQL string into a list of raw parse trees.
