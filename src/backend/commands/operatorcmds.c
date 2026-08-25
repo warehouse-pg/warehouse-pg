@@ -260,8 +260,14 @@ DefineOperator(List *names, List *parameters)
 		 * extensions' estimators.)
 		 *
 		 * If it is built-in, only require EXECUTE rights.
+		 *
+		 * "Built-in" here means a hand-assigned bootstrap catalog entry
+		 * (OID < FirstBootstrapObjectId); this is WHPG6's equivalent of
+		 * upstream's FirstGenbkiObjectId boundary.  Functions created later
+		 * during initdb (information_schema, system_views, cdb_schema, ...)
+		 * are not built-in for this purpose and must not skip the gate.
 		 */
-		if (restrictionOid >= FirstNormalObjectId)
+		if (restrictionOid >= FirstBootstrapObjectId)
 		{
 			if (!superuser())
 				ereport(ERROR,
@@ -311,7 +317,7 @@ DefineOperator(List *names, List *parameters)
 					NameListToString(joinName))));
 
 		/* privilege checks are the same as for the restriction estimator */
-		if (joinOid >= FirstNormalObjectId)
+		if (joinOid >= FirstBootstrapObjectId)
 		{
 			if (!superuser())
 				ereport(ERROR,
