@@ -186,3 +186,30 @@ SELECT name, statement, parameter_types FROM pg_prepared_statements
 ------+-----------+-----------------
 (0 rows)
 
+--
+-- Cross-check the result type of a portal running EXECUTE or FETCH
+-- (CVE-2026-16239).  A cursor OPENed FOR EXECUTE of a prepared statement
+-- captures the expected result tupdesc when the cursor is opened; if the
+-- prepared statement is deallocated and re-prepared with a different
+-- result type before the cursor is fetched, the FETCH must error out
+-- instead of silently reinterpreting the new tuple's bytes as the old
+-- type.
+CREATE FUNCTION portal_result_type_check() RETURNS void AS $$
+DECLARE
+    cur refcursor;
+    rec record;
+BEGIN
+    PREPARE portal_type_check_p AS SELECT 1::int AS a;
+    OPEN cur FOR EXECUTE 'EXECUTE portal_type_check_p';
+    DEALLOCATE portal_type_check_p;
+    PREPARE portal_type_check_p AS SELECT 'mismatch'::text AS a;
+    FETCH cur INTO rec;
+    RAISE NOTICE 'got: %', rec.a;
+    DEALLOCATE portal_type_check_p;
+END;
+$$ LANGUAGE plpgsql;
+SELECT portal_result_type_check();
+ERROR:  query result type does not match portal result type
+DETAIL:  Returned type text does not match expected type integer in column 1.
+CONTEXT:  PL/pgSQL function portal_result_type_check() line 10 at FETCH
+DROP FUNCTION portal_result_type_check();

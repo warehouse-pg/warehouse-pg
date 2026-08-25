@@ -1234,7 +1234,9 @@ FillPortalStore(Portal portal, bool isTopLevel)
 	SetTuplestoreDestReceiverParams(treceiver,
 									portal->holdStore,
 									portal->holdContext,
-									false);
+									false,
+									portal->tupDesc,
+									gettext_noop("query result type does not match portal result type"));
 
 	completionTag[0] = '\0';
 
