@@ -1753,17 +1753,15 @@ getCpuSetByRole(const char *cpuset)
 		splitcpuset = (char *)cpuset;
 	else
 	{
-		char *scpu = first + 1;
-
 		/* Get result cpuset by IS_QUERY_DISPATCHER(), on coordinator or segment */
 		if (IS_QUERY_DISPATCHER())
-			splitcpuset = scpu;
-		else
 		{
 			char *mcpu = (char *)palloc0(sizeof(char) * MaxCpuSetLength);
 			strncpy(mcpu, cpuset, first - cpuset);
 			splitcpuset = mcpu;
 		}
+		else
+			splitcpuset = first + 1;
 	}
 
 	return splitcpuset;
