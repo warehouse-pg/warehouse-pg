@@ -457,13 +457,18 @@ CHK_PARAMS () {
 		LOG_MSG "[INFO]:-Coordinator IP address array = ${COORDINATOR_IP_ADDRESS[@]}"
 		if [ x"" != x"$STANDBY_HOSTNAME" ];then
 			STANDBY_IP_ADDRESS_ALL=( $( REMOTE_EXECUTE_AND_GET_OUTPUT $STANDBY_HOSTNAME "$IPV4_ADDR_LIST_CMD |$GREP inet|$GREP -v \"127.0.0\"|$AWK '{print \$2}'|$CUT -d'/' -f1" 2>>$LOG_FILE ))
+			STANDBY_IPV4_RETVAL=$?
 			STANDBY_IPV6_ADDRESS_ALL=( $( REMOTE_EXECUTE_AND_GET_OUTPUT $STANDBY_HOSTNAME "$IPV6_ADDR_LIST_CMD |$GREP inet6|$AWK '{print \$2}' |$CUT -d'/' -f1" 2>>$LOG_FILE ))
+			STANDBY_IPV6_RETVAL=$?
 			STANDBY_IP_ADDRESS=(`$ECHO ${STANDBY_IP_ADDRESS_ALL[@]} ${STANDBY_IPV6_ADDRESS_ALL[@]}|$TR ' ' '\n'|$SORT -u|$TR '\n' ' '`)
-			ERROR_CHK $? "obtain IP address of standby Coordinator host" 2
+			ERROR_CHK $(( STANDBY_IPV4_RETVAL != 0 || STANDBY_IPV6_RETVAL != 0 )) "obtain IP address of standby Coordinator host" 2
 			LOG_MSG "[INFO]:-Standby IP address array = ${STANDBY_IP_ADDRESS[@]}"
 			#Check open files value
 			STANDBY_COORDINATOR_OPEN=$( REMOTE_EXECUTE_AND_GET_OUTPUT $STANDBY_HOSTNAME "ulimit -n" )
-			if [ $STANDBY_COORDINATOR_OPEN -lt $OS_OPENFILES ];then
+			RETVAL=$?
+			if [ $RETVAL -ne 0 ];then
+				LOG_MSG "[WARN]:-Failed to obtain open file limit on standby Coordinator host $STANDBY_HOSTNAME" 1
+			elif [ $STANDBY_COORDINATOR_OPEN -lt $OS_OPENFILES ];then
 				LOG_MSG "[WARN]:-Standby Coordinator open file limit is $STANDBY_COORDINATOR_OPEN should be >= $OS_OPENFILES" 1
 				ULIMIT_WARN=1
 			fi
@@ -680,7 +685,10 @@ CHK_OPEN_FILES () {
 	LOG_MSG "[INFO]:-Start Function $FUNCNAME"
 	LOG_MSG "[INFO]:-Checking $1"
 	OPEN_VALUE=$( REMOTE_EXECUTE_AND_GET_OUTPUT $1 "ulimit -n" )
-	if [ $OPEN_VALUE -lt $OS_OPENFILES ];then
+	RETVAL=$?
+	if [ $RETVAL -ne 0 ];then
+		LOG_MSG "[WARN]:-Failed to obtain open file limit on host $1" 1
+	elif [ $OPEN_VALUE -lt $OS_OPENFILES ];then
 		LOG_MSG "[WARN]:-Host $1 open files limit is $OPEN_VALUE should be >= $OS_OPENFILES" 1
 		ULIMIT_WARN=1
 	fi
@@ -746,7 +754,14 @@ CHK_QES () {
         # Check that the hostname is not associated with local host
         LOG_MSG "[INFO]:-Checking $GP_HOSTADDRESS $HOSTFILE for localhost set as $GP_HOSTADDRESS"
         LOCAL_COUNT=$( REMOTE_EXECUTE_AND_GET_OUTPUT $GP_HOSTADDRESS "$GREP $GP_HOSTADDRESS $HOSTFILE|$GREP -c localhost")
-        if [ $LOCAL_COUNT -ne 0 ];then
+        RETVAL=$?
+        # RETVAL is the exit status of the "grep -c localhost" pipe, so 1 is
+        # the normal, expected result when the host is not localhost-aliased;
+        # only 255 (ssh connection/authentication failure) means the check
+        # itself never ran.
+        if [ $RETVAL -eq 255 ];then
+            LOG_MSG "[WARN]:-Failed to check $HOSTFILE on $GP_HOSTADDRESS for localhost aliasing" 1
+        elif [ $LOCAL_COUNT -ne 0 ];then
             LOG_MSG "[WARN]:-----------------------------------------------------------" 1
             LOG_MSG "[WARN]:-Host $GP_HOSTADDRESS is assigned as localhost in $HOSTFILE"  1
             LOG_MSG "[WARN]:-This will cause segment->coordinator communication failures" 1

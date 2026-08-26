@@ -261,11 +261,23 @@ REMOTE_EXECUTE_AND_GET_OUTPUT () {
   LOG_MSG "[INFO]:-Start Function $FUNCNAME"
   HOST="$1"
   CMD="echo 'GP_DELIMITER_FOR_IGNORING_BASH_BANNER';$2"
-  OUTPUT=$( $TRUSTED_SHELL "$HOST" "$CMD" | $AWK '/^GP_DELIMITER_FOR_IGNORING_BASH_BANNER/ {seen = 1} seen {print}' | $TAIL -n +2 )
+  # Run the remote command on its own so RETVAL is the ssh/remote status;
+  # a pipeline into the banner filter would leave $? holding the filter's
+  # status instead, hiding connection failures.
+  OUTPUT=$( $TRUSTED_SHELL "$HOST" "$CMD" )
   RETVAL=$?
-  if [ $RETVAL -ne 0 ]; then
- 
-     LOG_MSG "[FATAL]:- Command $CMD on $HOST failed with error status $RETVAL" 2
+  OUTPUT=$( $ECHO "$OUTPUT" | $AWK '/^GP_DELIMITER_FOR_IGNORING_BASH_BANNER/ {seen = 1} seen {print}' | $TAIL -n +2 )
+  if [ $RETVAL -eq 255 ]; then
+     # 255 is ssh's own status for a connection or authentication failure:
+     # the remote command never ran.  Display on stderr: this function's
+     # stdout is the remote command's output, captured by every caller.
+     LOG_MSG "[FATAL]:- Command $CMD on $HOST failed with error status $RETVAL" 2 >&2
+  elif [ $RETVAL -ne 0 ]; then
+     # The remote command ran and exited non-zero.  Callers probe with
+     # grep/test commands for which a non-zero status is a legitimate
+     # negative answer, so record it without raising an error; the status
+     # is passed through to the caller below.
+     LOG_MSG "[INFO]:-Command $CMD on $HOST exited with status $RETVAL"
   else
      LOG_MSG "[INFO]:-Completed $TRUSTED_SHELL $HOST $CMD"
   fi
@@ -274,6 +286,7 @@ REMOTE_EXECUTE_AND_GET_OUTPUT () {
   DEBUG_LEVEL=$INITIAL_DEBUG_LEVEL
   #Return output
   echo "$OUTPUT"
+  return $RETVAL
 }
 
 POSTGRES_VERSION_CHK() {
