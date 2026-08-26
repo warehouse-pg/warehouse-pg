@@ -658,3 +658,76 @@ reset enable_seqscan;
 
 drop table index_only_join_test;
 drop table index_only_join_test_aocs;
+
+-- Test that ORCA does not use an index whose key collation differs from the
+-- default collation of the key's type. ORCA's metadata carries no collation
+-- information, so the index quals it generates always use the type's default
+-- collation; scanning a btree ordered by a different collation with such
+-- quals silently misses rows.
+-- The original wrong-results scenario needs a linguistic locale (e.g.
+-- en_US.utf8) whose ordering differs from the database default, which regress
+-- cannot assume; COLLATE "C" exercises the same code path (indcollation
+-- differs from the default collation oid) on every platform, so the bug is
+-- asserted through the plan shape: an unfixed ORCA picks the mismatched
+-- index below with an Index Cond.
+create table bfv_index_collate_tbl (id int, val text) distributed by (id);
+insert into bfv_index_collate_tbl select g, chr(97 + g % 26) || g from generate_series(1, 1000) g;
+create index bfv_index_collate_c_idx on bfv_index_collate_tbl (val collate "C");
+vacuum analyze bfv_index_collate_tbl;
+-- ORCA must not use the "C"-collation index for a default-collation
+-- predicate, even with table scans discouraged (it falls back instead
+-- because no scan alternative is left).
+set optimizer_enable_tablescan = off;
+explain (costs off) select count(*) from bfv_index_collate_tbl where val >= 'x';
+select count(*) from bfv_index_collate_tbl where val >= 'x';
+-- a multi-column index is hidden as a whole when any key column has a
+-- non-default collation, even though the int leading key itself would be
+-- collation-safe (conservative: ORCA metadata is per-index, not per-column)
+create index bfv_index_collate_multi_idx on bfv_index_collate_tbl (id, val collate "C");
+vacuum analyze bfv_index_collate_tbl;
+explain (costs off) select count(*) from bfv_index_collate_tbl where val >= 'x';
+select count(*) from bfv_index_collate_tbl where val >= 'x';
+-- an index with the default collation is still used
+-- (index-only scans disabled: the IOS-vs-IndexScan choice here is a cost
+-- near-tie that differs between architectures)
+create index bfv_index_collate_def_idx on bfv_index_collate_tbl (val);
+vacuum analyze bfv_index_collate_tbl;
+set enable_seqscan = off;
+set optimizer_enable_indexonlyscan = off;
+set enable_indexonlyscan = off;
+explain (costs off) select count(*) from bfv_index_collate_tbl where val >= 'x';
+select count(*) from bfv_index_collate_tbl where val >= 'x';
+-- a "name" column whose index uses the type's default collation stays visible
+-- to ORCA: a btree name_ops index stores cstring (hash indexes store the int4
+-- hash code), so the visibility check must compare against the TABLE column's
+-- type collation (C), which equals the index's, not the index attribute's
+create table bfv_index_collate_name_tbl (id int, nm name) distributed by (id);
+insert into bfv_index_collate_name_tbl select g, ('n' || g)::name from generate_series(1, 1000) g;
+create index bfv_index_collate_name_idx on bfv_index_collate_name_tbl (nm);
+vacuum analyze bfv_index_collate_name_tbl;
+explain (costs off) select count(*) from bfv_index_collate_name_tbl where nm >= 'n99';
+select count(*) from bfv_index_collate_name_tbl where nm >= 'n99';
+-- a "name" column indexed with a NON-default collation is hidden: name
+-- comparisons do consult the collation, and ORCA reconstructs the qual with
+-- the type's default (C), so it would scan a differently-ordered btree.
+-- "POSIX" (like "C") orders identically to the default here, so the row count
+-- is unchanged and the assertion is on the plan shape
+create index bfv_index_collate_name_posix_idx on bfv_index_collate_name_tbl (nm collate "POSIX");
+vacuum analyze bfv_index_collate_name_tbl;
+explain (costs off) select count(*) from bfv_index_collate_name_tbl where nm >= 'n99';
+-- a "name[]" column is hidden too: TypeCollation(name[]) is the database
+-- default, not C, so ORCA would scan the C-ordered array btree with a
+-- mismatched comparator
+create table bfv_index_collate_namearr_tbl (id int, tags name[]) distributed by (id);
+insert into bfv_index_collate_namearr_tbl select g, array[('t' || g)::name] from generate_series(1, 1000) g;
+create index bfv_index_collate_namearr_idx on bfv_index_collate_namearr_tbl (tags);
+vacuum analyze bfv_index_collate_namearr_tbl;
+explain (costs off) select count(*) from bfv_index_collate_namearr_tbl where tags = array['t99'::name];
+select count(*) from bfv_index_collate_namearr_tbl where tags = array['t99'::name];
+reset optimizer_enable_tablescan;
+reset enable_seqscan;
+reset optimizer_enable_indexonlyscan;
+reset enable_indexonlyscan;
+drop table bfv_index_collate_tbl;
+drop table bfv_index_collate_name_tbl;
+drop table bfv_index_collate_namearr_tbl;

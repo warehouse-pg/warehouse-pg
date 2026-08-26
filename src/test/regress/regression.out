@@ -1,0 +1,5 @@
+Optimizer enabled. Using optimizer answer files whenever possible
+Resource group disabled. Using default answer files
+test test_setup                   ... ok          603 ms
+test create_index                 ... FAILED     1207 ms
+test portals                      ... FAILED      320 ms

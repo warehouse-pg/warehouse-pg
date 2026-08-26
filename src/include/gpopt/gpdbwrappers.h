@@ -210,6 +210,9 @@ void FreeAttrStatsSlot(AttStatsSlot *sslot);
 // attribute statistics
 HeapTuple GetAttStats(Oid relid, AttrNumber attnum);
 
+// type oid of a given attribute of the given relation
+Oid GetAttType(Oid relid, AttrNumber attnum);
+
 List *GetExtStats(Relation rel);
 
 char *GetExtStatsName(Oid statOid);
