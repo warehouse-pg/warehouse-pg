@@ -1412,6 +1412,17 @@ doDispatchDtxProtocolCommand(DtxProtocolCommand dtxProtocolCommand,
 		}
 	}
 
+	/*
+	 * The PGresults (including any waitGxids arrays libpq attached to them)
+	 * are malloc'ed by libpq and were snatched out of the dispatcher state
+	 * by cdbdisp_returnResults(), so they are not released with any memory
+	 * context: they must be cleared here, or every dtx protocol command
+	 * leaks them for the life of the backend.
+	 */
+	CdbPgResults cdb_pgresults = {results, resultCount, 0};
+
+	cdbdisp_clearCdbPgResults(&cdb_pgresults);
+
 	return (numOfFailed == 0);
 }
 
