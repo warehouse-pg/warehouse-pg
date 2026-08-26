@@ -74,3 +74,28 @@ recordsep_zero off
 tableattr      
 title          
 tuples_only    off
+--
+-- \restrict / \unrestrict (CVE-2025-8714)
+--
+-- Entering restricted mode makes psql refuse every backslash command
+-- except a \unrestrict that supplies the matching key.
+\restrict secretkey
+-- refused while restricted (argument is neither echoed nor executed):
+\echo should_not_run
+backslash commands are restricted; only \unrestrict is allowed
+\pset border
+backslash commands are restricted; only \unrestrict is allowed
+-- a wrong key must NOT leave restricted mode:
+\unrestrict wrongkey
+\unrestrict: wrong key
+\echo still_restricted
+backslash commands are restricted; only \unrestrict is allowed
+-- the matching key leaves restricted mode; commands work again:
+\unrestrict secretkey
+\echo unrestricted_ok
+unrestricted_ok
+-- outside restricted mode these are plain errors:
+\unrestrict secretkey
+\unrestrict: not currently in restricted mode
+\restrict
+\restrict: missing required argument

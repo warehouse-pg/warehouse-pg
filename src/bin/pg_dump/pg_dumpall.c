@@ -93,6 +93,7 @@ static int	server_version;
 
 static FILE *OPF;
 static char *filename = NULL;
+static char *restrict_key = NULL;	/* CVE-2025-8714: psql \restrict key */
 
 #define exit_nicely(code) exit(code)
 
@@ -137,6 +138,7 @@ main(int argc, char *argv[])
 		{"lock-wait-timeout", required_argument, NULL, 2},
 		{"no-tablespaces", no_argument, &no_tablespaces, 1},
 		{"quote-all-identifiers", no_argument, &quote_all_identifiers, 1},
+		{"restrict-key", required_argument, NULL, 9},
 		{"role", required_argument, NULL, 3},
 		{"use-set-session-authorization", no_argument, &use_setsessauth, 1},
 		{"no-security-labels", no_argument, &no_security_labels, 1},
@@ -330,6 +332,12 @@ main(int argc, char *argv[])
 				appendShellString(pgdumpopts, use_role);
 				break;
 
+			case 9:				/* restrict key */
+				restrict_key = pg_strdup(optarg);
+				appendPQExpBufferStr(pgdumpopts, " --restrict-key ");
+				appendShellString(pgdumpopts, optarg);
+				break;
+
 				/* START MPP ADDITION */
 			case 1000:
 				/* gp-format */
@@ -429,6 +437,25 @@ main(int argc, char *argv[])
 		appendPQExpBufferStr(pgdumpopts, " --roles-only");
 
 	/*
+	 * Restrict the psql meta-commands the output may run at restore time.  If
+	 * no restrict key was provided, generate one.  A user-provided key is also
+	 * passed on to each per-database pg_dump via pgdumpopts (see above).
+	 * (CVE-2025-8714)
+	 */
+	if (!restrict_key)
+		restrict_key = generate_restrict_key();
+	if (!restrict_key)
+	{
+		fprintf(stderr, _("%s: could not generate restrict key\n"), progname);
+		exit_nicely(1);
+	}
+	if (!valid_restrict_key(restrict_key))
+	{
+		fprintf(stderr, _("%s: invalid restrict key\n"), progname);
+		exit_nicely(1);
+	}
+
+	/*
 	 * If there was a database specified on the command line, use that,
 	 * otherwise try to connect to database "postgres", and failing that
 	 * "template1".  "postgres" is the preferred choice for 8.1 and later
@@ -508,6 +535,14 @@ main(int argc, char *argv[])
 	fprintf(OPF,"--\n-- Greenplum Database cluster dump\n--\n\n");
 	if (verbose)
 		dumpTimestamp("Started on");
+
+	/*
+	 * Enter restricted mode to block any unexpected psql meta-commands while
+	 * pg_dumpall's own globals (roles, tablespaces, role settings) are
+	 * emitted.  pg_dump handles the per-database sections itself.
+	 * (CVE-2025-8714)
+	 */
+	fprintf(OPF, "\\restrict %s\n\n", restrict_key);
 
 	/*
 	 * We used to emit \connect postgres here, but that served no purpose
@@ -601,6 +636,13 @@ main(int argc, char *argv[])
 		}
 	}
 
+	/*
+	 * Exit restricted mode just before dumping the databases; each
+	 * per-database pg_dump re-enters restricted mode as appropriate.
+	 * (CVE-2025-8714)
+	 */
+	fprintf(OPF, "\\unrestrict %s\n\n", restrict_key);
+
 	if (!globals_only && !roles_only && !tablespaces_only)
 		dumpDatabases(conn);
 
@@ -653,6 +695,7 @@ help(void)
 	printf(_("  --no-tablespaces             do not dump tablespace assignments\n"));
 	printf(_("  --no-unlogged-table-data     do not dump unlogged table data\n"));
 	printf(_("  --quote-all-identifiers      quote all identifiers, even if not key words\n"));
+	printf(_("  --restrict-key=RESTRICT_KEY  use provided string as psql \\restrict key\n"));
 	printf(_("  --use-set-session-authorization\n"
 			 "                               use SET SESSION AUTHORIZATION commands instead of\n"
 			 "                               ALTER OWNER commands to set ownership\n"));
@@ -1830,7 +1873,15 @@ dumpCreateDB(PGconn *conn)
 			 * Cannot change tablespace of the database we're connected to,
 			 * so to move "postgres" to another tablespace, we connect to
 			 * "template1", and vice versa.
+			 *
+			 * These \connect meta-commands run at restore time while the
+			 * output is in psql's restricted mode (CVE-2025-8714), which
+			 * rejects backslash commands.  Temporarily leave and re-enter
+			 * restricted mode around them, as _reconnectToDB() does for its
+			 * own \connect.
 			 */
+			if (restrict_key)
+				appendPQExpBuffer(buf, "\\unrestrict %s\n", restrict_key);
 			if (strcmp(dbname, "postgres") == 0)
 				appendPQExpBuffer(buf, "\\connect template1\n");
 			else
@@ -1841,6 +1892,8 @@ dumpCreateDB(PGconn *conn)
 
 			/* connect to original database */
 			appendPsqlMetaConnect(buf, dbname);
+			if (restrict_key)
+				appendPQExpBuffer(buf, "\\restrict %s\n", restrict_key);
 		}
 
 		if (binary_upgrade)

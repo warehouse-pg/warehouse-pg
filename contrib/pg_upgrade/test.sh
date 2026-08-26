@@ -170,7 +170,7 @@ createdb "$dbname2" || createdb_status=$?
 createdb "$dbname3" || createdb_status=$?
 
 if "$MAKE" -C "$oldsrc" installcheck; then
-	pg_dumpall -f "$temp_root"/dump1.sql || pg_dumpall1_status=$?
+	pg_dumpall --restrict-key=test -f "$temp_root"/dump1.sql || pg_dumpall1_status=$?
 	if [ "$newsrc" != "$oldsrc" ]; then
 		oldpgversion=`psql -A -t -d regression -c "SHOW server_version_num"`
 		fix_sql=""
@@ -224,7 +224,7 @@ case $testhost in
 	*)		sh ./analyze_new_cluster.sh ;;
 esac
 
-pg_dumpall -f "$temp_root"/dump2.sql || pg_dumpall2_status=$?
+pg_dumpall --restrict-key=test -f "$temp_root"/dump2.sql || pg_dumpall2_status=$?
 pg_ctl -m fast stop
 
 if [ -n "$pg_dumpall2_status" ]; then

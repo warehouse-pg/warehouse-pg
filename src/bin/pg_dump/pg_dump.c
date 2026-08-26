@@ -358,6 +358,7 @@ main(int argc, char **argv)
 	enum trivalue prompt_password = TRI_DEFAULT;
 	int			compressLevel = -1;
 	int			plainText = 0;
+	char	   *restrict_key = NULL;
 	int			outputClean = 0;
 	int			outputCreateDB = 0;
 	bool		outputBlobs = false;
@@ -447,6 +448,7 @@ main(int argc, char **argv)
 		{"no-gp-syntax", no_argument, NULL, 1001},
 		{"function-oids", required_argument, NULL, 1002},
 		{"relation-oids", required_argument, NULL, 1003},
+		{"restrict-key", required_argument, NULL, 1004},
 		/* END MPP ADDITION */
 		{NULL, 0, NULL, 0}
 	};
@@ -662,6 +664,10 @@ main(int argc, char **argv)
 				include_everything = false;
 				break;
 
+			case 1004:				/* restrict key */
+				restrict_key = pg_strdup(optarg);
+				break;
+
 			default:
 				fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
 				exit_nicely(1);
@@ -716,7 +722,23 @@ main(int argc, char **argv)
 
 	/* archiveFormat specific setup */
 	if (archiveFormat == archNull)
+	{
 		plainText = 1;
+
+		/*
+		 * Restrict the psql meta-commands that the plain-text output may run
+		 * at restore time.  If no restrict key is provided, one is generated
+		 * for you.  (CVE-2025-8714)
+		 */
+		if (!restrict_key)
+			restrict_key = generate_restrict_key();
+		if (!restrict_key)
+			exit_horribly(NULL, "could not generate restrict key\n");
+		if (!valid_restrict_key(restrict_key))
+			exit_horribly(NULL, "invalid restrict key\n");
+	}
+	else if (restrict_key)
+		exit_horribly(NULL, "option --restrict-key can only be used with --format=plain\n");
 
 	/* Custom and directory formats are compressed by default, others not */
 	if (compressLevel == -1)
@@ -973,6 +995,7 @@ main(int argc, char **argv)
 	 */
 	ropt = NewRestoreOptions();
 	ropt->filename = filename;
+	ropt->restrict_key = restrict_key ? pg_strdup(restrict_key) : NULL;
 	ropt->dropSchema = outputClean;
 	ropt->dataOnly = dataOnly;
 	ropt->schemaOnly = schemaOnly;
@@ -1068,6 +1091,7 @@ help(const char *progname)
 	printf(_("  --no-tablespaces             do not dump tablespace assignments\n"));
 	printf(_("  --no-unlogged-table-data     do not dump unlogged table data\n"));
 	printf(_("  --quote-all-identifiers      quote all identifiers, even if not key words\n"));
+	printf(_("  --restrict-key=RESTRICT_KEY  use provided string as psql \\restrict key\n"));
 	printf(_("  --section=SECTION            dump named section (pre-data, data, or post-data)\n"));
 	printf(_("  --serializable-deferrable    wait until the dump can run without anomalies\n"));
 	printf(_("  --use-set-session-authorization\n"

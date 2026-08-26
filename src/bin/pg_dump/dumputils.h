@@ -70,6 +70,10 @@ extern bool processSQLNamePattern(PGconn *conn, PQExpBuffer buf,
 					  bool have_where, bool force_escape,
 					  const char *schemavar, const char *namevar,
 					  const char *altnamevar, const char *visibilityrule);
+
+extern char *generate_restrict_key(void);
+extern bool valid_restrict_key(const char *restrict_key);
+
 /* GPDB additions */
 extern char *escape_backslashes(const char *src, bool quotes_too);
 extern char *escape_fmtopts_string(const char *src);

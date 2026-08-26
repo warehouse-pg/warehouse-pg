@@ -152,7 +152,7 @@ slashUsage(unsigned short int pager)
 	if (currdb == NULL)
 		currdb = "";
 
-	output = PageOutput(103, pager);
+	output = PageOutput(106, pager);
 
 	/* if you add/remove a line here, change the row count above */
 
@@ -162,6 +162,10 @@ slashUsage(unsigned short int pager)
 	fprintf(output, _("  \\gset [PREFIX]         execute query and store results in psql variables\n"));
 	fprintf(output, _("  \\h [NAME]              help on syntax of SQL commands, * for all commands\n"));
 	fprintf(output, _("  \\q                     quit psql\n"));
+	fprintf(output, _("  \\restrict RESTRICT_KEY\n"
+					  "                         enter restricted mode with provided key\n"));
+	fprintf(output, _("  \\unrestrict RESTRICT_KEY\n"
+					  "                         exit restricted mode if key matches\n"));
 	fprintf(output, _("  \\watch [SEC]           execute query every SEC seconds\n"));
 	fprintf(output, "\n");
 

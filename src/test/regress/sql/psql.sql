@@ -43,3 +43,22 @@ select 10 as test01, 20 as test02 from generate_series(1,0) \gset
 
 -- show all pset options
 \pset
+
+--
+-- \restrict / \unrestrict (CVE-2025-8714)
+--
+-- Entering restricted mode makes psql refuse every backslash command
+-- except a \unrestrict that supplies the matching key.
+\restrict secretkey
+-- refused while restricted (argument is neither echoed nor executed):
+\echo should_not_run
+\pset border
+-- a wrong key must NOT leave restricted mode:
+\unrestrict wrongkey
+\echo still_restricted
+-- the matching key leaves restricted mode; commands work again:
+\unrestrict secretkey
+\echo unrestricted_ok
+-- outside restricted mode these are plain errors:
+\unrestrict secretkey
+\restrict
