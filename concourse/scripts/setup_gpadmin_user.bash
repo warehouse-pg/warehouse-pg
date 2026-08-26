@@ -95,6 +95,35 @@ setup_sshd() {
   # Disable password authentication so builds never hang given bad keys
   sed -ri 's/PasswordAuthentication yes/PasswordAuthentication no/g' /etc/ssh/sshd_config
 
+  # The two seds above match nothing on EL9-family images: their stock
+  # sshd_config carries neither "UsePAM yes" nor "PasswordAuthentication
+  # yes", only an Include, AuthorizedKeysFile and Subsystem line, so UsePAM
+  # keeps its built-in default of yes.  The container has no usable PAM
+  # account stack, so sshd accepts gpadmin's key and then refuses the
+  # session:
+  #
+  #   Accepted key RSA SHA256:... found at /home/gpadmin/.ssh/authorized_keys:1
+  #   Access denied for user gpadmin by PAM account configuration [preauth]
+  #
+  # Every bare ssh/rsync from test code then exits 255 while gpssh (pty,
+  # different PAM path) works.  State the settings in a drop-in instead of
+  # patching lines that are not there; the Include sits at the top of
+  # sshd_config and sshd takes the first value it finds, so these win.
+  if grep -q '^Include /etc/ssh/sshd_config.d/' /etc/ssh/sshd_config; then
+    mkdir -p /etc/ssh/sshd_config.d
+    cat > /etc/ssh/sshd_config.d/00-whpg-ci.conf <<-'SSHD_DROPIN'
+	UsePAM no
+	PasswordAuthentication no
+	SSHD_DROPIN
+  else
+    printf 'UsePAM no\nPasswordAuthentication no\n' >> /etc/ssh/sshd_config
+  fi
+
+  # Privilege separation needs these to exist; they are missing on minimal
+  # container images.
+  install -d -m 711 /var/empty/sshd
+  install -d -m 755 /run/sshd
+
   case "$TEST_OS" in
     centos7)
       test -e /etc/ssh/ssh_host_key || ssh-keygen -f /etc/ssh/ssh_host_key -N '' -t rsa1
