@@ -533,27 +533,54 @@ def impl(context, logdir):
     if os.path.exists('{}/recovery_progress.file'.format(log_dir)):
         raise Exception('recovery_progress.file is still present under {}'.format(log_dir))
 
-def backup_bashrc():
+# Whether backup_bashrc() ran for the current scenario.  restore_bashrc()
+# acts only when this is set: a missing backup file does not mean "there was
+# no .bashrc before the test" -- the hooks that call backup_bashrc() can fail
+# before reaching it, and deleting ~/.bashrc on that guess would destroy the
+# user's real file.
+_bashrc_backup_taken = False
+
+
+def _bashrc_paths():
     home_dir = os.environ.get('HOME')
-    file = home_dir + '/.bashrc'
-    backup_fle = home_dir + '/.bashrc.backup'
+    return home_dir + '/.bashrc', home_dir + '/.bashrc.backup'
+
+
+def backup_bashrc():
+    global _bashrc_backup_taken
+    file, backup_fle = _bashrc_paths()
+    _bashrc_backup_taken = False
     if (os.path.isfile(file)):
         command = "cp -f %s %s" % (file, backup_fle)
         result = run_cmd(command)
         if (result[0] != 0):
             raise Exception("Error while backing up bashrc file. STDERR:%s" % (result[2]))
+        _bashrc_backup_taken = True
+    else:
+        # No .bashrc to begin with: remember that, so restore removes whatever
+        # the scenario created rather than leaving it behind.
+        _bashrc_backup_taken = True
     return
 
 
 
 def restore_bashrc():
-    home_dir = os.environ.get('HOME')
-    file = home_dir + '/.bashrc'
-    backup_fle = home_dir + '/.bashrc.backup'
+    global _bashrc_backup_taken
+    file, backup_fle = _bashrc_paths()
+
+    if not _bashrc_backup_taken:
+        # backup_bashrc() never ran for this scenario -- the before hook can
+        # raise before reaching it.  Touching ~/.bashrc now would be acting on
+        # a guess about a file this test did not put there.
+        print("behave: skipping .bashrc restore -- no backup was taken for this scenario")
+        return
+
     if (os.path.isfile(backup_fle)):
         command = "mv -f %s %s" % (backup_fle, file)
     else:
+        # Backup ran and found no .bashrc, so anything here is the scenario's.
         command = "rm -f %s" % (file)
+    _bashrc_backup_taken = False
     result = run_cmd(command)
     if (result[0] != 0):
         raise Exception("Error while restoring up bashrc file. STDERR:%s" % (result[2]))
