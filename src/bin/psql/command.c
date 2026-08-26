@@ -96,6 +96,16 @@ static void checkWin32Codepage(void);
  *----------
  */
 
+/*
+ * State for the \restrict / \unrestrict meta-commands (CVE-2025-8714).  While
+ * "restricted" is set, HandleSlashCmds() refuses every backslash command
+ * except a \unrestrict that supplies the matching key.  pg_dump/pg_dumpall
+ * wrap plain-text dumps in \restrict ... \unrestrict so that a hostile dump
+ * cannot run psql meta-commands on the machine performing the restore.
+ */
+static bool restricted = false;
+static char *restrict_key = NULL;
+
 backslashResult
 HandleSlashCmds(PsqlScanState scan_state,
 				PQExpBuffer query_buf)
@@ -109,8 +119,17 @@ HandleSlashCmds(PsqlScanState scan_state,
 	/* Parse off the command name */
 	cmd = psql_scan_slash_command(scan_state);
 
-	/* And try to execute it */
-	status = exec_command(cmd, scan_state, query_buf);
+	/*
+	 * And try to execute it.  In restricted mode (entered via \restrict), the
+	 * only backslash command we will run is \unrestrict.
+	 */
+	if (restricted && strcmp(cmd, "unrestrict") != 0)
+	{
+		psql_error("backslash commands are restricted; only \\unrestrict is allowed\n");
+		status = PSQL_CMD_ERROR;
+	}
+	else
+		status = exec_command(cmd, scan_state, query_buf);
 
 	if (status == PSQL_CMD_UNKNOWN)
 	{
@@ -216,6 +235,62 @@ exec_command(const char *cmd,
 
 		success = do_pset("title", opt, &pset.popt, pset.quiet);
 		free(opt);
+	}
+
+	/*
+	 * \restrict -- enter restricted mode with the provided key
+	 * (CVE-2025-8714).  Read the key with OT_NO_EVAL so a hostile dump cannot
+	 * smuggle a backquote command substitution here (cf. CVE-2026-18408).
+	 */
+	else if (strcmp(cmd, "restrict") == 0)
+	{
+		char	   *opt = psql_scan_slash_option(scan_state,
+												 OT_NO_EVAL, NULL, false);
+
+		if (opt == NULL || opt[0] == '\0')
+		{
+			psql_error("\\%s: missing required argument\n", cmd);
+			success = false;
+		}
+		else
+		{
+			Assert(!restricted);
+			restrict_key = pg_strdup(opt);
+			restricted = true;
+		}
+		if (opt)
+			free(opt);
+	}
+
+	/* \unrestrict -- leave restricted mode if the provided key matches */
+	else if (strcmp(cmd, "unrestrict") == 0)
+	{
+		char	   *opt = psql_scan_slash_option(scan_state,
+												 OT_NO_EVAL, NULL, false);
+
+		if (opt == NULL || opt[0] == '\0')
+		{
+			psql_error("\\%s: missing required argument\n", cmd);
+			success = false;
+		}
+		else if (!restricted)
+		{
+			psql_error("\\%s: not currently in restricted mode\n", cmd);
+			success = false;
+		}
+		else if (strcmp(opt, restrict_key) == 0)
+		{
+			free(restrict_key);
+			restrict_key = NULL;
+			restricted = false;
+		}
+		else
+		{
+			psql_error("\\%s: wrong key\n", cmd);
+			success = false;
+		}
+		if (opt)
+			free(opt);
 	}
 
 	/*

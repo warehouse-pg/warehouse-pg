@@ -193,6 +193,8 @@ typedef struct _restoreOptions
 	bool	   *idWanted;		/* array showing which dump IDs to emit */
 
 	int			binary_upgrade;	/* GPDB: restoring for a binary upgrade */
+
+	char	   *restrict_key;	/* CVE-2025-8714: psql \restrict key, or NULL */
 } RestoreOptions;
 
 typedef void (*SetupWorkerPtr) (Archive *AH, RestoreOptions *ropt);

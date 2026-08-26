@@ -34,7 +34,10 @@ NEW_DATADIR=
 DEMOCLUSTER_OPTS=
 PGUPGRADE_OPTS=
 
-DUMP_OPTS=
+# Use a fixed \restrict key so the before- and after-upgrade dumps are
+# byte-comparable; pg_dumpall otherwise emits a random one per run
+# (CVE-2025-8714).
+DUMP_OPTS='--restrict-key=test'
 
 # The normal ICW run has a gpcheckcat call, so allow this testrunner to skip
 # running it in case it was just executed to save time.

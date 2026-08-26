@@ -358,6 +358,17 @@ RestoreArchive(Archive *AHX)
 
 	ahprintf(AH, "--\n-- Greenplum Database database dump\n--\n\n");
 
+	/*
+	 * If generating plain-text output, enter restricted mode to block any
+	 * unexpected psql meta-commands.  A malicious source might try to inject
+	 * a variety of things via bogus responses to queries.  While we cannot
+	 * prevent such sources from affecting the destination at restore time, we
+	 * can block psql meta-commands so that the client machine that runs psql
+	 * with the dump output remains unaffected.
+	 */
+	if (ropt->restrict_key)
+		ahprintf(AH, "\\restrict %s\n\n", ropt->restrict_key);
+
 	if (AH->public.verbose)
 	{
 		if (AH->archiveRemoteVersion)
@@ -635,6 +646,14 @@ RestoreArchive(Archive *AHX)
 		dumpTimestamp(AH, "Completed on", time(NULL));
 
 	ahprintf(AH, "--\n-- Greenplum Database database dump complete\n--\n\n");
+
+	/*
+	 * If generating plain-text output, exit restricted mode at the very end
+	 * of the script.  This is not pro forma; in particular, pg_dumpall
+	 * requires this when transitioning from one database to another.
+	 */
+	if (ropt->restrict_key)
+		ahprintf(AH, "\\unrestrict %s\n\n", ropt->restrict_key);
 
 	/*
 	 * Clean up & we're done.
@@ -3028,11 +3047,26 @@ _reconnectToDB(ArchiveHandle *AH, const char *dbname)
 		if (dbname)
 		{
 			PQExpBufferData connectbuf;
+			RestoreOptions *ropt = AH->ropt;
+			bool		restrict_on = (ropt && ropt->restrict_key);
+
+			/*
+			 * We must temporarily exit restricted mode for \connect.
+			 * Anything added between this \unrestrict and the following
+			 * \restrict must be careful to avoid any possible meta-command
+			 * injection vector.
+			 */
+			if (restrict_on)
+				ahprintf(AH, "\\unrestrict %s\n", ropt->restrict_key);
 
 			initPQExpBuffer(&connectbuf);
 			appendPsqlMetaConnect(&connectbuf, dbname);
-			ahprintf(AH, "%s\n", connectbuf.data);
+			ahprintf(AH, "%s%s", connectbuf.data,
+					 (restrict_on) ? "" : "\n");
 			termPQExpBuffer(&connectbuf);
+
+			if (restrict_on)
+				ahprintf(AH, "\\restrict %s\n\n", ropt->restrict_key);
 		}
 		else
 			ahprintf(AH, "%s\n", "\\connect -\n");

@@ -116,6 +116,7 @@ main(int argc, char **argv)
 		{"if-exists", no_argument, &if_exists, 1},
 		{"no-data-for-failed-tables", no_argument, &no_data_for_failed_tables, 1},
 		{"no-tablespaces", no_argument, &outputNoTablespaces, 1},
+		{"restrict-key", required_argument, NULL, 6},
 		{"role", required_argument, NULL, 2},
 		{"section", required_argument, NULL, 3},
 		{"use-set-session-authorization", no_argument, &use_setsessauth, 1},
@@ -284,6 +285,10 @@ main(int argc, char **argv)
 				set_dump_section(optarg, &(opts->dumpSections));
 				break;
 
+			case 6:				/* restrict key */
+				opts->restrict_key = pg_strdup(optarg);
+				break;
+
 			default:
 				fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
 				exit_nicely(1);
@@ -317,7 +322,35 @@ main(int argc, char **argv)
 					progname);
 			exit_nicely(1);
 		}
+
+		if (opts->restrict_key)
+		{
+			fprintf(stderr, _("%s: options -d/--dbname and --restrict-key cannot be used together\n"),
+					progname);
+			exit_nicely(1);
+		}
+
 		opts->useDB = 1;
+	}
+	else
+	{
+		/*
+		 * Plain-text output: restrict the psql meta-commands the script may
+		 * run at restore time.  If no restrict key is provided, generate one.
+		 * (CVE-2025-8714)
+		 */
+		if (!opts->restrict_key)
+			opts->restrict_key = generate_restrict_key();
+		if (!opts->restrict_key)
+		{
+			fprintf(stderr, _("%s: could not generate restrict key\n"), progname);
+			exit_nicely(1);
+		}
+		if (!valid_restrict_key(opts->restrict_key))
+		{
+			fprintf(stderr, _("%s: invalid restrict key\n"), progname);
+			exit_nicely(1);
+		}
 	}
 
 	if (opts->dataOnly && opts->schemaOnly)
@@ -485,6 +518,7 @@ usage(const char *progname)
 			 "                               created\n"));
 	printf(_("  --no-security-labels         do not restore security labels\n"));
 	printf(_("  --no-tablespaces             do not restore tablespace assignments\n"));
+	printf(_("  --restrict-key=RESTRICT_KEY  use provided string as psql \\restrict key\n"));
 	printf(_("  --section=SECTION            restore named section (pre-data, data, or post-data)\n"));
 	printf(_("  --use-set-session-authorization\n"
 			 "                               use SET SESSION AUTHORIZATION commands instead of\n"

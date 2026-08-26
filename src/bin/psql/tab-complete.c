@@ -884,9 +884,9 @@ psql_completion(const char *text, int start, int end)
 		"\\e", "\\echo", "\\ef", "\\encoding",
 		"\\f", "\\g", "\\gset", "\\h", "\\help", "\\H", "\\i", "\\ir", "\\l",
 		"\\lo_import", "\\lo_export", "\\lo_list", "\\lo_unlink",
-		"\\o", "\\p", "\\password", "\\prompt", "\\pset", "\\q", "\\qecho", "\\r",
+		"\\o", "\\p", "\\password", "\\prompt", "\\pset", "\\q", "\\qecho", "\\r", "\\restrict",
 		"\\set", "\\sf", "\\t", "\\T",
-		"\\timing", "\\unset", "\\x", "\\w", "\\watch", "\\z", "\\!", NULL
+		"\\timing", "\\unrestrict", "\\unset", "\\x", "\\w", "\\watch", "\\z", "\\!", NULL
 	};
 
 	(void) end;					/* not used */
