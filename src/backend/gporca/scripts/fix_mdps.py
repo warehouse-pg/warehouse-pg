@@ -46,9 +46,23 @@ def replacePlanSize(filename, actual, expected):
 def replacePlanInFile(filename, innerContent):
     with open(filename, "r") as fp:
         filedata = fp.read()
-    filedata = re.sub('    <dxl:Plan.*</dxl:Plan>\n',innerContent,filedata,flags=re.DOTALL)
+    # anchor on "<dxl:Plan " (trailing space) so the match cannot start at
+    # a <dxl:PlanHint> element earlier in the file
+    plan_pattern = re.compile(r'    <dxl:Plan .*</dxl:Plan>\n', flags=re.DOTALL)
+    if not plan_pattern.search(filedata):
+        print("Could not find the plan section in %s, please update this file by hand" % (filename))
+        return
+    newdata = plan_pattern.sub(innerContent, filedata)
+    if newdata == filedata:
+        return
+    # the replaced region must only be the plan; refuse to write a file that
+    # lost its metadata or query sections
+    for tag in ('<dxl:Metadata', '<dxl:Query'):
+        if tag in filedata and tag not in newdata:
+            print("Refusing to update %s: replacement would remove the %s section" % (filename, tag))
+            return
     with open(filename, 'w') as fp:
-        fp.write(filedata)
+        fp.write(newdata)
     return
 
 def processLogFile(logFileLines):
@@ -95,9 +109,9 @@ def processLogFile(logFileLines):
                 print("Log file contains partial plans for %s, please update this file by hand" % (current_file))
                 read_plan = 0
         elif actualSizeMatch:
-            actualSize = re.search('Actual size: (\d+)', line).group(1)
+            actualSize = re.search(r'Actual size: (\d+)', line).group(1)
         elif expectedSizeMatch:
-            expectedSize = re.search('Expected size: (\d+)', line).group(1)
+            expectedSize = re.search(r'Expected size: (\d+)', line).group(1)
             if not dryrun:
                 replacePlanSize(current_file, actualSize, expectedSize)
                 print("Changed plan size in %s \n" % (current_file))
@@ -135,6 +149,7 @@ def main():
 
     args = parser.parse_args()
 
+    global dryrun
     dryrun = args.dryRun
     inputfile = args.failed_tests_file
     logfile = args.logFile
