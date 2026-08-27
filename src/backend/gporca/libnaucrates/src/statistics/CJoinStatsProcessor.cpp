@@ -162,6 +162,16 @@ CJoinStatsProcessor::CalcAllJoinStats(CMemoryPool *mp,
 							expr->Pop()->Eopid());
 				inner_or_simple_2_way_loj_preds =
 					(*expr)[GPOPT_ZERO_INNER_JOIN_PRED_INDEX];
+
+				if (predIndexes->Size() != num_stats)
+				{
+					// the statistics objects do not correspond to the NAry
+					// join's logical children (e.g. they are outer-reference
+					// stats contexts), so the per-child LOJ predicate indexes
+					// do not apply; treat all steps as inner joins using the
+					// inner-join predicates only
+					predIndexes = nullptr;
+				}
 			}
 			break;
 
