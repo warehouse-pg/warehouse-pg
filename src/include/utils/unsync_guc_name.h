@@ -472,6 +472,7 @@
 		"resource_scheduler",
 		"resource_select_only",
 		"restart_after_crash",
+		"restrict_nonsystem_relation_kind",
 		"role",
 		"runaway_detector_activation_percent",
 		"seed",

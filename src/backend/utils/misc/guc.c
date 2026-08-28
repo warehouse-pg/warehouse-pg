@@ -517,6 +517,7 @@ static int	wal_segment_size;
 static bool	data_checksums;
 static bool integer_datetimes;
 static int	effective_io_concurrency;
+static char *restrict_nonsystem_relation_kind_string;
 
 /* should be static, but commands/variable.c needs to get at this */
 char	   *role_string;
@@ -3369,6 +3370,17 @@ static struct config_string ConfigureNamesString[] =
 		&external_pid_file,
 		NULL,
 		check_canonical_path, NULL, NULL
+	},
+
+	{
+		{"restrict_nonsystem_relation_kind", PGC_USERSET, CLIENT_CONN_STATEMENT,
+			gettext_noop("Sets relation kinds of non-system relation to restrict use"),
+			NULL,
+			GUC_LIST_INPUT | GUC_NOT_IN_SAMPLE
+		},
+		&restrict_nonsystem_relation_kind_string,
+		"",
+		check_restrict_nonsystem_relation_kind, assign_restrict_nonsystem_relation_kind, NULL
 	},
 
 	/* End-of-list marker */
