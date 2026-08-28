@@ -317,6 +317,7 @@ static void fmtReloptionsArray(Archive *fout, PQExpBuffer buffer,
 				   const char *reloptions, const char *prefix);
 static char *get_synchronized_snapshot(Archive *fout);
 static void setupDumpWorker(Archive *AHX, RestoreOptions *ropt);
+static void set_restrict_relation_kind(Archive *AH, const char *value);
 
 
 /* START MPP ADDITION */
@@ -1213,6 +1214,15 @@ setup_connection(Archive *AH, const char *dumpencoding, char *use_role)
 		ExecuteSqlStatement(AH, "SET quote_all_identifiers = true");
 
 	/*
+	 * For security reasons, we restrict the expansion of non-system views and
+	 * access to foreign tables during the pg_dump process.  The relaxation to
+	 * "view" in the dumpTableData_* paths mirrors upstream, but is inert on
+	 * this 9.4 base where makeTableDataInfo() builds no data job for foreign
+	 * tables, so that relaxation is never reached here.
+	 */
+	set_restrict_relation_kind(AH, "view, foreign-table");
+
+	/*
 	 * Initialize prepared-query state to "nothing prepared".  We do this here
 	 * so that a parallel dump worker will have its own state.
 	 */
@@ -1826,6 +1836,14 @@ dumpTableData_copy(Archive *fout, void *dcontext)
 	}
 	else if (tdinfo->filtercond)
 	{
+		/*
+		 * Temporarily relax the restriction to "view" so we can read a
+		 * foreign table's own data.  Inert on this 9.4 base (makeTableDataInfo()
+		 * builds no data job for foreign tables); kept for parity with upstream.
+		 */
+		if (tbinfo->relkind == RELKIND_FOREIGN_TABLE)
+			set_restrict_relation_kind(fout, "view");
+
 		appendPQExpBufferStr(q, "COPY (SELECT ");
 		/* klugery to get rid of parens in column list */
 		if (strlen(column_list) > 2)
@@ -1936,6 +1954,11 @@ dumpTableData_copy(Archive *fout, void *dcontext)
 				  classname);
 
 	destroyPQExpBuffer(q);
+
+	/* Revert back the setting */
+	if (tbinfo->relkind == RELKIND_FOREIGN_TABLE)
+		set_restrict_relation_kind(fout, "view, foreign-table");
+
 	return 1;
 }
 
@@ -1963,6 +1986,14 @@ dumpTableData_insert(Archive *fout, void *dcontext)
 	appendPQExpBuffer(q, "DECLARE _pg_dump_cursor CURSOR FOR "
 						"SELECT * FROM ONLY %s",
 						fmtQualifiedDumpable(tbinfo));
+
+	/*
+	 * Temporarily relax the restriction to "view" so we can read a foreign
+	 * table's own data.  Inert on this 9.4 base (makeTableDataInfo() builds no
+	 * data job for foreign tables); kept for parity with upstream.
+	 */
+	if (tbinfo->relkind == RELKIND_FOREIGN_TABLE)
+		set_restrict_relation_kind(fout, "view");
 
 	if (tdinfo->filtercond)
 		appendPQExpBuffer(q, " %s", tdinfo->filtercond);
@@ -2102,6 +2133,10 @@ dumpTableData_insert(Archive *fout, void *dcontext)
 	destroyPQExpBuffer(q);
 	if (insertStmt != NULL)
 		destroyPQExpBuffer(insertStmt);
+
+	/* Revert back the setting */
+	if (tbinfo->relkind == RELKIND_FOREIGN_TABLE)
+		set_restrict_relation_kind(fout, "view, foreign-table");
 
 	return 1;
 }
@@ -3212,6 +3247,28 @@ dumpBlobs(Archive *fout, void *arg __attribute__((unused)))
 	} while (ntups > 0);
 
 	return 1;
+}
+
+/*
+ * Set the given value to restrict_nonsystem_relation_kind value. Since
+ * restrict_nonsystem_relation_kind is introduced in minor version releases,
+ * the setting query is effective only where available.
+ */
+static void
+set_restrict_relation_kind(Archive *AH, const char *value)
+{
+	PQExpBuffer query = createPQExpBuffer();
+	PGresult   *res;
+
+	appendPQExpBuffer(query,
+					  "SELECT set_config(name, '%s', false) "
+					  "FROM pg_settings "
+					  "WHERE name = 'restrict_nonsystem_relation_kind'",
+					  value);
+	res = ExecuteSqlQuery(AH, query->data, PGRES_TUPLES_OK);
+
+	PQclear(res);
+	destroyPQExpBuffer(query);
 }
 
 static void

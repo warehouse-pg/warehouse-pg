@@ -396,6 +396,13 @@ EXPLAIN (verbose, costs off)
 DELETE FROM ft2 WHERE c1 = 9999 RETURNING tableoid::regclass;
 DELETE FROM ft2 WHERE c1 = 9999 RETURNING tableoid::regclass;
 
+-- test restriction on non-system foreign tables (CVE-2024-7348).
+SET restrict_nonsystem_relation_kind TO 'foreign-table';
+SELECT * from ft1 where c1 < 1; -- ERROR
+INSERT INTO ft1 (c1) VALUES (1); -- ERROR
+DELETE FROM ft1 WHERE c1 = 1; -- ERROR
+RESET restrict_nonsystem_relation_kind;
+
 -- Test that trigger on remote table works as expected
  \! env PGOPTIONS='' psql -p ${PG_PORT} contrib_regression -f sql/postgres_sql/gp2pg_postgres_create_trigger.sql
 
