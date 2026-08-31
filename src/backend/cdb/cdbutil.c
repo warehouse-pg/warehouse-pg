@@ -401,6 +401,35 @@ applyDispatchTopology(GpSegConfigEntry *catalog_configs, int *total_dbs,
 		}
 	}
 
+	/*
+	 * The coordinator row describes THIS dispatcher, so its identity is
+	 * verifiable right here, synchronously — unlike segment rows, whose
+	 * identity only the connect-time gpqeid handshake can check.  The
+	 * file's contract is that every row carries the node's own identity
+	 * (gp_dbid from internal.auto.conf, which is what whpg-dr's harvest
+	 * emits), NOT the catalog's role mapping: after a source-side
+	 * coordinator failover the replayed catalog names the promoted
+	 * standby's dbid, while this dispatcher keeps the dbid of the
+	 * basebackup it was restored from.  A row that carries the catalog
+	 * identity would first make the entry-database locate check fail with
+	 * an internal-looking error, and if that were relaxed, entry-gang
+	 * handshakes would FATAL mid-query instead — refuse it here with the
+	 * real explanation.
+	 */
+	for (j = 0; j < topology->nentries; j++)
+	{
+		DispatchTopologyEntry *entry = &topology->entries[j];
+
+		if (entry->content == -1 && entry->dbid != GpIdentity.dbid)
+			ereport(ERROR,
+					(errcode(ERRCODE_CONFIG_FILE_ERROR),
+					 errmsg("dispatch topology file \"%s\" coordinator row carries dbid %d, but this dispatcher is dbid %d",
+							whpg_dispatch_topology_file,
+							entry->dbid, GpIdentity.dbid),
+					 errhint("The file must carry each node's own identity (gp_dbid from internal.auto.conf), "
+							 "not the catalog's post-failover role mapping.")));
+	}
+
 	/* and no topology entry may name a content the catalog does not know */
 	for (j = 0; j < topology->nentries; j++)
 	{

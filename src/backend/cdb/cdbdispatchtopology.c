@@ -24,6 +24,7 @@
 
 #include "postgres.h"
 
+#include <sys/param.h>			/* for MAXHOSTNAMELEN */
 #include <sys/stat.h>
 
 #include "access/xlog.h"
@@ -48,14 +49,18 @@ char	   *whpg_dispatch_topology_state_str = NULL;
 static char *crosscheck_error_signature = NULL;
 
 /*
- * Worst case for one legal data line, matching the sscanf widths in
+ * Worst case for one data line as READ, matching the sscanf widths in
  * dispatch_topology_parse(): datadir is a path (MAXPGPATH, %1023s),
- * hostname and address are each capped at 256 — one byte above RFC
- * 1035's 253-byte limit for a fully qualified domain name, and wider
- * than MAXHOSTNAMELEN, which the FTS dump reader itself notes can be
- * smaller than names found in /etc/hosts — plus 64 bytes of slack for
- * content/dbid/port digits, separators and the line ending.  Also
- * sized for the error buffer: fixed text plus the file path.
+ * hostname and address buffers are 256 so a name over the ENFORCED
+ * limit (MAXHOSTNAMELEN, the component table's downstream contract) is
+ * still read in full up to 255 bytes and refused with a message naming
+ * the limit — a MAXHOSTNAMELEN-sized sscanf width would silently
+ * truncate it into a different, plausible-looking name instead.  Past
+ * 255 bytes sscanf splits the name across fields and the line fails
+ * the six-field shape check: refused too, just with the generic
+ * message.  Plus 64 bytes of slack for content/dbid/port digits,
+ * separators and the line ending.  Also sized for the error buffer:
+ * fixed text plus the file path.
  */
 #define TOPOLOGY_MAX_LINE	(MAXPGPATH + 2 * 256 + 64)
 
@@ -391,6 +396,20 @@ dispatch_topology_parse(const char *path, char *errbuf, size_t errbufsz)
 		{
 			snprintf(errbuf, errbufsz, "line %d: invalid port \"%s\"",
 					 lineno, f_port);
+			goto fail;
+		}
+		if (strlen(hostname) > MAXHOSTNAMELEN || strlen(address) > MAXHOSTNAMELEN)
+		{
+			/*
+			 * The component table enforces MAXHOSTNAMELEN downstream
+			 * (getCdbComponentInfo's sanity check, which the catalog path
+			 * satisfies at insertion time); re-establish it here so an
+			 * overlong name is refused with a real message instead of an
+			 * internal-looking error on every dispatch.
+			 */
+			snprintf(errbuf, errbufsz,
+					 "line %d: hostname or address exceeds %d characters (component table limit)",
+					 lineno, MAXHOSTNAMELEN);
 			goto fail;
 		}
 		if (!is_absolute_path(datadir))
