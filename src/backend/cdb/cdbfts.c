@@ -138,6 +138,22 @@ FtsIsSegmentDown(CdbComponentDatabaseInfo *dBInfo)
 	if (dBInfo->config->segindex == COORDINATOR_SEGMENT_ID)
 		return false;
 
+	/*
+	 * A component table built from a dispatch topology file lives in a
+	 * world FTS knows nothing about: ftsProbeInfo->status[] is populated
+	 * by the FTS probe under gp_segment_configuration dbids, while this
+	 * row carries the file's dbid — indexing the array with it would read
+	 * some other segment's slot, or garbage past the used range.  The
+	 * file declares its members dispatchable; their health is arbitrated
+	 * by the connection attempts themselves.  (On the hot-standby
+	 * dispatcher this feature serves, no FTS probe runs at all.)
+	 * Threadsafe: reads only memory owned by the component table.
+	 */
+	if (dBInfo->cdbs != NULL &&
+		dBInfo->cdbs->topology_signature != NULL &&
+		dBInfo->cdbs->topology_signature[0] != '\0')
+		return false;
+
 	return FTS_STATUS_IS_DOWN(ftsProbeInfo->status[dBInfo->config->dbid]);
 }
 

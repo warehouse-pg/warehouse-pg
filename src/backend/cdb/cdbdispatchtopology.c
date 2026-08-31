@@ -30,25 +30,21 @@
 #include "miscadmin.h"
 #include "storage/fd.h"
 #include "utils/builtins.h"
+#include "utils/memutils.h"
 
 /* GUC variables; definitions live in guc_gp.c's tables */
 char	   *whpg_dispatch_topology_file = NULL;
 char	   *whpg_dispatch_topology_state_str = NULL;
 
 /*
- * Last observed parse outcome of this backend.  Deliberately a plain
- * global, not GUC state: it must survive transaction abort so that a
- * failed parse keeps reporting "error" (fail closed) instead of being
- * rolled back together with the erroring transaction.
+ * Signature of the file content that last failed the component-table
+ * build's catalog cross-check in this backend.  Deliberately plain
+ * backend state, not GUC state: it must survive transaction abort so the
+ * state GUC keeps reporting "error" (fail closed) until the file itself
+ * changes.  A parse-level verdict is never cached — the show_hook
+ * re-validates on every call.  Owned by TopMemoryContext.
  */
-typedef enum DispatchTopologyState
-{
-	DISPATCH_TOPOLOGY_UNKNOWN = 0,	/* enabled, but not parsed yet */
-	DISPATCH_TOPOLOGY_ACTIVE,
-	DISPATCH_TOPOLOGY_ERROR
-} DispatchTopologyState;
-
-static DispatchTopologyState topology_state = DISPATCH_TOPOLOGY_UNKNOWN;
+static char *crosscheck_error_signature = NULL;
 
 /*
  * Worst case for one legal data line, matching the sscanf widths in
@@ -102,38 +98,48 @@ dispatch_topology_load(void)
 
 	topology = dispatch_topology_parse(path, errbuf, sizeof(errbuf));
 	if (topology == NULL)
-	{
-		topology_state = DISPATCH_TOPOLOGY_ERROR;
 		ereport(ERROR,
 				(errcode(ERRCODE_CONFIG_FILE_ERROR),
 				 errmsg("dispatch topology file \"%s\" is invalid: %s",
 						path, errbuf)));
-	}
 
-	topology_state = DISPATCH_TOPOLOGY_ACTIVE;
 	return topology;
 }
 
 /*
  * Called by the component-table build when the file parsed but failed a
- * cross-check against the catalog, so status keeps reporting "error".
+ * cross-check against the catalog.  The show_hook cannot re-run the
+ * cross-check (no catalog access there), so remember which file bytes
+ * failed: status keeps reporting "error" until the file changes.
  */
 void
 dispatch_topology_set_error(void)
 {
-	topology_state = DISPATCH_TOPOLOGY_ERROR;
+	char	   *sig = dispatch_topology_signature();
+
+	if (crosscheck_error_signature)
+		pfree(crosscheck_error_signature);
+	/* sig is NULL when the file has become unreadable: nothing to pin —
+	 * the parse-level check already reports "error" for that state */
+	crosscheck_error_signature = sig ?
+		MemoryContextStrdup(TopMemoryContext, sig) : NULL;
+	if (sig)
+		pfree(sig);
 }
 
 /*
  * Identity of the topology configuration a component table was built
- * with: empty when the feature is off, otherwise the file path plus a
- * hash of the file bytes.  Compared at transaction start to decide
- * whether the cached component table must be rebuilt.  Content-based
- * on purpose: a same-size file swapped in place must be noticed, and
- * filesystem timestamps are not a reliable witness for that.  The file
- * is a handful of lines, so the read is cheap.  An unreadable file
- * yields a signature that never matches, forcing a rebuild that then
- * reports the real error (fail closed).
+ * with: empty when the feature is off, NULL when the file cannot be
+ * read, otherwise the file path plus a hash of the file bytes.
+ * Compared at transaction start to decide whether the cached component
+ * table must be rebuilt.  Content-based on purpose: a same-size file
+ * swapped in place must be noticed, and filesystem timestamps are not a
+ * reliable witness for that.  The file is a handful of lines, so the
+ * read is cheap.  An unreadable file yields NULL, which never matches —
+ * NULL rather than a string sentinel, so no file path (which is
+ * operator-chosen and could contain anything) can collide with the
+ * sentinel's spelling — forcing a rebuild that then reports the real
+ * error (fail closed).
  */
 char *
 dispatch_topology_signature(void)
@@ -152,7 +158,7 @@ dispatch_topology_signature(void)
 
 	fd = AllocateFile(path, "rb");
 	if (fd == NULL)
-		return psprintf("%s|unreadable", path);
+		return NULL;
 
 	while ((nread = fread(buf, 1, sizeof(buf), fd)) > 0)
 	{
@@ -166,7 +172,7 @@ dispatch_topology_signature(void)
 	if (ferror(fd))
 	{
 		FreeFile(fd);
-		return psprintf("%s|unreadable", path);
+		return NULL;
 	}
 	FreeFile(fd);
 
@@ -181,36 +187,44 @@ dispatch_topology_signature_matches(const char *stored)
 	char	   *current = dispatch_topology_signature();
 	bool		matches;
 
-	matches = (stored != NULL && strcmp(stored, current) == 0);
-	pfree(current);
+	if (stored == NULL || current == NULL)
+		/* NULL current: an unreadable file never matches — force the
+		 * rebuild that will then report the real error (fail closed) */
+		matches = false;
+	else
+		matches = (strcmp(stored, current) == 0);
+	if (current)
+		pfree(current);
 	return matches;
 }
 
 /*
- * show_hook for whpg_dispatch_topology_state.  Reads the plain global so
- * the value is not subject to GUC transaction semantics; validates on
- * demand so a fresh session (e.g. a monitoring connection that never
- * dispatched) still reports the truth.
+ * show_hook for whpg_dispatch_topology_state.  Re-validates on EVERY
+ * call: the consumers of this GUC are monitoring sessions that never
+ * dispatch, so any cached verdict would go stale the moment the file is
+ * fixed (or broken) behind them.  The file is a handful of lines; a
+ * parse per SHOW is nothing against a monitoring cadence.  A file that
+ * parses but previously failed the catalog cross-check keeps reporting
+ * "error" until its bytes change (see dispatch_topology_set_error).
  */
 const char *
 show_whpg_dispatch_topology_state(void)
 {
+	char		path[MAXPGPATH];
+	char		errbuf[TOPOLOGY_MAX_LINE];
+
 	if (!dispatch_topology_enabled())
 		return "inactive";
 
-	if (topology_state == DISPATCH_TOPOLOGY_UNKNOWN)
-	{
-		char		path[MAXPGPATH];
-		char		errbuf[TOPOLOGY_MAX_LINE];
+	dispatch_topology_resolve_path(path, sizeof(path));
+	if (dispatch_topology_parse(path, errbuf, sizeof(errbuf)) == NULL)
+		return "error";
 
-		dispatch_topology_resolve_path(path, sizeof(path));
-		if (dispatch_topology_parse(path, errbuf, sizeof(errbuf)) != NULL)
-			topology_state = DISPATCH_TOPOLOGY_ACTIVE;
-		else
-			topology_state = DISPATCH_TOPOLOGY_ERROR;
-	}
+	if (crosscheck_error_signature != NULL &&
+		dispatch_topology_signature_matches(crosscheck_error_signature))
+		return "error";
 
-	return (topology_state == DISPATCH_TOPOLOGY_ACTIVE) ? "active" : "error";
+	return "active";
 }
 
 static int
@@ -238,6 +252,8 @@ dispatch_topology_parse(const char *path, char *errbuf, size_t errbufsz)
 	bool		has_coordinator = false;
 	bool		has_segment = false;
 	DispatchTopology *topology;
+	uint64		hash = 5381;
+	uint64		total = 0;
 	int			i;
 
 	fd = AllocateFile(path, "r");
@@ -253,6 +269,8 @@ dispatch_topology_parse(const char *path, char *errbuf, size_t errbufsz)
 
 	while (fgets(line, sizeof(line), fd))
 	{
+		size_t		linelen = strlen(line);
+		size_t		k;
 		long		content;
 		long		dbid;
 		long		port;
@@ -268,6 +286,17 @@ dispatch_topology_parse(const char *path, char *errbuf, size_t errbufsz)
 		const char *p = line;
 
 		lineno++;
+
+		/*
+		 * Accumulate the signature from the very bytes being parsed, so
+		 * the identity stored with the resulting table can never describe
+		 * a different file than the one the entries came from.  Same
+		 * function as dispatch_topology_signature() over the same byte
+		 * stream.
+		 */
+		for (k = 0; k < linelen; k++)
+			hash = hash * 33 + (unsigned char) line[k];
+		total += linelen;
 
 		while (*p == ' ' || *p == '\t')
 			p++;
@@ -360,7 +389,12 @@ dispatch_topology_parse(const char *path, char *errbuf, size_t errbufsz)
 			goto fail;
 		}
 
-		/* exactly one row per content */
+		/*
+		 * Exactly one row per content, and every row must name a distinct
+		 * dbid: two rows sharing a dbid would make the dbid handshake
+		 * vacuous for one of them.  Both fields are bounds-checked above,
+		 * so comparing against the stored int16 values cannot alias.
+		 */
 		for (i = 0; i < topology->nentries; i++)
 		{
 			if (topology->entries[i].content == content)
@@ -368,6 +402,13 @@ dispatch_topology_parse(const char *path, char *errbuf, size_t errbufsz)
 				snprintf(errbuf, errbufsz,
 						 "line %d: duplicate entry for content %d",
 						 lineno, (int) content);
+				goto fail;
+			}
+			if (topology->entries[i].dbid == dbid)
+			{
+				snprintf(errbuf, errbufsz,
+						 "line %d: duplicate dbid %d",
+						 lineno, (int) dbid);
 				goto fail;
 			}
 		}
@@ -413,6 +454,10 @@ dispatch_topology_parse(const char *path, char *errbuf, size_t errbufsz)
 
 	qsort(topology->entries, topology->nentries,
 		  sizeof(DispatchTopologyEntry), dispatch_topology_entry_cmp);
+
+	topology->signature = psprintf("%s|%llu|%llu", path,
+								   (unsigned long long) total,
+								   (unsigned long long) hash);
 
 	return topology;
 

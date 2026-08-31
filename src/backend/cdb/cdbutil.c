@@ -349,7 +349,8 @@ readGpSegConfigFromCatalog(int *total_dbs)
  * they point to live as long as the component table itself.
  */
 static GpSegConfigEntry *
-applyDispatchTopology(GpSegConfigEntry *catalog_configs, int *total_dbs)
+applyDispatchTopology(GpSegConfigEntry *catalog_configs, int *total_dbs,
+					  char **signature_out)
 {
 	DispatchTopology *topology = dispatch_topology_load();
 	GpSegConfigEntry *configs;
@@ -405,6 +406,16 @@ applyDispatchTopology(GpSegConfigEntry *catalog_configs, int *total_dbs)
 		}
 	}
 
+	/*
+	 * Note what is deliberately NOT validated here: that a row's dbid
+	 * matches the catalog's dbid for that content.  After a source-side
+	 * failover the restored node keeps the dbid of the basebackup it came
+	 * from (internal.auto.conf), while the replayed catalog may already
+	 * name the promoted mirror's dbid as the content's primary — the two
+	 * legally diverge.  Misassignment within the file (content A carrying
+	 * content B's dbid and address) is caught at connection time by the
+	 * content half of the gpqeid handshake instead.
+	 */
 	configs = (GpSegConfigEntry *)
 		palloc0(topology->nentries * sizeof(GpSegConfigEntry));
 
@@ -426,6 +437,7 @@ applyDispatchTopology(GpSegConfigEntry *catalog_configs, int *total_dbs)
 	}
 
 	*total_dbs = topology->nentries;
+	*signature_out = topology->signature;
 	return configs;
 }
 
@@ -440,6 +452,7 @@ getCdbComponentInfo(void)
 	int			i;
 	int			x = 0;
 	int			total_dbs = 0;
+	char	   *topology_signature = NULL;
 
 	bool		found;
 	HostPrimaryCountEntry *hsEntry;
@@ -467,7 +480,7 @@ getCdbComponentInfo(void)
 	if (Gp_role == GP_ROLE_DISPATCH && !am_ftsprobe &&
 		dispatch_topology_enabled())
 	{
-		configs = applyDispatchTopology(configs, &total_dbs);
+		configs = applyDispatchTopology(configs, &total_dbs, &topology_signature);
 		ELOG_DISPATCHER_DEBUG("dispatch topology applied to component table");
 	}
 
@@ -678,8 +691,17 @@ getCdbComponentInfo(void)
 
 	hash_destroy(hostPrimaryCountHash);
 
-	/* remember which topology configuration this table was built with */
-	component_databases->topology_signature = dispatch_topology_signature();
+	/*
+	 * Remember which topology configuration this table was built with.
+	 * The signature comes from the very bytes dispatch_topology_parse()
+	 * read — never from a second look at the file — so a swap between
+	 * the parse and this point cannot stamp old entries with a new
+	 * file's identity.  Empty when the feature was off at build time;
+	 * that emptiness is also what marks the table as catalog-built for
+	 * the gang-creation handshake decision.
+	 */
+	component_databases->topology_signature =
+		topology_signature ? topology_signature : pstrdup("");
 
 	MemoryContextSwitchTo(oldContext);
 

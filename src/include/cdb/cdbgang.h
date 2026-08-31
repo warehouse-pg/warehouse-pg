@@ -83,7 +83,7 @@ extern void ResetAllGangs(void);
 extern struct SegmentDatabaseDescriptor *getSegmentDescriptorFromGang(const Gang *gp, int seg);
 
 Gang *buildGangDefinition(List *segments, SegmentType segmentType);
-bool build_gpqeid_param(char *buf, int bufsz, bool is_writer, int identifier, int hostSegs, int icHtabSize, int expectedDbid);
+bool build_gpqeid_param(char *buf, int bufsz, bool is_writer, int identifier, int hostSegs, int icHtabSize, int expectedDbid, int expectedContent);
 
 extern void makeOptions(char **options, char **diff_options);
 extern bool segment_failure_due_to_recovery(const char *error_message);

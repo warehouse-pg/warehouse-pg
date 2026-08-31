@@ -154,13 +154,29 @@ create_gang_retry:
 			 * early enough now some locks are taken before command line
 			 * options are recognized.
 			 */
+			/*
+			 * Whether to demand the topology handshake is a property of
+			 * the component table these addresses came from, not of this
+			 * instant's GUC value: a SIGHUP disabling the GUC between the
+			 * table build and gang creation must not dispatch to
+			 * file-derived addresses with the handshake disarmed.  The
+			 * table records its origin in topology_signature (empty means
+			 * catalog-built).
+			 */
+			bool		topology_dispatch =
+				(segdbDesc->segment_database_info->cdbs != NULL &&
+				 segdbDesc->segment_database_info->cdbs->topology_signature != NULL &&
+				 segdbDesc->segment_database_info->cdbs->topology_signature[0] != '\0');
+
 			ret = build_gpqeid_param(gpqeid, sizeof(gpqeid),
 									 segdbDesc->isWriter,
 									 segdbDesc->identifier,
 									 segdbDesc->segment_database_info->hostPrimaryCount,
 									 totalSegs * 2,
-									 dispatch_topology_enabled() ?
-									 segdbDesc->segment_database_info->config->dbid : 0);
+									 topology_dispatch ?
+									 segdbDesc->segment_database_info->config->dbid : 0,
+									 topology_dispatch ?
+									 segdbDesc->segment_database_info->config->segindex : -1);
 
 			if (!ret)
 				ereport(ERROR,

@@ -248,7 +248,8 @@ segment_failure_due_to_dispatch_topology(const char *error_message)
 
 	ptr = strstr(error_message, fatal);
 	if ((ptr != NULL) && ptr[fatal_len] == ':' &&
-		strstr(error_message, _(DISPATCH_TOPOLOGY_DBID_MISMATCH_MSG)))
+		(strstr(error_message, _(DISPATCH_TOPOLOGY_DBID_MISMATCH_MSG)) ||
+		 strstr(error_message, _(DISPATCH_TOPOLOGY_CONTENT_MISMATCH_MSG))))
 		return true;
 
 	return false;
@@ -508,7 +509,7 @@ makeOptions(char **options, char **diff_options)
 bool
 build_gpqeid_param(char *buf, int bufsz,
 				   bool is_writer, int identifier, int hostSegs, int icHtabSize,
-				   int expectedDbid)
+				   int expectedDbid, int expectedContent)
 {
 	int		len;
 #ifdef HAVE_INT64_TIMESTAMP
@@ -529,16 +530,21 @@ build_gpqeid_param(char *buf, int bufsz,
 		return false;
 
 	/*
-	 * The dbid this dispatch expects to reach, appended only while a
-	 * dispatch topology file is active, so the wire format is unchanged
-	 * otherwise.  The QE refuses the connection when its own dbid
-	 * differs (see cdbgang_parse_gpqeid_params).
+	 * The dbid and content this dispatch expects to reach, appended only
+	 * while a dispatch topology file is active, so the wire format is
+	 * unchanged otherwise.  The QE refuses the connection when either
+	 * differs from its own identity (see cdbgang_parse_gpqeid_params).
+	 * Both travel together: the dbid catches a stale address reused by a
+	 * foreign segment, the content catches a consistent-but-misassigned
+	 * file row that pairs one content with another content's dbid and
+	 * address — a case the dbid alone passes by construction.
 	 */
 	if (expectedDbid > 0)
 	{
 		int		len2;
 
-		len2 = snprintf(buf + len, bufsz - len, ";%d", expectedDbid);
+		len2 = snprintf(buf + len, bufsz - len, ";%d;%d",
+						expectedDbid, expectedContent);
 		if (len2 <= 0 || len2 >= bufsz - len)
 			return false;
 		len += len2;
@@ -617,23 +623,40 @@ cdbgang_parse_gpqeid_params(struct Port *port pg_attribute_unused(),
 	}
 
 	/*
-	 * Optional seventh field: the dbid this dispatch expects to reach,
-	 * present only when the dispatcher runs with a dispatch topology
-	 * file.  A mismatch means the file routed this connection to the
-	 * wrong data directory; refuse it instead of running queries as the
-	 * wrong segment.
+	 * Optional seventh and eighth fields: the dbid and content this
+	 * dispatch expects to reach, present (always together) only when the
+	 * dispatcher runs with a dispatch topology file.  A dbid mismatch
+	 * means the file routed this connection to the wrong data directory.
+	 * A content mismatch catches what the dbid cannot: a file row that
+	 * pairs content A with content B's dbid and address is internally
+	 * consistent and passes the dbid check by construction, yet would run
+	 * A's slices against B's data.  Content identity is stable across
+	 * source-side failovers, so this check holds even where file dbids
+	 * and catalog dbids legally diverge.  Refuse instead of running
+	 * queries as the wrong segment.
 	 */
 	if (cp && np)
 	{
 		if (gpqeid_next_param(&cp, &np))
 		{
 			int			expected_dbid = (int) strtol(cp, NULL, 10);
+			int			expected_content;
+
+			/* the paired content field must travel with the dbid */
+			if (!gpqeid_next_param(&cp, &np))
+				goto bad;
+			expected_content = (int) strtol(cp, NULL, 10);
 
 			if (expected_dbid != GpIdentity.dbid)
 				ereport(FATAL,
 						(errmsg(DISPATCH_TOPOLOGY_DBID_MISMATCH_MSG),
 						 errdetail("Dispatched for dbid %d, but this segment is dbid %d.",
 								   expected_dbid, GpIdentity.dbid)));
+			if (expected_content != GpIdentity.segindex)
+				ereport(FATAL,
+						(errmsg(DISPATCH_TOPOLOGY_CONTENT_MISMATCH_MSG),
+						 errdetail("Dispatched for content %d, but this segment is content %d.",
+								   expected_content, GpIdentity.segindex)));
 		}
 	}
 
