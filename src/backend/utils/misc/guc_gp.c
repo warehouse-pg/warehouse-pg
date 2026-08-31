@@ -4803,9 +4803,11 @@ struct config_string ConfigureNamesString_gp[] =
 	{
 		{"whpg_dispatch_topology_file", PGC_SIGHUP, GP_ARRAY_CONFIGURATION,
 			gettext_noop("Path of the dispatch topology file; empty disables it."),
-			gettext_noop("When set on a dispatcher, dispatch resolves every content's "
-						 "address from this file instead of gp_segment_configuration "
-						 "row selection. A relative path is relative to the data directory."),
+			gettext_noop("Serves hot-standby dispatchers only: dispatch resolves every "
+						 "content's address from this file instead of gp_segment_configuration "
+						 "row selection; on any other node the component-table build refuses. "
+						 "Each row must carry the node's own identity (gp_dbid from "
+						 "internal.auto.conf). A relative path is relative to the data directory."),
 			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE | GUC_GPDB_NO_SYNC
 		},
 		&whpg_dispatch_topology_file,

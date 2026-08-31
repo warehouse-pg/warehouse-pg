@@ -352,10 +352,30 @@ static GpSegConfigEntry *
 applyDispatchTopology(GpSegConfigEntry *catalog_configs, int *total_dbs,
 					  char **signature_out)
 {
-	DispatchTopology *topology = dispatch_topology_load();
+	DispatchTopology *topology;
 	GpSegConfigEntry *configs;
 	int			i;
 	int			j;
+
+	/*
+	 * The topology file serves hot-standby dispatchers only.  On a live
+	 * primary dispatcher the catalog is the truth and FTS is authoritative
+	 * for segment health; dispatching by a file there would disable dead-
+	 * host detection and, after an FTS mirror promotion, keep committing
+	 * writes to the deposed primary.  Refuse instead of silently ignoring
+	 * the file: no silent fallback is this feature's contract.  (In
+	 * whpg-dr's promote flow the GUC is retired before any node reaches
+	 * normal operation; hitting this error means an interrupted promote or
+	 * a misplaced GUC — both want an operator, not a workaround.)
+	 */
+	if (!IS_HOT_STANDBY_QD())
+		ereport(ERROR,
+				(errcode(ERRCODE_CONFIG_FILE_ERROR),
+				 errmsg("whpg_dispatch_topology_file is set, but this dispatcher is not a hot standby"),
+				 errhint("The dispatch topology file serves hot-standby dispatchers only. "
+						 "Remove the GUC (whpg-dr promote's retirement does this), or finish the interrupted promote.")));
+
+	topology = dispatch_topology_load();
 
 	/* every catalog content must have a topology entry */
 	for (i = 0; i < *total_dbs; i++)
@@ -819,9 +839,22 @@ cdbcomponent_updateCdbComponents(void)
 			if (TempNamespaceOidIsValid())
 			{
 				/*
-				 * Do not update here, otherwise, temp files will be lost 
-				 * in segments;
+				 * Do not update here, otherwise, temp files will be lost
+				 * in segments.  That skip is tolerable for an fts_version
+				 * bump, but a CHANGED DISPATCH TOPOLOGY must never be
+				 * survived silently: the stale table would keep routing to
+				 * the old file's addresses for the session's lifetime, and
+				 * the dbid handshake cannot catch it (the stale rows match
+				 * the stale segments' identities).  Normally unreachable —
+				 * a hot-standby session cannot create temp tables — but a
+				 * session can outlive an out-of-band promotion, and that
+				 * corner must fail closed.
 				 */
+				if (!dispatch_topology_signature_matches(cdb_component_dbs->topology_signature))
+					ereport(ERROR,
+							(errcode(ERRCODE_CONFIG_FILE_ERROR),
+							 errmsg("the dispatch topology changed, but this session holds temporary tables"),
+							 errhint("Reconnect (or drop the temporary tables) to pick up the new topology.")));
 			}
 			else
 			{

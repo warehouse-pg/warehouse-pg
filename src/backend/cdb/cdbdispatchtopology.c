@@ -26,6 +26,7 @@
 
 #include <sys/stat.h>
 
+#include "access/xlog.h"
 #include "cdb/cdbdispatchtopology.h"
 #include "miscadmin.h"
 #include "storage/fd.h"
@@ -215,6 +216,15 @@ show_whpg_dispatch_topology_state(void)
 
 	if (!dispatch_topology_enabled())
 		return "inactive";
+
+	/*
+	 * Enabled on a node that is not in recovery is itself the error state:
+	 * the component-table build refuses it outright (see
+	 * applyDispatchTopology), so reporting anything but "error" here would
+	 * have monitoring call a refusing configuration healthy.
+	 */
+	if (!RecoveryInProgress())
+		return "error";
 
 	dispatch_topology_resolve_path(path, sizeof(path));
 	if (dispatch_topology_parse(path, errbuf, sizeof(errbuf)) == NULL)
