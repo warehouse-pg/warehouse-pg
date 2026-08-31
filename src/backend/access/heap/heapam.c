@@ -473,11 +473,19 @@ heapgetpage(TableScanDesc sscan, BlockNumber page)
 				 * the xmax too, but the visibility rules get more complicated
 				 * with locked-only tuples and multi-XIDs, so it seems better
 				 * to just give up early.
+				 *
+				 * Don't use the cache for a HEAP_COMBOCID tuple either: its
+				 * raw command id is an index into the backend-local combo-CID
+				 * array, not a real cmin, so it must not be compared with
+				 * another tuple's plain command id. Such a tuple can still
+				 * have HEAP_XMAX_INVALID set: if the deleting subtransaction
+				 * aborted, the combo cid stays behind.
 				 */
 				bool		use_cache;
 
-				if ((theader->t_infomask & HEAP_XMAX_INVALID) != 0 ||
-					HEAP_XMAX_IS_LOCKED_ONLY(theader->t_infomask))
+				if (((theader->t_infomask & HEAP_XMAX_INVALID) != 0 ||
+					 HEAP_XMAX_IS_LOCKED_ONLY(theader->t_infomask)) &&
+					(theader->t_infomask & HEAP_COMBOCID) == 0)
 					use_cache = true;
 				else
 					use_cache = false;

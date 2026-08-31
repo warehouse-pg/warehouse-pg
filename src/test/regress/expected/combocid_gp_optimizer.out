@@ -255,3 +255,58 @@ FETCH ALL FROM c;
 (99 rows)
 
 rollback;
+--
+-- Test that the one-item tuple-visibility cache in heapgetpage() ignores
+-- tuples carrying HEAP_COMBOCID.  Such a tuple's raw command id is an index
+-- into the backend-local combo-CID array, not a real cmin, so it must not be
+-- compared against another tuple's plain command id.
+--
+-- The scenario: a tuple whose deleting subtransaction aborted keeps its
+-- combo cid, and a later scan sets the HEAP_XMAX_INVALID hint bit, which
+-- used to make it eligible for the cache.  Combo-CID indexes and command
+-- ids both count from zero, so the combo index easily collides with the
+-- plain cmin of another tuple on the same page.  A cursor whose snapshot
+-- lies between the two real cmins then returned a wrong extra row: the
+-- plain tuple primed the cache and the combo tuple falsely hit it.
+--
+-- All rows use the same distribution key, so they land on the same segment
+-- and the same heap page.  The cursor query scans a big table before the
+-- table of interest (UNION ALL), so that the QE fills the motion send
+-- buffer and blocks at DECLARE time, and only reaches the page of interest
+-- during FETCH, after the hint bit has been set.
+--
+CREATE TEMP TABLE combocid_vischeck (a int, distkey int) distributed by (distkey);
+CREATE TEMP TABLE combocid_vischeck_filler (x int, distkey int) distributed by (distkey);
+CREATE TEMP TABLE combocid_vischeck_big (a int, distkey int) distributed by (distkey);
+INSERT INTO combocid_vischeck_big SELECT 0, 0 FROM generate_series(1, 200000);
+BEGIN;
+INSERT INTO combocid_vischeck VALUES (1, 0);          -- cmin 0
+INSERT INTO combocid_vischeck_filler VALUES (1, 0);   -- burn a command id
+INSERT INTO combocid_vischeck_filler VALUES (2, 0);   -- burn a command id
+DECLARE combocid_vischeck_cur CURSOR FOR
+    SELECT a FROM combocid_vischeck_big UNION ALL SELECT a FROM combocid_vischeck;
+INSERT INTO combocid_vischeck_filler VALUES (3, 0);   -- burn a command id
+-- Insert before the savepoint, so the tuple keeps the main transaction's xmin.
+INSERT INTO combocid_vischeck VALUES (2, 0);
+SAVEPOINT s;
+-- Assigns combo-CID index 0, colliding with the first row's cmin.
+DELETE FROM combocid_vischeck WHERE a = 2;
+ROLLBACK TO s;
+-- This scan sets the HEAP_XMAX_INVALID hint bit (the deleter aborted).
+SELECT count(*) FROM combocid_vischeck;
+ count 
+-------
+     2
+(1 row)
+
+-- Skip past the big table's rows; the segment scans the page of interest
+-- only now.  The cursor's snapshot predates the insertion of (2), so it
+-- must see only (1).
+MOVE 200000 FROM combocid_vischeck_cur;
+FETCH ALL FROM combocid_vischeck_cur;
+ a 
+---
+ 1
+(1 row)
+
+COMMIT;
