@@ -129,57 +129,72 @@ dispatch_topology_set_error(void)
 }
 
 /*
+ * topology_signature_format renders one canonical identity string from a
+ * stat result: device, inode, size and the two change timestamps.  Both
+ * signature producers (the parse's fstat of the very fd it read, and the
+ * compare side below) go through this one formatter, so the two can
+ * never drift.
+ */
+static char *
+topology_signature_format(const char *path, const struct stat *st)
+{
+	return psprintf("%s|%llu:%llu|%lld|%lld.%09ld|%lld.%09ld",
+					path,
+					(unsigned long long) st->st_dev,
+					(unsigned long long) st->st_ino,
+					(long long) st->st_size,
+					(long long) st->st_mtim.tv_sec, st->st_mtim.tv_nsec,
+					(long long) st->st_ctim.tv_sec, st->st_ctim.tv_nsec);
+}
+
+/*
  * Identity of the topology configuration a component table was built
  * with: empty when the feature is off, NULL when the file cannot be
- * read, otherwise the file path plus a hash of the file bytes.
- * Compared at transaction start to decide whether the cached component
- * table must be rebuilt.  Content-based on purpose: a same-size file
- * swapped in place must be noticed, and filesystem timestamps are not a
- * reliable witness for that.  The file is a handful of lines, so the
- * read is cheap.  An unreadable file yields NULL, which never matches —
- * NULL rather than a string sentinel, so no file path (which is
- * operator-chosen and could contain anything) can collide with the
- * sentinel's spelling — forcing a rebuild that then reports the real
- * error (fail closed).
+ * opened or stat'ed, otherwise the file's stat identity (device, inode,
+ * size, mtime, ctime).  Compared at transaction start to decide whether
+ * the cached component table must be rebuilt.
+ *
+ * Identity-based, not content-based: every legitimate way the file
+ * changes moves this tuple (tmp+rename changes the inode; an in-place
+ * overwrite moves size/mtime/ctime), while the stored side is taken by
+ * fstat'ing the very descriptor the parse read — so it can never
+ * describe different bytes than the entries were built from.  A
+ * same-identity file whose timestamps were deliberately forged is an
+ * operator actively lying to the kernel and is out of scope.  An
+ * unreadable file yields NULL, which never matches — NULL rather than a
+ * string sentinel, so no file path (which is operator-chosen and could
+ * contain anything) can collide with the sentinel's spelling — forcing a
+ * rebuild that then reports the real error (fail closed).
  */
 char *
 dispatch_topology_signature(void)
 {
 	char		path[MAXPGPATH];
 	FILE	   *fd;
-	char		buf[8192];
-	size_t		nread;
-	uint64		hash = 5381;
-	uint64		total = 0;
+	struct stat st;
 
 	if (!dispatch_topology_enabled())
 		return pstrdup("");
 
 	dispatch_topology_resolve_path(path, sizeof(path));
 
+	/*
+	 * Open for read (not bare stat()): an existing-but-unreadable file
+	 * must yield the unreadable NULL, so the mismatch forces the rebuild
+	 * that surfaces the real permission error.
+	 */
 	fd = AllocateFile(path, "rb");
 	if (fd == NULL)
 		return NULL;
 
-	while ((nread = fread(buf, 1, sizeof(buf), fd)) > 0)
-	{
-		size_t		i;
-
-		for (i = 0; i < nread; i++)
-			hash = hash * 33 + (unsigned char) buf[i];
-		total += nread;
-	}
-
-	if (ferror(fd))
+	if (fstat(fileno(fd), &st) < 0)
 	{
 		FreeFile(fd);
 		return NULL;
 	}
 	FreeFile(fd);
 
-	return psprintf("%s|%llu|%llu", path,
-					(unsigned long long) total,
-					(unsigned long long) hash);
+	return topology_signature_format(path, &st);
 }
 
 bool
@@ -262,8 +277,7 @@ dispatch_topology_parse(const char *path, char *errbuf, size_t errbufsz)
 	bool		has_coordinator = false;
 	bool		has_segment = false;
 	DispatchTopology *topology;
-	uint64		hash = 5381;
-	uint64		total = 0;
+	struct stat st;
 	int			i;
 
 	fd = AllocateFile(path, "r");
@@ -279,8 +293,6 @@ dispatch_topology_parse(const char *path, char *errbuf, size_t errbufsz)
 
 	while (fgets(line, sizeof(line), fd))
 	{
-		size_t		linelen = strlen(line);
-		size_t		k;
 		long		content;
 		long		dbid;
 		long		port;
@@ -296,17 +308,6 @@ dispatch_topology_parse(const char *path, char *errbuf, size_t errbufsz)
 		const char *p = line;
 
 		lineno++;
-
-		/*
-		 * Accumulate the signature from the very bytes being parsed, so
-		 * the identity stored with the resulting table can never describe
-		 * a different file than the one the entries came from.  Same
-		 * function as dispatch_topology_signature() over the same byte
-		 * stream.
-		 */
-		for (k = 0; k < linelen; k++)
-			hash = hash * 33 + (unsigned char) line[k];
-		total += linelen;
 
 		while (*p == ' ' || *p == '\t')
 			p++;
@@ -460,14 +461,23 @@ dispatch_topology_parse(const char *path, char *errbuf, size_t errbufsz)
 		goto fail;
 	}
 
+	/*
+	 * Stamp the identity from the very descriptor the lines were read
+	 * through: fstat on the open fd is atomically consistent with the
+	 * bytes just parsed, so a concurrent swap of the path cannot make the
+	 * signature describe a different file than the entries came from.
+	 */
+	if (fstat(fileno(fd), &st) < 0)
+	{
+		snprintf(errbuf, errbufsz, "could not stat file: %m");
+		goto fail;
+	}
 	FreeFile(fd);
 
 	qsort(topology->entries, topology->nentries,
 		  sizeof(DispatchTopologyEntry), dispatch_topology_entry_cmp);
 
-	topology->signature = psprintf("%s|%llu|%llu", path,
-								   (unsigned long long) total,
-								   (unsigned long long) hash);
+	topology->signature = topology_signature_format(path, &st);
 
 	return topology;
 

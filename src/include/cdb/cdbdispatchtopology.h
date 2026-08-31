@@ -34,11 +34,11 @@ typedef struct DispatchTopology
 {
 	int			nentries;		/* includes the content=-1 coordinator row */
 	DispatchTopologyEntry *entries; /* sorted by content, ascending */
-	char	   *signature;		/* identity of the parsed bytes, in the
+	char	   *signature;		/* stat identity of the parsed file, in the
 								 * dispatch_topology_signature() format;
-								 * computed from the very read that produced
-								 * the entries, never from a second look at
-								 * the file */
+								 * taken by fstat'ing the very descriptor
+								 * the parse read, never from a second look
+								 * at the path */
 } DispatchTopology;
 
 /* GUC variables (guc_gp.c) */
