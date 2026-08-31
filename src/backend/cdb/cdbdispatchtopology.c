@@ -32,21 +32,10 @@
 #include "miscadmin.h"
 #include "storage/fd.h"
 #include "utils/builtins.h"
-#include "utils/memutils.h"
 
 /* GUC variables; definitions live in guc_gp.c's tables */
 char	   *whpg_dispatch_topology_file = NULL;
 char	   *whpg_dispatch_topology_state_str = NULL;
-
-/*
- * Signature of the file content that last failed the component-table
- * build's catalog cross-check in this backend.  Deliberately plain
- * backend state, not GUC state: it must survive transaction abort so the
- * state GUC keeps reporting "error" (fail closed) until the file itself
- * changes.  A parse-level verdict is never cached — the show_hook
- * re-validates on every call.  Owned by TopMemoryContext.
- */
-static char *crosscheck_error_signature = NULL;
 
 /*
  * Worst case for one data line as READ, matching the sscanf widths in
@@ -110,27 +99,6 @@ dispatch_topology_load(void)
 						path, errbuf)));
 
 	return topology;
-}
-
-/*
- * Called by the component-table build when the file parsed but failed a
- * cross-check against the catalog.  The show_hook cannot re-run the
- * cross-check (no catalog access there), so remember which file bytes
- * failed: status keeps reporting "error" until the file changes.
- */
-void
-dispatch_topology_set_error(void)
-{
-	char	   *sig = dispatch_topology_signature();
-
-	if (crosscheck_error_signature)
-		pfree(crosscheck_error_signature);
-	/* sig is NULL when the file has become unreadable: nothing to pin —
-	 * the parse-level check already reports "error" for that state */
-	crosscheck_error_signature = sig ?
-		MemoryContextStrdup(TopMemoryContext, sig) : NULL;
-	if (sig)
-		pfree(sig);
 }
 
 /*
@@ -224,9 +192,16 @@ dispatch_topology_signature_matches(const char *stored)
  * call: the consumers of this GUC are monitoring sessions that never
  * dispatch, so any cached verdict would go stale the moment the file is
  * fixed (or broken) behind them.  The file is a handful of lines; a
- * parse per SHOW is nothing against a monitoring cadence.  A file that
- * parses but previously failed the catalog cross-check keeps reporting
- * "error" until its bytes change (see dispatch_topology_set_error).
+ * parse per SHOW is nothing against a monitoring cadence.
+ *
+ * Scope, deliberately narrow: "active" means the feature applies here
+ * (hot standby) and the file is well-formed.  Catalog-level cross-check
+ * failures are NOT reflected — they cannot be evaluated from a show_hook
+ * (no catalog access), and they need no quiet side channel: the
+ * component-table build fails closed, so every dispatching query reports
+ * them loudly with the real message.  The queries ARE the monitoring
+ * signal for that failure class (whpg-dr probes with live queries, not
+ * with this GUC).
  */
 const char *
 show_whpg_dispatch_topology_state(void)
@@ -248,10 +223,6 @@ show_whpg_dispatch_topology_state(void)
 
 	dispatch_topology_resolve_path(path, sizeof(path));
 	if (dispatch_topology_parse(path, errbuf, sizeof(errbuf)) == NULL)
-		return "error";
-
-	if (crosscheck_error_signature != NULL &&
-		dispatch_topology_signature_matches(crosscheck_error_signature))
 		return "error";
 
 	return "active";

@@ -392,7 +392,6 @@ applyDispatchTopology(GpSegConfigEntry *catalog_configs, int *total_dbs,
 		}
 		if (!found)
 		{
-			dispatch_topology_set_error();
 			ereport(ERROR,
 					(errcode(ERRCODE_CONFIG_FILE_ERROR),
 					 errmsg("dispatch topology file \"%s\" has no entry for content %d",
@@ -445,7 +444,6 @@ applyDispatchTopology(GpSegConfigEntry *catalog_configs, int *total_dbs,
 		}
 		if (!found)
 		{
-			dispatch_topology_set_error();
 			ereport(ERROR,
 					(errcode(ERRCODE_CONFIG_FILE_ERROR),
 					 errmsg("dispatch topology file \"%s\" has an entry for content %d which does not exist in %s",

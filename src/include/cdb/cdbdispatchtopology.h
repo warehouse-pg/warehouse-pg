@@ -47,7 +47,6 @@ extern char *whpg_dispatch_topology_state_str;
 
 extern bool dispatch_topology_enabled(void);
 extern DispatchTopology *dispatch_topology_load(void);
-extern void dispatch_topology_set_error(void);
 extern char *dispatch_topology_signature(void);
 extern bool dispatch_topology_signature_matches(const char *stored);
 extern const char *show_whpg_dispatch_topology_state(void);
