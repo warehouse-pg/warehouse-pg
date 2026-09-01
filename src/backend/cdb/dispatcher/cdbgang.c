@@ -14,6 +14,7 @@
  */
 #include "postgres.h"
 
+#include "access/xlog.h"		/* IsRoleMirror */
 #include "miscadmin.h"			/* MyProcPid */
 #include "pgstat.h"			/* pgstat_report_sessionid() */
 #include "utils/memutils.h"
@@ -249,7 +250,8 @@ segment_failure_due_to_dispatch_topology(const char *error_message)
 	ptr = strstr(error_message, fatal);
 	if ((ptr != NULL) && ptr[fatal_len] == ':' &&
 		(strstr(error_message, _(DISPATCH_TOPOLOGY_DBID_MISMATCH_MSG)) ||
-		 strstr(error_message, _(DISPATCH_TOPOLOGY_CONTENT_MISMATCH_MSG))))
+		 strstr(error_message, _(DISPATCH_TOPOLOGY_CONTENT_MISMATCH_MSG)) ||
+		 strstr(error_message, _(DISPATCH_TOPOLOGY_STANDBY_MISMATCH_MSG))))
 		return true;
 
 	return false;
@@ -537,7 +539,11 @@ build_gpqeid_param(char *buf, int bufsz,
 	 * Both travel together: the dbid catches a stale address reused by a
 	 * foreign segment, the content catches a consistent-but-misassigned
 	 * file row that pairs one content with another content's dbid and
-	 * address — a case the dbid alone passes by construction.
+	 * address — a case the dbid alone passes by construction.  Their
+	 * presence also makes the QE demand of itself that it be a standby,
+	 * which catches what neither coordinate can: a row pointing at the
+	 * corresponding node of the SOURCE cluster, whose dbid and content
+	 * match by clone construction (see the parse side).
 	 */
 	if (expectedDbid > 0)
 	{
@@ -660,6 +666,31 @@ cdbgang_parse_gpqeid_params(struct Port *port pg_attribute_unused(),
 			expected_content = (int) strtol(cp, &endptr, 10);
 			if (endptr == cp || *endptr != '\0' || expected_content < -1)
 				goto bad;
+
+			/*
+			 * dbid and content are cluster-relative coordinates, and a DR
+			 * replica is a physical clone of its source: every node keeps
+			 * the dbid of the basebackup it was restored from, so a
+			 * topology row pointing at the corresponding node of the
+			 * SOURCE cluster (the natural result of regenerating the file
+			 * from the replayed catalog) passes both coordinate checks by
+			 * construction.  What does tell the clusters apart is standby
+			 * state: every legitimate target of a topology dispatch is a
+			 * physical standby (the replica serves while replaying, and
+			 * promote retires the file before any node leaves recovery),
+			 * while the dangerous impostor -- a live primary of the source
+			 * cluster -- is not.  standby.signal is checked instead of
+			 * RecoveryInProgress() because this runs in
+			 * ProcessStartupPacket, before the backend is far enough
+			 * along for XLOG access; IsRoleMirror() is already used in
+			 * this context (see the GPCONN_TYPE handling there).
+			 */
+			if (!IsRoleMirror())
+				ereport(FATAL,
+						(errmsg(DISPATCH_TOPOLOGY_STANDBY_MISMATCH_MSG),
+						 errdetail("Dispatched from a topology file, but this node is not a standby."),
+						 errhint("A topology row that names a live primary usually points at the "
+								 "source cluster instead of the replica.")));
 
 			if (expected_dbid != GpIdentity.dbid)
 				ereport(FATAL,

@@ -31,6 +31,7 @@
 
 #define DISPATCH_TOPOLOGY_DBID_MISMATCH_MSG "dispatch topology dbid mismatch"
 #define DISPATCH_TOPOLOGY_CONTENT_MISMATCH_MSG "dispatch topology content mismatch"
+#define DISPATCH_TOPOLOGY_STANDBY_MISMATCH_MSG "dispatch topology standby mismatch"
 
 #ifndef PRIO_MAX
 #define PRIO_MAX 20

@@ -11,6 +11,18 @@
  * without a file row is an error, never a silent fallback to the possibly
  * stale catalog.
  *
+ * Misrouting protection, and its limit: connections dispatched from a
+ * topology row carry the row's dbid and content, and the receiving node
+ * verifies both against its own identity and demands of itself that it
+ * be a physical standby (see cdbgang_parse_gpqeid_params).  The standby
+ * demand is what catches a row pointing at the corresponding node of the
+ * SOURCE cluster — a live primary whose dbid and content match by clone
+ * construction.  What no kernel check can catch is a row pointing at the
+ * corresponding node of ANOTHER REPLICA of the same source: clones share
+ * every stable identity (dbids, contents, system identifier, timeline),
+ * so generating the file from the replica's own inventory — never from
+ * another cluster's — remains the tool's responsibility.
+ *
  * Copyright (c) 2026-Present EnterpriseDB Corporation.
  *
  * src/include/cdb/cdbdispatchtopology.h

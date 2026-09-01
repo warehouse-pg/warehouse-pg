@@ -60,4 +60,16 @@
 1q:
 2q:
 
+-- The standby half of the handshake, exercised directly (no GUC needed:
+-- the check arms itself on the presence of the topology fields in
+-- gpqeid).  The crafted gpqeid carries coordinates in the shape a
+-- topology dispatch would send, but arrives at a live primary: refused.
+-- This simulates the wrong-cluster row: a DR replica is a physical clone
+-- of its source, so a topology row pointing at the corresponding SOURCE
+-- node carries a dbid and content its target genuinely has — standby
+-- state is the only thing that tells the clusters apart.  (The standby
+-- check fires before the coordinate comparison, so it does not matter
+-- whether dbid 1 / content -1 match this coordinator.)
+! psql -X "dbname=postgres gpqeid=1;1;false;1;1;2;1;-1" -c "select 1" 2>&1 | grep -o "dispatch topology standby mismatch" | head -1;
+
 !\retcode rm -f "$COORDINATOR_DATA_DIRECTORY/whpg_dr_topology_test";
