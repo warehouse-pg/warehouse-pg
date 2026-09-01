@@ -40,18 +40,18 @@ INSERT 0 2
 
 !\retcode gpconfig -c whpg_dispatch_topology_file -v whpg_dr_topology_test --coordinatoronly --skipvalidation;
 -- start_ignore
-20260901:15:54:35:3326501 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_dispatch_topology_file -v whpg_dr_topology_test --coordinatoronly --skipvalidation'
+20260901:17:13:49:3453548 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_dispatch_topology_file -v whpg_dr_topology_test --coordinatoronly --skipvalidation'
 
 -- end_ignore
 (exited with code 0)
 !\retcode gpstop -u;
 -- start_ignore
-20260901:15:54:35:3326530 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
-20260901:15:54:35:3326530 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
-20260901:15:54:35:3326530 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
-20260901:15:54:35:3326530 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
-20260901:15:54:35:3326530 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
-20260901:15:54:35:3326530 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+20260901:17:13:49:3453578 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20260901:17:13:49:3453578 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260901:17:13:49:3453578 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260901:17:13:49:3453578 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260901:17:13:49:3453578 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260901:17:13:49:3453578 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
 
 -- end_ignore
 (exited with code 0)
@@ -95,18 +95,18 @@ HINT:  Reconnect (or drop the temporary tables) to pick up the new topology.
 -- the temp namespace survived the episode untouched.
 !\retcode gpconfig -r whpg_dispatch_topology_file --coordinatoronly --skipvalidation;
 -- start_ignore
-20260901:15:54:36:3326587 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-r whpg_dispatch_topology_file --coordinatoronly --skipvalidation'
+20260901:17:13:49:3453640 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-r whpg_dispatch_topology_file --coordinatoronly --skipvalidation'
 
 -- end_ignore
 (exited with code 0)
 !\retcode gpstop -u;
 -- start_ignore
-20260901:15:54:36:3326626 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
-20260901:15:54:36:3326626 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
-20260901:15:54:36:3326626 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
-20260901:15:54:36:3326626 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
-20260901:15:54:36:3326626 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
-20260901:15:54:36:3326626 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+20260901:17:13:49:3453679 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20260901:17:13:49:3453679 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260901:17:13:49:3453679 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260901:17:13:49:3453679 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260901:17:13:49:3453679 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260901:17:13:49:3453679 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
 
 -- end_ignore
 (exited with code 0)
@@ -140,6 +140,25 @@ HINT:  Reconnect (or drop the temporary tables) to pick up the new topology.
 -- whether dbid 1 / content -1 match this coordinator.)
 ! psql -X "dbname=postgres gpqeid=1;1;false;1;1;2;1;-1" -c "select 1" 2>&1 | grep -o "dispatch topology standby mismatch" | head -1;
 dispatch topology standby mismatch
+
+
+-- The other legitimate entrance into recovery: recovery.signal -- the
+-- shape of a whpg-dr replica, which runs targeted recovery held paused
+-- at its restore point, so the signal file stays for the replica's whole
+-- life.  A running primary never looks at the file (it is read at
+-- startup only), so planting it here is safe; it is removed right after,
+-- because left behind it would send the next restart into archive
+-- recovery.  With the file present the same crafted gpqeid must fall
+-- THROUGH the recovery check to the next line of defense, the dbid
+-- check (99 is nobody's dbid): proof that a targeted-recovery replica
+-- is an accepted dispatch target.  A check that demanded standby.signal
+-- alone refused every healthy replica -- this pins the fix.
+! touch "$COORDINATOR_DATA_DIRECTORY/recovery.signal";
+
+! psql -X "dbname=postgres gpqeid=1;1;false;1;1;2;99;-1" -c "select 1" 2>&1 | grep -o "dispatch topology dbid mismatch" | head -1;
+dispatch topology dbid mismatch
+
+! rm -f "$COORDINATOR_DATA_DIRECTORY/recovery.signal";
 
 
 !\retcode rm -f "$COORDINATOR_DATA_DIRECTORY/whpg_dr_topology_test";

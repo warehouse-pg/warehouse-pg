@@ -72,4 +72,19 @@
 -- whether dbid 1 / content -1 match this coordinator.)
 ! psql -X "dbname=postgres gpqeid=1;1;false;1;1;2;1;-1" -c "select 1" 2>&1 | grep -o "dispatch topology standby mismatch" | head -1;
 
+-- The other legitimate entrance into recovery: recovery.signal -- the
+-- shape of a whpg-dr replica, which runs targeted recovery held paused
+-- at its restore point, so the signal file stays for the replica's whole
+-- life.  A running primary never looks at the file (it is read at
+-- startup only), so planting it here is safe; it is removed right after,
+-- because left behind it would send the next restart into archive
+-- recovery.  With the file present the same crafted gpqeid must fall
+-- THROUGH the recovery check to the next line of defense, the dbid
+-- check (99 is nobody's dbid): proof that a targeted-recovery replica
+-- is an accepted dispatch target.  A check that demanded standby.signal
+-- alone refused every healthy replica -- this pins the fix.
+! touch "$COORDINATOR_DATA_DIRECTORY/recovery.signal";
+! psql -X "dbname=postgres gpqeid=1;1;false;1;1;2;99;-1" -c "select 1" 2>&1 | grep -o "dispatch topology dbid mismatch" | head -1;
+! rm -f "$COORDINATOR_DATA_DIRECTORY/recovery.signal";
+
 !\retcode rm -f "$COORDINATOR_DATA_DIRECTORY/whpg_dr_topology_test";
