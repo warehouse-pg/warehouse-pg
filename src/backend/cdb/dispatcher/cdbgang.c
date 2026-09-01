@@ -639,13 +639,27 @@ cdbgang_parse_gpqeid_params(struct Port *port pg_attribute_unused(),
 	{
 		if (gpqeid_next_param(&cp, &np))
 		{
-			int			expected_dbid = (int) strtol(cp, NULL, 10);
+			char	   *endptr;
+			int			expected_dbid;
 			int			expected_content;
+
+			/*
+			 * A real dispatcher always emits both fields as %d with dbid
+			 * > 0 and content >= -1, so anything else is a malformed
+			 * packet: refuse it as one.  Letting strtol turn garbage into
+			 * 0 would instead report a topology mismatch, pointing the
+			 * operator at the file when the file never said this.
+			 */
+			expected_dbid = (int) strtol(cp, &endptr, 10);
+			if (endptr == cp || *endptr != '\0' || expected_dbid <= 0)
+				goto bad;
 
 			/* the paired content field must travel with the dbid */
 			if (!gpqeid_next_param(&cp, &np))
 				goto bad;
-			expected_content = (int) strtol(cp, NULL, 10);
+			expected_content = (int) strtol(cp, &endptr, 10);
+			if (endptr == cp || *endptr != '\0' || expected_content < -1)
+				goto bad;
 
 			if (expected_dbid != GpIdentity.dbid)
 				ereport(FATAL,
