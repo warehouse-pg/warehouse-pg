@@ -102,6 +102,21 @@ dispatch_topology_load(void)
 }
 
 /*
+ * POSIX.1-2008 spells the full-resolution stat timestamps st_mtim and
+ * st_ctim; Darwin predates that and spells them st_mtimespec and
+ * st_ctimespec.  Keep the nanosecond resolution — the signature must
+ * move on a same-second in-place rewrite — rather than falling back to
+ * the portable but seconds-only st_mtime.
+ */
+#if defined(__darwin__)
+#define TOPOLOGY_ST_MTIM(st)	((st)->st_mtimespec)
+#define TOPOLOGY_ST_CTIM(st)	((st)->st_ctimespec)
+#else
+#define TOPOLOGY_ST_MTIM(st)	((st)->st_mtim)
+#define TOPOLOGY_ST_CTIM(st)	((st)->st_ctim)
+#endif
+
+/*
  * topology_signature_format renders one canonical identity string from a
  * stat result: device, inode, size and the two change timestamps.  Both
  * signature producers (the parse's fstat of the very fd it read, and the
@@ -116,8 +131,10 @@ topology_signature_format(const char *path, const struct stat *st)
 					(unsigned long long) st->st_dev,
 					(unsigned long long) st->st_ino,
 					(long long) st->st_size,
-					(long long) st->st_mtim.tv_sec, st->st_mtim.tv_nsec,
-					(long long) st->st_ctim.tv_sec, st->st_ctim.tv_nsec);
+					(long long) TOPOLOGY_ST_MTIM(st).tv_sec,
+					(long) TOPOLOGY_ST_MTIM(st).tv_nsec,
+					(long long) TOPOLOGY_ST_CTIM(st).tv_sec,
+					(long) TOPOLOGY_ST_CTIM(st).tv_nsec);
 }
 
 /*
