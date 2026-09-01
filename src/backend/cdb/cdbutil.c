@@ -504,11 +504,25 @@ getCdbComponentInfo(void)
 	bool		found;
 	HostPrimaryCountEntry *hsEntry;
 
+	/*
+	 * Every caller enters with no live component table (the rebuild path
+	 * destroys the old table, and with it this whole context, first).  So
+	 * an already-existing context can hold nothing but the leavings of a
+	 * previous build that ERRORed out partway — nothing outside the table
+	 * points into it — and resetting it here is what keeps a repeatedly
+	 * failing build (unreadable topology file, unresolvable hostname)
+	 * from accumulating one build's worth of allocations per retry for
+	 * the life of the session.
+	 */
+	Assert(cdb_component_dbs == NULL);
+
 	if (!CdbComponentsContext)
 		CdbComponentsContext = AllocSetContextCreate(TopMemoryContext, "cdb components Context",
 								ALLOCSET_DEFAULT_MINSIZE,
 								ALLOCSET_DEFAULT_INITSIZE,
 								ALLOCSET_DEFAULT_MAXSIZE);
+	else
+		MemoryContextReset(CdbComponentsContext);
 
 	oldContext = MemoryContextSwitchTo(CdbComponentsContext);
 
@@ -837,6 +851,7 @@ cdbcomponent_cleanupIdleQEs(bool includeWriter)
 void
 cdbcomponent_updateCdbComponents(void)
 {
+	bool topo_matches;
 	uint8 ftsVersion= getFtsVersion();
 	int expandVersion = GetGpExpandVersion();
 
@@ -853,6 +868,17 @@ cdbcomponent_updateCdbComponents(void)
 
 	PG_TRY();
 	{
+		/*
+		 * Evaluate the topology signature exactly once per decision: each
+		 * evaluation opens and stats the file, so independent evaluations
+		 * in the rebuild condition and its branches could see different
+		 * files — a swap landing between them would turn a plain
+		 * fts_version bump into a spurious topology-changed error for a
+		 * temp-table session.
+		 */
+		topo_matches = (cdb_component_dbs == NULL ||
+						dispatch_topology_signature_matches(cdb_component_dbs->topology_signature));
+
 		if (cdb_component_dbs == NULL)
 		{
 			cdb_component_dbs = getCdbComponentInfo();
@@ -861,7 +887,7 @@ cdbcomponent_updateCdbComponents(void)
 		}
 		else if ((cdb_component_dbs->fts_version != ftsVersion ||
 				 cdb_component_dbs->expand_version != expandVersion ||
-				 !dispatch_topology_signature_matches(cdb_component_dbs->topology_signature)))
+				 !topo_matches))
 		{
 			if (TempNamespaceOidIsValid())
 			{
@@ -877,7 +903,7 @@ cdbcomponent_updateCdbComponents(void)
 				 * session can outlive an out-of-band promotion, and that
 				 * corner must fail closed.
 				 */
-				if (!dispatch_topology_signature_matches(cdb_component_dbs->topology_signature))
+				if (!topo_matches)
 					ereport(ERROR,
 							(errcode(ERRCODE_CONFIG_FILE_ERROR),
 							 errmsg("the dispatch topology changed, but this session holds temporary tables"),
@@ -887,7 +913,7 @@ cdbcomponent_updateCdbComponents(void)
 			{
 				ELOG_DISPATCHER_DEBUG("component table rebuilt (fts %d->%d, topo sig %s)",
 									  cdb_component_dbs->fts_version, ftsVersion,
-									  dispatch_topology_signature_matches(cdb_component_dbs->topology_signature) ? "same" : "changed");
+									  topo_matches ? "same" : "changed");
 				cdbcomponent_destroyCdbComponents();
 				cdb_component_dbs = getCdbComponentInfo();
 				cdb_component_dbs->fts_version = ftsVersion;
@@ -1661,7 +1687,15 @@ hostPrimaryCountHashTableInit(void)
 	info.keysize = MAXHOSTNAMELEN;
 	info.entrysize = sizeof(HostPrimaryCountEntry);
 
-	return hash_create("HostSegs", 32, &info, HASH_ELEM);
+	/*
+	 * Tie the table to CdbComponentsContext (without HASH_CONTEXT it
+	 * would live under TopMemoryContext): a build that ERRORs out before
+	 * reaching its hash_destroy must leave the table where the next
+	 * build's context reset can reclaim it.
+	 */
+	info.hcxt = CdbComponentsContext;
+
+	return hash_create("HostSegs", 32, &info, HASH_ELEM | HASH_CONTEXT);
 }
 
 /*
