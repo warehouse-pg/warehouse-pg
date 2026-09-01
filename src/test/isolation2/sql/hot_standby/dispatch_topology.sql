@@ -54,6 +54,14 @@
 !\retcode awk '{ if ($1=="-1") $2=1; print }' "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good" > "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_coordwrong";
 !\retcode echo "# variant: coordwrong" >> "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_coordwrong";
 !\retcode echo "garbage line" > "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_garbage";
+!\retcode { printf '#'; head -c 1700 /dev/zero | tr '\0' 'x'; echo; cat "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good"; } > "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_longline";
+!\retcode { cat "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good"; printf '#'; head -c 1598 /dev/zero | tr '\0' 'x'; } > "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_maxline";
+!\retcode { cat "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good"; echo "999999999999999 4093 localhost localhost 12345 /tmp/nowhere"; } > "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_hugenum";
+!\retcode echo "# variant: hugenum" >> "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_hugenum";
+!\retcode { cat "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good"; echo "0000000000000012 sdw-nowhere 192.0.2.1 12345 /tmp/nowhere"; } > "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_zerosplit";
+!\retcode echo "# variant: zerosplit" >> "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_zerosplit";
+!\retcode { sed 's/$/\r/' "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good"; printf '\r\n'; printf '# variant: crlf\r\n'; } > "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_crlf";
+!\retcode { cat "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good"; printf '\f\n'; printf '\v# variant: oddspace\n'; } > "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_oddspace";
 
 -- Payload table, written on the primary; remote_apply (suite setup) makes
 -- it visible on the standby.
@@ -108,6 +116,19 @@ insert into hs_topo_t select generate_series(1, 100);
 !\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_overflow" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
 -1S: select count(*) from hs_topo_t;
 
+-- A numeric field wider than any legal value goes through strtol, not
+-- sscanf %d (whose out-of-range behavior is undefined), and is refused
+-- with a message naming the field.
+!\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_hugenum" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
+-1S: select count(*) from hs_topo_t;
+
+-- A line with a MISSING field is refused by its true token count, even
+-- when sscanf's field widths could split an over-wide zero-padded first
+-- token into a plausible content and dbid pair (five tokens must never
+-- reassemble into six accepted fields).
+!\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_zerosplit" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
+-1S: select count(*) from hs_topo_t;
+
 -- A hostname beyond the component table's limit is refused at parse with
 -- a real message, instead of dying later inside the build with an
 -- internal one.
@@ -125,6 +146,33 @@ insert into hs_topo_t select generate_series(1, 100);
 !\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_garbage" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
 -1S: select count(*) from hs_topo_t;
 -1M: show whpg_dispatch_topology_state;
+
+-- A physical line that does not fit the parse buffer is refused as too
+-- long, instead of letting fgets split it and re-parse the pieces as
+-- lines of their own (worst case: a comment's tail masquerading as a
+-- data row).
+!\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_longline" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
+-1S: select count(*) from hs_topo_t;
+
+-- The refusal is for lines with MORE bytes than the buffer, not for a
+-- last line that merely fills it: a maximum-length final comment line
+-- with no trailing newline is legal (fgets returns it with the buffer
+-- full and the EOF flag not yet raised — the parser peeks to tell the
+-- two apart).
+!\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_maxline" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
+-1S: select count(*) from hs_topo_t;
+
+-- CRLF line endings, including a CRLF blank line, are tolerated: '\r'
+-- is whitespace, not the start of a data line.
+!\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_crlf" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
+-1S: select count(*) from hs_topo_t;
+-1S: show whpg_dispatch_topology_state;
+
+-- Every isspace() flavor counts as whitespace: a line of only a form
+-- feed is blank, and a comment prefixed by a vertical tab is still a
+-- comment — neither is promoted into a (refused) data line.
+!\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_oddspace" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
+-1S: select count(*) from hs_topo_t;
 
 -- Good file again: everything recovers, both views agree.
 !\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";

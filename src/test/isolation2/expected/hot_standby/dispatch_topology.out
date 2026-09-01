@@ -118,6 +118,46 @@
 
 -- end_ignore
 (exited with code 0)
+!\retcode { printf '#'; head -c 1700 /dev/zero | tr '\0' 'x'; echo; cat "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good"; } > "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_longline";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode { cat "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good"; printf '#'; head -c 1598 /dev/zero | tr '\0' 'x'; } > "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_maxline";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode { cat "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good"; echo "999999999999999 4093 localhost localhost 12345 /tmp/nowhere"; } > "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_hugenum";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode echo "# variant: hugenum" >> "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_hugenum";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode { cat "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good"; echo "0000000000000012 sdw-nowhere 192.0.2.1 12345 /tmp/nowhere"; } > "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_zerosplit";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode echo "# variant: zerosplit" >> "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_zerosplit";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode { sed 's/$/\r/' "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good"; printf '\r\n'; printf '# variant: crlf\r\n'; } > "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_crlf";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode { cat "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good"; printf '\f\n'; printf '\v# variant: oddspace\n'; } > "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_oddspace";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
 
 -- Payload table, written on the primary; remote_apply (suite setup) makes
 -- it visible on the standby.
@@ -212,9 +252,9 @@ ERROR:  dispatch topology file "whpg_dr_topology_test" has no entry for content 
 (exited with code 0)
 -1S: select count(*) from hs_topo_t;
 ERROR:  failed to acquire resources on one or more segments
-DETAIL:  FATAL:  dispatch topology dbid mismatch (cdbgang.c:651)
-DETAIL:  Dispatched for dbid 5, but this segment is dbid 6.
- (seg0 127.0.0.1:9006)
+DETAIL:  FATAL:  dispatch topology dbid mismatch (cdbgang.c:710)
+DETAIL:  Dispatched for dbid 6, but this segment is dbid 5.
+ (seg1 127.0.0.1:9005)
 
 -- The content handshake: dbids AND addresses crossed — internally
 -- consistent, so the dbid check passes by construction; the content half
@@ -226,7 +266,7 @@ DETAIL:  Dispatched for dbid 5, but this segment is dbid 6.
 (exited with code 0)
 -1S: select count(*) from hs_topo_t;
 ERROR:  failed to acquire resources on one or more segments
-DETAIL:  FATAL:  dispatch topology content mismatch (cdbgang.c:656)
+DETAIL:  FATAL:  dispatch topology content mismatch (cdbgang.c:715)
 DETAIL:  Dispatched for content 0, but this segment is content 1.
  (seg0 127.0.0.1:9006)
 
@@ -238,7 +278,7 @@ DETAIL:  Dispatched for content 0, but this segment is content 1.
 -- end_ignore
 (exited with code 0)
 -1S: select count(*) from hs_topo_t;
-ERROR:  dispatch topology file "PATH" is invalid: line 3: duplicate dbid 8
+ERROR:  dispatch topology file "/tmp/claude-1000/-home-yjf-Documents-workspace-whpg-dr/18426e28-5160-4273-a3f6-91606eedb73e/scratchpad/k248/gpAux/gpdemo/datadirs/standby/whpg_dr_topology_test" is invalid: line 3: duplicate dbid 8
 
 -- A content beyond int16 would truncate into an alias of a real content:
 -- refused at parse.
@@ -248,7 +288,30 @@ ERROR:  dispatch topology file "PATH" is invalid: line 3: duplicate dbid 8
 -- end_ignore
 (exited with code 0)
 -1S: select count(*) from hs_topo_t;
-ERROR:  dispatch topology file "PATH" is invalid: line 5: invalid content "65537"
+ERROR:  dispatch topology file "/tmp/claude-1000/-home-yjf-Documents-workspace-whpg-dr/18426e28-5160-4273-a3f6-91606eedb73e/scratchpad/k248/gpAux/gpdemo/datadirs/standby/whpg_dr_topology_test" is invalid: line 5: invalid content "65537"
+
+-- A numeric field wider than any legal value goes through strtol, not
+-- sscanf %d (whose out-of-range behavior is undefined), and is refused
+-- with a message naming the field.
+!\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_hugenum" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-1S: select count(*) from hs_topo_t;
+ERROR:  dispatch topology file "/tmp/claude-1000/-home-yjf-Documents-workspace-whpg-dr/18426e28-5160-4273-a3f6-91606eedb73e/scratchpad/k248/gpAux/gpdemo/datadirs/standby/whpg_dr_topology_test" is invalid: line 5: invalid content "999999999999999"
+
+-- A line with a MISSING field is refused by its true token count, even
+-- when sscanf's field widths could split an over-wide zero-padded first
+-- token into a plausible content and dbid pair (five tokens must never
+-- reassemble into six accepted fields).
+!\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_zerosplit" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-1S: select count(*) from hs_topo_t;
+ERROR:  dispatch topology file "/tmp/claude-1000/-home-yjf-Documents-workspace-whpg-dr/18426e28-5160-4273-a3f6-91606eedb73e/scratchpad/k248/gpAux/gpdemo/datadirs/standby/whpg_dr_topology_test" is invalid: line 5: expected 6 fields "content dbid hostname address port datadir"
 
 -- A hostname beyond the component table's limit is refused at parse with
 -- a real message, instead of dying later inside the build with an
@@ -259,7 +322,7 @@ ERROR:  dispatch topology file "PATH" is invalid: line 5: invalid content "65537
 -- end_ignore
 (exited with code 0)
 -1S: select count(*) from hs_topo_t;
-ERROR:  dispatch topology file "PATH" is invalid: line 2: hostname or address exceeds 64 characters (component table limit)
+ERROR:  dispatch topology file "/tmp/claude-1000/-home-yjf-Documents-workspace-whpg-dr/18426e28-5160-4273-a3f6-91606eedb73e/scratchpad/k248/gpAux/gpdemo/datadirs/standby/whpg_dr_topology_test" is invalid: line 2: hostname or address exceeds 64 characters (component table limit)
 
 -- The coordinator row must carry THIS dispatcher's own identity; a row
 -- carrying some other node's dbid (e.g. regenerated from a replayed
@@ -281,11 +344,71 @@ HINT:  The file must carry each node's own identity (gp_dbid from internal.auto.
 -- end_ignore
 (exited with code 0)
 -1S: select count(*) from hs_topo_t;
-ERROR:  dispatch topology file "PATH" is invalid: line 1: expected 6 fields "content dbid hostname address port datadir"
+ERROR:  dispatch topology file "/tmp/claude-1000/-home-yjf-Documents-workspace-whpg-dr/18426e28-5160-4273-a3f6-91606eedb73e/scratchpad/k248/gpAux/gpdemo/datadirs/standby/whpg_dr_topology_test" is invalid: line 1: expected 6 fields "content dbid hostname address port datadir"
 -1M: show whpg_dispatch_topology_state;
  whpg_dispatch_topology_state 
 ------------------------------
  error                        
+(1 row)
+
+-- A physical line that does not fit the parse buffer is refused as too
+-- long, instead of letting fgets split it and re-parse the pieces as
+-- lines of their own (worst case: a comment's tail masquerading as a
+-- data row).
+!\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_longline" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-1S: select count(*) from hs_topo_t;
+ERROR:  dispatch topology file "/tmp/claude-1000/-home-yjf-Documents-workspace-whpg-dr/18426e28-5160-4273-a3f6-91606eedb73e/scratchpad/k248/gpAux/gpdemo/datadirs/standby/whpg_dr_topology_test" is invalid: line 1: line too long (maximum 1599 bytes)
+
+-- The refusal is for lines with MORE bytes than the buffer, not for a
+-- last line that merely fills it: a maximum-length final comment line
+-- with no trailing newline is legal (fgets returns it with the buffer
+-- full and the EOF flag not yet raised — the parser peeks to tell the
+-- two apart).
+!\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_maxline" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-1S: select count(*) from hs_topo_t;
+ count 
+-------
+ 100   
+(1 row)
+
+-- CRLF line endings, including a CRLF blank line, are tolerated: '\r'
+-- is whitespace, not the start of a data line.
+!\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_crlf" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-1S: select count(*) from hs_topo_t;
+ count 
+-------
+ 100   
+(1 row)
+-1S: show whpg_dispatch_topology_state;
+ whpg_dispatch_topology_state 
+------------------------------
+ active                       
+(1 row)
+
+-- Every isspace() flavor counts as whitespace: a line of only a form
+-- feed is blank, and a comment prefixed by a vertical tab is still a
+-- comment — neither is promoted into a (refused) data line.
+!\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_oddspace" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-1S: select count(*) from hs_topo_t;
+ count 
+-------
+ 100   
 (1 row)
 
 -- Good file again: everything recovers, both views agree.

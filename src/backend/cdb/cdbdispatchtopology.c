@@ -285,9 +285,35 @@ dispatch_topology_parse(const char *path, char *errbuf, size_t errbufsz)
 
 		lineno++;
 
-		while (*p == ' ' || *p == '\t')
+		/*
+		 * A physical line that does not fit the buffer would come back
+		 * from fgets in pieces, and the pieces would be parsed as lines
+		 * of their own — with wrong line numbers, and in the worst case a
+		 * comment's tail masquerading as a data row.  Refuse instead; a
+		 * missing newline is fine only on the last line of the file.  A
+		 * buffer-filling read does not raise the EOF flag by itself, so
+		 * peek one byte to tell a maximum-length last line (nothing
+		 * follows: legal) from a genuinely over-long one (no pushback
+		 * needed — the over-long case is refused outright).
+		 */
+		if (strchr(line, '\n') == NULL && !feof(fd) && fgetc(fd) != EOF)
+		{
+			snprintf(errbuf, errbufsz,
+					 "line %d: line too long (maximum %d bytes)",
+					 lineno, (int) sizeof(line) - 1);
+			goto fail;
+		}
+
+		/*
+		 * Skip leading whitespace with the same isspace() set the token
+		 * counting and sscanf below use — '\r' of a CRLF line, '\v', '\f'
+		 * alike — so no whitespace flavor can promote a blank or comment
+		 * line into a data line.  '\n' is whitespace too, so a blank line
+		 * runs p all the way to its terminator.
+		 */
+		while (*p != '\0' && isspace((unsigned char) *p))
 			p++;
-		if (*p == '\0' || *p == '\n' || *p == '#')
+		if (*p == '\0' || *p == '#')
 			continue;
 
 		/*
