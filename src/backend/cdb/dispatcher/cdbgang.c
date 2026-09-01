@@ -14,6 +14,8 @@
  */
 #include "postgres.h"
 
+#include <sys/stat.h>
+
 #include "access/xlog.h"		/* IsRoleMirror */
 #include "miscadmin.h"			/* MyProcPid */
 #include "pgstat.h"			/* pgstat_report_sessionid() */
@@ -674,23 +676,35 @@ cdbgang_parse_gpqeid_params(struct Port *port pg_attribute_unused(),
 			 * topology row pointing at the corresponding node of the
 			 * SOURCE cluster (the natural result of regenerating the file
 			 * from the replayed catalog) passes both coordinate checks by
-			 * construction.  What does tell the clusters apart is standby
-			 * state: every legitimate target of a topology dispatch is a
-			 * physical standby (the replica serves while replaying, and
-			 * promote retires the file before any node leaves recovery),
-			 * while the dangerous impostor -- a live primary of the source
-			 * cluster -- is not.  standby.signal is checked instead of
-			 * RecoveryInProgress() because this runs in
-			 * ProcessStartupPacket, before the backend is far enough
-			 * along for XLOG access; IsRoleMirror() is already used in
-			 * this context (see the GPCONN_TYPE handling there).
+			 * construction.  What does tell the clusters apart is
+			 * recovery state: every legitimate target of a topology
+			 * dispatch is replaying (the replica serves while replaying,
+			 * and promote retires the file before any node leaves
+			 * recovery), while the dangerous impostor -- a live primary
+			 * of the source cluster -- is not.  Both recovery entrances
+			 * are legitimate: standby.signal (a streaming standby) and
+			 * recovery.signal (a targeted-recovery replica held paused at
+			 * its restore point -- the whpg-dr shape, where the signal
+			 * file stays for the replica's whole life because recovery
+			 * never reaches an end).  A live primary has neither.  The
+			 * signal files are checked instead of RecoveryInProgress()
+			 * because this runs in ProcessStartupPacket, before the
+			 * backend is far enough along for XLOG access; IsRoleMirror()
+			 * is already used in this context (see the GPCONN_TYPE
+			 * handling there).
 			 */
 			if (!IsRoleMirror())
-				ereport(FATAL,
-						(errmsg(DISPATCH_TOPOLOGY_STANDBY_MISMATCH_MSG),
-						 errdetail("Dispatched from a topology file, but this node is not a standby."),
-						 errhint("A topology row that names a live primary usually points at the "
-								 "source cluster instead of the replica.")));
+			{
+				struct stat signal_st;
+
+				if (stat(RECOVERY_SIGNAL_FILE, &signal_st) != 0)
+					ereport(FATAL,
+							(errmsg(DISPATCH_TOPOLOGY_STANDBY_MISMATCH_MSG),
+							 errdetail("Dispatched from a topology file, but this node is not in recovery "
+									   "(neither standby.signal nor recovery.signal is present)."),
+							 errhint("A topology row that names a live primary usually points at the "
+									 "source cluster instead of the replica.")));
+			}
 
 			if (expected_dbid != GpIdentity.dbid)
 				ereport(FATAL,
