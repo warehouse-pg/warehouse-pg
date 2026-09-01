@@ -542,10 +542,10 @@ build_gpqeid_param(char *buf, int bufsz,
 	 * foreign segment, the content catches a consistent-but-misassigned
 	 * file row that pairs one content with another content's dbid and
 	 * address — a case the dbid alone passes by construction.  Their
-	 * presence also makes the QE demand of itself that it be a standby,
-	 * which catches what neither coordinate can: a row pointing at the
-	 * corresponding node of the SOURCE cluster, whose dbid and content
-	 * match by clone construction (see the parse side).
+	 * presence also makes the QE demand of itself that it be in
+	 * recovery, which catches what neither coordinate can: a row
+	 * pointing at the corresponding node of the SOURCE cluster, whose
+	 * dbid and content match by clone construction (see the parse side).
 	 */
 	if (expectedDbid > 0)
 	{

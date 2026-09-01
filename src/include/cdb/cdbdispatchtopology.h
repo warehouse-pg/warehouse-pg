@@ -14,14 +14,18 @@
  * Misrouting protection, and its limit: connections dispatched from a
  * topology row carry the row's dbid and content, and the receiving node
  * verifies both against its own identity and demands of itself that it
- * be a physical standby (see cdbgang_parse_gpqeid_params).  The standby
+ * be in recovery, entered through either signal file — standby.signal
+ * (a streaming standby) or recovery.signal (a targeted-recovery replica,
+ * the whpg-dr shape) — see cdbgang_parse_gpqeid_params.  The recovery
  * demand is what catches a row pointing at the corresponding node of the
  * SOURCE cluster — a live primary whose dbid and content match by clone
- * construction.  What no kernel check can catch is a row pointing at the
- * corresponding node of ANOTHER REPLICA of the same source: clones share
- * every stable identity (dbids, contents, system identifier, timeline),
- * so generating the file from the replica's own inventory — never from
- * another cluster's — remains the tool's responsibility.
+ * construction.  What no kernel check can catch is a row pointing at ANY
+ * OTHER CLONE of the same source that is in recovery — another replica,
+ * or a scratch PITR restore started on a former replica node's address:
+ * clones share every stable identity (dbids, contents, system
+ * identifier, timeline).  Generating the file from the replica's own
+ * inventory — never from another cluster's — and retiring it before a
+ * replica node's address is reused remain the tool's responsibility.
  *
  * Copyright (c) 2026-Present EnterpriseDB Corporation.
  *
