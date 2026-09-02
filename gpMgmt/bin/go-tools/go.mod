@@ -11,7 +11,7 @@ require (
 	github.com/spf13/viper v1.16.0
 	github.com/vbauerster/mpb/v8 v8.6.2
 	golang.org/x/exp v0.0.0-20231219180239-dc181d75b848
-	google.golang.org/grpc v1.82.1
+	google.golang.org/grpc v1.83.1
 )
 
 require (
