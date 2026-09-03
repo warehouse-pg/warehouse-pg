@@ -21,6 +21,7 @@
 #include "gpopt/base/CDefaultComparator.h"
 #include "gpopt/base/COptCtxt.h"
 #include "gpopt/base/CUtils.h"
+#include "gpopt/optimizer/COptimizerConfig.h"
 #include "gpopt/operators/CPredicateUtils.h"
 #include "gpopt/operators/CScalarArray.h"
 #include "gpopt/operators/CScalarBooleanTest.h"
@@ -293,6 +294,29 @@ CConstraintInterval::PcnstrIntervalFromScalarArrayCmp(CMemoryPool *mp,
 		return nullptr;
 	}
 
+	// Controlled by optimizer_array_constraint_cache GUC.
+	if (GPOS_FTRACE(EopttraceArrayConstraintCache))
+	{
+		CConstraintInterval *pciCached =
+			COptCtxt::PoctxtFromTLS()->PciLookupArrayCnstrCache(
+				pexpr->Pop(), colref, infer_nulls_as);
+		if (nullptr != pciCached)
+		{
+			return pciCached;
+		}
+	}
+
+	// Skip interval constraint creation for arrays exceeding the interval
+	// threshold.
+	COptimizerConfig *optimizer_config =
+		COptCtxt::PoctxtFromTLS()->GetOptimizerConfig();
+	ULONG array_interval_threshold =
+		optimizer_config->GetHint()->UlArrayIntervalThreshold();
+	if (ulArrayExprArity > array_interval_threshold)
+	{
+		return nullptr;
+	}
+
 	const IComparator *pcomp = COptCtxt::PoctxtFromTLS()->Pcomp();
 	gpos::CAutoRef<CDatumSortedSet> apdatumsortedset(
 		GPOS_NEW(mp) CDatumSortedSet(mp, pexprArray, pcomp));
@@ -358,7 +382,21 @@ CConstraintInterval::PcnstrIntervalFromScalarArrayCmp(CMemoryPool *mp,
 		}
 	}
 
-	return GPOS_NEW(mp) CConstraintInterval(mp, colref, prgrng, infer_nulls_as);
+	CConstraintInterval *pci =
+		GPOS_NEW(mp) CConstraintInterval(mp, colref, prgrng, infer_nulls_as);
+
+	// Cache the freshly-built interval so subsequent calls within this query
+	// reuse it without re-sorting. InsertArrayCnstrCache AddRefs the value
+	// (cache holds one ref); GPOS_NEW's ref belongs to our caller and is
+	// returned below. The cache's ref is released when m_phmArrayCnstrCache
+	// is released in ~COptCtxt.
+	if (GPOS_FTRACE(EopttraceArrayConstraintCache))
+	{
+		COptCtxt::PoctxtFromTLS()->InsertArrayCnstrCache(
+			pexpr->Pop(), colref, infer_nulls_as, pci);
+	}
+
+	return pci;
 }
 
 //---------------------------------------------------------------------------

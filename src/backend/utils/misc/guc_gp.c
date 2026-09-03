@@ -377,6 +377,7 @@ double		optimizer_sort_factor;
 /* Optimizer hints */
 int			optimizer_join_arity_for_associativity_commutativity;
 int         optimizer_array_expansion_threshold;
+int         optimizer_array_interval_threshold;
 int         optimizer_join_order_threshold;
 int			optimizer_join_order;
 int			optimizer_cte_inlining_bound;
@@ -397,6 +398,7 @@ bool		optimizer_remove_order_below_dml;
 bool		optimizer_multilevel_partitioning;
 bool 		optimizer_parallel_union;
 bool		optimizer_array_constraints;
+bool		optimizer_array_constraint_cache;
 bool		optimizer_cte_inlining;
 bool		optimizer_enable_space_pruning;
 bool		optimizer_enable_associativity;
@@ -2778,6 +2780,17 @@ struct config_bool ConfigureNamesBool_gp[] =
 	},
 
 	{
+		{"optimizer_array_constraint_cache", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Cache derived array constraints to avoid repeated computation during planning."),
+			NULL,
+			GUC_NOT_IN_SAMPLE
+		},
+		&optimizer_array_constraint_cache,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"optimizer_use_gpdb_allocators", PGC_POSTMASTER, RESOURCES_MEM,
 			gettext_noop("Enable ORCA to use GPDB Memory Contexts"),
 			NULL,
@@ -4169,6 +4182,24 @@ struct config_int ConfigureNamesInt_gp[] =
 		},
 		&optimizer_array_expansion_threshold,
 		20, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"optimizer_array_interval_threshold", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Item limit for interval constraint derivation from IN/NOT IN arrays. "
+						 "Above this size, the interval path bails out and the cheaper "
+						 "disjunction path takes over (controlled separately by "
+						 "optimizer_array_expansion_threshold). The per-query interval cache "
+						 "(optimizer_array_constraint_cache) amortises the derivation cost "
+						 "across preprocessing passes, so this default is intentionally "
+						 "generous; lower it only if planning time on very large IN clauses "
+						 "becomes a concern."),
+			NULL,
+			GUC_NOT_IN_SAMPLE
+		},
+		&optimizer_array_interval_threshold,
+		1000, 0, INT_MAX,
 		NULL, NULL, NULL
 	},
 

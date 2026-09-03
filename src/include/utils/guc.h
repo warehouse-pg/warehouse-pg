@@ -550,6 +550,7 @@ extern double optimizer_sort_factor;
 
 /* Optimizer hints */
 extern int optimizer_array_expansion_threshold;
+extern int optimizer_array_interval_threshold;
 extern int optimizer_join_order_threshold;
 extern int optimizer_join_order;
 extern int optimizer_join_arity_for_associativity_commutativity;
@@ -571,6 +572,7 @@ extern bool optimizer_remove_order_below_dml;
 extern bool optimizer_multilevel_partitioning;
 extern bool optimizer_parallel_union;
 extern bool optimizer_array_constraints;
+extern bool optimizer_array_constraint_cache;
 extern bool optimizer_cte_inlining;
 extern bool optimizer_enable_space_pruning;
 extern bool optimizer_enable_associativity;

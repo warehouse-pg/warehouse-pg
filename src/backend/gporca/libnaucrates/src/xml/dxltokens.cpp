@@ -84,6 +84,8 @@ CDXLTokens::Init(CMemoryPool *mp)
 		 GPOS_WSZ_LIT("JoinArityForAssociativityCommutativity")},
 		{EdxltokenArrayExpansionThreshold,
 		 GPOS_WSZ_LIT("ArrayExpansionThreshold")},
+		{EdxltokenArrayIntervalThreshold,
+		 GPOS_WSZ_LIT("ArrayIntervalThreshold")},
 		{EdxltokenJoinOrderDPThreshold,
 		 GPOS_WSZ_LIT("JoinOrderDynamicProgThreshold")},
 		{EdxltokenBroadcastThreshold, GPOS_WSZ_LIT("BroadcastThreshold")},

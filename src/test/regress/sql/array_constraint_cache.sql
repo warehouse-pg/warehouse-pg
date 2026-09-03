@@ -1,0 +1,291 @@
+-- Array-constraint cache: 2x2 sweep over the cache and threshold GUCs.
+-- Counts must match across all four configs; plans must be byte-identical
+-- within a (threshold, cache) pair. Plans may legitimately differ across
+-- the threshold axis (interval vs disjunction path).
+--
+-- IN sizes are 6-7 values, straddling the low threshold (5) but well below
+-- the high one (1000), so both paths are actually exercised.
+--
+-- Categories:
+--   C1  Dynamic pruning   (range partition, IN on the joined small table)
+--   C2  List + DEFAULT    (main IN matrix + IS NULL sub-variant)
+--   C3  Join with IN      (operator-pointer recycle stress)
+--   C4  CHECK (col IN)    (infer_nulls_as=true via table constraint)
+
+
+-- ---- Setup ---------------------------------------------------------------
+
+-- ============================================================================
+-- Setup: dedicated schema so table names cannot collide with other
+-- parallel-group tests.
+-- ============================================================================
+
+CREATE SCHEMA array_constraint_cache;
+SET search_path TO array_constraint_cache;
+
+-- foo: 10 rows, flat
+CREATE TABLE foo (id int, val text) DISTRIBUTED BY (id);
+INSERT INTO foo VALUES
+  (1,'a'),(2,'b'),(3,'c'),(4,'d'),(5,'e'),
+  (6,'f'),(7,'g'),(8,'h'),(9,'i'),(10,'j');
+ANALYZE foo;
+
+-- bar: 10 rows, LIST partition + DEFAULT (the bug-trigger shape)
+CREATE TABLE bar (id int, region text, amount int)
+DISTRIBUTED BY (id)
+PARTITION BY LIST (region)
+(
+  PARTITION p_na   VALUES ('US','CA'),
+  PARTITION p_eu   VALUES ('UK','DE'),
+  PARTITION p_asia VALUES ('JP'),
+  DEFAULT PARTITION lp_default
+);
+INSERT INTO bar VALUES
+  (1,'US',100),(2,'US',200),
+  (3,'CA',100),(4,'UK',100),
+  (5,'DE',100),(6,'JP',100),(7,'JP',200),
+  (8,'XX',100),(9,'YY',100),(10,'YY',200);   -- 8,9,10 → lp_default
+ANALYZE bar;
+
+-- baz: 6 rows, second LIST partition with DEFAULT, for the C3 join
+CREATE TABLE baz (id int, country text)
+DISTRIBUTED BY (id)
+PARTITION BY LIST (country)
+(
+  PARTITION c_west VALUES ('US'),
+  PARTITION c_east VALUES ('JP'),
+  DEFAULT PARTITION lp_default
+);
+INSERT INTO baz VALUES (1,'US'),(2,'US'),(3,'JP'),(4,'JP'),(5,'XX'),(6,'XX');
+ANALYZE baz;
+
+-- range_t: 12 rows, RANGE partitioned by date (6 monthly partitions)
+CREATE TABLE range_t (id int, d date, v int)
+DISTRIBUTED BY (id)
+PARTITION BY RANGE (d)
+(
+  START ('2024-01-01') INCLUSIVE
+  END   ('2024-07-01') EXCLUSIVE
+  EVERY (INTERVAL '1 month')
+);
+INSERT INTO range_t VALUES
+  ( 1,'2024-01-15',10), ( 2,'2024-01-25',20),
+  ( 3,'2024-02-10',30), ( 4,'2024-02-20',40),
+  ( 5,'2024-03-05',50), ( 6,'2024-03-25',60),
+  ( 7,'2024-04-05',70), ( 8,'2024-04-25',80),
+  ( 9,'2024-05-05',90), (10,'2024-05-25',100),
+  (11,'2024-06-05',110),(12,'2024-06-25',120);
+ANALYZE range_t;
+
+-- qux: 5 rows, CHECK (col IN (...)) — exercises the CHECK-constraint
+-- derivation path (the other place in ORCA that builds a fresh
+-- CScalarArrayCmp from catalog metadata and releases it after use).
+CREATE TABLE qux (
+  id int,
+  status text CHECK (status IN ('new','open','pending','closed','cancelled'))
+) DISTRIBUTED BY (id);
+INSERT INTO qux VALUES
+  (1,'new'),(2,'open'),(3,'pending'),(4,'closed'),(5,'cancelled');
+ANALYZE qux;
+
+-- The optimizer GUC is left to the cluster setting so the test runs under
+-- both Planner (matches .out) and ORCA (matches _optimizer.out).
+SET optimizer_array_constraints = on;
+
+
+-- ============================================================================
+-- C1. DYNAMIC PRUNING  (join-driven partition selector)
+-- ============================================================================
+-- IN of size 7 on the small joined table foo. range_t partitions are
+-- selected at exec time based on rows passing the IN filter.
+-- Expected rows: range_t.id = foo.id ∈ {1,2,3,5,7,9,11} → 7 matches.
+
+\echo '##############################'
+\echo '# C1: DYNAMIC PRUNING        #'
+\echo '##############################'
+
+\echo '--- C_lo_off  threshold=5,    cache=off ---'
+SET optimizer_array_interval_threshold = 5;
+SET optimizer_array_constraint_cache   = off;
+EXPLAIN (COSTS off)
+SELECT r.id, r.d, f.val FROM range_t r JOIN foo f ON r.id = f.id
+WHERE f.id IN (1,2,3,5,7,9,11);
+SELECT count(*) FROM range_t r JOIN foo f ON r.id = f.id
+WHERE f.id IN (1,2,3,5,7,9,11);                                       -- expected: 6
+
+\echo '--- C_lo_on   threshold=5,    cache=on  ---'
+SET optimizer_array_constraint_cache = on;
+EXPLAIN (COSTS off)
+SELECT r.id, r.d, f.val FROM range_t r JOIN foo f ON r.id = f.id
+WHERE f.id IN (1,2,3,5,7,9,11);
+SELECT count(*) FROM range_t r JOIN foo f ON r.id = f.id
+WHERE f.id IN (1,2,3,5,7,9,11);                                       -- expected: 6
+
+\echo '--- C_hi_off  threshold=1000, cache=off ---'
+SET optimizer_array_interval_threshold = 1000;
+SET optimizer_array_constraint_cache   = off;
+EXPLAIN (COSTS off)
+SELECT r.id, r.d, f.val FROM range_t r JOIN foo f ON r.id = f.id
+WHERE f.id IN (1,2,3,5,7,9,11);
+SELECT count(*) FROM range_t r JOIN foo f ON r.id = f.id
+WHERE f.id IN (1,2,3,5,7,9,11);                                       -- expected: 6
+
+\echo '--- C_hi_on   threshold=1000, cache=on  ---'
+SET optimizer_array_constraint_cache = on;
+EXPLAIN (COSTS off)
+SELECT r.id, r.d, f.val FROM range_t r JOIN foo f ON r.id = f.id
+WHERE f.id IN (1,2,3,5,7,9,11);
+SELECT count(*) FROM range_t r JOIN foo f ON r.id = f.id
+WHERE f.id IN (1,2,3,5,7,9,11);                                       -- expected: 6
+
+
+-- ============================================================================
+-- C2. LIST PARTITION + DEFAULT  (cache stress shape)
+-- ============================================================================
+-- 7 regions in the IN: 'US','CA','UK','DE','JP','XX','YY'.
+-- Counts must match across all configs. EXPLAIN may differ between
+-- threshold settings.
+
+\echo '##############################'
+\echo '# C2: LIST PARTITION+DEFAULT #'
+\echo '##############################'
+
+\echo '--- C_lo_off  threshold=5,    cache=off ---'
+SET optimizer_array_interval_threshold = 5;
+SET optimizer_array_constraint_cache   = off;
+EXPLAIN (COSTS off) SELECT * FROM bar
+WHERE region IN ('US','CA','UK','DE','JP','XX','YY');
+SELECT count(*) FROM bar
+WHERE region IN ('US','CA','UK','DE','JP','XX','YY');                -- expected: 10
+
+\echo '--- C_lo_on   threshold=5,    cache=on  ---'
+SET optimizer_array_constraint_cache = on;
+EXPLAIN (COSTS off) SELECT * FROM bar
+WHERE region IN ('US','CA','UK','DE','JP','XX','YY');
+SELECT count(*) FROM bar
+WHERE region IN ('US','CA','UK','DE','JP','XX','YY');                -- expected: 10
+
+\echo '--- C_hi_off  threshold=1000, cache=off ---'
+SET optimizer_array_interval_threshold = 1000;
+SET optimizer_array_constraint_cache   = off;
+EXPLAIN (COSTS off) SELECT * FROM bar
+WHERE region IN ('US','CA','UK','DE','JP','XX','YY');
+SELECT count(*) FROM bar
+WHERE region IN ('US','CA','UK','DE','JP','XX','YY');                -- expected: 10
+
+\echo '--- C_hi_on   threshold=1000, cache=on  ---'
+SET optimizer_array_constraint_cache = on;
+EXPLAIN (COSTS off) SELECT * FROM bar
+WHERE region IN ('US','CA','UK','DE','JP','XX','YY');
+SELECT count(*) FROM bar
+WHERE region IN ('US','CA','UK','DE','JP','XX','YY');                -- expected: 10
+
+-- --- C2 IS NULL variant: exercises lp_default's NOT IN derivation via a
+-- WHERE-clause path. One run cache off, one cache on; identical plans and
+-- count required. bar has no NULL rows so the count is 0.
+
+\echo '--- C2 IS NULL variant: cache=off, cache=on ---'
+SET optimizer_array_constraint_cache = off;
+EXPLAIN (COSTS off) SELECT * FROM bar WHERE region IS NULL;
+SELECT count(*) FROM bar WHERE region IS NULL;                       -- expected: 0
+
+SET optimizer_array_constraint_cache = on;
+EXPLAIN (COSTS off) SELECT * FROM bar WHERE region IS NULL;
+SELECT count(*) FROM bar WHERE region IS NULL;                       -- expected: 0
+
+
+-- ============================================================================
+-- C3. JOIN WITH IN  (operator-pointer recycle stress)
+-- ============================================================================
+-- Two LIST+DEFAULT tables joined with INs on partition keys. The bar
+-- side carries the > 5 IN size (to straddle threshold=5); baz uses a
+-- smaller IN because the table only has 3 distinct countries.
+-- Expected rows: bar.region IN (7 regions) → bar ids {1..10};
+--   filtered by baz.country IN ('US','JP') → ids {1,2,3,4} on baz;
+--   join id-eq → {1,2,3,4} = 4 rows.
+
+\echo '##############################'
+\echo '# C3: JOIN WITH IN           #'
+\echo '##############################'
+
+\echo '--- C_lo_off  threshold=5,    cache=off ---'
+SET optimizer_array_interval_threshold = 5;
+SET optimizer_array_constraint_cache   = off;
+EXPLAIN (COSTS off)
+SELECT b.id, b.region, c.country FROM bar b JOIN baz c ON b.id = c.id
+WHERE b.region IN ('US','CA','UK','DE','JP','XX','YY')
+  AND c.country IN ('US','JP');
+SELECT count(*) FROM bar b JOIN baz c ON b.id = c.id
+WHERE b.region IN ('US','CA','UK','DE','JP','XX','YY')
+  AND c.country IN ('US','JP');                                       -- expected: 4
+
+\echo '--- C_lo_on   threshold=5,    cache=on  ---'
+SET optimizer_array_constraint_cache = on;
+EXPLAIN (COSTS off)
+SELECT b.id, b.region, c.country FROM bar b JOIN baz c ON b.id = c.id
+WHERE b.region IN ('US','CA','UK','DE','JP','XX','YY')
+  AND c.country IN ('US','JP');
+SELECT count(*) FROM bar b JOIN baz c ON b.id = c.id
+WHERE b.region IN ('US','CA','UK','DE','JP','XX','YY')
+  AND c.country IN ('US','JP');                                       -- expected: 4
+
+\echo '--- C_hi_off  threshold=1000, cache=off ---'
+SET optimizer_array_interval_threshold = 1000;
+SET optimizer_array_constraint_cache   = off;
+EXPLAIN (COSTS off)
+SELECT b.id, b.region, c.country FROM bar b JOIN baz c ON b.id = c.id
+WHERE b.region IN ('US','CA','UK','DE','JP','XX','YY')
+  AND c.country IN ('US','JP');
+SELECT count(*) FROM bar b JOIN baz c ON b.id = c.id
+WHERE b.region IN ('US','CA','UK','DE','JP','XX','YY')
+  AND c.country IN ('US','JP');                                       -- expected: 4
+
+\echo '--- C_hi_on   threshold=1000, cache=on  ---'
+SET optimizer_array_constraint_cache = on;
+EXPLAIN (COSTS off)
+SELECT b.id, b.region, c.country FROM bar b JOIN baz c ON b.id = c.id
+WHERE b.region IN ('US','CA','UK','DE','JP','XX','YY')
+  AND c.country IN ('US','JP');
+SELECT count(*) FROM bar b JOIN baz c ON b.id = c.id
+WHERE b.region IN ('US','CA','UK','DE','JP','XX','YY')
+  AND c.country IN ('US','JP');                                       -- expected: 4
+
+
+-- ============================================================================
+-- C4. CHECK constraint with IN  (regression for infer_nulls_as=true path)
+-- ============================================================================
+-- Threshold axis is omitted: both INs (5 and 2 values) engage the interval
+-- path at any threshold. Three assertions: cache=off → 2, cache=on → 2 with
+-- identical plan, contradiction filter → 0 rows.
+
+\echo '##############################'
+\echo '# C4: CHECK (col IN (...))   #'
+\echo '##############################'
+
+SET optimizer_array_interval_threshold = 1000;
+
+\echo '--- cache=off ---'
+SET optimizer_array_constraint_cache = off;
+EXPLAIN (COSTS off) SELECT * FROM qux WHERE status IN ('open','closed');
+SELECT count(*) FROM qux WHERE status IN ('open','closed');          -- expected: 2
+
+\echo '--- cache=on ---'
+SET optimizer_array_constraint_cache = on;
+EXPLAIN (COSTS off) SELECT * FROM qux WHERE status IN ('open','closed');
+SELECT count(*) FROM qux WHERE status IN ('open','closed');          -- expected: 2
+
+\echo '--- contradiction smoke test: status outside CHECK set ---'
+EXPLAIN (COSTS off) SELECT * FROM qux WHERE status = 'invalid';
+SELECT count(*) FROM qux WHERE status = 'invalid';                   -- expected: 0
+
+
+-- ============================================================================
+-- Teardown
+-- ============================================================================
+
+RESET optimizer_array_constraint_cache;
+RESET optimizer_array_constraints;
+RESET optimizer_array_interval_threshold;
+RESET search_path;
+
+DROP SCHEMA array_constraint_cache CASCADE;
