@@ -1,8 +1,0 @@
-{
-  "coordinator":{
-    "hostname":"",
-    "address":"",
-    "port":"",
-    "data-directory":""
-  }
-}
