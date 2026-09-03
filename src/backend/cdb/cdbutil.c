@@ -537,9 +537,21 @@ getCdbComponentInfo(void)
 	 * With a dispatch topology file active, the catalog rows only supply
 	 * the authoritative content set; every address, port and dbid comes
 	 * from the file.  FTS keeps operating on the raw catalog rows.
+	 *
+	 * applyDispatchTopology() refuses (ERROR) when this is not a hot-standby
+	 * dispatcher, which is the intended fail-closed behavior for a user
+	 * query.  But a background worker must never take that ERROR here: the
+	 * dtx-recovery worker builds a component table at startup, and if the
+	 * GUC is stray-set on a live primary its build would ERROR, crash-loop
+	 * the worker, and leave *shmDtmStarted unset — wedging the whole cluster
+	 * behind "waiting for distributed transaction recovery" after a restart.
+	 * On a live primary the catalog is authoritative, so a background worker
+	 * simply builds from it (ignoring the file); the stray GUC still refuses
+	 * ordinary user queries, and recovery completes so the cluster comes up.
 	 */
 	if (Gp_role == GP_ROLE_DISPATCH && !am_ftsprobe &&
-		dispatch_topology_enabled())
+		dispatch_topology_enabled() &&
+		!(IsBackgroundWorker && !IS_HOT_STANDBY_QD()))
 	{
 		configs = applyDispatchTopology(configs, &total_dbs, &topology_signature);
 		ELOG_DISPATCHER_DEBUG("dispatch topology applied to component table");
