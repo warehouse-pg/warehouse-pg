@@ -700,7 +700,6 @@ AtExecGPSplitPartition(Relation rel, AlterTableCmd *cmd)
 		partname_comp       partcomp    = {.tablename=NULL, .level=0, .partnum=0};
 		List                *ancestors  = get_partition_ancestors(RelationGetRelid(rel));
 		GpPartDefElem       *elem;
-		GpPartDefElem       *elem_new;
 		PartitionBoundSpec  *boundspec1;
 		PartitionBoundSpec  *boundspec2 = boundspec;
 		PartitionKey        partkey     = RelationRetrievePartitionKey(rel);
@@ -992,61 +991,25 @@ AtExecGPSplitPartition(Relation rel, AlterTableCmd *cmd)
 		elem->colencs = p_colencs;
 		elem->options = p_reloptions;
 
-		elem_new = elem;
-		if (defaultpartname)
-		{
-			/*
-			 * Splitting the DEFAULT partition: the new sibling is a brand
-			 * new range, unrelated to the default partition's own storage
-			 * choice, so it should inherit the root table's storage
-			 * (matching CREATE TABLE ... PARTITION OF <root> behavior),
-			 * not the default partition's. The recreated default half
-			 * below keeps using the default partition's own storage, via
-			 * "elem", since it's logically the same partition, just
-			 * re-bounded.
-			 */
-			HeapTuple	roottuple;
-
-			elem_new = makeNode(GpPartDefElem);
-			elem_new->tablespacename = get_tablespace_name(rel->rd_rel->reltablespace);
-			elem_new->accessMethod = get_am_name(rel->rd_rel->relam);
-			elem_new->colencs = rel_get_column_encodings(rel);
-
-			roottuple = SearchSysCache1(RELOID, RelationGetRelid(rel));
-			if (HeapTupleIsValid(roottuple))
-			{
-				Datum		rootdatum;
-				bool		rootisnull;
-
-				rootdatum = SysCacheGetAttr(RELOID, roottuple,
-											 Anum_pg_class_reloptions,
-											 &rootisnull);
-				elem_new->options = rootisnull ? NIL : untransformRelOptions(rootdatum);
-				ReleaseSysCache(roottuple);
-			}
-			else
-				elog(ERROR, "pg_class tuple not found for relation %s",
-					 RelationGetRelationName(rel));
-
-			/*
-			 * NOTE: the new (non-default) half intentionally keeps the
-			 * legacy "<root>_<level>_prt_<name>" naming here (i.e.
-			 * partcomp.tablename is left unset), even though the user gave
-			 * an explicit name in the INTO clause. Giving it the literal
-			 * name instead breaks anything that addresses a split-off
-			 * partition by its generated name -- both GPDB-classic by-name
-			 * partition maintenance (GpFindTargetPartition has no
-			 * literal-name fallback) and, as it turns out, a wide swath of
-			 * this project's own regression suite and presumably customer
-			 * scripts, which either reference the generated name directly
-			 * or rely on it being prefixed with "<root>_" for LIKE-based
-			 * catalog queries. See PR discussion for the concrete CI
-			 * failures this caused when the literal name was used here.
-			 */
-		}
+		/*
+		 * NOTE: both the new (non-default) half and the recreated default
+		 * half intentionally inherit storage/reloptions/naming from the
+		 * DEFAULT partition being split (via the shared "elem" below and
+		 * leaving partcomp.tablename unset for the new half), not from the
+		 * root table, even though the new half covers a brand new range.
+		 * This matches documented WHPG semantics ("partitions created from
+		 * a SPLIT PARTITION inherit the properties of the split child",
+		 * gpdb-doc/markdown/admin_guide/ddl/about-part-changes.html.md),
+		 * WHPG6's ATPExecPartSplit behavior, and the existing regression
+		 * test at partition.sql:1766-1774. An earlier version of this
+		 * split-default-partition fix changed both of these to inherit
+		 * from the root instead, but that was a behavior change
+		 * contradicting documented/tested semantics, not a bug fix, and
+		 * was reverted after review.
+		 */
 
 		/* create first partition stmt */
-		stmts = lappend(stmts, makePartitionCreateStmt(rel, partname1, boundspec1, NULL, elem_new, &partcomp, ORIGIN_GP_CLASSIC_ALTER_GEN));
+		stmts = lappend(stmts, makePartitionCreateStmt(rel, partname1, boundspec1, NULL, elem, &partcomp, ORIGIN_GP_CLASSIC_ALTER_GEN));
 
 		/* create second partition stmt */
 		if (defaultpartname)

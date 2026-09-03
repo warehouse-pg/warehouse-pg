@@ -2553,7 +2553,7 @@ Options: compresslevel=5, compresstype=zlib
 Partition of: sg_cal_event_silvertail_hour FOR VALUES FROM ('Wed Apr 29 07:00:00 2009') TO ('Wed Apr 29 08:00:00 2009')
 Partition constraint: ((transactiontime IS NOT NULL) AND (transactiontime >= 'Wed Apr 29 07:00:00 2009'::timestamp(2) without time zone) AND (transactiontime < 'Wed Apr 29 08:00:00 2009'::timestamp(2) without time zone))
 Distributed by: (ip)
-Options: compresslevel=5, compresstype=zlib, blocksize=32768, checksum=true
+Options: compresstype=zlib, compresslevel=5, blocksize=32768, checksum=true
 
 drop table sg_cal_event_silvertail_hour;
 -- Make sure we inherit coordinator's storage settings
@@ -2569,7 +2569,7 @@ select c.oid::regclass, relkind, amname, reloptions from pg_class c left join pg
         oid         | relkind | amname |                            reloptions                             
 --------------------+---------+--------+-------------------------------------------------------------------
  foo_p              | p       | ao_row | {compresslevel=5,compresstype=zlib}
- foo_p_1_prt_p10_20 | r       | ao_row | {compresslevel=5,compresstype=zlib,blocksize=32768,checksum=true}
+ foo_p_1_prt_p10_20 | r       | ao_row | {compresstype=zlib,compresslevel=5,blocksize=32768,checksum=true}
 (2 rows)
 
 select count(distinct k) from foo_p;
@@ -2590,8 +2590,8 @@ into (partition p10_20, default partition);
 select c.oid::regclass, relkind, amname, reloptions from pg_class c left join pg_am am on am.oid = relam where c.oid in ('foo_p_1_prt_p10_20'::regclass, 'foo_p_1_prt_def'::regclass);
         oid         | relkind | amname |                            reloptions                             
 --------------------+---------+--------+-------------------------------------------------------------------
+ foo_p_1_prt_p10_20 | r       | ao_row | {blocksize=32768,compresslevel=0,compresstype=none,checksum=true}
  foo_p_1_prt_def    | r       | ao_row | {blocksize=32768,compresslevel=0,compresstype=none,checksum=true}
- foo_p_1_prt_p10_20 | r       | heap   | 
 (2 rows)
 
 select count(distinct k) from foo_p;
