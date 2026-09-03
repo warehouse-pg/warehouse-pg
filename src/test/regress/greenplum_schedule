@@ -125,10 +125,6 @@ test: partition partition1 partition_indexing partition_storage partition_ddl pa
 
 test: index_constraint_naming index_constraint_naming_partition index_constraint_naming_upgrade
 
-# split_default_partition installs a database-wide event trigger, which
-# would also fire for other tests' DDL if run concurrently -- keep it alone.
-test: split_default_partition
-
 test: brin_ao brin_aocs brin_interface
 
 test: sreh
