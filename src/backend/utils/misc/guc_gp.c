@@ -28,6 +28,7 @@
 #include "cdb/cdbendpoint.h"
 #include "cdb/cdbdisp.h"
 #include "cdb/cdbdisp_query.h"
+#include "cdb/cdbdispatchtopology.h"
 #include "cdb/cdbhash.h"
 #include "cdb/cdbsreh.h"
 #include "cdb/cdbvars.h"
@@ -4788,7 +4789,7 @@ struct config_string ConfigureNamesString_gp[] =
 #endif  /* ENABLE_IC_PROXY */
 
 	{
-		{"gp_pause_on_restore_point_replay", PGC_SUSET, DEVELOPER_OPTIONS,
+		{"gp_pause_on_restore_point_replay", PGC_SUSET, WAL_RECOVERY_TARGET,
 			gettext_noop("Specifies the restore point to pause replay on."),
 			gettext_noop("Unlike recovery_target_name, this can be used to continuously set/reset "
 						"how much a standby should replay up to."),
@@ -4797,6 +4798,32 @@ struct config_string ConfigureNamesString_gp[] =
 		&gp_pause_on_restore_point_replay,
 		"",
 		NULL, NULL, NULL
+	},
+
+	{
+		{"whpg_dispatch_topology_file", PGC_SIGHUP, GP_ARRAY_CONFIGURATION,
+			gettext_noop("Path of the dispatch topology file; empty disables it."),
+			gettext_noop("Serves hot-standby dispatchers only: dispatch resolves every "
+						 "content's address from this file instead of gp_segment_configuration "
+						 "row selection; on any other node the component-table build refuses. "
+						 "Each row must carry the node's own identity (gp_dbid from "
+						 "internal.auto.conf). A relative path is relative to the data directory."),
+			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE | GUC_GPDB_NO_SYNC
+		},
+		&whpg_dispatch_topology_file,
+		"",
+		NULL, NULL, NULL
+	},
+
+	{
+		{"whpg_dispatch_topology_state", PGC_INTERNAL, PRESET_OPTIONS,
+			gettext_noop("Shows the state of the dispatch topology file."),
+			gettext_noop("One of: inactive, active, error."),
+			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
+		},
+		&whpg_dispatch_topology_state_str,
+		"inactive",
+		NULL, NULL, show_whpg_dispatch_topology_state
 	},
 
 	/* End-of-list marker */

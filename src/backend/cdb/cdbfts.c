@@ -138,6 +138,24 @@ FtsIsSegmentDown(CdbComponentDatabaseInfo *dBInfo)
 	if (dBInfo->config->segindex == COORDINATOR_SEGMENT_ID)
 		return false;
 
+	/*
+	 * Rows of a topology-built component table carry the file's dbids,
+	 * while ftsProbeInfo->status[] is keyed by catalog dbids — indexing
+	 * the array with a file dbid would read some other segment's slot.
+	 * Since topology tables can only be built on a hot-standby dispatcher
+	 * (applyDispatchTopology refuses elsewhere), this branch is normally
+	 * inert: no FTS probe runs in recovery and the array stays zeroed.
+	 * Its remaining purpose is the promotion transition window — a
+	 * session's existing topology table outliving an out-of-band
+	 * pg_promote while the freshly started FTS probe begins filling the
+	 * array under catalog dbids.  Threadsafe: reads only memory owned by
+	 * the component table.
+	 */
+	if (dBInfo->cdbs != NULL &&
+		dBInfo->cdbs->topology_signature != NULL &&
+		dBInfo->cdbs->topology_signature[0] != '\0')
+		return false;
+
 	return FTS_STATUS_IS_DOWN(ftsProbeInfo->status[dBInfo->config->dbid]);
 }
 

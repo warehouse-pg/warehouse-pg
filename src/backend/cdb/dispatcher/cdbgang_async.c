@@ -28,6 +28,7 @@
 #include "tcop/tcopprot.h"
 #include "libpq-fe.h"
 #include "libpq-int.h"
+#include "cdb/cdbdispatchtopology.h"
 #include "cdb/cdbfts.h"
 #include "cdb/cdbgang.h"
 #include "cdb/cdbgang_async.h"
@@ -153,11 +154,29 @@ create_gang_retry:
 			 * early enough now some locks are taken before command line
 			 * options are recognized.
 			 */
+			/*
+			 * Whether to demand the topology handshake is a property of
+			 * the component table these addresses came from, not of this
+			 * instant's GUC value: a SIGHUP disabling the GUC between the
+			 * table build and gang creation must not dispatch to
+			 * file-derived addresses with the handshake disarmed.  The
+			 * table records its origin in topology_signature (empty means
+			 * catalog-built).
+			 */
+			bool		topology_dispatch =
+				(segdbDesc->segment_database_info->cdbs != NULL &&
+				 segdbDesc->segment_database_info->cdbs->topology_signature != NULL &&
+				 segdbDesc->segment_database_info->cdbs->topology_signature[0] != '\0');
+
 			ret = build_gpqeid_param(gpqeid, sizeof(gpqeid),
 									 segdbDesc->isWriter,
 									 segdbDesc->identifier,
 									 segdbDesc->segment_database_info->hostPrimaryCount,
-									 totalSegs * 2);
+									 totalSegs * 2,
+									 topology_dispatch ?
+									 segdbDesc->segment_database_info->config->dbid : 0,
+									 topology_dispatch ?
+									 segdbDesc->segment_database_info->config->segindex : -1);
 
 			if (!ret)
 				ereport(ERROR,
@@ -261,6 +280,21 @@ create_gang_retry:
 						else if (segment_failure_due_to_missing_writer(PQerrorMessage(segdbDesc->conn)))
 						{
 							markCurrentGxactWriterGangLost();
+							ereport(ERROR, (errcode(ERRCODE_GP_INTERCONNECTION_ERROR),
+											errmsg("failed to acquire resources on one or more segments"),
+											errdetail("%s (%s)", PQerrorMessage(segdbDesc->conn), segdbDesc->whoami)));
+						}
+						else if (segment_failure_due_to_dispatch_topology(PQerrorMessage(segdbDesc->conn)))
+						{
+							/*
+							 * The topology handshake refused this connection:
+							 * the target's dbid or content differs from the
+							 * file row's, or the target is not in recovery
+							 * (usually a row pointing at a live primary of
+							 * the source cluster).  None of that can heal by
+							 * itself, so fail immediately instead of burning
+							 * the gang-creation retries.
+							 */
 							ereport(ERROR, (errcode(ERRCODE_GP_INTERCONNECTION_ERROR),
 											errmsg("failed to acquire resources on one or more segments"),
 											errdetail("%s (%s)", PQerrorMessage(segdbDesc->conn), segdbDesc->whoami)));

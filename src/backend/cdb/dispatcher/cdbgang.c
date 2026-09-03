@@ -14,6 +14,9 @@
  */
 #include "postgres.h"
 
+#include <sys/stat.h>
+
+#include "access/xlog.h"		/* IsRoleMirror */
 #include "miscadmin.h"			/* MyProcPid */
 #include "pgstat.h"			/* pgstat_report_sessionid() */
 #include "utils/memutils.h"
@@ -223,6 +226,34 @@ segment_failure_due_to_missing_writer(const char *error_message)
 	ptr = strstr(error_message, fatal);
 	if ((ptr != NULL) && ptr[fatal_len] == ':' &&
 		strstr(error_message, _(WRITER_IS_MISSING_MSG)))
+		return true;
+
+	return false;
+}
+
+/*
+ * Check if the segment failure is a dispatch topology dbid mismatch.
+ * Such a failure is permanent for the current topology file, so gang
+ * creation must not retry it.
+ */
+bool
+segment_failure_due_to_dispatch_topology(const char *error_message)
+{
+	char	   *fatal = NULL,
+			   *ptr = NULL;
+	int			fatal_len = 0;
+
+	if (error_message == NULL)
+		return false;
+
+	fatal = _("FATAL");
+	fatal_len = strlen(fatal);
+
+	ptr = strstr(error_message, fatal);
+	if ((ptr != NULL) && ptr[fatal_len] == ':' &&
+		(strstr(error_message, _(DISPATCH_TOPOLOGY_DBID_MISMATCH_MSG)) ||
+		 strstr(error_message, _(DISPATCH_TOPOLOGY_CONTENT_MISMATCH_MSG)) ||
+		 strstr(error_message, _(DISPATCH_TOPOLOGY_STANDBY_MISMATCH_MSG))))
 		return true;
 
 	return false;
@@ -481,7 +512,8 @@ makeOptions(char **options, char **diff_options)
  */
 bool
 build_gpqeid_param(char *buf, int bufsz,
-				   bool is_writer, int identifier, int hostSegs, int icHtabSize)
+				   bool is_writer, int identifier, int hostSegs, int icHtabSize,
+				   int expectedDbid, int expectedContent)
 {
 	int		len;
 #ifdef HAVE_INT64_TIMESTAMP
@@ -498,7 +530,35 @@ build_gpqeid_param(char *buf, int bufsz,
 				   gp_session_id, PgStartTime,
 				   (is_writer ? "true" : "false"), identifier, hostSegs, icHtabSize);
 
-	return (len > 0 && len < bufsz);
+	if (len <= 0 || len >= bufsz)
+		return false;
+
+	/*
+	 * The dbid and content this dispatch expects to reach, appended only
+	 * while a dispatch topology file is active, so the wire format is
+	 * unchanged otherwise.  The QE refuses the connection when either
+	 * differs from its own identity (see cdbgang_parse_gpqeid_params).
+	 * Both travel together: the dbid catches a stale address reused by a
+	 * foreign segment, the content catches a consistent-but-misassigned
+	 * file row that pairs one content with another content's dbid and
+	 * address — a case the dbid alone passes by construction.  Their
+	 * presence also makes the QE demand of itself that it be in
+	 * recovery, which catches what neither coordinate can: a row
+	 * pointing at the corresponding node of the SOURCE cluster, whose
+	 * dbid and content match by clone construction (see the parse side).
+	 */
+	if (expectedDbid > 0)
+	{
+		int		len2;
+
+		len2 = snprintf(buf + len, bufsz - len, ";%d;%d",
+						expectedDbid, expectedContent);
+		if (len2 <= 0 || len2 >= bufsz - len)
+			return false;
+		len += len2;
+	}
+
+	return true;
 }
 
 static bool
@@ -568,6 +628,95 @@ cdbgang_parse_gpqeid_params(struct Port *port pg_attribute_unused(),
 	if (gpqeid_next_param(&cp, &np))
 	{
 		ic_htab_size = (int) strtol(cp, NULL, 10);
+	}
+
+	/*
+	 * Optional seventh and eighth fields: the dbid and content this
+	 * dispatch expects to reach, present (always together) only when the
+	 * dispatcher runs with a dispatch topology file.  A dbid mismatch
+	 * means the file routed this connection to the wrong data directory.
+	 * A content mismatch catches what the dbid cannot: a file row that
+	 * pairs content A with content B's dbid and address is internally
+	 * consistent and passes the dbid check by construction, yet would run
+	 * A's slices against B's data.  Content identity is stable across
+	 * source-side failovers, so this check holds even where file dbids
+	 * and catalog dbids legally diverge.  Refuse instead of running
+	 * queries as the wrong segment.
+	 */
+	if (cp && np)
+	{
+		if (gpqeid_next_param(&cp, &np))
+		{
+			char	   *endptr;
+			int			expected_dbid;
+			int			expected_content;
+
+			/*
+			 * A real dispatcher always emits both fields as %d with dbid
+			 * > 0 and content >= -1, so anything else is a malformed
+			 * packet: refuse it as one.  Letting strtol turn garbage into
+			 * 0 would instead report a topology mismatch, pointing the
+			 * operator at the file when the file never said this.
+			 */
+			expected_dbid = (int) strtol(cp, &endptr, 10);
+			if (endptr == cp || *endptr != '\0' || expected_dbid <= 0)
+				goto bad;
+
+			/* the paired content field must travel with the dbid */
+			if (!gpqeid_next_param(&cp, &np))
+				goto bad;
+			expected_content = (int) strtol(cp, &endptr, 10);
+			if (endptr == cp || *endptr != '\0' || expected_content < -1)
+				goto bad;
+
+			/*
+			 * dbid and content are cluster-relative coordinates, and a DR
+			 * replica is a physical clone of its source: every node keeps
+			 * the dbid of the basebackup it was restored from, so a
+			 * topology row pointing at the corresponding node of the
+			 * SOURCE cluster (the natural result of regenerating the file
+			 * from the replayed catalog) passes both coordinate checks by
+			 * construction.  What does tell the clusters apart is
+			 * recovery state: every legitimate target of a topology
+			 * dispatch is replaying (the replica serves while replaying,
+			 * and promote retires the file before any node leaves
+			 * recovery), while the dangerous impostor -- a live primary
+			 * of the source cluster -- is not.  Both recovery entrances
+			 * are legitimate: standby.signal (a streaming standby) and
+			 * recovery.signal (a targeted-recovery replica held paused at
+			 * its restore point -- the whpg-dr shape, where the signal
+			 * file stays for the replica's whole life because recovery
+			 * never reaches an end).  A live primary has neither.  The
+			 * signal files are checked instead of RecoveryInProgress()
+			 * because this runs in ProcessStartupPacket, before the
+			 * backend is far enough along for XLOG access; IsRoleMirror()
+			 * is already used in this context (see the GPCONN_TYPE
+			 * handling there).
+			 */
+			if (!IsRoleMirror())
+			{
+				struct stat signal_st;
+
+				if (stat(RECOVERY_SIGNAL_FILE, &signal_st) != 0)
+					ereport(FATAL,
+							(errmsg(DISPATCH_TOPOLOGY_STANDBY_MISMATCH_MSG),
+							 errdetail("Dispatched from a topology file, but this node is not in recovery "
+									   "(neither standby.signal nor recovery.signal is present)."),
+							 errhint("A topology row that names a live primary usually points at the "
+									 "source cluster instead of the replica.")));
+			}
+
+			if (expected_dbid != GpIdentity.dbid)
+				ereport(FATAL,
+						(errmsg(DISPATCH_TOPOLOGY_DBID_MISMATCH_MSG),
+						 errdetail("Dispatched for dbid %d, but this segment is dbid %d.",
+								   expected_dbid, GpIdentity.dbid)));
+			if (expected_content != GpIdentity.segindex)
+				ereport(FATAL,
+						(errmsg(DISPATCH_TOPOLOGY_CONTENT_MISMATCH_MSG),
+						 errdetail("Dispatched for content %d, but this segment is content %d.",
+								   expected_content, GpIdentity.segindex)));
+		}
 	}
 
 	/* Too few items, or too many? */

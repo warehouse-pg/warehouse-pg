@@ -1,0 +1,464 @@
+-- Tests for whpg_dispatch_topology_file on its real deployment shape: a
+-- hot-standby dispatcher.  The standby coordinator dispatches with
+-- addresses resolved from the topology file; the file's rows carry the
+-- identities of the nodes a hot-standby QD actually reaches — the
+-- mirrors, plus the standby coordinator itself for the entry database.
+--
+-- Sessions: 1: is the primary QD (writes), -1S: is a dispatch session on
+-- the standby QD (everything under test), -1M: is a utility session on
+-- the standby for reading the state GUC while standby dispatch is broken.
+--
+-- All file variants are staged up front; the GUC is set on the STANDBY
+-- only (appended to its postgresql.conf + reload) — on any non-hot-standby
+-- node the component-table build refuses the feature outright, which the
+-- plain dispatch_topology test asserts.
+
+-- start_matchsubs
+-- m/dispatch topology file "[^"]*"/
+-- s/dispatch topology file "[^"]*"/dispatch topology file "PATH"/
+-- m/seg\d+ [0-9.]+:\d+/
+-- s/seg\d+ [0-9.]+:\d+/segN IP:PORT/
+-- m/pid=\d+/
+-- s/pid=\d+/pid=PID/
+-- m/line \d+:/
+-- s/line \d+:/line N:/
+-- m/\(cdbgang\.c:\d+\)/
+-- s/\(cdbgang\.c:\d+\)/(cdbgang.c:NNN)/
+-- m/Dispatched for dbid \d+, but this segment is dbid \d+\./
+-- s/Dispatched for dbid \d+, but this segment is dbid \d+\./Dispatched for dbid X, but this segment is dbid Y./
+-- m/Dispatched for content -?\d+, but this segment is content -?\d+\./
+-- s/Dispatched for content -?\d+, but this segment is content -?\d+\./Dispatched for content X, but this segment is content Y./
+-- m/duplicate dbid \d+/
+-- s/duplicate dbid \d+/duplicate dbid N/
+-- m/coordinator row carries dbid \d+, but this dispatcher is dbid \d+/
+-- s/coordinator row carries dbid \d+, but this dispatcher is dbid \d+/coordinator row carries dbid X, but this dispatcher is dbid Y/
+-- end_matchsubs
+
+-- Stage the variants.  The good file lists the role='m' rows: the mirrors
+-- (what a hot-standby QD dispatches to) and the standby coordinator (the
+-- entry database — the file's contract is each node's OWN identity, which
+-- for content -1 is the standby itself).
+!\retcode psql -X -At -d postgres -c "select content, dbid, hostname, address, port, datadir from gp_segment_configuration where role='m' order by content" | tr '|' ' ' > "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode sed '/^0 /d' "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good" > "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_nocontent0";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode echo "# variant: nocontent0" >> "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_nocontent0";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode psql -X -At -d postgres -c "select t.content, t.dbid, o.hostname, o.address, o.port, t.datadir from gp_segment_configuration t join gp_segment_configuration o on o.role='m' and o.content = case t.content when 0 then 1 when 1 then 0 else t.content end where t.role='m' order by t.content" | tr '|' ' ' > "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_swapped";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode echo "# variant: swapped" >> "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_swapped";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode psql -X -At -d postgres -c "select t.content, o.dbid, o.hostname, o.address, o.port, o.datadir from gp_segment_configuration t join gp_segment_configuration o on o.role='m' and o.content = case t.content when 0 then 1 when 1 then 0 else t.content end where t.role='m' order by t.content" | tr '|' ' ' > "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_misassigned";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode echo "# variant: misassigned" >> "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_misassigned";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode awk 'NR==1 { saved=$2 } $1=="1" { $2=saved } { print }' "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good" > "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_dupdbid";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode echo "# variant: dupdbid" >> "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_dupdbid";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode { cat "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good"; echo "65537 4093 localhost localhost 12345 /tmp/nowhere"; } > "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_overflow";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode echo "# variant: overflow" >> "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_overflow";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode awk '$1=="0" { $3="a-hostname-longer-than-maxhostnamelen-which-is-sixty-four-on-linux-boxes" } { print }' "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good" > "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_hostlong";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode echo "# variant: hostlong" >> "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_hostlong";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode awk '{ if ($1=="-1") $2=1; print }' "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good" > "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_coordwrong";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode echo "# variant: coordwrong" >> "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_coordwrong";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode echo "garbage line" > "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_garbage";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode { printf '#'; head -c 1700 /dev/zero | tr '\0' 'x'; echo; cat "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good"; } > "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_longline";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode { cat "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good"; printf '#'; head -c 1598 /dev/zero | tr '\0' 'x'; } > "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_maxline";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode { cat "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good"; echo "999999999999999 4093 localhost localhost 12345 /tmp/nowhere"; } > "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_hugenum";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode echo "# variant: hugenum" >> "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_hugenum";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode { cat "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good"; echo "0000000000000012 sdw-nowhere 192.0.2.1 12345 /tmp/nowhere"; } > "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_zerosplit";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode echo "# variant: zerosplit" >> "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_zerosplit";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode { sed 's/$/\r/' "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good"; printf '\r\n'; printf '# variant: crlf\r\n'; } > "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_crlf";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode { cat "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good"; printf '\f\n'; printf '\v# variant: oddspace\n'; } > "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_oddspace";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+
+-- Payload table, written on the primary; remote_apply (suite setup) makes
+-- it visible on the standby.
+create table hs_topo_t(a int) distributed by (a);
+CREATE TABLE
+insert into hs_topo_t select generate_series(1, 100);
+INSERT 0 100
+
+-- Feature off on the standby: state shows inactive.
+-1S: show whpg_dispatch_topology_state;
+ whpg_dispatch_topology_state 
+------------------------------
+ inactive                     
+(1 row)
+
+-- Enable on the STANDBY only.
+!\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode echo "whpg_dispatch_topology_file = 'whpg_dr_topology_test'" >> "$COORDINATOR_DATA_DIRECTORY/../../standby/postgresql.conf";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode pg_ctl reload -D "$COORDINATOR_DATA_DIRECTORY/../../standby";
+-- start_ignore
+server signaled
+
+-- end_ignore
+(exited with code 0)
+
+-- Happy path: standby dispatch works from the file; state agrees from
+-- both the dispatch and the utility view.
+-1S: select count(*) from hs_topo_t;
+ count 
+-------
+ 100   
+(1 row)
+-1S: select count(distinct gp_segment_id) > 1 from hs_topo_t;
+ ?column? 
+----------
+ t        
+(1 row)
+-1S: show whpg_dispatch_topology_state;
+ whpg_dispatch_topology_state 
+------------------------------
+ active                       
+(1 row)
+-1M: show whpg_dispatch_topology_state;
+ whpg_dispatch_topology_state 
+------------------------------
+ active                       
+(1 row)
+
+-- One row per content: fail closed, no silent fallback to the catalog.
+!\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_nocontent0" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-1S: select count(*) from hs_topo_t;
+ERROR:  dispatch topology file "whpg_dr_topology_test" has no entry for content 0
+-- The state GUC's scope is deliberately parse-level: a catalog-level
+-- crosscheck failure surfaces through the failing queries themselves
+-- (above), not through this GUC — the file itself is well-formed.
+-1M: show whpg_dispatch_topology_state;
+ whpg_dispatch_topology_state 
+------------------------------
+ active                       
+(1 row)
+
+-- Recovery is automatic once a good file is back.
+!\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-1S: select count(*) from hs_topo_t;
+ count 
+-------
+ 100   
+(1 row)
+
+-- The dbid handshake: addresses crossed, dbids kept — every connection
+-- reaches a live node whose own dbid differs. Refused, permanently.
+!\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_swapped" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-1S: select count(*) from hs_topo_t;
+ERROR:  failed to acquire resources on one or more segments
+DETAIL:  FATAL:  dispatch topology dbid mismatch (cdbgang.c:710)
+DETAIL:  Dispatched for dbid 6, but this segment is dbid 5.
+ (seg1 127.0.0.1:9005)
+
+-- The content handshake: dbids AND addresses crossed — internally
+-- consistent, so the dbid check passes by construction; the content half
+-- refuses running one content's slices against another's data.
+!\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_misassigned" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-1S: select count(*) from hs_topo_t;
+ERROR:  failed to acquire resources on one or more segments
+DETAIL:  FATAL:  dispatch topology content mismatch (cdbgang.c:715)
+DETAIL:  Dispatched for content 0, but this segment is content 1.
+ (seg0 127.0.0.1:9006)
+
+-- Two rows sharing a dbid would make the handshake vacuous for one of
+-- them: refused at parse.
+!\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_dupdbid" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-1S: select count(*) from hs_topo_t;
+ERROR:  dispatch topology file "/tmp/claude-1000/-home-yjf-Documents-workspace-whpg-dr/18426e28-5160-4273-a3f6-91606eedb73e/scratchpad/k248/gpAux/gpdemo/datadirs/standby/whpg_dr_topology_test" is invalid: line 3: duplicate dbid 8
+
+-- A content beyond int16 would truncate into an alias of a real content:
+-- refused at parse.
+!\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_overflow" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-1S: select count(*) from hs_topo_t;
+ERROR:  dispatch topology file "/tmp/claude-1000/-home-yjf-Documents-workspace-whpg-dr/18426e28-5160-4273-a3f6-91606eedb73e/scratchpad/k248/gpAux/gpdemo/datadirs/standby/whpg_dr_topology_test" is invalid: line 5: invalid content "65537"
+
+-- A numeric field wider than any legal value goes through strtol, not
+-- sscanf %d (whose out-of-range behavior is undefined), and is refused
+-- with a message naming the field.
+!\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_hugenum" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-1S: select count(*) from hs_topo_t;
+ERROR:  dispatch topology file "/tmp/claude-1000/-home-yjf-Documents-workspace-whpg-dr/18426e28-5160-4273-a3f6-91606eedb73e/scratchpad/k248/gpAux/gpdemo/datadirs/standby/whpg_dr_topology_test" is invalid: line 5: invalid content "999999999999999"
+
+-- A line with a MISSING field is refused by its true token count, even
+-- when sscanf's field widths could split an over-wide zero-padded first
+-- token into a plausible content and dbid pair (five tokens must never
+-- reassemble into six accepted fields).
+!\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_zerosplit" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-1S: select count(*) from hs_topo_t;
+ERROR:  dispatch topology file "/tmp/claude-1000/-home-yjf-Documents-workspace-whpg-dr/18426e28-5160-4273-a3f6-91606eedb73e/scratchpad/k248/gpAux/gpdemo/datadirs/standby/whpg_dr_topology_test" is invalid: line 5: expected 6 fields "content dbid hostname address port datadir"
+
+-- A hostname beyond the component table's limit is refused at parse with
+-- a real message, instead of dying later inside the build with an
+-- internal one.
+!\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_hostlong" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-1S: select count(*) from hs_topo_t;
+ERROR:  dispatch topology file "/tmp/claude-1000/-home-yjf-Documents-workspace-whpg-dr/18426e28-5160-4273-a3f6-91606eedb73e/scratchpad/k248/gpAux/gpdemo/datadirs/standby/whpg_dr_topology_test" is invalid: line 2: hostname or address exceeds 64 characters (component table limit)
+
+-- The coordinator row must carry THIS dispatcher's own identity; a row
+-- carrying some other node's dbid (e.g. regenerated from a replayed
+-- catalog after a source-side coordinator failover) is refused at load.
+!\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_coordwrong" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-1S: select count(*) from hs_topo_t;
+ERROR:  dispatch topology file "whpg_dr_topology_test" coordinator row carries dbid 1, but this dispatcher is dbid 8
+HINT:  The file must carry each node's own identity (gp_dbid from internal.auto.conf), not the catalog's post-failover role mapping.
+
+-- Unparsable garbage: dispatch refuses, and the state GUC agrees from the
+-- utility view (parse-level failures ARE its scope).
+!\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_garbage" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-1S: select count(*) from hs_topo_t;
+ERROR:  dispatch topology file "/tmp/claude-1000/-home-yjf-Documents-workspace-whpg-dr/18426e28-5160-4273-a3f6-91606eedb73e/scratchpad/k248/gpAux/gpdemo/datadirs/standby/whpg_dr_topology_test" is invalid: line 1: expected 6 fields "content dbid hostname address port datadir"
+-1M: show whpg_dispatch_topology_state;
+ whpg_dispatch_topology_state 
+------------------------------
+ error                        
+(1 row)
+
+-- A physical line that does not fit the parse buffer is refused as too
+-- long, instead of letting fgets split it and re-parse the pieces as
+-- lines of their own (worst case: a comment's tail masquerading as a
+-- data row).
+!\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_longline" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-1S: select count(*) from hs_topo_t;
+ERROR:  dispatch topology file "/tmp/claude-1000/-home-yjf-Documents-workspace-whpg-dr/18426e28-5160-4273-a3f6-91606eedb73e/scratchpad/k248/gpAux/gpdemo/datadirs/standby/whpg_dr_topology_test" is invalid: line 1: line too long (maximum 1599 bytes)
+
+-- The refusal is for lines with MORE bytes than the buffer, not for a
+-- last line that merely fills it: a maximum-length final comment line
+-- with no trailing newline is legal (fgets returns it with the buffer
+-- full and the EOF flag not yet raised — the parser peeks to tell the
+-- two apart).
+!\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_maxline" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-1S: select count(*) from hs_topo_t;
+ count 
+-------
+ 100   
+(1 row)
+
+-- CRLF line endings, including a CRLF blank line, are tolerated: '\r'
+-- is whitespace, not the start of a data line.
+!\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_crlf" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-1S: select count(*) from hs_topo_t;
+ count 
+-------
+ 100   
+(1 row)
+-1S: show whpg_dispatch_topology_state;
+ whpg_dispatch_topology_state 
+------------------------------
+ active                       
+(1 row)
+
+-- Every isspace() flavor counts as whitespace: a line of only a form
+-- feed is blank, and a comment prefixed by a vertical tab is still a
+-- comment — neither is promoted into a (refused) data line.
+!\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_oddspace" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-1S: select count(*) from hs_topo_t;
+ count 
+-------
+ 100   
+(1 row)
+
+-- Good file again: everything recovers, both views agree.
+!\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-1S: select count(*) from hs_topo_t;
+ count 
+-------
+ 100   
+(1 row)
+-1S: show whpg_dispatch_topology_state;
+ whpg_dispatch_topology_state 
+------------------------------
+ active                       
+(1 row)
+-1M: show whpg_dispatch_topology_state;
+ whpg_dispatch_topology_state 
+------------------------------
+ active                       
+(1 row)
+
+-- Disable and clean up.
+!\retcode sed -i '/whpg_dispatch_topology_file/d' "$COORDINATOR_DATA_DIRECTORY/../../standby/postgresql.conf";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode pg_ctl reload -D "$COORDINATOR_DATA_DIRECTORY/../../standby";
+-- start_ignore
+server signaled
+
+-- end_ignore
+(exited with code 0)
+-1S: select count(*) from hs_topo_t;
+ count 
+-------
+ 100   
+(1 row)
+-1S: show whpg_dispatch_topology_state;
+ whpg_dispatch_topology_state 
+------------------------------
+ inactive                     
+(1 row)
+drop table hs_topo_t;
+DROP TABLE
+!\retcode rm -f "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test" "$COORDINATOR_DATA_DIRECTORY/../../standby"/topo_hs_*;
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)

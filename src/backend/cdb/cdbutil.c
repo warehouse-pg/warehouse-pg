@@ -40,6 +40,7 @@
 #include "catalog/gp_id.h"
 #include "catalog/indexing.h"
 #include "cdb/cdbhash.h"
+#include "cdb/cdbdispatchtopology.h"
 #include "cdb/cdbutil.h"
 #include "cdb/cdbmotion.h"
 #include "cdb/cdbvars.h"
@@ -333,6 +334,160 @@ readGpSegConfigFromCatalog(int *total_dbs)
 /*
  *  Internal function to initialize each component info
  */
+/*
+ * Replace the rows read from gp_segment_configuration with the rows of
+ * the dispatch topology file: exactly one primary row per content.
+ *
+ * The file's content set must equal the catalog's content set — a
+ * catalog content without a file row, or a file row for a content the
+ * catalog does not know, is an error.  Dispatch never falls back to
+ * catalog row selection while the file is active; a fallback would
+ * reintroduce, at unpredictable moments, exactly the stale-catalog
+ * misrouting the file exists to end.
+ *
+ * Runs inside CdbComponentsContext; the synthesized rows and the strings
+ * they point to live as long as the component table itself.
+ */
+static GpSegConfigEntry *
+applyDispatchTopology(GpSegConfigEntry *catalog_configs, int *total_dbs,
+					  char **signature_out)
+{
+	DispatchTopology *topology;
+	GpSegConfigEntry *configs;
+	int			i;
+	int			j;
+
+	/*
+	 * The topology file serves hot-standby dispatchers only.  On a live
+	 * primary dispatcher the catalog is the truth and FTS is authoritative
+	 * for segment health; dispatching by a file there would disable dead-
+	 * host detection and, after an FTS mirror promotion, keep committing
+	 * writes to the deposed primary.  Refuse instead of silently ignoring
+	 * the file: no silent fallback is this feature's contract.  (In
+	 * whpg-dr's promote flow the GUC is retired before any node reaches
+	 * normal operation; hitting this error means an interrupted promote or
+	 * a misplaced GUC — both want an operator, not a workaround.)
+	 */
+	if (!IS_HOT_STANDBY_QD())
+		ereport(ERROR,
+				(errcode(ERRCODE_CONFIG_FILE_ERROR),
+				 errmsg("whpg_dispatch_topology_file is set, but this dispatcher is not a hot standby"),
+				 errhint("The dispatch topology file serves hot-standby dispatchers only. "
+						 "Remove the GUC (whpg-dr promote's retirement does this), or finish the interrupted promote.")));
+
+	topology = dispatch_topology_load();
+
+	/* every catalog content must have a topology entry */
+	for (i = 0; i < *total_dbs; i++)
+	{
+		bool		found = false;
+
+		for (j = 0; j < topology->nentries; j++)
+		{
+			if (topology->entries[j].content == catalog_configs[i].segindex)
+			{
+				found = true;
+				break;
+			}
+		}
+		if (!found)
+		{
+			ereport(ERROR,
+					(errcode(ERRCODE_CONFIG_FILE_ERROR),
+					 errmsg("dispatch topology file \"%s\" has no entry for content %d",
+							whpg_dispatch_topology_file,
+							catalog_configs[i].segindex)));
+		}
+	}
+
+	/*
+	 * The coordinator row describes THIS dispatcher, so its identity is
+	 * verifiable right here, synchronously — unlike segment rows, whose
+	 * identity only the connect-time gpqeid handshake can check.  The
+	 * file's contract is that every row carries the node's own identity
+	 * (gp_dbid from internal.auto.conf, which is what whpg-dr's harvest
+	 * emits), NOT the catalog's role mapping: after a source-side
+	 * coordinator failover the replayed catalog names the promoted
+	 * standby's dbid, while this dispatcher keeps the dbid of the
+	 * basebackup it was restored from.  A row that carries the catalog
+	 * identity would first make the entry-database locate check fail with
+	 * an internal-looking error, and if that were relaxed, entry-gang
+	 * handshakes would FATAL mid-query instead — refuse it here with the
+	 * real explanation.
+	 */
+	for (j = 0; j < topology->nentries; j++)
+	{
+		DispatchTopologyEntry *entry = &topology->entries[j];
+
+		if (entry->content == -1 && entry->dbid != GpIdentity.dbid)
+			ereport(ERROR,
+					(errcode(ERRCODE_CONFIG_FILE_ERROR),
+					 errmsg("dispatch topology file \"%s\" coordinator row carries dbid %d, but this dispatcher is dbid %d",
+							whpg_dispatch_topology_file,
+							entry->dbid, GpIdentity.dbid),
+					 errhint("The file must carry each node's own identity (gp_dbid from internal.auto.conf), "
+							 "not the catalog's post-failover role mapping.")));
+	}
+
+	/* and no topology entry may name a content the catalog does not know */
+	for (j = 0; j < topology->nentries; j++)
+	{
+		bool		found = false;
+
+		for (i = 0; i < *total_dbs; i++)
+		{
+			if (catalog_configs[i].segindex == topology->entries[j].content)
+			{
+				found = true;
+				break;
+			}
+		}
+		if (!found)
+		{
+			ereport(ERROR,
+					(errcode(ERRCODE_CONFIG_FILE_ERROR),
+					 errmsg("dispatch topology file \"%s\" has an entry for content %d which does not exist in %s",
+							whpg_dispatch_topology_file,
+							topology->entries[j].content,
+							GpSegmentConfigRelationName)));
+		}
+	}
+
+	/*
+	 * Note what is deliberately NOT validated here: that a row's dbid
+	 * matches the catalog's dbid for that content.  After a source-side
+	 * failover the restored node keeps the dbid of the basebackup it came
+	 * from (internal.auto.conf), while the replayed catalog may already
+	 * name the promoted mirror's dbid as the content's primary — the two
+	 * legally diverge.  Misassignment within the file (content A carrying
+	 * content B's dbid and address) is caught at connection time by the
+	 * content half of the gpqeid handshake instead.
+	 */
+	configs = (GpSegConfigEntry *)
+		palloc0(topology->nentries * sizeof(GpSegConfigEntry));
+
+	for (j = 0; j < topology->nentries; j++)
+	{
+		DispatchTopologyEntry *entry = &topology->entries[j];
+		GpSegConfigEntry *config = &configs[j];
+
+		config->dbid = entry->dbid;
+		config->segindex = entry->content;
+		config->role = GP_SEGMENT_CONFIGURATION_ROLE_PRIMARY;
+		config->preferred_role = GP_SEGMENT_CONFIGURATION_ROLE_PRIMARY;
+		config->mode = GP_SEGMENT_CONFIGURATION_MODE_INSYNC;
+		config->status = GP_SEGMENT_CONFIGURATION_STATUS_UP;
+		config->port = entry->port;
+		config->hostname = entry->hostname;
+		config->address = entry->address;
+		config->datadir = entry->datadir;
+	}
+
+	*total_dbs = topology->nentries;
+	*signature_out = topology->signature;
+	return configs;
+}
+
 static CdbComponentDatabases *
 getCdbComponentInfo(void)
 {
@@ -344,15 +499,30 @@ getCdbComponentInfo(void)
 	int			i;
 	int			x = 0;
 	int			total_dbs = 0;
+	char	   *topology_signature = NULL;
 
 	bool		found;
 	HostPrimaryCountEntry *hsEntry;
+
+	/*
+	 * Every caller enters with no live component table (the rebuild path
+	 * destroys the old table, and with it this whole context, first).  So
+	 * an already-existing context can hold nothing but the leavings of a
+	 * previous build that ERRORed out partway — nothing outside the table
+	 * points into it — and resetting it here is what keeps a repeatedly
+	 * failing build (unreadable topology file, unresolvable hostname)
+	 * from accumulating one build's worth of allocations per retry for
+	 * the life of the session.
+	 */
+	Assert(cdb_component_dbs == NULL);
 
 	if (!CdbComponentsContext)
 		CdbComponentsContext = AllocSetContextCreate(TopMemoryContext, "cdb components Context",
 								ALLOCSET_DEFAULT_MINSIZE,
 								ALLOCSET_DEFAULT_INITSIZE,
 								ALLOCSET_DEFAULT_MAXSIZE);
+	else
+		MemoryContextReset(CdbComponentsContext);
 
 	oldContext = MemoryContextSwitchTo(CdbComponentsContext);
 
@@ -362,6 +532,30 @@ getCdbComponentInfo(void)
 		configs = readGpSegConfigFromCatalog(&total_dbs);
 	else
 		configs = readGpSegConfigFromFTSFiles(&total_dbs);
+
+	/*
+	 * With a dispatch topology file active, the catalog rows only supply
+	 * the authoritative content set; every address, port and dbid comes
+	 * from the file.  FTS keeps operating on the raw catalog rows.
+	 *
+	 * applyDispatchTopology() refuses (ERROR) when this is not a hot-standby
+	 * dispatcher, which is the intended fail-closed behavior for a user
+	 * query.  But a background worker must never take that ERROR here: the
+	 * dtx-recovery worker builds a component table at startup, and if the
+	 * GUC is stray-set on a live primary its build would ERROR, crash-loop
+	 * the worker, and leave *shmDtmStarted unset — wedging the whole cluster
+	 * behind "waiting for distributed transaction recovery" after a restart.
+	 * On a live primary the catalog is authoritative, so a background worker
+	 * simply builds from it (ignoring the file); the stray GUC still refuses
+	 * ordinary user queries, and recovery completes so the cluster comes up.
+	 */
+	if (Gp_role == GP_ROLE_DISPATCH && !am_ftsprobe &&
+		dispatch_topology_enabled() &&
+		!(IsBackgroundWorker && !IS_HOT_STANDBY_QD()))
+	{
+		configs = applyDispatchTopology(configs, &total_dbs, &topology_signature);
+		ELOG_DISPATCHER_DEBUG("dispatch topology applied to component table");
+	}
 
 	component_databases = palloc0(sizeof(CdbComponentDatabases));
 
@@ -570,6 +764,18 @@ getCdbComponentInfo(void)
 
 	hash_destroy(hostPrimaryCountHash);
 
+	/*
+	 * Remember which topology configuration this table was built with.
+	 * The signature comes from the very bytes dispatch_topology_parse()
+	 * read — never from a second look at the file — so a swap between
+	 * the parse and this point cannot stamp old entries with a new
+	 * file's identity.  Empty when the feature was off at build time;
+	 * that emptiness is also what marks the table as catalog-built for
+	 * the gang-creation handshake decision.
+	 */
+	component_databases->topology_signature =
+		topology_signature ? topology_signature : pstrdup("");
+
 	MemoryContextSwitchTo(oldContext);
 
 	return component_databases;
@@ -657,6 +863,7 @@ cdbcomponent_cleanupIdleQEs(bool includeWriter)
 void
 cdbcomponent_updateCdbComponents(void)
 {
+	bool topo_matches;
 	uint8 ftsVersion= getFtsVersion();
 	int expandVersion = GetGpExpandVersion();
 
@@ -673,6 +880,17 @@ cdbcomponent_updateCdbComponents(void)
 
 	PG_TRY();
 	{
+		/*
+		 * Evaluate the topology signature exactly once per decision: each
+		 * evaluation opens and stats the file, so independent evaluations
+		 * in the rebuild condition and its branches could see different
+		 * files — a swap landing between them would turn a plain
+		 * fts_version bump into a spurious topology-changed error for a
+		 * temp-table session.
+		 */
+		topo_matches = (cdb_component_dbs == NULL ||
+						dispatch_topology_signature_matches(cdb_component_dbs->topology_signature));
+
 		if (cdb_component_dbs == NULL)
 		{
 			cdb_component_dbs = getCdbComponentInfo();
@@ -680,18 +898,34 @@ cdbcomponent_updateCdbComponents(void)
 			cdb_component_dbs->expand_version = GetGpExpandVersion();
 		}
 		else if ((cdb_component_dbs->fts_version != ftsVersion ||
-				 cdb_component_dbs->expand_version != expandVersion))
+				 cdb_component_dbs->expand_version != expandVersion ||
+				 !topo_matches))
 		{
 			if (TempNamespaceOidIsValid())
 			{
 				/*
-				 * Do not update here, otherwise, temp files will be lost 
-				 * in segments;
+				 * Do not update here, otherwise, temp files will be lost
+				 * in segments.  That skip is tolerable for an fts_version
+				 * bump, but a CHANGED DISPATCH TOPOLOGY must never be
+				 * survived silently: the stale table would keep routing to
+				 * the old file's addresses for the session's lifetime, and
+				 * the dbid handshake cannot catch it (the stale rows match
+				 * the stale segments' identities).  Normally unreachable —
+				 * a hot-standby session cannot create temp tables — but a
+				 * session can outlive an out-of-band promotion, and that
+				 * corner must fail closed.
 				 */
+				if (!topo_matches)
+					ereport(ERROR,
+							(errcode(ERRCODE_CONFIG_FILE_ERROR),
+							 errmsg("the dispatch topology changed, but this session holds temporary tables"),
+							 errhint("Reconnect (or drop the temporary tables) to pick up the new topology.")));
 			}
 			else
 			{
-				ELOG_DISPATCHER_DEBUG("FTS rescanned, get new component databases info.");
+				ELOG_DISPATCHER_DEBUG("component table rebuilt (fts %d->%d, topo sig %s)",
+									  cdb_component_dbs->fts_version, ftsVersion,
+									  topo_matches ? "same" : "changed");
 				cdbcomponent_destroyCdbComponents();
 				cdb_component_dbs = getCdbComponentInfo();
 				cdb_component_dbs->fts_version = ftsVersion;
@@ -1465,7 +1699,15 @@ hostPrimaryCountHashTableInit(void)
 	info.keysize = MAXHOSTNAMELEN;
 	info.entrysize = sizeof(HostPrimaryCountEntry);
 
-	return hash_create("HostSegs", 32, &info, HASH_ELEM);
+	/*
+	 * Tie the table to CdbComponentsContext (without HASH_CONTEXT it
+	 * would live under TopMemoryContext): a build that ERRORs out before
+	 * reaching its hash_destroy must leave the table where the next
+	 * build's context reset can reclaim it.
+	 */
+	info.hcxt = CdbComponentsContext;
+
+	return hash_create("HostSegs", 32, &info, HASH_ELEM | HASH_CONTEXT);
 }
 
 /*
