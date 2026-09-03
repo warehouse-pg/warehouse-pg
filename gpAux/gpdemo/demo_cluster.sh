@@ -435,6 +435,28 @@ if [ "$enable_gpfdist" = "yes" ] && [ "$with_openssl" = "yes" ]; then
 	echo ""
 fi
 
+#
+# Optional (opt-in) dev/test aid: provision a cluster CA + node certificates and
+# switch the cluster to gp_internal_tls=verify-ca so QD<->QE connections
+# authenticate with mutual TLS instead of trusting the magic protocol bit.
+# This mirrors what a DBA would do in production (the DBA owns cert files; the
+# GUCs just point at them).  Off by default to match the product default
+# (gp_internal_tls=disable); opt in with WITH_INTERNAL_TLS=1.
+#
+if [ "${WITH_INTERNAL_TLS:-0}" = "1" ] && \
+   "$GPPATH/pg_config" --configure 2>/dev/null | grep -q -- '--with-openssl'; then
+	echo "======================================================================"
+	echo "Enabling mutual TLS on internal QD<->QE connections (gp_internal_tls=verify-ca):"
+	echo "======================================================================"
+	# gpstop and the provisioner both need COORDINATOR_DATA_DIRECTORY exported.
+	export COORDINATOR_DATA_DIRECTORY="$QDDIR/$SEG_PREFIX-1"
+	export MASTER_DATA_DIRECTORY="$COORDINATOR_DATA_DIRECTORY"
+	PGPORT="$COORDINATOR_DEMO_PORT" ./setup_internal_tls.sh
+	echo "Restarting cluster to enforce mutual TLS ..."
+	$GPPATH/gpstop -ar -M immediate >/dev/null 2>&1
+	echo ""
+fi
+
 OPTIMIZER=$(psql -t -p ${COORDINATOR_DEMO_PORT} -d template1 -c "show optimizer"   2>&1)
 
 echo "======================================================================" 2>&1 | tee -a optimizer-state.log

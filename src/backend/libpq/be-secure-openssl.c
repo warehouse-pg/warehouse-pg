@@ -36,6 +36,9 @@
 #include <openssl/ec.h>
 #endif
 
+#include "cdb/cdbvars.h"
+#include "common/string.h"
+#include "lib/stringinfo.h"
 #include "libpq/libpq.h"
 #include "miscadmin.h"
 #include "pgstat.h"
@@ -61,6 +64,10 @@ static bool initialize_ecdh(SSL_CTX *context, bool isServerStart);
 static const char *SSLerrmessage(unsigned long ecode);
 
 static char *X509_NAME_to_cstring(X509_NAME *name);
+static char *prepare_cert_name(char *name);
+
+/* for passing data back from verify_cb() */
+static const char *cert_errdetail;
 
 static SSL_CTX *SSL_context = NULL;
 static bool SSL_initialized = false;
@@ -263,40 +270,81 @@ be_tls_init(bool isServerStart)
 		SSL_CTX_set_options(context, SSL_OP_CIPHER_SERVER_PREFERENCE);
 
 	/*
-	 * Load CA store, so we can verify client certificates if needed.
+	 * Load CA store, so we can verify client certificates if needed.  Two trust
+	 * anchors may apply: the external ssl_ca_file (the coordinator's identity to
+	 * client applications) and the internal cluster CA (gp_internal_tls_ca_file)
+	 * used to authenticate QD-to-QE connections.  Both are loaded into the same
+	 * verify store so a certificate from either domain passes the handshake;
+	 * internal_client_authentication() then re-verifies internal connections
+	 * against the cluster CA specifically, so the two domains stay separate and
+	 * an external-CA leaf cannot be used as a cluster credential.
 	 */
-	if (ssl_ca_file[0])
 	{
-		STACK_OF(X509_NAME) * root_cert_list;
+		STACK_OF(X509_NAME) *root_cert_list = NULL;
+		bool		load_internal_ca = (gp_internal_tls != GP_INTERNAL_TLS_DISABLE &&
+										gp_internal_tls_ca_file != NULL &&
+										gp_internal_tls_ca_file[0] != '\0');
 
-		if (SSL_CTX_load_verify_locations(context, ssl_ca_file, NULL) != 1 ||
-			(root_cert_list = SSL_load_client_CA_file(ssl_ca_file)) == NULL)
+		if (ssl_ca_file[0])
 		{
-			ereport(isServerStart ? FATAL : LOG,
-					(errcode(ERRCODE_CONFIG_FILE_ERROR),
-					 errmsg("could not load root certificate file \"%s\": %s",
-							ssl_ca_file, SSLerrmessage(ERR_get_error()))));
-			goto error;
+			if (SSL_CTX_load_verify_locations(context, ssl_ca_file, NULL) != 1 ||
+				(root_cert_list = SSL_load_client_CA_file(ssl_ca_file)) == NULL)
+			{
+				ereport(isServerStart ? FATAL : LOG,
+						(errcode(ERRCODE_CONFIG_FILE_ERROR),
+						 errmsg("could not load root certificate file \"%s\": %s",
+								ssl_ca_file, SSLerrmessage(ERR_get_error()))));
+				goto error;
+			}
 		}
 
-		/*
-		 * Tell OpenSSL to send the list of root certs we trust to clients in
-		 * CertificateRequests.  This lets a client with a keystore select the
-		 * appropriate client certificate to send to us.  Also, this ensures
-		 * that the SSL context will "own" the root_cert_list and remember to
-		 * free it when no longer needed.
-		 */
-		SSL_CTX_set_client_CA_list(context, root_cert_list);
+		if (load_internal_ca)
+		{
+			STACK_OF(X509_NAME) *internal_ca_list;
 
-		/*
-		 * Always ask for SSL client cert, but don't fail if it's not
-		 * presented.  We might fail such connections later, depending on what
-		 * we find in pg_hba.conf.
-		 */
-		SSL_CTX_set_verify(context,
-						   (SSL_VERIFY_PEER |
-							SSL_VERIFY_CLIENT_ONCE),
-						   verify_cb);
+			if (SSL_CTX_load_verify_locations(context, gp_internal_tls_ca_file, NULL) != 1 ||
+				(internal_ca_list = SSL_load_client_CA_file(gp_internal_tls_ca_file)) == NULL)
+			{
+				ereport(isServerStart ? FATAL : LOG,
+						(errcode(ERRCODE_CONFIG_FILE_ERROR),
+						 errmsg("could not load internal cluster CA file \"%s\": %s",
+								gp_internal_tls_ca_file, SSLerrmessage(ERR_get_error()))));
+				goto error;
+			}
+
+			/* Merge the internal CA's names into the CertificateRequest list. */
+			if (root_cert_list == NULL)
+				root_cert_list = internal_ca_list;
+			else
+			{
+				while (sk_X509_NAME_num(internal_ca_list) > 0)
+					sk_X509_NAME_push(root_cert_list,
+									  sk_X509_NAME_shift(internal_ca_list));
+				sk_X509_NAME_free(internal_ca_list);
+			}
+		}
+
+		if (root_cert_list != NULL)
+		{
+			/*
+			 * Tell OpenSSL to send the list of root certs we trust to clients in
+			 * CertificateRequests.  This lets a client with a keystore select the
+			 * appropriate client certificate to send to us.  Also, this ensures
+			 * that the SSL context will "own" the root_cert_list and remember to
+			 * free it when no longer needed.
+			 */
+			SSL_CTX_set_client_CA_list(context, root_cert_list);
+
+			/*
+			 * Always ask for SSL client cert, but don't fail if it's not
+			 * presented.  We might fail such connections later, depending on
+			 * what we find in pg_hba.conf.
+			 */
+			SSL_CTX_set_verify(context,
+							   (SSL_VERIFY_PEER |
+								SSL_VERIFY_CLIENT_ONCE),
+							   verify_cb);
+		}
 	}
 
 	/*----------
@@ -346,8 +394,11 @@ be_tls_init(bool isServerStart)
 
 	/*
 	 * Set flag to remember whether CA store has been loaded into SSL_context.
+	 * Either the external ssl_ca_file or the internal cluster CA counts.
 	 */
-	if (ssl_ca_file[0])
+	if (ssl_ca_file[0] ||
+		(gp_internal_tls != GP_INTERNAL_TLS_DISABLE &&
+		 gp_internal_tls_ca_file != NULL && gp_internal_tls_ca_file[0] != '\0'))
 		ssl_loaded_verify_locations = true;
 	else
 		ssl_loaded_verify_locations = false;
@@ -466,7 +517,9 @@ aloop:
 				ereport(COMMERROR,
 						(errcode(ERRCODE_PROTOCOL_VIOLATION),
 						 errmsg("could not accept SSL connection: %s",
-								SSLerrmessage(ecode))));
+								SSLerrmessage(ecode)),
+						 cert_errdetail ? errdetail_internal("%s", cert_errdetail) : 0));
+				cert_errdetail = NULL;
 				break;
 			case SSL_ERROR_ZERO_RETURN:
 				ereport(COMMERROR,
@@ -953,7 +1006,119 @@ dummy_ssl_passwd_cb(char *buf, int size, int rwflag, void *userdata)
 static int
 verify_cb(int ok, X509_STORE_CTX *ctx)
 {
+	int			depth;
+	int			errcode;
+	const char *errstring;
+	StringInfoData str;
+	X509	   *cert;
+
+	if (ok)
+	{
+		/* Nothing to do for the successful case. */
+		return ok;
+	}
+
+	/*
+	 * On failure, build a detail message describing the offending certificate
+	 * and store it in cert_errdetail for be_tls_open_server() to emit once, as
+	 * errdetail on the connection failure it is already going to report.  We do
+	 * not ereport() here: verify_cb() fires for every failing certificate at
+	 * every chain depth and on every handshake (including the external port), so
+	 * logging directly would flood the log with attacker-influenced data.  We
+	 * still return "ok" unchanged, so OpenSSL rejects the handshake as before.
+	 */
+	depth = X509_STORE_CTX_get_error_depth(ctx);
+	errcode = X509_STORE_CTX_get_error(ctx);
+	errstring = X509_verify_cert_error_string(errcode);
+
+	initStringInfo(&str);
+	appendStringInfo(&str,
+					 _("Client certificate verification failed at depth %d: %s."),
+					 depth, errstring);
+
+	cert = X509_STORE_CTX_get_current_cert(ctx);
+	if (cert)
+	{
+		char	   *subject,
+				   *issuer;
+		char	   *sub_prepared,
+				   *iss_prepared;
+		char	   *serialno;
+		ASN1_INTEGER *sn;
+		BIGNUM	   *b;
+
+		/*
+		 * Get the Subject and Issuer for logging, but don't let maliciously
+		 * huge certs flood the logs, and don't reflect non-ASCII bytes into it
+		 * either.
+		 */
+		subject = X509_NAME_to_cstring(X509_get_subject_name(cert));
+		sub_prepared = prepare_cert_name(subject);
+
+		issuer = X509_NAME_to_cstring(X509_get_issuer_name(cert));
+		iss_prepared = prepare_cert_name(issuer);
+
+		/*
+		 * Pull the serial number, too, in case a Subject is still ambiguous.
+		 * This mirrors be_tls_get_peer_serial().
+		 */
+		sn = X509_get_serialNumber(cert);
+		b = ASN1_INTEGER_to_BN(sn, NULL);
+		serialno = BN_bn2dec(b);
+
+		appendStringInfoChar(&str, '\n');
+		appendStringInfo(&str,
+						 _("Failed certificate data (unverified): subject \"%s\", serial number %s, issuer \"%s\"."),
+						 sub_prepared, serialno ? serialno : _("unknown"),
+						 iss_prepared);
+
+		BN_free(b);
+		OPENSSL_free(serialno);
+		pfree(issuer);
+		pfree(subject);
+	}
+
+	/* Store our detail message to be logged later. */
+	cert_errdetail = str.data;
+
 	return ok;
+}
+
+/*
+ * Sanitize a certificate distinguished name for logging: truncate it (keeping
+ * the most-specific trailing fields) and replace any non-ASCII bytes, so that a
+ * maliciously large or non-UTF8 name from an unauthenticated peer cannot flood
+ * or corrupt the server log.  Returns a pointer into the supplied buffer.
+ */
+static char *
+prepare_cert_name(char *name)
+{
+	size_t		namelen = strlen(name);
+	char	   *truncated = name;
+
+	/*
+	 * Common Names are 64 chars max, so for a common case where the CN is the
+	 * last field, we can still print the longest possible CN with a 7-character
+	 * prefix (".../CN=[64 chars]"), for a reasonable limit of 71 characters.
+	 */
+#define MAXLEN 71
+
+	if (namelen > MAXLEN)
+	{
+		/*
+		 * Keep the end of the name, not the beginning, since the most specific
+		 * field is likely to give users the most information.
+		 */
+		truncated = name + namelen - MAXLEN;
+		truncated[0] = truncated[1] = truncated[2] = '.';
+		namelen = MAXLEN;
+	}
+
+#undef MAXLEN
+
+	pg_clean_ascii(truncated);
+
+	return truncated;
 }
 
 /*
@@ -1186,6 +1351,62 @@ be_tls_get_peer_serial(Port *port, char *ptr, size_t len)
 	}
 	else
 		ptr[0] = '\0';
+}
+
+/*
+ * Re-verify the peer certificate against the internal cluster CA specifically.
+ *
+ * The TLS handshake verified the peer against the shared verify store, which
+ * may also contain the external ssl_ca_file.  Internal (QD-to-QE)
+ * authentication must trust only certificates that chain to the internal
+ * cluster CA (gp_internal_tls_ca_file), so we build a throwaway store from that
+ * file alone and verify the leaf (with the peer-supplied chain as untrusted
+ * intermediates) against it.  Returns true only on a clean verification.
+ */
+bool
+be_tls_verify_peer_against_internal_ca(Port *port)
+{
+	X509_STORE	   *store;
+	X509_STORE_CTX *ctx;
+	STACK_OF(X509) *chain;
+	bool			verified = false;
+
+	if (port->peer == NULL || port->ssl == NULL)
+		return false;
+	if (gp_internal_tls_ca_file == NULL || gp_internal_tls_ca_file[0] == '\0')
+		return false;
+
+	store = X509_STORE_new();
+	if (store == NULL)
+		return false;
+
+	if (X509_STORE_load_locations(store, gp_internal_tls_ca_file, NULL) != 1)
+	{
+		ereport(COMMERROR,
+				(errmsg("could not load internal cluster CA file \"%s\" for peer verification: %s",
+						gp_internal_tls_ca_file, SSLerrmessage(ERR_get_error()))));
+		X509_STORE_free(store);
+		return false;
+	}
+
+	ctx = X509_STORE_CTX_new();
+	if (ctx == NULL)
+	{
+		X509_STORE_free(store);
+		return false;
+	}
+
+	/* Include the chain the peer sent so intermediates can be used. */
+	chain = SSL_get_peer_cert_chain(port->ssl);
+
+	if (X509_STORE_CTX_init(ctx, store, port->peer, chain) == 1 &&
+		X509_verify_cert(ctx) == 1)
+		verified = true;
+
+	X509_STORE_CTX_free(ctx);
+	X509_STORE_free(store);
+
+	return verified;
 }
 
 #ifdef HAVE_X509_GET_SIGNATURE_NID

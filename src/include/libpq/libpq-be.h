@@ -277,6 +277,15 @@ extern void be_tls_get_peer_issuer_name(Port *port, char *ptr, size_t len);
 extern void be_tls_get_peer_serial(Port *port, char *ptr, size_t len);
 
 /*
+ * Re-verify the connection's peer certificate specifically against the
+ * internal cluster CA (gp_internal_tls_ca_file), independently of the CA store
+ * used during the TLS handshake.  Used by internal (QD-to-QE) authentication to
+ * keep the internal trust domain separate from the external ssl_ca_file domain.
+ * Returns true only if a peer certificate is present and chains to that CA.
+ */
+extern bool be_tls_verify_peer_against_internal_ca(Port *port);
+
+/*
  * Get the server certificate hash for SCRAM channel binding type
  * tls-server-end-point.
  *
