@@ -905,7 +905,11 @@ class AnalyzeDb(Operation):
                       root_partition_col_dict, dirty_partitions, target_list):
         lock_file_path = self.ensure_semaphore_file_exists()
 
-        with open(lock_file_path, 'r') as lock_file:
+        # The descriptor must be opened for writing: on NFS the kernel client
+        # translates flock() into a byte-range lock and rejects an exclusive
+        # (F_WRLCK) request on a read-only descriptor with EBADF. The file is
+        # guaranteed to exist here, so 'r+' never truncates or creates it.
+        with open(lock_file_path, 'r+') as lock_file:
             logger.info("about to request exclusive lock on '%s' for analyzedb, to be able to write results..." % lock_file_path)
             fcntl.flock(lock_file, fcntl.LOCK_EX)  # will block until available
             logger.info("acquired analyzedb output lock, proceeding...")
