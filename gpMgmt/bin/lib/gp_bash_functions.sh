@@ -541,7 +541,20 @@ CREATE_SPREAD_MIRROR_ARRAY () {
 		((GP_M_PORT=$P_PORT+$MIRROR_OFFSET))
 		M_CONTENT=`$ECHO $QE_LINE|$AWK -F"~" '{print $6}'`
 		M_SEG=`$ECHO $QE_LINE|$AWK -F"~" '{print $4}'|$AWK -F"/" '{print $NF}'`
-		QE_MIRROR_ARRAY=(${QE_MIRROR_ARRAY[@]} ${QE_M_HOST}~${QE_M_NAME}~${GP_M_PORT}~${GP_M_DIR}/${M_SEG}~${DBID_COUNT}~${M_CONTENT})
+		# Mirror's ic-proxy listener port follows the same parallel-offset
+		# pattern as its data port: PROXY_PORT_BASE + per-host PORT_COUNT
+		# plus the MIRROR_PROXY_OFFSET (set in gpinitsystem iff both
+		# PROXY_PORT_BASE and MIRROR_PROXY_PORT_BASE are configured).
+		# 0 means "no proxy listener for this mirror" and is silently
+		# skipped by WRITE_PROXY_MESH; this keeps the change inert for
+		# clusters that don't opt in to ic-proxy.
+		P_PROXY_PORT=`$ECHO $QE_LINE|$AWK -F"~" '{print $7}'`
+		if [ x"" != x"$MIRROR_PROXY_OFFSET" ] && [ "$P_PROXY_PORT" -gt 0 ] 2>/dev/null; then
+			((GP_M_PROXY_PORT=$P_PROXY_PORT+$MIRROR_PROXY_OFFSET))
+		else
+			GP_M_PROXY_PORT=0
+		fi
+		QE_MIRROR_ARRAY=(${QE_MIRROR_ARRAY[@]} ${QE_M_HOST}~${QE_M_NAME}~${GP_M_PORT}~${GP_M_DIR}/${M_SEG}~${DBID_COUNT}~${M_CONTENT}~${GP_M_PROXY_PORT})
 		POSTGRES_PORT_CHK $GP_M_PORT $QE_M_NAME
 		((DBID_COUNT=$DBID_COUNT+1))
 		((SEGS_PROCESSED=$SEGS_PROCESSED+1))
@@ -604,7 +617,15 @@ CREATE_GROUP_MIRROR_ARRAY () {
 		P_PORT=`$ECHO $QE_LINE|$AWK -F"~" '{print $3}'`
 		GP_M_PORT=$(($P_PORT+$MIRROR_OFFSET))
 
-		QE_MIRROR_ARRAY=(${QE_MIRROR_ARRAY[@]} ${QE_M_HOST}~${QE_M_NAME}~${GP_M_PORT}~${GP_M_DIR}~${DBID_COUNT}~${M_CONTENT})
+		# See CREATE_SPREAD_MIRROR_ARRAY above for the ic-proxy port
+		# convention; same formula applies to group mirrors.
+		P_PROXY_PORT=`$ECHO $QE_LINE|$AWK -F"~" '{print $7}'`
+		if [ x"" != x"$MIRROR_PROXY_OFFSET" ] && [ "$P_PROXY_PORT" -gt 0 ] 2>/dev/null; then
+			GP_M_PROXY_PORT=$(($P_PROXY_PORT+$MIRROR_PROXY_OFFSET))
+		else
+			GP_M_PROXY_PORT=0
+		fi
+		QE_MIRROR_ARRAY=(${QE_MIRROR_ARRAY[@]} ${QE_M_HOST}~${QE_M_NAME}~${GP_M_PORT}~${GP_M_DIR}~${DBID_COUNT}~${M_CONTENT}~${GP_M_PROXY_PORT})
 		POSTGRES_PORT_CHK $GP_M_PORT $QE_M_NAME
 
 		DBID_COUNT=$(($DBID_COUNT+1))
@@ -1204,6 +1225,11 @@ SET_VAR () {
 	GP_DIR=`$ECHO $I|$CUT -d$S -f4`
 	GP_DBID=`$ECHO $I|$CUT -d$S -f5`
 	GP_CONTENT=`$ECHO $I|$CUT -d$S -f6`
+	# Field 7 is the ic-proxy listener port (0 = no proxy for this seg).
+	# Added when PROXY_PORT_BASE was introduced; absent on entries from
+	# older config files, in which case the cut yields empty and callers
+	# should treat that as 0.
+	GP_PROXY_PORT=`$ECHO $I|$CUT -d$S -f7`
 }
 
 #******************************************************************************

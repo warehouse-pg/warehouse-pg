@@ -98,6 +98,11 @@ static void assign_pljava_classpath_insecure(bool newval, void *extra);
 static bool check_gp_resource_group_bypass(bool *newval, void **extra, GucSource source);
 static int guc_array_compare(const void *a, const void *b);
 
+#ifdef ENABLE_IC_PROXY
+static bool check_gp_interconnect_proxy_addresses(char **newval, void **extra,
+												  GucSource source);
+#endif
+
 extern struct config_generic *find_option(const char *name, bool create_placeholders, int elevel);
 
 extern int listenerBacklog;
@@ -227,6 +232,18 @@ bool		gp_resource_group_bypass;
 bool		gp_resource_group_bypass_catalog_query;
 bool		gp_resource_group_bypass_direct_dispatch;
 char	   *gp_resource_group_cgroup_parent;
+
+/*
+ * ic-proxy TLS GUCs. When gp_interconnect_proxy_tls_enable is true,
+ * peer connections (daemon-to-daemon TCP) negotiate TLS-1.3 before
+ * exchanging any application bytes. Backend-to-daemon traffic stays
+ * on its Unix domain socket without TLS — the trust boundary is the
+ * local host. See ic_proxy_peer.c for the handshake hook points.
+ */
+bool		gp_interconnect_proxy_tls_enable = false;
+char	   *gp_interconnect_proxy_tls_cert_file;
+char	   *gp_interconnect_proxy_tls_key_file;
+char	   *gp_interconnect_proxy_tls_ca_file;
 
 /* Metrics collector debug GUC */
 bool		vmem_process_interrupt = false;
@@ -2891,6 +2908,23 @@ struct config_bool ConfigureNamesBool_gp[] =
 		check_gp_resource_group_bypass, NULL, NULL
 	},
 
+#ifdef ENABLE_IC_PROXY
+	{
+		{"gp_interconnect_proxy_tls_enable", PGC_POSTMASTER, GP_ARRAY_TUNING,
+			gettext_noop("Encrypt ic-proxy peer (daemon-to-daemon) traffic with TLS-1.3."),
+			gettext_noop("When on, the proxy bgworker negotiates TLS over each peer TCP "
+						 "connection before exchanging any application bytes. Backend-to-"
+						 "daemon traffic stays on its local Unix domain socket without TLS. "
+						 "If gp_interconnect_proxy_tls_cert_file / key_file are unset, an "
+						 "ephemeral self-signed cert is generated per proxy at startup."),
+			GUC_GPDB_NO_SYNC
+		},
+		&gp_interconnect_proxy_tls_enable,
+		false,
+		NULL, NULL, NULL
+	},
+#endif  /* ENABLE_IC_PROXY */
+
 	{
 		{"gp_resource_group_bypass_catalog_query", PGC_USERSET, RESOURCES,
 			gettext_noop("Bypass all catalog only queries."),
@@ -4778,11 +4812,53 @@ struct config_string ConfigureNamesString_gp[] =
 #ifdef ENABLE_IC_PROXY
 	{
 		{"gp_interconnect_proxy_addresses", PGC_SIGHUP, GP_ARRAY_CONFIGURATION,
-			gettext_noop("Sets the ic-proxy addresses as \"content:ip:port ...\", must be ordered by content, the port is ignored at the moment."),
-			gettext_noop("e.g. \"-1:10.0.0.1:2000 0:10.0.0.2:2000 1:10.0.0.2:2001\""),
-			GUC_NO_SHOW_ALL | GUC_GPDB_NO_SYNC
+			gettext_noop("ic-proxy mesh as \"dbid:content:hostname:port,...\", sorted by dbid."),
+			gettext_noop("e.g. \"1:-1:10.0.0.1:2000,2:0:10.0.0.2:2000,3:1:10.0.0.2:2001\". "
+						 "Normally written by gpinitsystem from PROXY_PORT_BASE; "
+						 "operators only adjust it for port changes or expansion."),
+			GUC_GPDB_NO_SYNC
 		},
 		&gp_interconnect_proxy_addresses,
+		"",
+		check_gp_interconnect_proxy_addresses, NULL, NULL
+	},
+
+	{
+		{"gp_interconnect_proxy_tls_cert_file", PGC_POSTMASTER, GP_ARRAY_TUNING,
+			gettext_noop("PEM-encoded certificate file used by the ic-proxy peer TLS handshake."),
+			gettext_noop("Loaded once at proxy bgworker startup. If empty (the default) "
+						 "and gp_interconnect_proxy_tls_enable is on, the proxy generates "
+						 "an ephemeral self-signed cert at startup — encrypted on the wire "
+						 "but not MITM-safe. Set this together with the key and ca files to "
+						 "anchor the handshake against a cluster CA."),
+			GUC_SUPERUSER_ONLY
+		},
+		&gp_interconnect_proxy_tls_cert_file,
+		"",
+		NULL, NULL, NULL
+	},
+
+	{
+		{"gp_interconnect_proxy_tls_key_file", PGC_POSTMASTER, GP_ARRAY_TUNING,
+			gettext_noop("PEM-encoded private key matching gp_interconnect_proxy_tls_cert_file."),
+			gettext_noop("Must be readable only by the OS user that runs postgres (mode 0600). "
+						 "Ignored unless cert_file is also set."),
+			GUC_SUPERUSER_ONLY
+		},
+		&gp_interconnect_proxy_tls_key_file,
+		"",
+		NULL, NULL, NULL
+	},
+
+	{
+		{"gp_interconnect_proxy_tls_ca_file", PGC_POSTMASTER, GP_ARRAY_TUNING,
+			gettext_noop("PEM-encoded CA bundle used to verify the peer's certificate during the ic-proxy TLS handshake."),
+			gettext_noop("When set together with cert_file and key_file, both peer ends require "
+						 "the remote to present a certificate chain that verifies against this "
+						 "CA — defeats man-in-the-middle on a compromised cluster network."),
+			GUC_SUPERUSER_ONLY
+		},
+		&gp_interconnect_proxy_tls_ca_file,
 		"",
 		NULL, NULL, NULL
 	},
@@ -5428,6 +5504,84 @@ check_gp_workfile_compression(bool *newval, void **extra, GucSource source)
 #endif
 	return true;
 }
+
+#ifdef ENABLE_IC_PROXY
+/*
+ * Validate gp_interconnect_proxy_addresses. Format is one or more entries
+ * of "dbid:content:hostname:port", joined by commas. Empty string is
+ * valid (means "ic-proxy mesh not configured"). Mirrors the parser in
+ * ic_proxy_addr.c's ic_proxy_reload_addresses, but reports a precise
+ * error here so SET / postgresql.conf reload fails loudly instead of
+ * silently dropping malformed entries.
+ */
+static bool
+check_gp_interconnect_proxy_addresses(char **newval, void **extra, GucSource source)
+{
+	const char *s = *newval;
+	int			entry_idx = 0;
+
+	if (s == NULL || *s == '\0')
+		return true;
+
+	while (*s)
+	{
+		int			dbid = 0;
+		int			content = 0;
+		int			port = 0;
+		char		hostname[256] = {0};
+		int			consumed = 0;
+		int			matched;
+
+		matched = sscanf(s, "%d:%d:%255[^:]:%d%n",
+						 &dbid, &content, hostname, &port, &consumed);
+		if (matched != 4)
+		{
+			GUC_check_errdetail("malformed entry #%d near \"%.40s\" "
+								"(expected dbid:content:hostname:port)",
+								entry_idx, s);
+			return false;
+		}
+
+		if (dbid < 1)
+		{
+			GUC_check_errdetail("entry #%d: dbid must be >= 1, got %d",
+								entry_idx, dbid);
+			return false;
+		}
+		if (content < -1)
+		{
+			GUC_check_errdetail("entry #%d: content must be >= -1, got %d",
+								entry_idx, content);
+			return false;
+		}
+		if (port < 1 || port > 65535)
+		{
+			GUC_check_errdetail("entry #%d: port must be 1-65535, got %d",
+								entry_idx, port);
+			return false;
+		}
+		if (hostname[0] == '\0')
+		{
+			GUC_check_errdetail("entry #%d: hostname is empty", entry_idx);
+			return false;
+		}
+
+		s += consumed;
+		if (*s == ',')
+			s++;
+		else if (*s != '\0')
+		{
+			GUC_check_errdetail("entry #%d: unexpected trailing character '%c'",
+								entry_idx, *s);
+			return false;
+		}
+
+		entry_idx++;
+	}
+
+	return true;
+}
+#endif   /* ENABLE_IC_PROXY */
 
 void
 DispatchSyncPGVariable(struct config_generic * gconfig)
