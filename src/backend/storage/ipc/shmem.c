@@ -225,12 +225,23 @@ ShmemAllocNoError(Size size)
 
 	/*
 	 * Extra alignment for large requests, since they are probably buffers.
-	 * This is also needed for mprotect based shared buffer debugging
-	 * (-DMPROTECT_BUFFERS).
+	 *
+	 * Only mprotect-based shared buffer debugging (-DMPROTECT_BUFFERS) needs
+	 * the buffer pool to start on an OS page boundary; otherwise BUFFERALIGN
+	 * is sufficient, as in upstream.  Page alignment is not modelled by the
+	 * size estimate in CreateSharedMemoryAndSemaphores(), so every >= BLCKSZ
+	 * request silently consumes up to one page of unaccounted slack.  That
+	 * is tolerable with 4KB pages but on 64KB-page kernels (ppc64le, some
+	 * aarch64 distributions) it adds up to several MB and can exhaust the
+	 * segment during startup.
 	 */
 	if (size >= BLCKSZ)
 	{
-		newStart =  TYPEALIGN(ShmemSystemPageSize, newStart);
+#ifdef MPROTECT_BUFFERS
+		newStart = TYPEALIGN(ShmemSystemPageSize, newStart);
+#else
+		newStart = BUFFERALIGN(newStart);
+#endif
 	}
 
 	newFree = newStart + size;
