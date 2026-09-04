@@ -467,28 +467,48 @@ CExtendedStatsProcessor::ApplyCorrelatedStatsToScaleFactorFilterCalculation(
 				continue;
 			}
 
-			/*
-			 * Estimate the implied clause on its own, exactly as the
-			 * per-column path would: filter the attribute's histogram by the
-			 * constant and normalize it. The normalization returns the
-			 * reciprocal of the clause's selectivity, and the filtered
-			 * histogram replaces the unfiltered one so that downstream
-			 * operators see the attribute's post-filter distribution.
-			 */
-			CStatsPredPoint *point_pred =
-				CStatsPredPoint::ConvertPredStats(child_pred);
-			CDouble clause_scale_factor(1.0);
-			CHistogram *filtered_histogram =
-				histogram->MakeHistogramFilterNormalize(
-					point_pred->GetCmpType(), point_pred->GetPredPoint(),
-					&clause_scale_factor);
-			implied_sel = 1.0 / clause_scale_factor.Get();
+			if (histogram->IsEmpty() ||
+				histogram->GetFrequency() < CStatistics::Epsilon)
+			{
+				/*
+				 * The attribute has no usable statistics: its histogram is
+				 * the bucketless placeholder ORCA builds when the column has
+				 * no pg_statistic row (e.g. after ALTER COLUMN TYPE, which
+				 * drops the column's statistics but keeps the dependency
+				 * statistics). Filtering it would report a selectivity of
+				 * ~0 and turn "nothing is known about the column" into "no
+				 * row matches"; assume the default selectivity for the clause
+				 * instead, as the per-column path does for a column without
+				 * statistics.
+				 */
+				implied_sel = CHistogram::DefaultSelectivity.Get();
+			}
+			else
+			{
+				/*
+				 * Estimate the implied clause on its own, exactly as the
+				 * per-column path would: filter the attribute's histogram by
+				 * the constant and normalize it. The normalization returns
+				 * the reciprocal of the clause's selectivity, and the
+				 * filtered histogram replaces the unfiltered one so that
+				 * downstream operators see the attribute's post-filter
+				 * distribution.
+				 */
+				CStatsPredPoint *point_pred =
+					CStatsPredPoint::ConvertPredStats(child_pred);
+				CDouble clause_scale_factor(1.0);
+				CHistogram *filtered_histogram =
+					histogram->MakeHistogramFilterNormalize(
+						point_pred->GetCmpType(), point_pred->GetPredPoint(),
+						&clause_scale_factor);
+				implied_sel = 1.0 / clause_scale_factor.Get();
 
-			/* replacing the entry releases 'histogram'; do not use it below */
-			CStatisticsUtils::AddHistogram(mp, colid, filtered_histogram,
-										   result_histograms,
-										   true /* replace_old */);
-			GPOS_DELETE(filtered_histogram);
+				/* replacing the entry releases 'histogram'; don't use it below */
+				CStatisticsUtils::AddHistogram(mp, colid, filtered_histogram,
+											   result_histograms,
+											   true /* replace_old */);
+				GPOS_DELETE(filtered_histogram);
+			}
 
 			/* mark this one as done, so we don't touch it again. */
 			child_pred->SetEstimated();
