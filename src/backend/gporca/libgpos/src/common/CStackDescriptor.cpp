@@ -70,8 +70,17 @@ CStackDescriptor::BackTrace(ULONG top_frames_to_skip)
 		}
 		else
 		{
-			// get return address (one above the base pointer)
+			// get return address of the function owning this frame
+#if defined(__powerpc64__)
+			// ELFv1/ELFv2: a function saves its LR into the caller's frame,
+			// two words past that frame's back chain; *next_frame passed the
+			// range check above, so the dereference stays on the stack
+			ULONG_PTR *frame_address = (ULONG_PTR *) *next_frame + 2;
+#else
+			// x86-64 / AArch64: the return address sits right after the
+			// saved frame pointer in the function's own frame
 			ULONG_PTR *frame_address = (ULONG_PTR *) (next_frame + 1);
+#endif
 			m_array_of_addresses[m_depth++] = (void *) *frame_address;
 		}
 
