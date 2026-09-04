@@ -3741,8 +3741,10 @@ drop table extstats_fact, extstats_dim;
 --   P(a,b) = P(a) * (degree + (1 - degree) * P(b))
 -- i.e. the implied column's own selectivity, discounted by the degree to
 -- which the dependency holds. Half of the a-groups below obey b = a % 10 and
--- the other half are noise, so degree(a => b) = 0.5.
-create table dep_t(id int, a int, b int) distributed by (id);
+-- the other half are noise, so degree(a => b) = 0.5. Autovacuum is disabled on
+-- the table so that an automatic ANALYZE cannot re-create the column statistics
+-- dropped by the ALTER COLUMN TYPE below.
+create table dep_t(id int, a int, b int) with (autovacuum_enabled = false) distributed by (id);
 insert into dep_t
 select g, g % 100,
        case when g % 100 < 50 then (g % 100) % 10
@@ -3776,6 +3778,12 @@ select * from dep_estimated_rows('select * from dep_t where a = 1 and b = 1');
 select * from dep_estimated_rows('select * from dep_t where a < 5 and b = 1');
 -- the implied column's histogram is filtered too: one distinct b remains
 select * from dep_estimated_rows('select distinct b from dep_t where a = 1 and b = 1');
+-- ALTER COLUMN TYPE drops the column's statistics but keeps the dependency
+-- statistics. With nothing known about b, its filter gets the default
+-- selectivity inside the dependency formula: 100 * (0.5 + 0.5 * 0.4) = 70,
+-- rather than collapsing to a single row
+alter table dep_t alter column b type bigint;
+select * from dep_estimated_rows('select * from dep_t where a = 1 and b = 1');
 reset optimizer;
 drop function dep_estimated_rows(text);
 drop table dep_t;
