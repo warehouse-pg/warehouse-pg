@@ -19,8 +19,11 @@ namespace gpnaucrates
 class CExtendedStatsProcessor
 {
 public:
-	static void ApplyCorrelatedStatsToScaleFactorFilterCalculation(
-		CDoubleArray *scale_factors, CStatsPredConj *conjunctive_pred_stats,
+	// Estimate the conjuncts covered by functional-dependency extended
+	// statistics; marks them as estimated and returns their combined scale
+	// factor (>= 1.0)
+	static CDouble ApplyCorrelatedStatsToScaleFactorFilterCalculation(
+		CStatsPredConj *conjunctive_pred_stats,
 		const IMDExtStatsInfo *md_statsinfo,
 		UlongToIntMap *colid_to_attno_mapping, CMemoryPool *mp,
 		UlongToHistogramMap *result_histograms);
