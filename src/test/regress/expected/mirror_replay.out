@@ -72,11 +72,15 @@ VACUUM mirror_reply_test_table;
 -- expecting mirror to be marked down
 do $$
 begin
-  for i in 1..120 loop
+  -- The mirror is only marked down after its startup process replays the
+  -- truncate record and PANICs; on a slow platform that can take longer
+  -- than a burst of back-to-back probes, so wait between probes (60s max).
+  for i in 1..300 loop
     if (select status = 'd' from gp_segment_configuration where content=0 and role = 'm') then
       return;
     end if;
     perform gp_request_fts_probe_scan();
+    perform pg_sleep(0.2);
   end loop;
 end;
 $$;
@@ -94,11 +98,12 @@ SELECT role, preferred_role, mode, status FROM gp_segment_configuration WHERE co
 -- loop while segments come in sync
 do $$
 begin
-  for i in 1..120 loop
+  for i in 1..300 loop
     if (select mode = 's' from gp_segment_configuration where content=0 and role = 'p') then
       return;
     end if;
     perform gp_request_fts_probe_scan();
+    perform pg_sleep(0.2);
   end loop;
 end;
 $$;
