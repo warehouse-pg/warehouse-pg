@@ -409,6 +409,20 @@ make_subplan(PlannerInfo *root, Query *orig_subquery,
 				 subLinkType == EXPR_SUBLINK ||
 				 subLinkType == MULTIEXPR_SUBLINK ||
 				 subLinkType == EXISTS_SUBLINK) : config->gp_cte_sharing;
+
+		/*
+		 * These sublink types may be planned as an InitPlan, which is
+		 * dispatched and awaited ahead of the main plan. A CTE referenced
+		 * both here and by the main plan (or by another InitPlan) can never
+		 * be shared: the producer would wait forever for a consumer that
+		 * hasn't been dispatched yet.
+		 */
+		if (subLinkType == ROWCOMPARE_SUBLINK ||
+			subLinkType == ARRAY_SUBLINK ||
+			subLinkType == EXPR_SUBLINK ||
+			subLinkType == MULTIEXPR_SUBLINK ||
+			subLinkType == EXISTS_SUBLINK)
+			config->cte_sharing_allowed = false;
 	}
 	/*
 	 * Strictly speaking, the order of rows in a subquery doesn't matter.
