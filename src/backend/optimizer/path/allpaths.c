@@ -3095,25 +3095,48 @@ set_cte_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 			is_shared = true;
 			break;
 		default:
-			/*
-			 * Force sharing when the CTE is both multiply-referenced and
-			 * volatile, regardless of gp_cte_sharing: a volatile CTE with
-			 * more than one reference must be evaluated exactly once, or
-			 * results would depend on how many references there happen to
-			 * be. Otherwise, fall back to the original gp_cte_sharing-gated
-			 * behavior.
-			 */
-			is_shared = (cte->cterefcount > 1 && contain_volatile_function) ||
-				(root->config->gp_cte_sharing &&
-				 (cte->cterefcount > 1 || contain_volatile_function));
-
+			is_shared = root->config->gp_cte_sharing &&
+				(cte->cterefcount > 1 || contain_volatile_function);
+			break;
 	}
 
 	/*
-	 * since shareinputscan with outer refs is not supported by GPDB, if
-	 * contain outer self references, the cte need to be inlined.
+	 * A CTE with side effects (volatile functions, or a data-modifying
+	 * statement) that is referenced more than once must be evaluated
+	 * exactly once, or results would depend on how many references there
+	 * happen to be. Force sharing for it regardless of gp_cte_sharing or
+	 * the MATERIALIZED hint.
 	 */
-	if (is_shared && contain_outer_selfref(cte->ctequery))
+	if (cte->cterefcount > 1 &&
+		(contain_volatile_function || subquery->commandType != CMD_SELECT))
+		is_shared = true;
+
+	/*
+	 * ... unless a ShareInputScan cannot be placed here at all.
+	 *
+	 * A lone reference is always safe to share (there is no other consumer
+	 * for its producer to conflict with), so these only matter once there
+	 * is more than one reference:
+	 *
+	 * Inside an InitPlan-capable sublink, or at a nested CTE level, a
+	 * second reference might live outside the current InitPlan/nesting;
+	 * the producer would then wait forever for a consumer dispatched on a
+	 * different schedule (or deadlock against another nested SharedScan).
+	 * Per-reference evaluation is what pre-PR234 already did here.
+	 */
+	if (cte->cterefcount > 1 && !root->config->cte_sharing_allowed)
+		is_shared = false;
+
+	/*
+	 * These, on the other hand, are structural limitations of
+	 * ShareInputScan itself and apply regardless of how many references
+	 * there are: it has no slice table to synchronize producer/consumer on
+	 * a QE, and it cannot be rescanned under an outer correlation (nor,
+	 * pre-existing, under an outer recursive self-reference).
+	 */
+	if (Gp_role != GP_ROLE_DISPATCH ||
+		contain_outer_selfref(cte->ctequery) ||
+		contain_vars_of_level_or_above((Node *) cte->ctequery, 1))
 		is_shared = false;
 
 	if (!is_shared)
@@ -3125,6 +3148,7 @@ set_cte_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 		 * disallow sharing of ctes at lower levels.
 		 */
 		config->gp_cte_sharing = false;
+		config->cte_sharing_allowed = false;
 
 		config->honor_order_by = false;
 
@@ -3183,6 +3207,7 @@ set_cte_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 			 * disallow sharing of ctes at lower levels.
 			 */
 			config->gp_cte_sharing = false;
+			config->cte_sharing_allowed = false;
 
 			config->honor_order_by = false;
 
