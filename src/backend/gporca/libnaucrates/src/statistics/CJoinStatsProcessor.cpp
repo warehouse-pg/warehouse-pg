@@ -14,6 +14,7 @@
 #include "gpos/common/CBitSet.h"
 
 #include "gpopt/base/COptCtxt.h"
+#include "gpopt/base/CUtils.h"
 #include "gpopt/operators/CLogicalIndexApply.h"
 #include "gpopt/operators/CLogicalNAryJoin.h"
 #include "gpopt/operators/CPredicateUtils.h"
@@ -122,7 +123,8 @@ CJoinStatsProcessor::JoinHistograms(
 IStatistics *
 CJoinStatsProcessor::CalcAllJoinStats(CMemoryPool *mp,
 									  IStatisticsArray *statistics_array,
-									  CExpression *expr, COperator *pop)
+									  CExpression *expr, COperator *pop,
+									  BOOL stats_are_join_children)
 {
 	GPOS_ASSERT(nullptr != expr);
 	GPOS_ASSERT(nullptr != statistics_array);
@@ -141,6 +143,8 @@ CJoinStatsProcessor::CalcAllJoinStats(CMemoryPool *mp,
 	// predicate indexes, if we have a mix of inner and LOJs
 	ULongPtrArray *predIndexes = nullptr;
 	CExpression *inner_or_simple_2_way_loj_preds = expr;
+	// the predicates to apply with inner-join semantics at every step
+	CExpressionArray *inner_join_conjuncts = nullptr;
 
 	switch (pop->Eopid())
 	{
@@ -160,17 +164,42 @@ CJoinStatsProcessor::CalcAllJoinStats(CMemoryPool *mp,
 			{
 				GPOS_ASSERT(COperator::EopScalarNAryJoinPredList ==
 							expr->Pop()->Eopid());
-				inner_or_simple_2_way_loj_preds =
-					(*expr)[GPOPT_ZERO_INNER_JOIN_PRED_INDEX];
-
-				if (predIndexes->Size() != num_stats)
+				if (stats_are_join_children)
 				{
-					// the statistics objects do not correspond to the NAry
-					// join's logical children (e.g. they are outer-reference
-					// stats contexts), so the per-child LOJ predicate indexes
-					// do not apply; treat all steps as inner joins using the
-					// inner-join predicates only
+					GPOS_ASSERT(predIndexes->Size() == num_stats);
+					inner_or_simple_2_way_loj_preds =
+						(*expr)[GPOPT_ZERO_INNER_JOIN_PRED_INDEX];
+				}
+				else
+				{
+					// The statistics objects are not the join's children
+					// (outer-reference stats contexts, or the [outer, local]
+					// pair joined by DeriveStatsWithOuterRefs), so the
+					// per-child LOJ predicate indexes cannot be paired with
+					// them. That derivation joins with inner-join semantics
+					// to consider all combinations of outer tuples, so apply
+					// every predicate of the list - the inner-join predicates
+					// and each LOJ's ON predicate - at every step.
 					predIndexes = nullptr;
+					inner_join_conjuncts = GPOS_NEW(mp) CExpressionArray(mp);
+					const ULONG num_pred_children = expr->Arity();
+					for (ULONG c = 0; c < num_pred_children; c++)
+					{
+						CExpressionArray *child_conjuncts =
+							CPredicateUtils::PdrgpexprConjuncts(mp, (*expr)[c]);
+						const ULONG num_child_conjuncts =
+							child_conjuncts->Size();
+						for (ULONG ul = 0; ul < num_child_conjuncts; ul++)
+						{
+							CExpression *conjunct = (*child_conjuncts)[ul];
+							if (!CUtils::FScalarConstTrue(conjunct))
+							{
+								conjunct->AddRef();
+								inner_join_conjuncts->Append(conjunct);
+							}
+						}
+						child_conjuncts->Release();
+					}
 				}
 			}
 			break;
@@ -185,9 +214,11 @@ CJoinStatsProcessor::CalcAllJoinStats(CMemoryPool *mp,
 	// first step where all of its columns are available; passing it again
 	// at a later step would re-apply it as an unsupported filter predicate
 	// with a default scale factor and underestimate the cardinality.
-	CExpressionArray *inner_join_conjuncts =
-		CPredicateUtils::PdrgpexprConjuncts(mp,
-											inner_or_simple_2_way_loj_preds);
+	if (nullptr == inner_join_conjuncts)
+	{
+		inner_join_conjuncts = CPredicateUtils::PdrgpexprConjuncts(
+			mp, inner_or_simple_2_way_loj_preds);
+	}
 	const ULONG num_inner_conjuncts = inner_join_conjuncts->Size();
 	CBitSet *consumed_conjuncts = GPOS_NEW(mp) CBitSet(mp);
 
@@ -207,7 +238,9 @@ CJoinStatsProcessor::CalcAllJoinStats(CMemoryPool *mp,
 		if (nullptr == predIndexes ||
 			GPOPT_ZERO_INNER_JOIN_PRED_INDEX == *(*predIndexes)[i])
 		{
-			// inner join step: use the inner-join conjuncts that have not
+			// inner-join step, or the single step of a simple 2-way left outer
+			// join: apply the conjuncts of inner_or_simple_2_way_loj_preds (the
+			// inner-join predicates, or that LOJ's ON predicate) that have not
 			// been consumed by a previous step
 			step_conjuncts = GPOS_NEW(mp) CExpressionArray(mp);
 			for (ULONG ul = 0; ul < num_inner_conjuncts; ul++)
@@ -638,7 +671,8 @@ CJoinStatsProcessor::DeriveJoinStats(CMemoryPool *mp,
 
 	// derive stats based on local join condition
 	IStatistics *join_stats = CJoinStatsProcessor::CalcAllJoinStats(
-		mp, statistics_array, local_expr, exprhdl.Pop());
+		mp, statistics_array, local_expr, exprhdl.Pop(),
+		true /* stats_are_join_children */);
 
 	if (exprhdl.HasOuterRefs() && 0 < stats_ctxt->Size())
 	{
@@ -731,7 +765,8 @@ CJoinStatsProcessor::DeriveStatsWithOuterRefs(
 	// join outer stats object based on given scalar expression,
 	// we use inner join semantics here to consider all relevant combinations of outer tuples
 	IStatistics *outer_stats = CJoinStatsProcessor::CalcAllJoinStats(
-		mp, all_outer_stats, expr, exprhdl.Pop());
+		mp, all_outer_stats, expr, exprhdl.Pop(),
+		false /* stats_are_join_children */);
 	CDouble num_rows_outer = outer_stats->Rows();
 
 	// join passed stats object and outer stats based on the passed join type
@@ -740,7 +775,8 @@ CJoinStatsProcessor::DeriveStatsWithOuterRefs(
 	stats->AddRef();
 	statistics_array->Append(stats);
 	IStatistics *result_join_stats = CJoinStatsProcessor::CalcAllJoinStats(
-		mp, statistics_array, expr, exprhdl.Pop());
+		mp, statistics_array, expr, exprhdl.Pop(),
+		false /* stats_are_join_children */);
 	statistics_array->Release();
 
 	// scale result using cardinality of outer stats and set number of rebinds of returned stats
