@@ -422,7 +422,19 @@ class SQLIsolationExecutor(object):
                         break
                     elif (("the database system is starting up" in str(e) or
                          "the database system is resetting" in str(e) or
-                         "the database system is in recovery mode" in str(e)) and
+                         "the database system is in recovery mode" in str(e) or
+                         # A connection opened in the narrow window after a
+                         # backend crash but before the postmaster has entered
+                         # its reset cycle is accepted and then killed, which
+                         # surfaces as a connection reset rather than one of the
+                         # "system is <state>" messages above. The postmaster's
+                         # own HINT ("In a moment you should be able to
+                         # reconnect") says to retry, so treat it the same. On a
+                         # slow platform this window is wide enough that
+                         # crash_recovery_dtm's utility reconnect lands in it.
+                         "server closed the connection unexpectedly" in str(e) or
+                         "terminating connection because of crash of another server process" in str(e) or
+                         "Connection reset by peer" in str(e)) and
                         retry > 1):
                         retry -= 1
                         time.sleep(0.1)
