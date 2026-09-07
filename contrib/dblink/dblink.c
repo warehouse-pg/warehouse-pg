@@ -2568,7 +2568,7 @@ createConnHash(void)
 	ctl.keysize = NAMEDATALEN;
 	ctl.entrysize = sizeof(remoteConnHashEnt);
 
-	return hash_create("Remote Con hash", NUMCONN, &ctl, HASH_ELEM);
+	return hash_create("Remote Con hash", NUMCONN, &ctl, HASH_ELEM | HASH_STRINGS);
 }
 
 static void

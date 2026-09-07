@@ -30,7 +30,8 @@
  * dynahash.c provides support for these types of lookup keys:
  *
  * 1. Null-terminated C strings (truncated if necessary to fit in keysize),
- * compared as though by strcmp().  This is the default behavior.
+ * compared as though by strcmp().  This is selected by specifying the
+ * HASH_STRINGS flag to hash_create.
  *
  * 2. Arbitrary binary data of size keysize, compared as though by memcmp().
  * (Caller must ensure there are no undefined padding bits in the keys!)
@@ -307,6 +308,12 @@ string_compare(const char *key1, const char *key2, Size keysize)
  *	*info: additional table parameters, as indicated by flags
  *	flags: bitmask indicating which parameters to take from *info
  *
+ * The flags value must include exactly one of HASH_STRINGS, HASH_BLOBS,
+ * or HASH_FUNCTION, to define the key hashing semantics (C strings,
+ * binary blobs, or custom, respectively).  Callers specifying a custom
+ * hash function will likely also want to use HASH_COMPARE, and perhaps
+ * also HASH_KEYCOPY, to control key comparison and copying.
+ *
  * Note: for a shared-memory hashtable, nelem needs to be a pretty good
  * estimate, since we can't expand the table on the fly.  But an unshared
  * hashtable can be expanded on-the-fly, so it's better for nelem to be
@@ -361,9 +368,13 @@ hash_create(const char *tabname, long nelem, HASHCTL *info, int flags)
 	 * Select the appropriate hash function (see comments at head of file).
 	 */
 	if (flags & HASH_FUNCTION)
+	{
+		Assert(!(flags & (HASH_BLOBS | HASH_STRINGS)));
 		hashp->hash = info->hash;
+	}
 	else if (flags & HASH_BLOBS)
 	{
+		Assert(!(flags & HASH_STRINGS));
 		/* We can optimize hashing for common key sizes */
 		Assert(flags & HASH_ELEM);
 		if (info->keysize == sizeof(uint32))
@@ -372,7 +383,21 @@ hash_create(const char *tabname, long nelem, HASHCTL *info, int flags)
 			hashp->hash = tag_hash;
 	}
 	else
-		hashp->hash = string_hash;	/* default hash function */
+	{
+		/*
+		 * string_hash used to be considered the default hash method, and in a
+		 * non-assert build it effectively still is.  But we now consider it
+		 * an assertion error to not say HASH_STRINGS explicitly.  To help
+		 * catch mistaken usage of HASH_STRINGS, we also insist on a
+		 * reasonably long string length: if the keysize is only 4 or 8 bytes,
+		 * it's almost certainly an integer or pointer not a string.
+		 */
+		Assert(flags & HASH_STRINGS);
+		Assert(flags & HASH_ELEM);
+		Assert(info->keysize > 8);
+
+		hashp->hash = string_hash;
+	}
 
 	/*
 	 * If you don't specify a match function, it defaults to string_compare if

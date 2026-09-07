@@ -94,6 +94,7 @@ typedef struct HASHCTL
 #define HASH_SHARED_MEM 0x0800	/* Hashtable is in shared memory */
 #define HASH_ATTACH		0x1000	/* Do not initialize hctl */
 #define HASH_FIXED_SIZE 0x2000	/* Initial size is a hard limit */
+#define HASH_STRINGS	0x4000	/* Select support functions for string keys */
 
 
 /* max_dsize value to indicate expansible directory */
@@ -120,8 +121,9 @@ typedef struct
  * prototypes for functions in dynahash.c
  *
  * Note: It is deprecated for callers of hash_create to explicitly specify
- * string_hash, tag_hash, uint32_hash, or oid_hash.  Just set HASH_BLOBS or
- * not.  Use HASH_FUNCTION only when you want something other than those.
+ * string_hash, tag_hash, uint32_hash, or oid_hash.  Just set HASH_STRINGS
+ * or HASH_BLOBS.  Use HASH_FUNCTION only when you want something other than
+ * one of these.
  */
 extern uint32 tag_hash(const void *key, Size keysize);
 extern HTAB *hash_create(const char *tabname, long nelem,
