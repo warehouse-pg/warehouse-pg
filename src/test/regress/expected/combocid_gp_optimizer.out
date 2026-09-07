@@ -255,3 +255,80 @@ FETCH ALL FROM c;
 (99 rows)
 
 rollback;
+--
+-- Test that the one-item tuple-visibility cache in heapgetpage() ignores
+-- tuples carrying HEAP_COMBOCID.  Such a tuple's raw command id is an index
+-- into the backend-local combo-CID array, not a real cmin, so it must not be
+-- compared against another tuple's plain command id.
+--
+-- The scenario: a tuple whose deleting subtransaction aborted keeps its
+-- combo cid, and a later scan sets the HEAP_XMAX_INVALID hint bit, which
+-- used to make it eligible for the cache.  Combo-CID indexes and command
+-- ids both count from zero, so the combo index easily collides with the
+-- plain cmin of another tuple on the same page.  A cursor whose snapshot
+-- lies between the two real cmins then returned a wrong extra row: the
+-- plain tuple primed the cache and the combo tuple falsely hit it.
+--
+-- Both rows use the same distribution key (2 hashes to content 0, dbid 2),
+-- so they land on the same segment and the same heap page.  QEs execute a
+-- cursor's plan eagerly at DECLARE, which would scan the page before the
+-- combo state exists; suspend the cursor's reader QE right after it has
+-- acquired its snapshot and set up interconnect, and resume it only after
+-- the combo tuple and the hint bit are in place, so the page is scanned at
+-- FETCH time.  The fault is armed for a single occurrence: the count(*)
+-- below passes the same fault point and must go through.
+--
+CREATE TEMP TABLE combocid_vischeck (a int, distkey int) distributed by (distkey);
+CREATE TEMP TABLE combocid_vischeck_filler (x int, distkey int) distributed by (distkey);
+BEGIN;
+INSERT INTO combocid_vischeck VALUES (1, 2);          -- cmin 0
+INSERT INTO combocid_vischeck_filler VALUES (1, 2);   -- burn a command id
+INSERT INTO combocid_vischeck_filler VALUES (2, 2);   -- burn a command id
+SELECT gp_inject_fault('qe_got_snapshot_and_interconnect', 'suspend', 2);
+ gp_inject_fault 
+-----------------
+ Success:
+(1 row)
+
+DECLARE combocid_vischeck_cur CURSOR FOR SELECT a FROM combocid_vischeck;
+SELECT gp_wait_until_triggered_fault('qe_got_snapshot_and_interconnect', 1, 2);
+ gp_wait_until_triggered_fault 
+-------------------------------
+ Success:
+(1 row)
+
+INSERT INTO combocid_vischeck_filler VALUES (3, 2);   -- burn a command id
+-- Insert before the savepoint, so the tuple keeps the main transaction's xmin.
+INSERT INTO combocid_vischeck VALUES (2, 2);
+SAVEPOINT s;
+-- Assigns combo-CID index 0, colliding with the first row's cmin.
+DELETE FROM combocid_vischeck WHERE a = 2;
+ROLLBACK TO s;
+-- This scan sets the HEAP_XMAX_INVALID hint bit (the deleter aborted).
+SELECT count(*) FROM combocid_vischeck;
+ count 
+-------
+     2
+(1 row)
+
+SELECT gp_inject_fault('qe_got_snapshot_and_interconnect', 'resume', 2);
+ gp_inject_fault 
+-----------------
+ Success:
+(1 row)
+
+-- The cursor's snapshot predates the insertion of (2), so it must see
+-- only (1).
+FETCH ALL FROM combocid_vischeck_cur;
+ a 
+---
+ 1
+(1 row)
+
+COMMIT;
+SELECT gp_inject_fault('qe_got_snapshot_and_interconnect', 'reset', 2);
+ gp_inject_fault 
+-----------------
+ Success:
+(1 row)
+
