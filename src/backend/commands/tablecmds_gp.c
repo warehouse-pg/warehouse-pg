@@ -991,6 +991,23 @@ AtExecGPSplitPartition(Relation rel, AlterTableCmd *cmd)
 		elem->colencs = p_colencs;
 		elem->options = p_reloptions;
 
+		/*
+		 * NOTE: both the new (non-default) half and the recreated default
+		 * half intentionally inherit storage/reloptions/naming from the
+		 * DEFAULT partition being split (via the shared "elem" below and
+		 * leaving partcomp.tablename unset for the new half), not from the
+		 * root table, even though the new half covers a brand new range.
+		 * This matches documented WHPG semantics ("partitions created from
+		 * a SPLIT PARTITION inherit the properties of the split child",
+		 * gpdb-doc/markdown/admin_guide/ddl/about-part-changes.html.md),
+		 * WHPG6's ATPExecPartSplit behavior, and the existing regression
+		 * test at partition.sql:1766-1774. An earlier version of this
+		 * split-default-partition fix changed both of these to inherit
+		 * from the root instead, but that was a behavior change
+		 * contradicting documented/tested semantics, not a bug fix, and
+		 * was reverted after review.
+		 */
+
 		/* create first partition stmt */
 		stmts = lappend(stmts, makePartitionCreateStmt(rel, partname1, boundspec1, NULL, elem, &partcomp, ORIGIN_GP_CLASSIC_ALTER_GEN));
 
