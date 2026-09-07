@@ -764,6 +764,18 @@ gpdb::GetAttStats(Oid relid, AttrNumber attnum)
 	return nullptr;
 }
 
+Oid
+gpdb::GetAttType(Oid relid, AttrNumber attnum)
+{
+	GP_WRAP_START;
+	{
+		/* catalog tables: pg_attribute */
+		return get_atttype(relid, attnum);
+	}
+	GP_WRAP_END;
+	return InvalidOid;
+}
+
 List *
 gpdb::GetExtStats(Relation rel)
 {
