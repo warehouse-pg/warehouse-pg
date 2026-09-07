@@ -268,6 +268,13 @@ fi])
 AC_SUBST(enable_coverage)
 
 #
+# --enable-asan enables building with AddressSanitizer
+#
+PGAC_ARG_BOOL(enable, asan, no,
+              [build with AddressSanitizer instrumentation])
+AC_SUBST(enable_asan)
+
+#
 # DTrace
 #
 PGAC_ARG_BOOL(enable, dtrace, no,
@@ -444,6 +451,7 @@ unset CXXFLAGS
 # If the user specifies something in the environment, that is used.
 # else:  If the template file set something, that is used.
 # else:  If coverage was enabled, don't set anything.
+# else:  If asan was enabled, we use -O1.
 # else:  If the compiler is GCC, then we use -O3.
 # else:  If the compiler is something else, then we use -O, unless debugging.
 
@@ -453,6 +461,9 @@ elif test "${CFLAGS+set}" = set; then
   : # (keep what template set)
 elif test "$enable_coverage" = yes; then
   : # no optimization by default
+elif test "$enable_asan" = yes; then
+  # sanitizer sweet spot: keep stacks honest without crawling
+  CFLAGS="-O1"
 elif test "$GCC" = yes; then
   CFLAGS="-O3"
 else
@@ -468,6 +479,8 @@ elif test "${CXXFLAGS+set}" = set; then
   : # (keep what template set)
 elif test "$enable_coverage" = yes; then
   : # no optimization by default
+elif test "$enable_asan" = yes; then
+  CXXFLAGS="-O1"
 elif test "$GCC" = yes; then
   CXXFLAGS="-O3"
 else
@@ -689,6 +702,27 @@ if test "$enable_coverage" = yes; then
   fi
 fi
 
+# enable AddressSanitizer if --enable-asan
+ASAN_ORCA_CXXFLAGS=
+if test "$enable_asan" = yes; then
+  if test "$GCC" = yes; then
+    CFLAGS="$CFLAGS -fsanitize=address -fno-omit-frame-pointer"
+    CXXFLAGS="$CXXFLAGS -fsanitize=address -fno-omit-frame-pointer"
+    # ASan instrumentation makes the compiler's flow analysis more
+    # conservative, which can trip ORCA's -Werror on maybe-uninitialized.
+    # Keep that a warning -- only for ORCA (the only C++ tree that uses
+    # -Werror), and only if the C++ compiler knows the flag (clang sets
+    # $GCC=yes too but may reject GCC warning names).
+    PGAC_PROG_VARCXX_VARFLAGS_OPT(CXX, ASAN_ORCA_CXXFLAGS,
+                                  [-Wno-error=maybe-uninitialized])
+    # The backend links via CXX and shared libraries via LDFLAGS alone,
+    # so the runtime must be on the link line everywhere.
+    LDFLAGS="$LDFLAGS -fsanitize=address"
+  else
+    AC_MSG_ERROR([--enable-asan is supported only when using GCC or Clang])
+  fi
+fi
+
 # enable profiling if --enable-profiling
 if test "$enable_profiling" = yes && test "$ac_cv_prog_cc_g" = yes; then
   if test "$GCC" = yes; then
@@ -717,6 +751,7 @@ BITCODE_CXXFLAGS="$BITCODE_CXXFLAGS $user_BITCODE_CXXFLAGS"
 
 AC_SUBST(BITCODE_CFLAGS)
 AC_SUBST(BITCODE_CXXFLAGS)
+AC_SUBST(ASAN_ORCA_CXXFLAGS)
 
 # The template file must set up CFLAGS_SL; we don't support user override
 AC_SUBST(CFLAGS_SL)
