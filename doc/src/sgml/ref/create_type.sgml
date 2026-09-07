@@ -176,6 +176,11 @@ CREATE TYPE <replaceable class="parameter">name</replaceable>
     the range type.  See <xref linkend="rangetypes-defining"/> for more
     information.
    </para>
+
+   <para>
+    To be able to create a range type, you must have <literal>USAGE</literal>
+    privilege on the subtype.
+   </para>
   </refsect2>
 
   <refsect2>
