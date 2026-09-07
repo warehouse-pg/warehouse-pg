@@ -116,6 +116,13 @@ def before_scenario(context, scenario):
     if 'gpssh-exkeys' in context.feature.tags:
         context.gpssh_exkeys_context = GpsshExkeysMgmtContext(context)
 
+    # Must happen before the feature-level early return below: after_scenario()
+    # restores ~/.bashrc for these scenarios unconditionally, and features in
+    # tags_to_skip (gpinitsystem among them) carry @backup_restore_bashrc
+    # scenarios too.
+    if 'gp_bash_functions.sh' in context.feature.tags or 'backup_restore_bashrc' in scenario.effective_tags:
+        backup_bashrc()
+
     tags_to_skip = ['gpexpand', 'gpaddmirrors', 'gpstate', 'gpmovemirrors',
                     'gpconfig', 'gpssh-exkeys', 'gpstop', 'gpinitsystem', 'cross_subnet']
     if set(context.feature.tags).intersection(tags_to_skip):
@@ -124,8 +131,6 @@ def before_scenario(context, scenario):
     if 'analyzedb' not in context.feature.tags:
         start_database_if_not_started(context)
         drop_database_if_exists(context, 'testdb')
-    if 'gp_bash_functions.sh' in context.feature.tags or 'backup_restore_bashrc' in scenario.effective_tags:
-        backup_bashrc()
 
 def after_scenario(context, scenario):
     #TODO: you'd think that the scenario.skip() in before_scenario() would
