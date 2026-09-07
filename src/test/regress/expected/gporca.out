@@ -14986,6 +14986,66 @@ explain (analyze, costs off, summary off, timing off) with cte as (select * from
  Optimizer: Postgres-based planner
 (5 rows)
 
+-- Multivariate ndistinct statistics must keep applying when the grouping list
+-- also contains a system column. No statistics object can cover a system
+-- column (it has no positive attno), so it is estimated on its own while the
+-- user columns still use the (ndistinct) item. x and y are functionally
+-- related (50 real combinations vs 2500 under independence), so the group
+-- estimate exposes which path was taken. Row estimates are read from the first
+-- EXPLAIN ANALYZE line because the test's matchsubs hide the rows= of plain
+-- EXPLAIN output. Autovacuum is disabled on the table so that an automatic
+-- ANALYZE cannot change the statistics under the test.
+create table ndist_t (id int, x int, y int) with (autovacuum_enabled = false) distributed by (id);
+insert into ndist_t select g, g % 50, (g % 50) * 7 % 50 from generate_series(1, 10000) g;
+create statistics ndist_t_xy (ndistinct) on x, y from ndist_t;
+analyze ndist_t;
+create function extstats_estimated_rows(text) returns table (estimated int, actual int)
+language plpgsql as
+$$
+declare
+    ln text;
+    tmp text[];
+    first_row bool := true;
+begin
+    for ln in
+        execute format('explain analyze %s', $1)
+    loop
+        if first_row then
+            first_row := false;
+            tmp := regexp_match(ln, 'rows=(\d*) .* rows=(\d*)');
+            return query select tmp[1]::int, tmp[2]::int;
+        end if;
+    end loop;
+end;
+$$;
+select * from extstats_estimated_rows('select x, y from ndist_t group by x, y');
+ estimated | actual 
+-----------+--------
+        50 |     50
+(1 row)
+
+select * from extstats_estimated_rows('select gp_segment_id, x, y from ndist_t group by gp_segment_id, x, y');
+ estimated | actual 
+-----------+--------
+       150 |    150
+(1 row)
+
+-- without the statistics object both estimates fall back to independence
+drop statistics ndist_t_xy;
+select * from extstats_estimated_rows('select x, y from ndist_t group by x, y');
+ estimated | actual 
+-----------+--------
+      1000 |     50
+(1 row)
+
+select * from extstats_estimated_rows('select gp_segment_id, x, y from ndist_t group by gp_segment_id, x, y');
+ estimated | actual 
+-----------+--------
+      1000 |    150
+(1 row)
+
+drop function extstats_estimated_rows(text);
+drop table ndist_t;
 -- Filter estimation with extended statistics must not crash when the memo
 -- group's cached stats were extended incrementally (histograms appended for
 -- columns that the colid -> attno mapping initially lacked). The ROLLUP is
