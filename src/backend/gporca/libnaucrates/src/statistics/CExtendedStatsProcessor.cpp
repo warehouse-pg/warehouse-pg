@@ -22,6 +22,8 @@
 
 #include "naucrates/md/CMDExtStatsInfo.h"
 #include "naucrates/statistics/CFilterStatsProcessor.h"
+#include "naucrates/statistics/CStatisticsUtils.h"
+#include "naucrates/statistics/CStatsPredPoint.h"
 
 
 #define STATS_MAX_DIMENSIONS 8 /* max number of attributes */
@@ -31,18 +33,28 @@
 
 using namespace gpopt;
 
+/*
+ * A functional dependency states that equal values of the determining
+ * columns imply an equal value of the implied column, so only an equality
+ * comparison against a non-null constant can be matched to one; a range
+ * comparison on a covered column says nothing about the implied column. Every
+ * constant comparison is an EsptPoint predicate, and IS NULL is represented
+ * as an equality with a null constant, so both the comparison type and the
+ * constant have to be checked. Mirrors the backend's
+ * dependency_is_compatible_clause(), which accepts equality operators only.
+ */
 static BOOL
-IsDependencyCapablePredicate(CStatsPred *child_pred GPOS_UNUSED)
+IsDependencyCapablePredicate(CStatsPred *child_pred)
 {
-	/*
-	 * TODO: EsptPoint covers all constant comparisons (Eq/G/GEq/L/LEq, see
-	 * CStatsPredUtils::StatsCmpType()), so range predicates are let into
-	 * functional-dependency estimation where they get equality semantics.
-	 * The backend analogue, dependency_is_compatible_clause(), accepts
-	 * equality-to-pseudoconstant only; this should gate on the point
-	 * predicate's comparison type being EstatscmptEq.
-	 */
-	return child_pred->GetPredStatsType() == CStatsPred::EsptPoint;
+	if (CStatsPred::EsptPoint != child_pred->GetPredStatsType())
+	{
+		return false;
+	}
+
+	CStatsPredPoint *point_pred = CStatsPredPoint::ConvertPredStats(child_pred);
+
+	return CStatsPred::EstatscmptEq == point_pred->GetCmpType() &&
+		   !point_pred->GetPredPoint()->GetDatum()->IsNull();
 }
 
 /*
@@ -255,30 +267,49 @@ find_strongest_dependency(CMDDependencyArray *dependencies, CBitSet *attnums)
 //		CExtendedStatsProcessor::ApplyCorrelatedStatsToScaleFactorFilterCalculation
 //
 //	@doc:
-//		This function is essentially an ORCA version of the dependencies.c
-//		function dependencies_clauselist_selectivity(). It determines the most
-//		suitable extended statistic to apply and computes the scale factor for
-//		the conjunctive_pred_stats.
+//		ORCA counterpart of dependencies_clauselist_selectivity() in
+//		dependencies.c. Picks the functional-dependency statistics object that
+//		covers the most equality conjuncts and, for each applicable dependency
+//		(a,b => c), estimates the conjunct on the implied column c against its
+//		histogram and folds it into the combined estimate as
+//
+//		    P(a,b,c) = P(a,b) * (f + (1-f) * P(c))
+//
+//		where f is the dependency's degree of validity: in the fraction f of
+//		the rows where the dependency holds, c is fully determined by a,b and
+//		the conjunct on c filters nothing further; in the remaining rows c is
+//		treated as independent. The conjunct on c is marked as estimated so
+//		the per-column path does not count it again, and c's histogram in
+//		result_histograms is replaced by the filtered one. The conjuncts on
+//		the determining columns are left to the per-column path.
+//
+//		Returns the resulting scale factor, i.e. the reciprocal of the product
+//		of the bracketed terms (>= 1.0; exactly 1.0 when no dependency
+//		applies). The caller multiplies it into the filter's scale factor
+//		outside the multi-column damping: the bracket already encodes the
+//		measured correlation between the covered columns, which is what the
+//		damping approximates for columns without such statistics.
 //
 //---------------------------------------------------------------------------
-void
+CDouble
 CExtendedStatsProcessor::ApplyCorrelatedStatsToScaleFactorFilterCalculation(
-	CDoubleArray *scale_factors, CStatsPredConj *conjunctive_pred_stats,
-	const IMDExtStatsInfo *md_statsinfo, UlongToIntMap *colid_to_attno_mapping,
-	CMemoryPool *mp, UlongToHistogramMap *result_histograms)
+	CStatsPredConj *conjunctive_pred_stats, const IMDExtStatsInfo *md_statsinfo,
+	UlongToIntMap *colid_to_attno_mapping, CMemoryPool *mp,
+	UlongToHistogramMap *result_histograms)
 {
-	GPOS_ASSERT(scale_factors->Size() == 0);
-
 	if (!md_statsinfo || md_statsinfo->GetExtStatInfoArray()->Size() == 0)
 	{
-		return;
+		return CDouble(1.0);
 	}
 
-	DOUBLE s1 = 1.0;
+	DOUBLE dependency_scale_factor = 1.0;
 	CMDExtStatsInfo *stat;
 	CMDDependencyArray *dependencies;
 
 	CBitSet *clauses_attnums = GPOS_NEW(mp) CBitSet(mp);
+
+	/* attnums whose clause has been estimated through a dependency */
+	CBitSet *estimated_attnums = GPOS_NEW(mp) CBitSet(mp);
 
 	/*
 	 * Pre-process the clauses list to extract the attnums seen in each item.
@@ -318,7 +349,8 @@ CExtendedStatsProcessor::ApplyCorrelatedStatsToScaleFactorFilterCalculation(
 	if (clauses_attnums->Size() < 2)
 	{
 		clauses_attnums->Release();
-		return;
+		estimated_attnums->Release();
+		return CDouble(1.0);
 	}
 
 	/* find the best suited statistics object for these attnums */
@@ -329,7 +361,8 @@ CExtendedStatsProcessor::ApplyCorrelatedStatsToScaleFactorFilterCalculation(
 	if (!stat)
 	{
 		clauses_attnums->Release();
-		return;
+		estimated_attnums->Release();
+		return CDouble(1.0);
 	}
 
 	const COptCtxt *poctxt = COptCtxt::PoctxtFromTLS();
@@ -351,7 +384,8 @@ CExtendedStatsProcessor::ApplyCorrelatedStatsToScaleFactorFilterCalculation(
 	 */
 	while (true)
 	{
-		DOUBLE s2 = 1.0;
+		/* selectivity of the conjunct on the implied column, P(c) above */
+		DOUBLE implied_sel = 1.0;
 		CMDDependency *dependency;
 
 		/* the widest/strongest dependency, fully matched by clauses */
@@ -376,7 +410,8 @@ CExtendedStatsProcessor::ApplyCorrelatedStatsToScaleFactorFilterCalculation(
 			/*
 			 * Skip incompatible clauses, and ones we've already estimated on.
 			 */
-			if (child_pred->IsAlreadyUsedInScaleFactorEstimation())
+			if (child_pred->IsAlreadyUsedInScaleFactorEstimation() ||
+				!IsDependencyCapablePredicate(child_pred))
 			{
 				continue;
 			}
@@ -390,62 +425,126 @@ CExtendedStatsProcessor::ApplyCorrelatedStatsToScaleFactorFilterCalculation(
 				continue;
 			}
 
-			/*
-			 * Technically we could find more than one clause for a given
-			 * attnum. Since these clauses must be equality clauses, we choose
-			 * to only take the selectivity estimate from the final clause in
-			 * the list for this attnum. If the attnum happens to be compared
-			 * to a different Const in another clause then no rows will match
-			 * anyway. If it happens to be compared to the same Const, then
-			 * ignoring the additional clause is just the thing to do.
-			 */
-			if (dependency_implies_attribute(dependency, *attnum))
+			if (!dependency_implies_attribute(dependency, *attnum))
 			{
-				const CHistogram *histogram = result_histograms->Find(&colid);
-				if (nullptr == histogram)
-				{
-					/*
-					 * No histogram to estimate the implied clause with; give
-					 * up on the dependency for this attribute. The attnum
-					 * bit must still be cleared: the outer loop terminates
-					 * only once no dependency is fully matched by the
-					 * remaining attnums, so leaving the bit set would make
-					 * find_strongest_dependency() return the same dependency
-					 * forever. The clause stays unestimated here and is later
-					 * given the default selectivity by the regular per-column
-					 * path (see MakeHistHashMapConjFilter()).
-					 */
-					clauses_attnums->ExchangeClear(*attnum);
-					continue;
-				}
-				s2 = 1 / histogram->GetFrequency().Get();
+				continue;
+			}
 
-				/* mark this one as done, so we don't touch it again. */
-				child_pred->SetEstimated();
-
+			if (!clauses_attnums->Get(*attnum))
+			{
 				/*
-				 * Mark that we've got and used the dependency on this clause.
-				 * We'll want to ignore this when looking for the next
-				 * strongest dependency above.
+				 * A further equality clause on the implied attribute. If the
+				 * attribute was estimated through the dependency, the first
+				 * clause has already fixed its value and selectivity: with the
+				 * same constant this one filters nothing more, with a
+				 * different constant no row matches at all, so it must not be
+				 * counted again by the per-column path. If the dependency was
+				 * given up for the attribute instead, the clause stays with
+				 * the per-column path like the first one.
+				 */
+				if (estimated_attnums->Get(*attnum))
+				{
+					child_pred->SetEstimated();
+				}
+				continue;
+			}
+
+			const CHistogram *histogram = result_histograms->Find(&colid);
+			if (nullptr == histogram)
+			{
+				/*
+				 * No histogram to estimate the implied clause with; give up
+				 * on the dependency for this attribute. The attnum bit must
+				 * still be cleared: the outer loop terminates only once no
+				 * dependency is fully matched by the remaining attnums, so
+				 * leaving the bit set would make find_strongest_dependency()
+				 * return the same dependency forever. The clause stays
+				 * unestimated here and is later given the default selectivity
+				 * by the regular per-column path (see
+				 * MakeHistHashMapConjFilter()).
 				 */
 				clauses_attnums->ExchangeClear(*attnum);
+				continue;
 			}
+
+			if (histogram->IsEmpty() ||
+				histogram->GetFrequency() < CStatistics::Epsilon)
+			{
+				/*
+				 * The attribute has no usable statistics: its histogram is
+				 * the bucketless placeholder ORCA builds when the column has
+				 * no pg_statistic row (e.g. after ALTER COLUMN TYPE, which
+				 * drops the column's statistics but keeps the dependency
+				 * statistics). Filtering it would report a selectivity of
+				 * ~0 and turn "nothing is known about the column" into "no
+				 * row matches"; assume the default selectivity for the clause
+				 * instead, as the per-column path does for a column without
+				 * statistics.
+				 */
+				implied_sel = CHistogram::DefaultSelectivity.Get();
+			}
+			else
+			{
+				/*
+				 * Estimate the implied clause on its own, exactly as the
+				 * per-column path would: filter the attribute's histogram by
+				 * the constant and normalize it. The normalization returns
+				 * the reciprocal of the clause's selectivity, and the
+				 * filtered histogram replaces the unfiltered one so that
+				 * downstream operators see the attribute's post-filter
+				 * distribution.
+				 */
+				CStatsPredPoint *point_pred =
+					CStatsPredPoint::ConvertPredStats(child_pred);
+				CDouble clause_scale_factor(1.0);
+				CHistogram *filtered_histogram =
+					histogram->MakeHistogramFilterNormalize(
+						point_pred->GetCmpType(), point_pred->GetPredPoint(),
+						&clause_scale_factor);
+				implied_sel = 1.0 / clause_scale_factor.Get();
+
+				/* replacing the entry releases 'histogram'; don't use it below */
+				CStatisticsUtils::AddHistogram(mp, colid, filtered_histogram,
+											   result_histograms,
+											   true /* replace_old */);
+				GPOS_DELETE(filtered_histogram);
+			}
+
+			/* mark this one as done, so we don't touch it again. */
+			child_pred->SetEstimated();
+			estimated_attnums->ExchangeSet(*attnum);
+
+			/*
+			 * Mark that we've got and used the dependency on this clause.
+			 * We'll want to ignore this when looking for the next
+			 * strongest dependency above.
+			 */
+			clauses_attnums->ExchangeClear(*attnum);
 		}
 
 		/*
-		 * Now factor in the selectivity for all the "implied" clauses into
-		 * the final one, using this formula:
+		 * Fold the implied clause into the estimate:
 		 *
 		 * P(a,b) = P(a) * (f + (1-f) * P(b))
 		 *
-		 * where 'f' is the degree of validity of the dependency.
+		 * where 'f' is the degree of validity of the dependency. In
+		 * scale-factor space that is a division by the bracket: with f = 1 the
+		 * implied clause is fully redundant and the factor is 1, with f = 0 it
+		 * degenerates to the independence assumption. The bracket is a
+		 * probability; clamp it so that rounding in f + (1-f) cannot push it
+		 * past 1 and yield a scale factor below 1.
 		 */
-		s1 *= (dependency->GetDegree().Get() +
-			   (1 - dependency->GetDegree().Get()) * s2);
+		DOUBLE degree = dependency->GetDegree().Get();
+		DOUBLE implied_factor =
+			std::min(1.0, degree + (1.0 - degree) * implied_sel);
+		dependency_scale_factor *= 1.0 / implied_factor;
 	}
-	scale_factors->Append(GPOS_NEW(mp) CDouble(s1));
+	GPOS_ASSERT(1.0 <= dependency_scale_factor);
 
 	clauses_attnums->Release();
+	estimated_attnums->Release();
+
+	return CDouble(dependency_scale_factor);
 }
 
 //---------------------------------------------------------------------------

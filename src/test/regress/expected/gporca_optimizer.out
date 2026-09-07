@@ -15072,3 +15072,79 @@ select count(*) from (
 
 reset optimizer;
 drop table extstats_fact, extstats_dim;
+-- Functional-dependency extended statistics: a conjunction of equality
+-- filters on the covered columns is estimated as
+--   P(a,b) = P(a) * (degree + (1 - degree) * P(b))
+-- i.e. the implied column's own selectivity, discounted by the degree to
+-- which the dependency holds. Half of the a-groups below obey b = a % 10 and
+-- the other half are noise, so degree(a => b) = 0.5. Autovacuum is disabled on
+-- the table so that an automatic ANALYZE cannot re-create the column statistics
+-- dropped by the ALTER COLUMN TYPE below.
+create table dep_t(id int, a int, b int) with (autovacuum_enabled = false) distributed by (id);
+insert into dep_t
+select g, g % 100,
+       case when g % 100 < 50 then (g % 100) % 10
+            else ((g / 100) * 37 + g % 100) % 100 end
+from generate_series(1, 10000) g;
+create statistics dep_t_ab (dependencies) on a, b from dep_t;
+analyze dep_t;
+-- estimated and actual row count of the top plan node
+create function dep_estimated_rows(text) returns table (estimated int, actual int)
+language plpgsql as
+$$
+declare
+    ln text;
+    tmp text[];
+begin
+    for ln in execute format('explain analyze %s', $1)
+    loop
+        tmp := regexp_match(ln, 'rows=(\d*) .* rows=(\d*)');
+        return query select tmp[1]::int, tmp[2]::int;
+        return;
+    end loop;
+end;
+$$;
+set optimizer = on;
+-- P(a = 1) = 0.01
+select * from dep_estimated_rows('select * from dep_t where a = 1');
+ estimated | actual 
+-----------+--------
+       100 |    100
+(1 row)
+
+-- P(b = 1) = 0.055: 10000 * 0.01 * (0.5 + 0.5 * 0.055) = 53, not 100
+select * from dep_estimated_rows('select * from dep_t where a = 1 and b = 1');
+ estimated | actual 
+-----------+--------
+        53 |    100
+(1 row)
+
+-- a range filter on the determining column does not match the dependency;
+-- both filters take the regular per-column path
+select * from dep_estimated_rows('select * from dep_t where a < 5 and b = 1');
+ estimated | actual 
+-----------+--------
+        49 |    100
+(1 row)
+
+-- the implied column's histogram is filtered too: one distinct b remains
+select * from dep_estimated_rows('select distinct b from dep_t where a = 1 and b = 1');
+ estimated | actual 
+-----------+--------
+         1 |      1
+(1 row)
+
+-- ALTER COLUMN TYPE drops the column's statistics but keeps the dependency
+-- statistics. With nothing known about b, its filter gets the default
+-- selectivity inside the dependency formula: 100 * (0.5 + 0.5 * 0.4) = 70,
+-- rather than collapsing to a single row
+alter table dep_t alter column b type bigint;
+select * from dep_estimated_rows('select * from dep_t where a = 1 and b = 1');
+ estimated | actual 
+-----------+--------
+        70 |    100
+(1 row)
+
+reset optimizer;
+drop function dep_estimated_rows(text);
+drop table dep_t;
