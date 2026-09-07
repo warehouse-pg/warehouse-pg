@@ -6,7 +6,7 @@ SET search_path="$user",test_gp_fastsequence_@amname@,public;
 
 SET default_table_access_method=@amname@;
 
-CREATE OR REPLACE FUNCTION fastseq_details(input_query_regex text)
+CREATE OR REPLACE FUNCTION fastseq_log_rows(input_query_regex text)
   RETURNS TABLE (logdatabase text, logsegment text, logseverity text, logdebug text, logmessage text)
   LANGUAGE plpgsql AS
 $func$
@@ -37,6 +37,29 @@ BEGIN
       AND l2.logmessage LIKE 'In-place update to gp_fastsequence%'
       AND l2.logdebug LIKE input_query_regex) s
   ORDER BY logdebug, logmessage;
+END
+$func$;
+
+-- The syslogger stamps and writes log lines asynchronously, and with
+-- debug_appendonly_print_insert_tuple on it has hundreds of per-tuple lines
+-- queued behind the gp_fastsequence ones we want.  On a slow machine the last
+-- line of the preceding statement may not have reached the log file yet when
+-- we read it, so poll until the set of matching rows stops growing.
+CREATE OR REPLACE FUNCTION fastseq_details(input_query_regex text)
+  RETURNS TABLE (logdatabase text, logsegment text, logseverity text, logdebug text, logmessage text)
+  LANGUAGE plpgsql AS
+$func$
+DECLARE
+  prev_count int := -1;
+  cur_count int;
+BEGIN
+  FOR i IN 1..50 LOOP
+    SELECT count(*) INTO cur_count FROM fastseq_log_rows(input_query_regex);
+    EXIT WHEN cur_count > 0 AND cur_count = prev_count;
+    prev_count := cur_count;
+    PERFORM pg_sleep(0.2);
+  END LOOP;
+  RETURN QUERY SELECT * FROM fastseq_log_rows(input_query_regex);
 END
 $func$;
 
