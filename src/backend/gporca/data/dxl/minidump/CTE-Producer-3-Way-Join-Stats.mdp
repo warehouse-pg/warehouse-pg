@@ -1,5 +1,60 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <dxl:DXLMessage xmlns:dxl="http://greenplum.com/dxl/2010/12/">
+  <dxl:Comment><![CDATA[
+  PTT-1683: every CTE consumer copies the producer's cached statistics, so a
+  consumer's row estimate must equal the producer's. CalcAllJoinStats used to
+  pass the full inner-join predicate conjunction at every incremental 2-way
+  step of an NAry join; a conjunct already applied at an earlier step then
+  had both sides inside the accumulated input and was re-applied as an
+  "unsupported" filter with the default selectivity 0.4, shrinking the
+  estimate by 0.4^C(n,2) for n joins. CTE producer statistics are always
+  derived on the standalone NAry-join expression, so a 3-join producer read
+  through two consumers showed producer 1000000 next to consumers 113778
+  (= 1000000 / 8.789). This minidump pins Rows=1000000 on the CTEProducer and
+  on both CTEConsumers.
+
+  Reproduce / regenerate this minidump (TPC-DS-shaped fact + 3 dimensions;
+  the fact rows reference existing dimension keys so the joins preserve the
+  fact cardinality):
+    CREATE TABLE date_dim (d_date_sk int, d_month_seq int, d_year int,
+                           d_qoy int, d_moy int) DISTRIBUTED BY (d_date_sk);
+    CREATE TABLE store (s_store_sk int, s_store_id text)
+        DISTRIBUTED BY (s_store_sk);
+    CREATE TABLE item (i_item_sk int, i_product_name text, i_brand text,
+                       i_class text, i_category text) DISTRIBUTED BY (i_item_sk);
+    CREATE TABLE store_sales (ss_item_sk int, ss_sold_date_sk int,
+                              ss_store_sk int, ss_quantity int,
+                              ss_sales_price numeric) DISTRIBUTED BY (ss_item_sk);
+    INSERT INTO date_dim SELECT g, g / 30, 2020 + g / 365, (g / 91) % 4 + 1,
+                                g % 12 + 1 FROM generate_series(1, 1826) g;
+    INSERT INTO store SELECT g, 'store_' || g FROM generate_series(1, 100) g;
+    INSERT INTO item SELECT g, 'product_' || g, 'brand_' || g % 50,
+                            'class_' || g % 20, 'cat_' || g % 10
+                     FROM generate_series(1, 3000) g;
+    INSERT INTO store_sales SELECT g % 3000 + 1, g % 1826 + 1, g % 100 + 1,
+                                   g % 100, (g % 1000) / 10.0
+                            FROM generate_series(1, 1000000) g;
+    ANALYZE date_dim; ANALYZE store; ANALYZE item; ANALYZE store_sales;
+    SET optimizer = on;
+    SET optimizer_minidump = always;   -- dump every ORCA optimization
+    EXPLAIN WITH cte AS MATERIALIZED (
+        SELECT ss_quantity, d_year, s_store_id, i_category
+        FROM store_sales, date_dim, store, item
+        WHERE ss_sold_date_sk = d_date_sk AND ss_store_sk = s_store_sk
+          AND ss_item_sk = i_item_sk)
+    SELECT count(*) FROM (SELECT * FROM cte UNION ALL SELECT * FROM cte) x;
+
+  Expected EXPLAIN (GPORCA), row estimates:
+    Shared Scan (producer) ... rows=1000000
+    Shared Scan (consumer) ... rows=1000000   -- twice, under the Append
+  What is being pinned: the CTEProducer and both CTEConsumers in the
+  <dxl:Plan> below carry the same Rows="1000000.000000". Before the fix the
+  consumers were estimated at 113778. The exact histograms in the dump depend
+  on the generated data; the producer == consumer relationship does not.
+
+  The dump lands under <coordinator $PGDATA>/minidumps/Minidump_*.mdp. Copy it
+  here and pretty-print it with xmllint --format before committing.
+  ]]></dxl:Comment>
   <dxl:Thread Id="0">
     <dxl:OptimizerConfig>
       <dxl:EnumeratorConfig Id="0" PlanSamples="0" CostThreshold="0"/>
