@@ -2868,11 +2868,11 @@ CTranslatorRelcacheToDXL::IsIndexSupported(Relation index_rel)
 	// the table column's type, not the index attribute's: the index stores a
 	// different type for some opclasses (btree name_ops stores cstring, hash
 	// indexes store the int4 hash code) while indcollation still carries the
-	// column's collation. No type is exempted: a "name" key matches only
-	// because its indcollation (C) equals TypeCollation(name) (also C), while
-	// a "name[]" key is correctly hidden because TypeCollation(name[]) is the
-	// database default, not C — the exact mismatch ORCA would scan with.
-	// Remove this once ORCA carries collations through DXL.
+	// column's collation. No type is exempted: a "name" or "name[]" key
+	// matches only because its indcollation (C) equals TypeCollation() for
+	// that type (also C, per the NAMEOID/NAMEARRAYOID special-case there),
+	// while an index with an explicit non-C collation on either type is
+	// correctly hidden. Remove this once ORCA carries collations through DXL.
 	if (index_supported)
 	{
 		for (int i = 0; i < index_rel->rd_index->indnkeyatts; i++)

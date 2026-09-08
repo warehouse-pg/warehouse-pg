@@ -715,9 +715,11 @@ select count(*) from bfv_index_collate_name_tbl where nm >= 'n99';
 create index bfv_index_collate_name_posix_idx on bfv_index_collate_name_tbl (nm collate "POSIX");
 vacuum analyze bfv_index_collate_name_tbl;
 explain (costs off) select count(*) from bfv_index_collate_name_tbl where nm >= 'n99';
--- a "name[]" column is hidden too: TypeCollation(name[]) is the database
--- default, not C, so ORCA would scan the C-ordered array btree with a
--- mismatched comparator
+-- a "name[]" column has the same C type-default collation as "name" but its
+-- indcollation (950) differs from TypeCollation(name[]) (100, since only
+-- NAMEOID is special-cased there), so the visibility check must exempt
+-- NAMEARRAYOID too -- mirroring check_collation()'s NAMEOID || NAMEARRAYOID
+-- whitelist -- or the index would be wrongly hidden from ORCA
 create table bfv_index_collate_namearr_tbl (id int, tags name[]) distributed by (id);
 insert into bfv_index_collate_namearr_tbl select g, array[('t' || g)::name] from generate_series(1, 1000) g;
 create index bfv_index_collate_namearr_idx on bfv_index_collate_namearr_tbl (tags);
