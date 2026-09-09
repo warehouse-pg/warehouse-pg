@@ -1091,8 +1091,8 @@ plperl_build_tuple_result(HV *perlhash, TupleDesc td)
 	HE		   *he;
 	HeapTuple	tup;
 
-	values = palloc0(sizeof(Datum) * td->natts);
-	nulls = palloc(sizeof(bool) * td->natts);
+	values = palloc0_array(Datum, td->natts);
+	nulls = palloc_array(bool, td->natts);
 	memset(nulls, true, sizeof(bool) * td->natts);
 
 	hv_iterinit(perlhash);
@@ -1457,7 +1457,7 @@ plperl_ref_from_pg_array(Datum arg, Oid typid)
 	SV		   *av;
 	HV		   *hv;
 
-	info = palloc(sizeof(plperl_array_info));
+	info = palloc_object(plperl_array_info);
 
 	/* get element type information, including output conversion function */
 	get_type_io_data(elementtype, IOFunc_output,
@@ -1484,7 +1484,7 @@ plperl_ref_from_pg_array(Datum arg, Oid typid)
 						  &nitems);
 
 		/* Get total number of elements in each dimension */
-		info->nelems = palloc(sizeof(int) * info->ndims);
+		info->nelems = palloc_array(int, info->ndims);
 		info->nelems[0] = nitems;
 		for (i = 1; i < info->ndims; i++)
 			info->nelems[i] = info->nelems[i - 1] / dims[i - 1];
@@ -1727,9 +1727,9 @@ plperl_modify_tuple(HV *hvTD, TriggerData *tdata, HeapTuple otup)
 				 errmsg("$_TD->{new} is not a hash reference")));
 	hvNew = (HV *) SvRV(*svp);
 
-	modattrs = palloc(tupdesc->natts * sizeof(int));
-	modvalues = palloc(tupdesc->natts * sizeof(Datum));
-	modnulls = palloc(tupdesc->natts * sizeof(char));
+	modattrs = palloc_array(int, tupdesc->natts);
+	modvalues = palloc_array(Datum, tupdesc->natts);
+	modnulls = palloc_array(char, tupdesc->natts);
 	slotsused = 0;
 
 	hv_iterinit(hvNew);
@@ -3475,13 +3475,13 @@ plperl_spi_prepare(char *query, int argc, SV **argv)
 										 ALLOCSET_SMALL_INITSIZE,
 										 ALLOCSET_SMALL_MAXSIZE);
 		MemoryContextSwitchTo(plan_cxt);
-		qdesc = (plperl_query_desc *) palloc0(sizeof(plperl_query_desc));
+		qdesc = palloc0_object(plperl_query_desc);
 		snprintf(qdesc->qname, sizeof(qdesc->qname), "%p", qdesc);
 		qdesc->plan_cxt = plan_cxt;
 		qdesc->nargs = argc;
-		qdesc->argtypes = (Oid *) palloc(argc * sizeof(Oid));
-		qdesc->arginfuncs = (FmgrInfo *) palloc(argc * sizeof(FmgrInfo));
-		qdesc->argtypioparams = (Oid *) palloc(argc * sizeof(Oid));
+		qdesc->argtypes = palloc_array(Oid, argc);
+		qdesc->arginfuncs = palloc_array(FmgrInfo, argc);
+		qdesc->argtypioparams = palloc_array(Oid, argc);
 		MemoryContextSwitchTo(oldcontext);
 
 		/************************************************************
@@ -3667,8 +3667,8 @@ plperl_spi_exec_prepared(char *query, HV *attr, int argc, SV **argv)
 		 ************************************************************/
 		if (argc > 0)
 		{
-			nulls = (char *) palloc(argc);
-			argvalues = (Datum *) palloc(argc * sizeof(Datum));
+			nulls = palloc_array(char, argc);
+			argvalues = palloc_array(Datum, argc);
 		}
 		else
 		{
@@ -3793,8 +3793,8 @@ plperl_spi_query_prepared(char *query, int argc, SV **argv)
 		 ************************************************************/
 		if (argc > 0)
 		{
-			nulls = (char *) palloc(argc);
-			argvalues = (Datum *) palloc(argc * sizeof(Datum));
+			nulls = palloc_array(char, argc);
+			argvalues = palloc_array(Datum, argc);
 		}
 		else
 		{
