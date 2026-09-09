@@ -410,6 +410,32 @@ parsetext(Oid cfgId, ParsedText *prs, char *buf, int buflen)
 
 			while (ptr->lexeme)
 			{
+				size_t		lexeme_len = strlen(ptr->lexeme);
+
+				/*
+				 * A dictionary can produce a normalized lexeme longer than the
+				 * source token, so re-check the length against MAXSTRLEN here
+				 * (the check above only bounds the raw token length).
+				 */
+				if (lexeme_len > MAXSTRLEN)
+				{
+#ifdef IGNORE_LONGLEXEME
+					ereport(NOTICE,
+							(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+							 errmsg("word is too long to be indexed"),
+							 errdetail("Words longer than %d characters are ignored.",
+									   MAXSTRLEN)));
+					ptr++;
+					continue;
+#else
+					ereport(ERROR,
+							(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+							 errmsg("word is too long to be indexed"),
+							 errdetail("Words longer than %d characters are ignored.",
+									   MAXSTRLEN)));
+#endif
+				}
+
 				if (prs->curwords == prs->lenwords)
 				{
 					prs->lenwords *= 2;
@@ -418,7 +444,7 @@ parsetext(Oid cfgId, ParsedText *prs, char *buf, int buflen)
 
 				if (ptr->flags & TSL_ADDPOS)
 					prs->pos++;
-				prs->words[prs->curwords].len = strlen(ptr->lexeme);
+				prs->words[prs->curwords].len = lexeme_len;
 				prs->words[prs->curwords].word = ptr->lexeme;
 				prs->words[prs->curwords].nvariant = ptr->nvariant;
 				prs->words[prs->curwords].flags = ptr->flags & TSL_PREFIX;
