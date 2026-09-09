@@ -368,6 +368,22 @@ fmgr_info_C_lang(Oid functionId, FmgrInfo *finfo, HeapTuple procedureTuple)
 		case 0:
 			/* Old style: need to use a handler */
 			finfo->fn_addr = fmgr_oldstyle;
+
+			/*
+			 * Protect against overrun of the fixed-size arg_toastable array.
+			 * Ordinarily the parser would have checked this long since, but
+			 * it's possible that we are looking at a pg_proc entry that was
+			 * made by a server executable with a different value of
+			 * FUNC_MAX_ARGS.
+			 */
+			if (procedureStruct->pronargs > FUNC_MAX_ARGS)
+				ereport(ERROR,
+						(errcode(ERRCODE_TOO_MANY_ARGUMENTS),
+						 errmsg_plural("cannot pass more than %d argument to a function",
+									   "cannot pass more than %d arguments to a function",
+									   FUNC_MAX_ARGS,
+									   FUNC_MAX_ARGS)));
+
 			fnextra = (Oldstyle_fnextra *)
 				MemoryContextAllocZero(finfo->fn_mcxt,
 									   sizeof(Oldstyle_fnextra));

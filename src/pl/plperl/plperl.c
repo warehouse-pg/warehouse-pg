@@ -2800,6 +2800,24 @@ compile_plperl_function(Oid fn_oid, bool is_trigger, bool is_event_trigger)
 		 ************************************************************/
 		if (!is_trigger && !is_event_trigger)
 		{
+			/*
+			 * Protect against overrun of the fixed-size arg_out_func,
+			 * arg_is_rowtype and arg_arraytype arrays.  Ordinarily the
+			 * parser would have checked this long since, but it's possible
+			 * that we are looking at a pg_proc entry that was made by a
+			 * server executable with a different value of FUNC_MAX_ARGS.
+			 */
+			if (procStruct->pronargs > FUNC_MAX_ARGS)
+			{
+				free_plperl_function(prodesc);
+				ereport(ERROR,
+						(errcode(ERRCODE_TOO_MANY_ARGUMENTS),
+						 errmsg_plural("cannot pass more than %d argument to a function",
+									   "cannot pass more than %d arguments to a function",
+									   FUNC_MAX_ARGS,
+									   FUNC_MAX_ARGS)));
+			}
+
 			prodesc->nargs = procStruct->pronargs;
 			for (i = 0; i < prodesc->nargs; i++)
 			{

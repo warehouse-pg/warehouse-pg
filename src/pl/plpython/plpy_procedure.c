@@ -266,6 +266,24 @@ PLy_procedure_create(HeapTuple procTup, Oid fn_oid, bool is_trigger)
 				}
 			}
 
+			/*
+			 * Protect against overrun of the fixed-size args[] array.
+			 * Ordinarily the parser would have checked this long since, but
+			 * it's possible that we are looking at a pg_proc entry that was
+			 * made by a server executable with a different value of
+			 * FUNC_MAX_ARGS.  Note that we must check the count of IN args
+			 * actually stored into args[] (proc->nargs, derived from
+			 * proallargtypes), not pronargs, since a corrupted catalog row
+			 * could make them differ.
+			 */
+			if (proc->nargs > FUNC_MAX_ARGS)
+				ereport(ERROR,
+						(errcode(ERRCODE_TOO_MANY_ARGUMENTS),
+						 errmsg_plural("cannot pass more than %d argument to a function",
+									   "cannot pass more than %d arguments to a function",
+									   FUNC_MAX_ARGS,
+									   FUNC_MAX_ARGS)));
+
 			proc->argnames = (char **) PLy_malloc0(sizeof(char *) * proc->nargs);
 			for (i = pos = 0; i < total; i++)
 			{
