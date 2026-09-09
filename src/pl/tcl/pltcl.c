@@ -1295,7 +1295,7 @@ compile_pltcl_function(Oid fn_oid, Oid tgreloid,
 		Datum		prosrcdatum;
 		bool		isnull;
 		char	   *proc_source;
-		char		buf[32];
+		char		buf[64];
 		Tcl_Interp *interp;
 		int			i;
 		int			tcl_rc;
@@ -1413,6 +1413,27 @@ compile_pltcl_function(Oid fn_oid, Oid tgreloid,
 		 ************************************************************/
 		if (!is_trigger && !is_event_trigger)
 		{
+			/*
+			 * Protect against overrun of the fixed-size arg_out_func and
+			 * arg_is_rowtype arrays (and the proc_internal_args buffer).
+			 * Ordinarily the parser would have checked this long since, but
+			 * it's possible that we are looking at a pg_proc entry that was
+			 * made by a server executable with a different value of
+			 * FUNC_MAX_ARGS.
+			 */
+			if (procStruct->pronargs > FUNC_MAX_ARGS)
+			{
+				free(prodesc->user_proname);
+				free(prodesc->internal_proname);
+				free(prodesc);
+				ereport(ERROR,
+						(errcode(ERRCODE_TOO_MANY_ARGUMENTS),
+						 errmsg_plural("cannot pass more than %d argument to a function",
+									   "cannot pass more than %d arguments to a function",
+									   FUNC_MAX_ARGS,
+									   FUNC_MAX_ARGS)));
+			}
+
 			prodesc->nargs = procStruct->pronargs;
 			proc_internal_args[0] = '\0';
 			for (i = 0; i < prodesc->nargs; i++)
