@@ -62,3 +62,15 @@ select 10 as test01, 20 as test02 from generate_series(1,0) \gset
 -- outside restricted mode these are plain errors:
 \unrestrict secretkey
 \restrict
+
+--
+-- \copy must skip in-line data, even if the issued COPY command fails
+-- before entering COPY_IN state (CVE-2026-6464).
+--
+\copy no_such_table from stdin
+foo
+\echo this should not get output
+bar
+\echo this should not get output
+\.
+\echo this should get output

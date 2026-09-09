@@ -311,7 +311,7 @@ main(int argc, char *argv[])
 		if (pset.echo == PSQL_ECHO_ALL)
 			puts(options.action_string);
 
-		successResult = SendQuery(options.action_string)
+		successResult = SendQuery(options.action_string, -1)
 			? EXIT_SUCCESS : EXIT_FAILURE;
 	}
 

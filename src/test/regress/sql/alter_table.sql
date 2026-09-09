@@ -1014,7 +1014,9 @@ copy alter_table_test from stdin;
 \.
 select * from alter_table_test order by 1;
 copy alter_table_test(a) from stdin;
+\.
 copy alter_table_test("........pg.dropped.1........") from stdin;
+\.
 copy alter_table_test(b,c) from stdin;
 31	32
 \.
