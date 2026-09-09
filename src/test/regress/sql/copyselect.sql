@@ -42,6 +42,7 @@ copy (select t into temp test3 from copyselect_test1 where id=3) to stdout;
 -- This should fail
 --
 copy (select * from copyselect_test1) from stdin;
+\.
 --
 -- This should fail
 --

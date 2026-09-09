@@ -254,7 +254,8 @@ MainLoop(FILE *source)
 				}
 
 				/* execute query */
-				success = SendQuery(query_buf->data);
+				success = SendQuery(query_buf->data,
+									psql_scan_count_copy_from_stdin(scan_state));
 				slashCmdStatus = success ? PSQL_CMD_SEND : PSQL_CMD_ERROR;
 
 				/* transfer query to previous_buf by pointer-swapping */
@@ -265,9 +266,10 @@ MainLoop(FILE *source)
 					query_buf = swap_buf;
 				}
 				resetPQExpBuffer(query_buf);
+				/* reset parsing state, too */
+				psql_scan_reset(scan_state);
 
 				added_nl_pos = -1;
-				/* we need not do psql_scan_reset() here */
 			}
 			else if (scan_result == PSCAN_BACKSLASH)
 			{
@@ -313,7 +315,7 @@ MainLoop(FILE *source)
 
 				if (slashCmdStatus == PSQL_CMD_SEND)
 				{
-					success = SendQuery(query_buf->data);
+					success = SendQuery(query_buf->data, -1);
 
 					/* transfer query to previous_buf by pointer-swapping */
 					{
@@ -384,7 +386,8 @@ MainLoop(FILE *source)
 			pg_send_history(history_buf);
 
 		/* execute query */
-		success = SendQuery(query_buf->data);
+		success = SendQuery(query_buf->data,
+							psql_scan_count_copy_from_stdin(scan_state));
 
 		if (!success && die_on_error)
 			successResult = EXIT_USER;

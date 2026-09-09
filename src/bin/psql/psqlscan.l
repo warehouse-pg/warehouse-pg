@@ -110,6 +110,15 @@ typedef struct PsqlScanStateData
 	int			paren_depth;	/* depth of nesting in parentheses */
 	int			xcdepth;		/* depth of nesting in slash-star comments */
 	char	   *dolqstart;		/* current $foo$ quote start string */
+
+	/*
+	 * State used to detect and count COPY ... FROM STDIN commands, so that
+	 * any in-line data left over from a COPY that failed before entering
+	 * COPY_IN state can be discarded instead of being executed as SQL.
+	 */
+	int			copy_stdin_count;	/* number of COPY FROM STDIN commands */
+	int			init_idents_count;	/* # identifiers since start of statement */
+	char		init_idents[8]; /* records the first few identifiers */
 } PsqlScanStateData;
 
 static PsqlScanState cur_state;	/* current state while active */
@@ -133,6 +142,9 @@ static int	backtick_start_offset;
 int	yylex(void);
 
 static void evaluate_backtick(void);
+static void psqlscan_record_initial_keyword(const char *identifier);
+static bool psqlscan_is_copy_from_stdin(void);
+static void psqlscan_track_identifier(const char *identifier);
 static void push_new_buffer(const char *newstr, const char *varname);
 static void pop_buffer_stack(PsqlScanState state);
 static bool var_is_current_source(PsqlScanState state, const char *varname);
@@ -709,6 +721,10 @@ other			.
 					ECHO;
 					if (cur_state->paren_depth == 0)
 					{
+						/* Remember if this subcommand was COPY FROM STDIN */
+						if (psqlscan_is_copy_from_stdin())
+							cur_state->copy_stdin_count++;
+						cur_state->init_idents_count = 0;
 						/* Terminate lexing temporarily */
 						return LEXRES_SEMI;
 					}
@@ -722,6 +738,13 @@ other			.
 "\\"[;:]		{
 					/* Force a semicolon or colon into the query buffer */
 					emit(yytext + 1, 1);
+					/* Remember if this subcommand was COPY FROM STDIN */
+					if (yytext[1] == ';' && cur_state->paren_depth == 0)
+					{
+						if (psqlscan_is_copy_from_stdin())
+							cur_state->copy_stdin_count++;
+						cur_state->init_idents_count = 0;
+					}
 				}
 
 "\\"			{
@@ -903,6 +926,7 @@ other			.
 
 
 {identifier}	{
+					psqlscan_track_identifier(yytext);
 					ECHO;
 				}
 
@@ -1204,6 +1228,84 @@ other			.
 %%
 
 /*
+ * Record the first few keywords of the current statement into
+ * cur_state->init_idents, so that psqlscan_is_copy_from_stdin() can later
+ * recognize a leading COPY ... FROM STDIN.  We record the interesting
+ * keywords using their first character (upper-cased), which works so long
+ * as those are all different.
+ */
+static void
+psqlscan_record_initial_keyword(const char *identifier)
+{
+	if (cur_state->init_idents_count < lengthof(cur_state->init_idents))
+	{
+		/*
+		 * We only need to recognize COPY ... FROM STDIN.  (Note: the
+		 * backend grammar doesn't distinguish STDIN from STDOUT, so we
+		 * should not do so here either.)
+		 */
+		if (pg_strcasecmp(identifier, "copy") == 0 ||
+			pg_strcasecmp(identifier, "from") == 0 ||
+			pg_strcasecmp(identifier, "stdin") == 0 ||
+			pg_strcasecmp(identifier, "stdout") == 0)
+			cur_state->init_idents[cur_state->init_idents_count] =
+				pg_toupper((unsigned char) identifier[0]);
+		/* For other keywords or identifiers, leave '\0' in the entry */
+		cur_state->init_idents_count++;
+	}
+}
+
+/*
+ * Does the current statement's initial keywords match COPY ... FROM STDIN?
+ */
+static bool
+psqlscan_is_copy_from_stdin(void)
+{
+	char	   *idents = cur_state->init_idents;
+	int			i;
+
+	/*
+	 * The first word must be COPY, but after that there could be up to
+	 * four identifiers (BINARY database.schema.table) before FROM.  Since
+	 * some of the words we track are not reserved words, don't assume the
+	 * intervening array entries are '\0'.  psqlscan_track_identifier()
+	 * ignores everything within parens, so we won't see a column list nor
+	 * the query in COPY (query).
+	 */
+	if (idents[0] != 'C')
+		return false;
+	for (i = 1; i < lengthof(cur_state->init_idents) - 1; i++)
+	{
+		/* Scan to find FROM; if not seen within range, it's not valid COPY */
+		if (idents[i] != 'F')
+			continue;
+		/* It's COPY FROM STDIN only if the next word is STDIN */
+		return (idents[i + 1] == 'S');
+	}
+	return false;
+}
+
+/*
+ * This is called each time the lexer recognizes an unquoted identifier
+ * (which could also be a keyword).  It records enough of the initial
+ * keywords of the current statement for psqlscan_is_copy_from_stdin() to
+ * later recognize a leading COPY ... FROM STDIN.
+ */
+static void
+psqlscan_track_identifier(const char *identifier)
+{
+	/* None of this needs to happen when we're inside parentheses */
+	if (cur_state->paren_depth != 0)
+		return;
+
+	/* Reset tracking state at the start of each new statement */
+	if (cur_state->init_idents_count == 0)
+		memset(cur_state->init_idents, 0, sizeof(cur_state->init_idents));
+
+	psqlscan_record_initial_keyword(identifier);
+}
+
+/*
  * Create a lexer working state struct.
  */
 PsqlScanState
@@ -1458,6 +1560,29 @@ psql_scan_reset(PsqlScanState state)
 	if (state->dolqstart)
 		free(state->dolqstart);
 	state->dolqstart = NULL;
+	state->copy_stdin_count = 0;
+	state->init_idents_count = 0;
+}
+
+/*
+ * Return the number of COPY ... FROM STDIN commands seen since the last
+ * psql_scan_reset().  This should be called only after we've finished
+ * scanning a complete query string and are ready to send it to the
+ * backend.
+ */
+int
+psql_scan_count_copy_from_stdin(PsqlScanState state)
+{
+	cur_state = state;
+	if (state->init_idents_count > 0)
+	{
+		/* Count any COPY FROM STDIN following the last semicolon */
+		if (psqlscan_is_copy_from_stdin())
+			state->copy_stdin_count++;
+		/* ... but do so only once */
+		state->init_idents_count = 0;
+	}
+	return state->copy_stdin_count;
 }
 
 /*
