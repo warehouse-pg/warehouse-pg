@@ -1056,8 +1056,8 @@ pltcl_trigger_handler(PG_FUNCTION_ARGS, bool pltrusted)
 		if (ret_numvals % 2 != 0)
 			elog(ERROR, "invalid return list from trigger - must have even # of elements");
 
-		modattrs = (int *) palloc(tupdesc->natts * sizeof(int));
-		modvalues = (Datum *) palloc(tupdesc->natts * sizeof(Datum));
+		modattrs = palloc_array(int, tupdesc->natts);
+		modvalues = palloc_array(Datum, tupdesc->natts);
 		for (i = 0; i < tupdesc->natts; i++)
 		{
 			modattrs[i] = i + 1;
@@ -1685,7 +1685,7 @@ pltcl_quote(ClientData cdata, Tcl_Interp *interp,
 	 * Allocate space for the maximum the string can
 	 * grow to and initialize pointers
 	 ************************************************************/
-	tmp = palloc(strlen(argv[1]) * 2 + 1);
+	tmp = palloc(add_size(mul_size(strlen(argv[1]), 2), 1));
 	cp1 = argv[1];
 	cp2 = tmp;
 
@@ -2152,12 +2152,12 @@ pltcl_SPI_prepare(ClientData cdata, Tcl_Interp *interp,
 									 ALLOCSET_SMALL_INITSIZE,
 									 ALLOCSET_SMALL_MAXSIZE);
 	MemoryContextSwitchTo(plan_cxt);
-	qdesc = (pltcl_query_desc *) palloc0(sizeof(pltcl_query_desc));
+	qdesc = palloc0_object(pltcl_query_desc);
 	snprintf(qdesc->qname, sizeof(qdesc->qname), "%p", qdesc);
 	qdesc->nargs = nargs;
-	qdesc->argtypes = (Oid *) palloc(nargs * sizeof(Oid));
-	qdesc->arginfuncs = (FmgrInfo *) palloc(nargs * sizeof(FmgrInfo));
-	qdesc->argtypioparams = (Oid *) palloc(nargs * sizeof(Oid));
+	qdesc->argtypes = palloc_array(Oid, nargs);
+	qdesc->arginfuncs = palloc_array(FmgrInfo, nargs);
+	qdesc->argtypioparams = palloc_array(Oid, nargs);
 	MemoryContextSwitchTo(oldcontext);
 
 	/************************************************************
@@ -2400,7 +2400,7 @@ pltcl_SPI_execute_plan(ClientData cdata, Tcl_Interp *interp,
 		 * Setup the value array for SPI_execute_plan() using
 		 * the type specific input functions
 		 ************************************************************/
-		argvalues = (Datum *) palloc(callnargs * sizeof(Datum));
+		argvalues = palloc_array(Datum, callnargs);
 
 		for (j = 0; j < callnargs; j++)
 		{
