@@ -6,6 +6,7 @@
 
 #include "storage/ipc.h"
 #include "storage/proc.h"
+#include "utils/guc_tables.h"
 
 #include "../cdbdisp_query.c"
 
@@ -336,6 +337,13 @@ main(int argc, char *argv[])
 	MyTmGxactLocal = (TMGXACTLOCAL *) MemoryContextAllocZero(TopMemoryContext, sizeof(TMGXACTLOCAL));
 
 	SetSessionUserId(1000, true);
+	/*
+	 * buildGpQueryString() also reads the outer user id, and GetOuterUserId()
+	 * asserts it is set.  SET ROLE NONE derives it from the session user; it
+	 * also updates the is_superuser GUC, so the GUC table must exist first.
+	 */
+	build_guc_variables();
+	SetCurrentRoleId(InvalidOid, false);
 
 	return run_tests(tests);
 }
