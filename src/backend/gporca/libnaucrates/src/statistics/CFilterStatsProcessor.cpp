@@ -327,9 +327,12 @@ CFilterStatsProcessor::MakeHistHashMapConjFilter(
 	UlongToHistogramMap *result_histograms =
 		CStatisticsUtils::CopyHistHashMap(mp, input_histograms);
 
-	CExtendedStatsProcessor::ApplyCorrelatedStatsToScaleFactorFilterCalculation(
-		scale_factors, conjunctive_pred_stats, input_stats->GetExtStatsInfo(),
-		input_stats->GetColidToAttnoMapping(), mp, result_histograms);
+	// estimate the conjuncts covered by functional-dependency extended
+	// statistics first; they are marked as estimated and skipped below
+	CDouble dependency_scale_factor = CExtendedStatsProcessor::
+		ApplyCorrelatedStatsToScaleFactorFilterCalculation(
+			conjunctive_pred_stats, input_stats->GetExtStatsInfo(),
+			input_stats->GetColidToAttnoMapping(), mp, result_histograms);
 
 	// properties of last seen column
 	CDouble last_scale_factor(1.0);
@@ -473,8 +476,12 @@ CFilterStatsProcessor::MakeHistHashMapConjFilter(
 	GPOS_ASSERT(nullptr != scale_factors);
 	CScaleFactorUtils::SortScalingFactor(scale_factors, true /* fDescending */);
 
+	// The damping below approximates the unknown correlation between the
+	// filtered columns. The dependency factor already carries the measured
+	// correlation of the columns it covers, so it is applied undamped.
 	*scale_factor = CScaleFactorUtils::CalcScaleFactorCumulativeConj(
-		stats_config, scale_factors);
+						stats_config, scale_factors) *
+					dependency_scale_factor;
 
 	// clean up
 	scale_factors->Release();
