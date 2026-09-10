@@ -47,6 +47,7 @@ const CHAR *rgszCTEFileNames[] = {
 	"../data/dxl/minidump/CTE-Preds1.mdp",
 	"../data/dxl/minidump/CTE-Preds2.mdp",
 	"../data/dxl/minidump/CTE-Join-Redistribute-Producer.mdp",
+	"../data/dxl/minidump/CTE-Producer-3-Way-Join-Stats.mdp",
 	"../data/dxl/minidump/CTE-SetOp.mdp",
 	"../data/dxl/minidump/cte-duplicate-columns-1.mdp",
 	"../data/dxl/minidump/cte-duplicate-columns-2.mdp",
