@@ -1165,6 +1165,10 @@ get_perl_array_ref(SV *sv)
 
 /*
  * helper function for plperl_array_to_datum, recurses for multi-D arrays
+ *
+ * Caller is required to have set dims[cur_depth - 1] to the length of the
+ * input array, i.e., av_len(av) + 1.  We make this requirement so as to
+ * avoid reading av_len() twice, which is hazardous for tied arrays.
  */
 static ArrayBuildState *
 array_to_datum_internal(AV *av, ArrayBuildState *astate,
@@ -1174,7 +1178,7 @@ array_to_datum_internal(AV *av, ArrayBuildState *astate,
 {
 	dTHX;
 	int			i;
-	int			len = av_len(av) + 1;
+	int			len = dims[cur_depth - 1];
 
 	for (i = 0; i < len; i++)
 	{
@@ -1697,8 +1701,7 @@ plperl_event_trigger_build_args(FunctionCallInfo fcinfo)
 	return newRV_noinc((SV *) hv);
 }
 
-/* Set up the new tuple returned from a trigger. */
-
+/* Construct the modified new tuple to be returned from a trigger. */
 static HeapTuple
 plperl_modify_tuple(HV *hvTD, TriggerData *tdata, HeapTuple otup)
 {
@@ -1707,14 +1710,11 @@ plperl_modify_tuple(HV *hvTD, TriggerData *tdata, HeapTuple otup)
 	HV		   *hvNew;
 	HE		   *he;
 	HeapTuple	rtup;
-	int			slotsused;
-	int		   *modattrs;
-	Datum	   *modvalues;
-	char	   *modnulls;
-
 	TupleDesc	tupdesc;
-
-	tupdesc = tdata->tg_relation->rd_att;
+	int			natts;
+	Datum	   *modvalues;
+	bool	   *modnulls;
+	bool	   *modrepls;
 
 	svp = hv_fetch_string(hvTD, "new");
 	if (!svp)
@@ -1727,51 +1727,50 @@ plperl_modify_tuple(HV *hvTD, TriggerData *tdata, HeapTuple otup)
 				 errmsg("$_TD->{new} is not a hash reference")));
 	hvNew = (HV *) SvRV(*svp);
 
-	modattrs = palloc_array(int, tupdesc->natts);
-	modvalues = palloc_array(Datum, tupdesc->natts);
-	modnulls = palloc_array(char, tupdesc->natts);
-	slotsused = 0;
+	tupdesc = tdata->tg_relation->rd_att;
+	natts = tupdesc->natts;
+
+	modvalues = palloc0_array(Datum, natts);
+	modnulls = palloc0_array(bool, natts);
+	modrepls = palloc0_array(bool, natts);
 
 	hv_iterinit(hvNew);
 	while ((he = hv_iternext(hvNew)))
 	{
-		bool		isnull;
 		char	   *key = hek2cstr(he);
 		SV		   *val = HeVAL(he);
 		int			attn = SPI_fnumber(tupdesc, key);
 
-		if (attn <= 0 || tupdesc->attrs[attn - 1]->attisdropped)
+		if (attn == SPI_ERROR_NOATTRIBUTE ||
+			(attn > 0 && tupdesc->attrs[attn - 1]->attisdropped))
 			ereport(ERROR,
 					(errcode(ERRCODE_UNDEFINED_COLUMN),
 					 errmsg("Perl hash contains nonexistent column \"%s\"",
 							key)));
+		if (attn <= 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("cannot set system attribute \"%s\"",
+							key)));
 
-		modvalues[slotsused] = plperl_sv_to_datum(val,
-										  tupdesc->attrs[attn - 1]->atttypid,
-										 tupdesc->attrs[attn - 1]->atttypmod,
-												  NULL,
-												  NULL,
-												  InvalidOid,
-												  &isnull);
-
-		modnulls[slotsused] = isnull ? 'n' : ' ';
-		modattrs[slotsused] = attn;
-		slotsused++;
+		modvalues[attn - 1] = plperl_sv_to_datum(val,
+												 tupdesc->attrs[attn - 1]->atttypid,
+												 tupdesc->attrs[attn - 1]->atttypmod,
+												 NULL,
+												 NULL,
+												 InvalidOid,
+												 &modnulls[attn - 1]);
+		modrepls[attn - 1] = true;
 
 		pfree(key);
 	}
 	hv_iterinit(hvNew);
 
-	rtup = SPI_modifytuple(tdata->tg_relation, otup, slotsused,
-						   modattrs, modvalues, modnulls);
+	rtup = heap_modify_tuple(otup, tupdesc, modvalues, modnulls, modrepls);
 
-	pfree(modattrs);
 	pfree(modvalues);
 	pfree(modnulls);
-
-	if (rtup == NULL)
-		elog(ERROR, "SPI_modifytuple failed: %s",
-			 SPI_result_code_string(SPI_result));
+	pfree(modrepls);
 
 	return rtup;
 }
