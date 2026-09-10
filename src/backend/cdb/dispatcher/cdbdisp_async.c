@@ -448,8 +448,10 @@ checkDispatchResult(CdbDispatcherState *ds, int timeout_sec)
 	int			i;
 	int			timeout = 0;
 	bool		sentSignal = false;
+	bool		signalDue = false;
 	uint8 ftsVersion = 0;
 	struct timeval start_ts, now;
+	struct timeval signal_ts = {0, 0};
 	int64		diff_us;
 
 	CdbDispatchCmdAsync *pParms = (CdbDispatchCmdAsync *) ds->dispatchParams;
@@ -494,6 +496,39 @@ checkDispatchResult(CdbDispatcherState *ds, int timeout_sec)
 		 */
 		if ((CancelRequested() || meleeResults->errcode) && meleeResults->cancelOnError)
 			pParms->waitMode = DISPATCH_WAIT_CANCEL;
+
+		/*
+		 * Deliver the cancel (or finish) request once it has been due for
+		 * DISPATCH_WAIT_CANCEL_TIMEOUT_MSEC, whatever the wait below returns.
+		 * The poll-timeout branch sends it too, but only when a wait times
+		 * out, and that may never happen: a connection that is finished but
+		 * still readable -- a QE that exited after we were done with it and
+		 * left a notice and EOF unread -- or QEs that keep sending notices
+		 * make WaitEventSetWait() return at once on every iteration, and the
+		 * surviving QEs would never be told to stop.
+		 *
+		 * The delay is the one the timeout branch has always given: most
+		 * statements end with all QEs finishing by themselves within it, and
+		 * a request costs a connection and a backend on every segment.
+		 */
+		if (pParms->waitMode != DISPATCH_WAIT_NONE &&
+			pParms->waitMode != DISPATCH_WAIT_ACK_ROOT &&
+			!sentSignal && timeout_sec != 0)
+		{
+			gettimeofday(&now, NULL);
+			if (!signalDue)
+			{
+				signalDue = true;
+				signal_ts = now;
+			}
+			else if ((now.tv_sec - signal_ts.tv_sec) * 1000000L +
+					 ((int) now.tv_usec - (int) signal_ts.tv_usec) >=
+					 DISPATCH_WAIT_CANCEL_TIMEOUT_MSEC * 1000L)
+			{
+				signalQEs(pParms);
+				sentSignal = true;
+			}
+		}
 
 		/*
 		 * Which QEs are still running and could send results to us?
