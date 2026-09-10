@@ -496,6 +496,23 @@ checkDispatchResult(CdbDispatcherState *ds, int timeout_sec)
 			pParms->waitMode = DISPATCH_WAIT_CANCEL;
 
 		/*
+		 * Deliver the cancel (or finish) request right away instead of from
+		 * the poll-timeout branch below.  A connection that is finished but
+		 * still readable -- a QE that exited after we were done with it and
+		 * left a notice and EOF unread -- makes WaitEventSetWait() return
+		 * immediately on every iteration; the timeout branch, and with it the
+		 * only other call to signalQEs(), would then never be reached and the
+		 * surviving QEs would never be told to stop.
+		 */
+		if (pParms->waitMode != DISPATCH_WAIT_NONE &&
+			pParms->waitMode != DISPATCH_WAIT_ACK_ROOT &&
+			!sentSignal)
+		{
+			signalQEs(pParms);
+			sentSignal = true;
+		}
+
+		/*
 		 * Which QEs are still running and could send results to us?
 		 */
 		for (i = 0; i < db_count; i++)
