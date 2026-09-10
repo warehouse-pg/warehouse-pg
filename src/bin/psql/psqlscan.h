@@ -50,6 +50,8 @@ extern PsqlScanResult psql_scan(PsqlScanState state,
 
 extern void psql_scan_reset(PsqlScanState state);
 
+extern int	psql_scan_count_copy_from_stdin(PsqlScanState state);
+
 extern bool psql_scan_in_quote(PsqlScanState state);
 
 extern char *psql_scan_slash_command(PsqlScanState state);

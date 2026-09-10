@@ -99,3 +99,11 @@ unrestricted_ok
 \unrestrict: not currently in restricted mode
 \restrict
 \restrict: missing required argument
+--
+-- \copy must skip in-line data, even if the issued COPY command fails
+-- before entering COPY_IN state (CVE-2026-6464).
+--
+\copy no_such_table from stdin
+ERROR:  relation "no_such_table" does not exist
+\echo this should get output
+this should get output
