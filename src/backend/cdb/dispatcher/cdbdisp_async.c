@@ -591,17 +591,23 @@ checkDispatchResult(CdbDispatcherState *ds, int timeout_sec)
 					dispatchResult->stillRunning = true;
 				}
 #endif
+				/* done with this QE: take its socket out of the wait set */
+				if (!dispatchResult->stillRunning && i >= 0 && added[i])
+					RemoveWaitEvent(DispWaitSet, added[i] - 1);
 				continue;
 			}
 
-			/* add segment sock to the waitset */
+			/*
+			 * Add the segment socket to the wait set, remembering its position
+			 * (plus one, so that zero still means "not added") so that it can
+			 * be removed again once the QE is finished.
+			 */
 			if (!added[i])
 			{
 				int 	sock = PQsocket(conn);
 				long 	ev_userdata = i; /* the index "i" as the event's userdata */
 				Assert(sock >= 0);
-				AddWaitEventToSet(DispWaitSet, WL_SOCKET_READABLE, sock, NULL, (void *)ev_userdata);
-				added[i] = 1;
+				added[i] = AddWaitEventToSet(DispWaitSet, WL_SOCKET_READABLE, sock, NULL, (void *)ev_userdata) + 1;
 			}
 			nfds++;
 		}
@@ -859,10 +865,19 @@ handlePollSuccess(CdbDispatchCmdAsync *pParms,
 		SegmentDatabaseDescriptor *segdbDesc = dispatchResult->segdbDesc;
 
 		/*
-		 * Skip if already finished or didn't dispatch.
+		 * Already finished with this QE, yet its socket became readable: the
+		 * backend went away after we were done with it (a segment reset kills
+		 * every backend of the session) and left a notice and EOF that nobody
+		 * will read.  Left in the set, such a socket stays readable forever
+		 * and starves the poll-timeout branch of checkDispatchResult().  Drop
+		 * it.  Normally the socket is removed when the QE finishes, below, so
+		 * this is a safety net.
 		 */
 		if (!dispatchResult->stillRunning)
+		{
+			RemoveWaitEvent(DispWaitSet, revents[i].pos);
 			continue;
+		}
 
 		if (pParms->waitMode == DISPATCH_WAIT_ACK_ROOT &&
 				 dispatchResult->receivedAckMsg)
@@ -895,6 +910,7 @@ handlePollSuccess(CdbDispatchCmdAsync *pParms,
 		if (finished)
 		{
 			dispatchResult->stillRunning = false;
+			RemoveWaitEvent(DispWaitSet, revents[i].pos);
 
 			ELOG_DISPATCHER_DEBUG("processResults says we are finished with %ld of %d (%s)",
 								  pos + 1, pParms->dispatchCount, segdbDesc->whoami);
