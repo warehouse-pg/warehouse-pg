@@ -1199,10 +1199,16 @@ array_to_datum_internal(AV *av, ArrayBuildState *astate,
 			/* set size when at first element in this level, else compare */
 			if (i == 0 && *ndims == cur_depth)
 			{
+				/* array after some scalars at same level? */
+				if (astate != NULL)
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+							 errmsg("multidimensional arrays must have array expressions with matching dimensions")));
 				dims[*ndims] = av_len(nav) + 1;
 				(*ndims)++;
 			}
-			else if (av_len(nav) + 1 != dims[cur_depth])
+			else if (cur_depth >= *ndims ||
+					 av_len(nav) + 1 != dims[cur_depth])
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
 						 errmsg("multidimensional arrays must have array expressions with matching dimensions")));
