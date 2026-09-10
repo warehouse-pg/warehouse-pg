@@ -275,6 +275,7 @@ static ArrayBuildState *array_to_datum_internal(AV *av, ArrayBuildState *astate,
 						int *ndims, int *dims, int cur_depth,
 						Oid arraytypid, Oid elemtypid, int32 typmod,
 						FmgrInfo *finfo, Oid typioparam);
+static int	av_count_limit(AV *av);
 static Datum plperl_hash_to_datum(SV *src, TupleDesc td);
 
 static void plperl_init_shared_libs(pTHX);
@@ -1153,7 +1154,7 @@ get_perl_array_ref(SV *sv)
 			HV		   *hv = (HV *) SvRV(sv);
 			SV		  **sav = hv_fetch_string(hv, "array");
 
-			if (*sav && SvOK(*sav) && SvROK(*sav) &&
+			if (sav && *sav && SvOK(*sav) && SvROK(*sav) &&
 				SvTYPE(SvRV(*sav)) == SVt_PVAV)
 				return *sav;
 
@@ -1199,10 +1200,16 @@ array_to_datum_internal(AV *av, ArrayBuildState *astate,
 			/* set size when at first element in this level, else compare */
 			if (i == 0 && *ndims == cur_depth)
 			{
-				dims[*ndims] = av_len(nav) + 1;
+				/* array after some scalars at same level? */
+				if (astate != NULL)
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+							 errmsg("multidimensional arrays must have array expressions with matching dimensions")));
+				dims[*ndims] = av_count_limit(nav);
 				(*ndims)++;
 			}
-			else if (av_len(nav) + 1 != dims[cur_depth])
+			else if (cur_depth >= *ndims ||
+					 av_count_limit(nav) != dims[cur_depth])
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
 						 errmsg("multidimensional arrays must have array expressions with matching dimensions")));
@@ -1241,6 +1248,29 @@ array_to_datum_internal(AV *av, ArrayBuildState *astate,
 }
 
 /*
+ * We need the length of a Perl array, and must read it only once, because
+ * av_len() can behave inconsistently for a tied array.  We also reject a
+ * value that would overrun what the array machinery can represent; anything
+ * above MaxArraySize will surely fail later anyway.  Upstream uses av_count(),
+ * which is not available on this Perl/ppport vintage, so use av_len() + 1.
+ */
+static int
+av_count_limit(AV *av)
+{
+	dTHX;
+	SSize_t		cnt = av_len(av) + 1;
+
+	if (cnt < 0)
+		cnt = 0;
+	if (cnt > MaxArraySize)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("array size exceeds the maximum allowed (%d)",
+						(int) MaxArraySize)));
+	return (int) cnt;
+}
+
+/*
  * convert perl array ref to a datum
  */
 static Datum
@@ -1266,7 +1296,7 @@ plperl_array_to_datum(SV *src, Oid typid, int32 typmod)
 	_sv_to_datum_finfo(elemtypid, &finfo, &typioparam);
 
 	memset(dims, 0, sizeof(dims));
-	dims[0] = av_len((AV *) SvRV(src)) + 1;
+	dims[0] = av_count_limit((AV *) SvRV(src));
 
 	astate = array_to_datum_internal((AV *) SvRV(src), NULL,
 									 &ndims, dims, 1,
@@ -2393,14 +2423,16 @@ plperl_func_handler(PG_FUNCTION_ARGS)
 		if (sav)
 		{
 			dTHX;
-			int			i = 0;
-			SV		  **svp = 0;
 			AV		   *rav = (AV *) SvRV(sav);
+			int			alen = av_count_limit(rav);
+			int			i;
 
-			while ((svp = av_fetch(rav, i, FALSE)) != NULL)
+			for (i = 0; i < alen; i++)
 			{
-				plperl_return_next_internal(*svp);
-				i++;
+				SV		  **svp = av_fetch(rav, i, FALSE);
+
+				if (svp)
+					plperl_return_next_internal(*svp);
 			}
 		}
 		else if (SvOK(perlret))
