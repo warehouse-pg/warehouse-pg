@@ -166,6 +166,10 @@ test: fast_default
 # loose over-eager constraint exclusion check, please refer to issue 10287
 test: constraints_check
 
+# regression for the per-query array-constraint cache (ORCA) and the
+# interval-derivation threshold
+test: array_constraint_cache
+
 # run stats by itself because its delay may be insufficient under heavy load
 #
 # 'stats' test has been disabled in GPDB, because it tries to set stats-related

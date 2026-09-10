@@ -17,9 +17,11 @@
 
 #include "gpopt/base/CCTEInfo.h"
 #include "gpopt/base/CColumnFactory.h"
+#include "gpopt/base/CConstraint.h"
 #include "gpopt/base/IComparator.h"
 #include "gpopt/base/SPartSelectorInfo.h"
 #include "gpopt/mdcache/CMDAccessor.h"
+#include "gpos/utils.h"
 
 namespace gpopt
 {
@@ -32,9 +34,66 @@ using UlongToBitSetMap =
 
 // forward declarations
 class CColRefSet;
+class CConstraint;
+class CConstraintInterval;
+class COperator;
 class COptimizerConfig;
 class ICostModel;
 class IConstExprEvaluator;
+
+//---------------------------------------------------------------------------
+//	@struct:
+//		SArrayCnstrCacheKey
+//
+//	@doc:
+//		Composite key for caching CConstraintInterval derived from
+//		ScalarArrayCmp expressions.
+//		Keyed by {operator ptr, colref ptr,infer_nulls_as}.
+//
+//---------------------------------------------------------------------------
+struct SArrayCnstrCacheKey
+{
+	COperator *m_pop;
+	const CColRef *m_pcr;
+	BOOL m_infer_nulls_as;
+
+	// Pins the operator pointer for the lifetime of the key.
+	SArrayCnstrCacheKey(COperator *pop, const CColRef *pcr, BOOL infer_nulls_as)
+		: m_pop(pop), m_pcr(pcr), m_infer_nulls_as(infer_nulls_as)
+	{
+		m_pop->AddRef();
+	}
+
+	~SArrayCnstrCacheKey()
+	{
+		m_pop->Release();
+	}
+
+	static ULONG
+	HashValue(const SArrayCnstrCacheKey *pkey)
+	{
+		return gpos::CombineHashes(
+			gpos::CombineHashes(gpos::HashPtr<COperator>(pkey->m_pop),
+								gpos::HashPtr<CColRef>(pkey->m_pcr)),
+			static_cast<ULONG>(pkey->m_infer_nulls_as));
+	}
+
+	static BOOL
+	Equals(const SArrayCnstrCacheKey *pkey1, const SArrayCnstrCacheKey *pkey2)
+	{
+		return pkey1->m_pop == pkey2->m_pop && pkey1->m_pcr == pkey2->m_pcr &&
+			   pkey1->m_infer_nulls_as == pkey2->m_infer_nulls_as;
+	}
+};
+
+// hash map: {COperator*, CColRef*} -> CConstraint*
+// Values are always CConstraintInterval* but stored as base class to avoid
+// including CConstraintInterval.h in this widely-included header.
+using ArrayCnstrCacheMap =
+	CHashMap<SArrayCnstrCacheKey, CConstraint,
+			 SArrayCnstrCacheKey::HashValue, SArrayCnstrCacheKey::Equals,
+			 CleanupDelete<SArrayCnstrCacheKey>,
+			 CleanupRelease<CConstraint>>;
 
 //---------------------------------------------------------------------------
 //	@class:
@@ -122,6 +181,10 @@ private:
 	// detailed info (filter expr, stats etc) per partition selector
 	// (required by CDynamicPhysicalScan for recomputing statistics for DPE)
 	SPartSelectorInfo *m_part_selector_info;
+
+	// cache for CConstraintInterval derived from ScalarArrayCmp expressions
+	// avoids repeated O(N log N) sort+dedup.
+	ArrayCnstrCacheMap *m_phmArrayCnstrCache;
 
 public:
 	COptCtxt(COptCtxt &) = delete;
@@ -296,6 +359,17 @@ public:
 	BOOL AddPartSelectorInfo(ULONG selector_id, SPartSelectorInfoEntry *entry);
 
 	const SPartSelectorInfoEntry *GetPartSelectorInfo(ULONG selector_id) const;
+
+	// lookup cached CConstraintInterval for a ScalarArrayCmp expression
+	// returns AddRef'd interval if found, nullptr otherwise
+	CConstraintInterval *PciLookupArrayCnstrCache(COperator *pop,
+												  const CColRef *pcr,
+												  BOOL infer_nulls_as);
+
+	// insert a CConstraintInterval into the cache for a ScalarArrayCmp expression
+	void InsertArrayCnstrCache(COperator *pop, const CColRef *pcr,
+							   BOOL infer_nulls_as,
+							   CConstraintInterval *pci);
 
 	// set required system columns
 	void

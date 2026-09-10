@@ -14,6 +14,7 @@
 #include "gpos/base.h"
 #include "gpos/common/CAutoP.h"
 
+#include "gpopt/base/CConstraintInterval.h"
 #include "gpopt/base/CDefaultComparator.h"
 #include "gpopt/cost/ICostModel.h"
 #include "gpopt/eval/IConstExprEvaluator.h"
@@ -51,7 +52,8 @@ COptCtxt::COptCtxt(CMemoryPool *mp, CColumnFactory *col_factory,
 	  m_has_coordinator_only_tables(false),
 	  m_has_replicated_tables(false),
 	  m_scanid_to_part_map(nullptr),
-	  m_selector_id_counter(0)
+	  m_selector_id_counter(0),
+	  m_phmArrayCnstrCache(nullptr)
 {
 	GPOS_ASSERT(nullptr != mp);
 	GPOS_ASSERT(nullptr != col_factory);
@@ -66,6 +68,7 @@ COptCtxt::COptCtxt(CMemoryPool *mp, CColumnFactory *col_factory,
 	m_direct_dispatchable_filters = GPOS_NEW(mp) CExpressionArray(mp);
 	m_scanid_to_part_map = GPOS_NEW(m_mp) UlongToBitSetMap(m_mp);
 	m_part_selector_info = GPOS_NEW(m_mp) SPartSelectorInfo(m_mp);
+	m_phmArrayCnstrCache = GPOS_NEW(m_mp) ArrayCnstrCacheMap(m_mp);
 }
 
 
@@ -80,6 +83,7 @@ COptCtxt::COptCtxt(CMemoryPool *mp, CColumnFactory *col_factory,
 //---------------------------------------------------------------------------
 COptCtxt::~COptCtxt()
 {
+	m_phmArrayCnstrCache->Release();
 	GPOS_DELETE(m_pcf);
 	GPOS_DELETE(m_pcomp);
 	m_pceeval->Release();
@@ -177,4 +181,56 @@ COptCtxt::AddPartSelectorInfo(ULONG selector_id, SPartSelectorInfoEntry *entry)
 {
 	ULONG *key = GPOS_NEW(m_mp) ULONG(selector_id);
 	return m_part_selector_info->Insert(key, entry);
+}
+
+
+//---------------------------------------------------------------------------
+//	@function:
+//		COptCtxt::PciLookupArrayCnstrCache
+//
+//	@doc:
+//		Lookup cached CConstraintInterval for a ScalarArrayCmp expression.
+//		Returns AddRef'd interval if found, nullptr otherwise.
+//
+//---------------------------------------------------------------------------
+CConstraintInterval *
+COptCtxt::PciLookupArrayCnstrCache(COperator *pop, const CColRef *pcr,
+								   BOOL infer_nulls_as)
+{
+	SArrayCnstrCacheKey key(pop, pcr, infer_nulls_as);
+	CConstraint *pcnstr = m_phmArrayCnstrCache->Find(&key);
+	if (nullptr != pcnstr)
+	{
+		pcnstr->AddRef();
+		// Safe downcast: only CConstraintInterval values are inserted
+		return static_cast<CConstraintInterval *>(pcnstr);
+	}
+	return nullptr;
+}
+
+
+//---------------------------------------------------------------------------
+//	@function:
+//		COptCtxt::InsertArrayCnstrCache
+//
+//	@doc:
+//		Insert a CConstraintInterval into the cache for a ScalarArrayCmp
+//		expression.
+//
+//---------------------------------------------------------------------------
+void
+COptCtxt::InsertArrayCnstrCache(COperator *pop, const CColRef *pcr,
+								BOOL infer_nulls_as, CConstraintInterval *pci)
+{
+	SArrayCnstrCacheKey *pkey =
+		GPOS_NEW(m_mp) SArrayCnstrCacheKey(pop, pcr, infer_nulls_as);
+	// Store as base class pointer; only CConstraintInterval values are inserted
+	CConstraint *pcnstr = static_cast<CConstraint *>(pci);
+	pcnstr->AddRef();
+	if (!m_phmArrayCnstrCache->Insert(pkey, pcnstr))
+	{
+		// key already exists (duplicate call), clean up
+		GPOS_DELETE(pkey);
+		pcnstr->Release();
+	}
 }

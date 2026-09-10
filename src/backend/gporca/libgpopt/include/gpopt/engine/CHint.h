@@ -41,6 +41,8 @@ private:
 
 	ULONG m_ulArrayExpansionThreshold;
 
+	ULONG m_ulArrayIntervalThreshold;
+
 	ULONG m_ulJoinOrderDPLimit;
 
 	ULONG m_ulBroadcastThreshold;
@@ -58,13 +60,15 @@ public:
 
 	// ctor
 	CHint(ULONG join_arity_for_associativity_commutativity,
-		  ULONG array_expansion_threshold, ULONG ulJoinOrderDPLimit,
+		  ULONG array_expansion_threshold, ULONG array_interval_threshold,
+		  ULONG ulJoinOrderDPLimit,
 		  ULONG broadcast_threshold, BOOL enforce_constraint_on_dml,
 		  ULONG push_group_by_below_setop_threshold, ULONG xform_bind_threshold,
 		  ULONG skew_factor)
 		: m_ulJoinArityForAssociativityCommutativity(
 			  join_arity_for_associativity_commutativity),
 		  m_ulArrayExpansionThreshold(array_expansion_threshold),
+		  m_ulArrayIntervalThreshold(array_interval_threshold),
 		  m_ulJoinOrderDPLimit(ulJoinOrderDPLimit),
 		  m_ulBroadcastThreshold(broadcast_threshold),
 		  m_fEnforceConstraintsOnDML(enforce_constraint_on_dml),
@@ -96,6 +100,18 @@ public:
 	UlArrayExpansionThreshold() const
 	{
 		return m_ulArrayExpansionThreshold;
+	}
+
+	// Maximum number of elements in the scalar comparison with an array which
+	// will be processed through the interval constraint path (Path A:
+	// CDatumSortedSet sort + CRange creation in CConstraintInterval).
+	// Separate from UlArrayExpansionThreshold() which gates the less efficient
+	// disjunction path (Path B). Path A produces a single sorted CConstraintInterval
+	// and, with caching enabled, the sort cost is paid only once per query.
+	ULONG
+	UlArrayIntervalThreshold() const
+	{
+		return m_ulArrayIntervalThreshold;
 	}
 
 	// Maximum number of relations in an n-ary join operator where ORCA will
@@ -151,6 +167,7 @@ public:
 		return GPOS_NEW(mp) CHint(
 			gpos::int_max, /* join_arity_for_associativity_commutativity */
 			gpos::int_max, /* array_expansion_threshold */
+			gpos::int_max, /* array_interval_threshold */
 			JOIN_ORDER_DP_THRESHOLD,			 /*ulJoinOrderDPLimit*/
 			BROADCAST_THRESHOLD,				 /*broadcast_threshold*/
 			true,								 /* enforce_constraint_on_dml */

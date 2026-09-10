@@ -275,6 +275,11 @@ CConfigParamMapping::SConfigMappingElem CConfigParamMapping::m_elements[] = {
 	 true,	// m_negate_param
 	 GPOS_WSZ_LIT("Disable ordered aggregate plans.")},
 
+	{EopttraceArrayConstraintCache, &optimizer_array_constraint_cache,
+	 false,	 // m_negate_param
+	 GPOS_WSZ_LIT(
+		 "Cache derived array constraints to avoid repeated computation during planning.")},
+
 	{EopttraceExpandFullJoin, &optimizer_expand_fulljoin,
 	 false,	 // m_negate_param
 	 GPOS_WSZ_LIT(
