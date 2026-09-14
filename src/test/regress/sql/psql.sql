@@ -74,3 +74,13 @@ bar
 \echo this should not get output
 \.
 \echo this should get output
+
+-- same, but using the legacy pre-FROM "WITH OIDS" COPY syntax with a
+-- 3-part qualified name (BINARY database.schema.table WITH OIDS FROM
+-- STDIN): this pushes the initial-keyword count past what upstream's
+-- init_idents[] sizing accounts for, so the in-line data must still be
+-- recognized and skipped.
+COPY BINARY no_such_db.no_such_schema.no_such_table WITH OIDS FROM STDIN;
+SELECT 'this should not get output';
+\.
+\echo this should get output

@@ -118,7 +118,7 @@ typedef struct PsqlScanStateData
 	 */
 	int			copy_stdin_count;	/* number of COPY FROM STDIN commands */
 	int			init_idents_count;	/* # identifiers since start of statement */
-	char		init_idents[8]; /* records the first few identifiers */
+	char		init_idents[9]; /* records the first few identifiers */
 } PsqlScanStateData;
 
 static PsqlScanState cur_state;	/* current state while active */
@@ -1266,11 +1266,13 @@ psqlscan_is_copy_from_stdin(void)
 
 	/*
 	 * The first word must be COPY, but after that there could be up to
-	 * four identifiers (BINARY database.schema.table) before FROM.  Since
-	 * some of the words we track are not reserved words, don't assume the
-	 * intervening array entries are '\0'.  psqlscan_track_identifier()
-	 * ignores everything within parens, so we won't see a column list nor
-	 * the query in COPY (query).
+	 * six identifiers (BINARY database.schema.table WITH OIDS) before
+	 * FROM -- WHPG's grammar still supports the pre-FROM "WITH OIDS"
+	 * clause that upstream PostgreSQL removed in v12, so init_idents[]
+	 * must be sized to fit that too.  Since some of the words we track
+	 * are not reserved words, don't assume the intervening array entries
+	 * are '\0'.  psqlscan_track_identifier() ignores everything within
+	 * parens, so we won't see a column list nor the query in COPY (query).
 	 */
 	if (idents[0] != 'C')
 		return false;
