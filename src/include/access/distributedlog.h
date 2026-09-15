@@ -66,7 +66,7 @@ extern void DistributedLog_CheckPoint(void);
 extern void DistributedLog_Extend(TransactionId newestXid);
 extern bool DistributedLog_GetLowWaterXid(
 							  TransactionId *lowWaterXid);
-extern void DistributedLog_InitOldestXmin(void);
+extern void DistributedLog_InitOldestXmin(TransactionId nextXid);
 
 /* XLOG stuff */
 #define DISTRIBUTEDLOG_ZEROPAGE		0x00

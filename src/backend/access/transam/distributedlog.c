@@ -31,6 +31,7 @@
 #include "access/distributedlog.h"
 #include "access/slru.h"
 #include "access/transam.h"
+#include "access/xlog.h"
 #include "cdb/cdbtm.h"
 #include "cdb/cdbvars.h"
 #include "port/atomics.h"
@@ -109,13 +110,20 @@ static void DistributedLog_Truncate(TransactionId oldestXmin);
  * distributed log, starting from the smallest datfrozenxid, until
  * we find a page that exists.
  *
+ * nextXid bounds the scan: it is the next XID to be assigned according to
+ * the checkpoint we started from, so the horizon can never have been past
+ * it.  It is passed in rather than read from ShmemVariableCache because the
+ * hot-standby startup path runs this before latestCompletedXid has been
+ * set; deriving the bound from that field there produced a horizon of
+ * FirstNormalTransactionId whenever the oldest pages were already gone,
+ * and every later snapshot then tried to read a removed page.
+ *
  * The caller is expected to hold DistributedLogControlLock on entry.
  */
 void
-DistributedLog_InitOldestXmin(void)
+DistributedLog_InitOldestXmin(TransactionId nextXid)
 {
 	TransactionId oldestXmin = ShmemVariableCache->oldestXid;
-	TransactionId latestXid = ShmemVariableCache->latestCompletedXid;
 
 	/*
 	 * Start scanning from oldest datfrozenxid, until we find a
@@ -136,9 +144,9 @@ DistributedLog_InitOldestXmin(void)
 		xid = AdvanceTransactionIdToNextPage(oldestXmin);
 
 		/*
-		 * But don't go past oldestLocalXmin + 1 which is the most 
-		 * we might've set the oldestXmin before restart (essentially
-		 * it's same as the 'xmax' value in GetSnapshotData()).
+		 * But don't go past nextXid, which is the most we might've set the
+		 * oldestXmin to before the restart (essentially it's the same as
+		 * the 'xmax' value in GetSnapshotData()).
 		 *
 		 * Note that, stopping here means that we don't have a page
 		 * for oldestXmin, but we are fine because:
@@ -150,11 +158,18 @@ DistributedLog_InitOldestXmin(void)
 		 *     access DLOG for oldestXmin. Even if we call 
 		 *     DistributedLog_AdvanceOldestXmin(), since we don't have
 		 *     any newer xid to advance to, the call would be a no-op.
+		 *
+		 * On a hot standby the same holds for a different reason: nextXid
+		 * comes from the checkpoint we restart from, and any xid at or above
+		 * it is assigned by WAL that lies after that checkpoint's redo
+		 * pointer.  The ZEROPAGE record for its page is replayed before any
+		 * commit on that page, so by the time a snapshot here can advance
+		 * past nextXid the page exists again even if a truncation replayed
+		 * before the restart had removed the file.
 		 */
-		if (TransactionIdFollows(xid, latestXid))
+		if (TransactionIdFollowsOrEquals(xid, nextXid))
 		{
-			oldestXmin = latestXid;
-			TransactionIdAdvance(oldestXmin);
+			oldestXmin = nextXid;
 			break;
 		}
 
@@ -497,17 +512,25 @@ DistributedLog_CommittedCheck(
 	TransactionId oldestXmin;
 
 
+	/*
+	 * Read the horizon under the same lock that protects the page read
+	 * below.  Truncation moves the horizon and removes the files under the
+	 * exclusive lock, so a horizon seen here is still the horizon when the
+	 * page is read; read unlocked, the page could vanish in between.
+	 */
+	LWLockAcquire(DistributedLogTruncateLock, LW_SHARED);
+
 	oldestXmin = (TransactionId)pg_atomic_read_u32((pg_atomic_uint32 *)&DistributedLogShared->oldestXmin);
 	if (oldestXmin == InvalidTransactionId)
 		elog(PANIC, "DistributedLog's OldestXmin not initialized yet");
 
 	if (TransactionIdPrecedes(localXid, oldestXmin))
 	{
+		LWLockRelease(DistributedLogTruncateLock);
 		*distribXid = 0;
 		return false;
 	}
 
-	LWLockAcquire(DistributedLogTruncateLock, LW_SHARED);
 	slotno = SimpleLruReadPage_ReadOnly(DistributedLogCtl, page, localXid);
 	ptr = (DistributedLogEntry *) DistributedLogCtl->shared->page_buffer[slotno];
 	ptr += entryno;
@@ -846,7 +869,7 @@ DistributedLog_Startup(TransactionId oldestActiveXid,
 		DistributedLogCtl->shared->page_dirty[slotno] = true;
 	}
 
-	DistributedLog_InitOldestXmin();
+	DistributedLog_InitOldestXmin(nextXid);
 
 	LWLockRelease(DistributedLogControlLock);
 }
@@ -975,8 +998,18 @@ DistributedLog_Truncate(TransactionId oldestXmin)
 		return;					/* nothing to remove */
 	}
 
-	/* Write XLOG record and flush XLOG to disk */
-	DistributedLog_WriteTruncateXlogRec(cutoffPage);
+	/*
+	 * Write XLOG record and flush XLOG to disk.
+	 *
+	 * Not on a hot standby: no WAL may be written there, and none is
+	 * needed.  The primary's truncate record removes, when replayed here,
+	 * only what lies below our own horizon (see DistributedLog_redo), so
+	 * segments the primary has already given up can linger until our
+	 * horizon has moved past them.  Removing them now is local
+	 * housekeeping; the primary's WAL has already dropped them, or will.
+	 */
+	if (!RecoveryInProgress())
+		DistributedLog_WriteTruncateXlogRec(cutoffPage);
 
 	/* Now we can remove the old DistributedLog segment(s) */
 	SimpleLruTruncate(DistributedLogCtl, cutoffPage);
@@ -1078,6 +1111,8 @@ DistributedLog_redo(XLogReaderState *record)
 	else if (info == DISTRIBUTEDLOG_TRUNCATE)
 	{
 		int			page;
+		int			cutoffPage;
+		TransactionId oldestXmin;
 
 		memcpy(&page, XLogRecGetData(record), sizeof(int));
 
@@ -1085,17 +1120,79 @@ DistributedLog_redo(XLogReaderState *record)
 			 "Redo DISTRIBUTEDLOG_TRUNCATE page %d",
 			 page);
 
-		/*
-		 * During XLOG replay, latest_page_number isn't set up yet; insert
-		 * a suitable value to bypass the sanity test in SimpleLruTruncate.
-		 */
-		DistributedLogCtl->shared->latest_page_number = page;
+		cutoffPage = page;
 
-		SimpleLruTruncate(DistributedLogCtl, page);
+		LWLockAcquire(DistributedLogTruncateLock, LW_EXCLUSIVE);
+
+		oldestXmin = (TransactionId) pg_atomic_read_u32((pg_atomic_uint32 *)&DistributedLogShared->oldestXmin);
+
+		if (HotStandbyActiveInReplay())
+		{
+			/*
+			 * Backends may hold snapshots.  The primary removed these pages
+			 * because every distributed snapshot it knew of had moved past
+			 * them; our readers are not among those.  They get their
+			 * distributed snapshots from the standby coordinator, which
+			 * replays its own WAL stream and may lag this mirror, so a
+			 * snapshot taken here, even later, can still be older than the
+			 * mappings the primary is discarding, and without them it would
+			 * silently treat rows too new for it as visible.
+			 *
+			 * Our own horizon is the bound those readers need: it is advanced
+			 * only by the snapshots dispatched to this mirror, checking each
+			 * entry's gxid against them (DistributedLog_AdvanceOldestXmin),
+			 * exactly as on the primary.  So remove nothing at or above the
+			 * horizon's page.  The rest goes when our horizon crosses the
+			 * segment on its own (DistributedLog_Truncate).
+			 */
+			int			horizonPage;
+
+			Assert(TransactionIdIsValid(oldestXmin));
+			horizonPage = TransactionIdToPage(oldestXmin);
+			if (DistributedLog_PagePrecedes(horizonPage, page))
+				cutoffPage = horizonPage;
+		}
+		else
+		{
+			/*
+			 * No backend can hold a snapshot yet: crash recovery, archive
+			 * recovery, or a hot standby that has not reached consistency, so
+			 * nothing needs the removed pages.  Move our horizon past them, so
+			 * that the next DistributedLog_AdvanceOldestXmin() does not start
+			 * its scan on a page that no longer exists.  The horizon set at
+			 * startup can lie in a segment this record removes when a standby
+			 * restarts and replays the record a second time.  Only the
+			 * segments wholly before the page are removed (SimpleLruTruncate),
+			 * so the bound is the first xid of the page's segment; the
+			 * mappings between it and the page stay readable.
+			 */
+			TransactionId cutoffXid;
+
+			cutoffXid = (TransactionId) (page - page % SLRU_PAGES_PER_SEGMENT) *
+				(TransactionId) ENTRIES_PER_PAGE;
+			if (!TransactionIdIsValid(oldestXmin) ||
+				TransactionIdPrecedes(oldestXmin, cutoffXid))
+				pg_atomic_write_u32((pg_atomic_uint32 *)&DistributedLogShared->oldestXmin, cutoffXid);
+		}
+
+		/*
+		 * latest_page_number is maintained by the ZEROPAGE records we replay,
+		 * but during crash recovery nothing has set it up yet.  Raise it to
+		 * this page so SimpleLruTruncate's sanity test passes, but never lower
+		 * it: on a hot standby it may already be ahead of the primary's
+		 * horizon page, and a standby-side truncation cutting there must not
+		 * be mistaken for a wraparound.
+		 */
+		if (DistributedLog_PagePrecedes(DistributedLogCtl->shared->latest_page_number, page))
+			DistributedLogCtl->shared->latest_page_number = page;
+
+		SimpleLruTruncate(DistributedLogCtl, cutoffPage);
+
+		LWLockRelease(DistributedLogTruncateLock);
 
 		elog((Debug_print_full_dtm ? LOG : DEBUG5),
-			 "DistributedLog_redo truncate to cutoff page = %d",
-			 page);
+			 "DistributedLog_redo truncate to cutoff page = %d (record page %d)",
+			 cutoffPage, page);
 	}
 	else
 		elog(PANIC, "DistributedLog_redo: unknown op code %u", info);
