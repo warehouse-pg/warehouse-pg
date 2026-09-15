@@ -48,12 +48,14 @@ PostgreSQL documentation
    Creating a database cluster consists of creating the directories in
    which the database data will live, generating the shared catalog
    tables (tables that belong to the whole cluster rather than to any
-   particular database), and creating the <literal>template1</literal>
-   and <literal>postgres</literal> databases. When you later create a
+   particular database), and creating the <literal>template1</literal>,
+   <literal>postgres</literal>, <literal>whadmin</literal>, and
+   <literal>gpadmin</literal> databases. When you later create a
    new database, everything in the <literal>template1</literal> database is
    copied.  (Therefore, anything installed in <literal>template1</literal>
    is automatically copied into each database created later.)
-   The <literal>postgres</literal> database is a default database meant
+   The <literal>postgres</literal>, <literal>whadmin</literal>, and
+   <literal>gpadmin</literal> databases are default databases meant
    for use by users, utilities and third party applications.
   </para>
 
