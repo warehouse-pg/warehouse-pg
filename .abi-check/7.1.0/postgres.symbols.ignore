@@ -16,3 +16,4 @@ pqFunctionCall3
 SetTuplestoreDestReceiverParams
 build_gpqeid_param
 AlterDomainAddConstraint
+AppendOptimizedCollectDeadSegments
