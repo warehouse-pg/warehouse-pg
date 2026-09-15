@@ -49,6 +49,34 @@ create event trigger regress_event_trigger_end on ddl_command_end
 CREATE EXTERNAL WEB TABLE endtest_ext (x text) EXECUTE 'echo foo;' FORMAT 'text';
 CREATE TABLE endtest_heap (x text) DISTRIBUTED BY (x);
 
+-- SPLIT DEFAULT PARTITION (with the default partition carrying its own
+-- explicit storage, different from the root's) must not crash
+-- pg_event_trigger_ddl_commands(). AtExecGPSplitPartition() renames the
+-- old default partition out of the way and later drops that same
+-- (temp-named) relation within the same top-level statement; a command
+-- collected earlier in the statement (the rename) can end up referencing
+-- an object that's already gone by the time this trigger inspects it.
+CREATE TABLE endtest_split_default (id int, d date) USING ao_row
+    WITH (compresstype=zstd, compresslevel=1) DISTRIBUTED BY (id)
+    PARTITION BY RANGE (d);
+CREATE TABLE endtest_split_default_dflt PARTITION OF endtest_split_default DEFAULT
+    USING ao_column WITH (compresstype=zstd, compresslevel=2);
+ALTER TABLE endtest_split_default
+    SPLIT DEFAULT PARTITION START ('2020-03-01') END ('2020-04-01')
+    INTO (PARTITION endtest_split_default_new, DEFAULT PARTITION);
+
+-- Regular (non-default) SPLIT PARTITION shares the same unconditional
+-- rename-then-drop code path (AtExecGPSplitPartition() renames the
+-- partition being split and drops it regardless of whether it's the
+-- default partition), so it must not crash either.
+CREATE TABLE endtest_split_regular (id int, d date) DISTRIBUTED BY (id)
+    PARTITION BY RANGE (d);
+CREATE TABLE endtest_split_regular_p1 PARTITION OF endtest_split_regular
+    FOR VALUES FROM ('2020-01-01') TO ('2020-07-01');
+ALTER TABLE endtest_split_regular
+    SPLIT PARTITION FOR ('2020-02-01') AT ('2020-04-01')
+    INTO (PARTITION endtest_split_jan_mar, PARTITION endtest_split_apr_jun);
+
 -- the other two GPDB-specific commands that reach the tail collect
 CREATE OR REPLACE FUNCTION write_to_file() RETURNS integer as '$libdir/gpextprotocol.so', 'demoprot_export' LANGUAGE C STABLE NO SQL;
 CREATE OR REPLACE FUNCTION read_from_file() RETURNS integer as '$libdir/gpextprotocol.so', 'demoprot_import' LANGUAGE C STABLE NO SQL;
@@ -59,11 +87,16 @@ ALTER TYPE endtest_domain SET DEFAULT ENCODING (compresstype=zlib);
 
 drop event trigger regress_event_trigger_end;
 
--- both the external and the regular table must be here
+-- the external table, the regular table, and both kinds of split must all
+-- be here -- if pg_event_trigger_ddl_commands() had crashed partway
+-- through either SPLIT above, this statement never would have completed
+-- and none of the later rows (or this SELECT itself) would exist.
 SELECT tag, identity, objtype FROM regress_ddl_history ORDER BY id;
 
 DROP EXTERNAL TABLE endtest_ext;
 DROP TABLE endtest_heap;
+DROP TABLE endtest_split_default;
+DROP TABLE endtest_split_regular;
 DROP PROTOCOL demoprot_end_test;
 DROP DOMAIN endtest_domain;
 DROP TABLE regress_ddl_history;

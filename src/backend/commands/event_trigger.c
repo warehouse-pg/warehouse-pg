@@ -2109,50 +2109,87 @@ pg_event_trigger_ddl_commands(PG_FUNCTION_ARGS)
 					else if (cmd->type == SCT_AlterTSConfig)
 						addr = cmd->d.atscfg.address;
 
-					type = getObjectTypeDescription(&addr);
-					identity = getObjectIdentity(&addr);
-
 					/*
-					 * Obtain schema name, if any ("pg_temp" if a temp
-					 * object). If the object class is not in the supported
-					 * list here, we assume it's a schema-less object type,
-					 * and thus "schema" remains set to NULL.
+					 * A command collected earlier in this transaction may
+					 * reference an object -- or, for a column, a specific
+					 * objectSubId of one -- that no longer exists by the time
+					 * this function runs -- e.g. GPDB's SPLIT DEFAULT
+					 * PARTITION renames a partition out of the way and later
+					 * drops that same relation within the same top-level
+					 * statement. getObjectTypeDescription()/getObjectIdentity()
+					 * do a hard catalog lookup and error out for a vanished
+					 * object, so skip such rows instead, the same way the
+					 * IF-NOT-EXISTS/invalid-OID case above is skipped: there
+					 * is nothing coherent left to report about it.
+					 *
+					 * This existence check -- and the schema-name lookup below,
+					 * which shares the same catalog open/lookup -- only cover
+					 * object classes with metadata registered in ObjectProperty[]
+					 * (is_objectclass_supported()); a command referencing a class
+					 * outside that list (e.g. a user mapping) can still hit the
+					 * same error. Fully closing that gap requires threading a
+					 * missing_ok parameter through getObjectTypeDescription()/
+					 * getObjectIdentity() themselves, as upstream did in commits
+					 * 2a10fdc4307a/2d689babe3cb; that is a much larger change,
+					 * tracked separately.
 					 */
 					if (is_objectclass_supported(addr.classId))
 					{
-						AttrNumber	nspAttnum;
+						Relation	catalog;
+						HeapTuple	objtup;
+						bool		vanished;
 
-						nspAttnum = get_object_attnum_namespace(addr.classId);
-						if (nspAttnum != InvalidAttrNumber)
+						catalog = table_open(addr.classId, AccessShareLock);
+						objtup = get_catalog_object_by_oid(catalog,
+									get_object_attnum_oid(addr.classId),
+									addr.objectId);
+						vanished = !HeapTupleIsValid(objtup);
+
+						/*
+						 * The object's parent row still exists, but if this
+						 * address is for one of its columns (objectSubId), that
+						 * specific column may itself have been dropped since the
+						 * command was collected.
+						 */
+						if (!vanished && addr.objectSubId != 0 &&
+							!SearchSysCacheExists2(ATTNUM,
+									ObjectIdGetDatum(addr.objectId),
+									Int16GetDatum(addr.objectSubId)))
+							vanished = true;
+
+						if (!vanished)
 						{
-							Relation	catalog;
-							HeapTuple	objtup;
-							Oid			schema_oid;
-							bool		isnull;
+							AttrNumber	nspAttnum;
 
-							catalog = table_open(addr.classId, AccessShareLock);
-							objtup = get_catalog_object_by_oid(catalog,
-															   get_object_attnum_oid(addr.classId),
-															   addr.objectId);
-							if (!HeapTupleIsValid(objtup))
-								elog(ERROR, "cache lookup failed for object %u/%u",
-									 addr.classId, addr.objectId);
-							schema_oid =
-								heap_getattr(objtup, nspAttnum,
-											 RelationGetDescr(catalog), &isnull);
-							if (isnull)
-								elog(ERROR,
-									 "invalid null namespace in object %u/%u/%d",
-									 addr.classId, addr.objectId, addr.objectSubId);
-							/* XXX not quite get_namespace_name_or_temp */
-							if (isAnyTempNamespace(schema_oid))
-								schema = pstrdup("pg_temp");
-							else
-								schema = get_namespace_name(schema_oid);
+							nspAttnum = get_object_attnum_namespace(addr.classId);
+							if (nspAttnum != InvalidAttrNumber)
+							{
+								Oid			schema_oid;
+								bool		isnull;
 
-							table_close(catalog, AccessShareLock);
+								schema_oid =
+									heap_getattr(objtup, nspAttnum,
+												 RelationGetDescr(catalog), &isnull);
+								if (isnull)
+									elog(ERROR,
+										 "invalid null namespace in object %u/%u/%d",
+										 addr.classId, addr.objectId, addr.objectSubId);
+								/* XXX not quite get_namespace_name_or_temp */
+								if (isAnyTempNamespace(schema_oid))
+									schema = pstrdup("pg_temp");
+								else
+									schema = get_namespace_name(schema_oid);
+							}
 						}
+
+						table_close(catalog, AccessShareLock);
+
+						if (vanished)
+							continue;
 					}
+
+					type = getObjectTypeDescription(&addr);
+					identity = getObjectIdentity(&addr);
 
 					/* classid */
 					values[i++] = ObjectIdGetDatum(addr.classId);

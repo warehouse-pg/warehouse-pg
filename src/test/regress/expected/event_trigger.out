@@ -467,7 +467,7 @@ NOTICE:  END: command_tag=ALTER SEQUENCE type=sequence identity=evttrig.id_col_d
 NOTICE:  END: command_tag=ALTER TABLE type=table identity=evttrig.id
 ALTER TABLE evttrig.id ALTER COLUMN col_d DROP IDENTITY,
   ALTER COLUMN col_d SET DATA TYPE int;
-NOTICE:  END: got internal exception
+NOTICE:  END: command_tag=ALTER TABLE type=table identity=evttrig.id
 DROP INDEX evttrig.one_idx;
 NOTICE:  NORMAL: orig=t normal=f istemp=f type=index identity=evttrig.one_idx name={evttrig,one_idx} args={}
 DROP SCHEMA evttrig CASCADE;
