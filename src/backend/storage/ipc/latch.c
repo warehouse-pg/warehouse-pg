@@ -455,6 +455,18 @@ SetLatch(Latch *latch)
 
 	latch->is_set = true;
 
+	/*
+	 * Order the is_set store before the read of `waiting` below. A SetLatch
+	 * from another thread of the owning process (the UDP interconnect's
+	 * receive thread does this) races with WaitEventSetWait's
+	 * "waiting = true; if (is_set)" sequence; without a barrier on both sides
+	 * each may read the other's old value and the wakeup is lost until the
+	 * caller's timeout. PostgreSQL 14 closed the same window with
+	 * Latch.maybe_sleeping plus barriers on both sides (upstream commit
+	 * c8f3bc2401e, "Optimize latches to send fewer signals").
+	 */
+	pg_memory_barrier();
+
 #ifndef WIN32
 
 	/*
@@ -1082,6 +1094,12 @@ WaitEventSetWait(WaitEventSet *set, long timeout,
 
 #ifndef WIN32
 	waiting = true;
+
+	/*
+	 * Make `waiting` visible before we check is_set; the setter checks
+	 * `waiting` only after storing is_set. See SetLatch.
+	 */
+	pg_memory_barrier();
 #else
 	/* Ensure that signals are serviced even if latch is already set */
 	pgwin32_dispatch_queued_signals();
