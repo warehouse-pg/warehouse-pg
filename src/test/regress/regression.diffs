@@ -1,0 +1,3034 @@
+diff -I HINT: -I CONTEXT: -I GP_IGNORE: -U3 /Users/mingli.zhang/work/whpg8/src/test/regress/expected/create_index_optimizer.out /Users/mingli.zhang/work/whpg8/src/test/regress/results/create_index.out
+--- /Users/mingli.zhang/work/whpg8/src/test/regress/expected/create_index_optimizer.out	2026-09-03 11:21:04.229160009 +0000
++++ /Users/mingli.zhang/work/whpg8/src/test/regress/results/create_index.out	2026-09-03 11:21:04.254160009 +0000
+@@ -7,30 +7,46 @@
+ -- BTREE
+ --
+ CREATE INDEX onek_unique1 ON onek USING btree(unique1 int4_ops);
++ERROR:  relation "onek" does not exist
+ CREATE INDEX IF NOT EXISTS onek_unique1 ON onek USING btree(unique1 int4_ops);
+-NOTICE:  relation "onek_unique1" already exists, skipping
++ERROR:  relation "onek" does not exist
+ CREATE INDEX IF NOT EXISTS ON onek USING btree(unique1 int4_ops);
+ ERROR:  syntax error at or near "ON"
+ LINE 1: CREATE INDEX IF NOT EXISTS ON onek USING btree(unique1 int4_...
+                                    ^
+ CREATE INDEX onek_unique2 ON onek USING btree(unique2 int4_ops);
++ERROR:  relation "onek" does not exist
+ CREATE INDEX onek_hundred ON onek USING btree(hundred int4_ops);
++ERROR:  relation "onek" does not exist
+ CREATE INDEX onek_stringu1 ON onek USING btree(stringu1 name_ops);
++ERROR:  relation "onek" does not exist
+ CREATE INDEX tenk1_unique1 ON tenk1 USING btree(unique1 int4_ops);
++ERROR:  relation "tenk1" does not exist
+ CREATE INDEX tenk1_unique2 ON tenk1 USING btree(unique2 int4_ops);
++ERROR:  relation "tenk1" does not exist
+ CREATE INDEX tenk1_hundred ON tenk1 USING btree(hundred int4_ops);
++ERROR:  relation "tenk1" does not exist
+ CREATE INDEX tenk1_thous_tenthous ON tenk1 (thousand, tenthous);
++ERROR:  relation "tenk1" does not exist
+ CREATE INDEX tenk2_unique1 ON tenk2 USING btree(unique1 int4_ops);
++ERROR:  relation "tenk2" does not exist
+ CREATE INDEX tenk2_unique2 ON tenk2 USING btree(unique2 int4_ops);
++ERROR:  relation "tenk2" does not exist
+ CREATE INDEX tenk2_hundred ON tenk2 USING btree(hundred int4_ops);
++ERROR:  relation "tenk2" does not exist
+ CREATE INDEX rix ON road USING btree (name text_ops);
++ERROR:  relation "road" does not exist
+ CREATE INDEX iix ON ihighway USING btree (name text_ops);
++ERROR:  relation "ihighway" does not exist
+ CREATE INDEX six ON shighway USING btree (name text_ops);
++ERROR:  relation "shighway" does not exist
+ -- test comments
+ COMMENT ON INDEX six_wrong IS 'bad index';
+ ERROR:  relation "six_wrong" does not exist
+ COMMENT ON INDEX six IS 'good index';
++ERROR:  relation "six" does not exist
+ COMMENT ON INDEX six IS NULL;
++ERROR:  relation "six" does not exist
+ --
+ -- BTREE ascending/descending cases
+ --
+@@ -40,37 +56,68 @@
+ -- "lost".
+ --
+ CREATE INDEX bt_i4_index ON bt_i4_heap USING btree (seqno int4_ops);
++ERROR:  relation "bt_i4_heap" does not exist
+ CREATE INDEX bt_name_index ON bt_name_heap USING btree (seqno name_ops);
++ERROR:  relation "bt_name_heap" does not exist
+ CREATE INDEX bt_txt_index ON bt_txt_heap USING btree (seqno text_ops);
++ERROR:  relation "bt_txt_heap" does not exist
+ CREATE INDEX bt_f8_index ON bt_f8_heap USING btree (seqno float8_ops);
++ERROR:  relation "bt_f8_heap" does not exist
+ --
+ -- BTREE partial indices
+ --
+ CREATE INDEX onek2_u1_prtl ON onek2 USING btree(unique1 int4_ops)
+ 	where unique1 < 20 or unique1 > 980;
++ERROR:  relation "onek2" does not exist
+ CREATE INDEX onek2_u2_prtl ON onek2 USING btree(unique2 int4_ops)
+ 	where stringu1 < 'B';
++ERROR:  relation "onek2" does not exist
+ CREATE INDEX onek2_stu1_prtl ON onek2 USING btree(stringu1 name_ops)
+ 	where onek2.stringu1 >= 'J' and onek2.stringu1 < 'K';
++ERROR:  relation "onek2" does not exist
+ --
+ -- GiST (rtree-equivalent opclasses only)
+ --
+ CREATE INDEX grect2ind ON fast_emp4000 USING gist (home_base);
++ERROR:  relation "fast_emp4000" does not exist
+ CREATE INDEX gpolygonind ON polygon_tbl USING gist (f1);
++ERROR:  relation "polygon_tbl" does not exist
+ CREATE INDEX gcircleind ON circle_tbl USING gist (f1);
++ERROR:  relation "circle_tbl" does not exist
+ INSERT INTO POINT_TBL(f1) VALUES (NULL);
++ERROR:  relation "point_tbl" does not exist
++LINE 1: INSERT INTO POINT_TBL(f1) VALUES (NULL);
++                    ^
+ ANALYZE POINT_TBL;
++ERROR:  relation "point_tbl" does not exist
+ CREATE INDEX gpointind ON point_tbl USING gist (f1);
++ERROR:  relation "point_tbl" does not exist
+ CREATE TEMP TABLE gpolygon_tbl AS
+     SELECT polygon(home_base) AS f1 FROM slow_emp4000;
++ERROR:  relation "slow_emp4000" does not exist
++LINE 2:     SELECT polygon(home_base) AS f1 FROM slow_emp4000;
++                                                 ^
+ ANALYZE gpolygon_tbl;
++ERROR:  relation "gpolygon_tbl" does not exist
+ INSERT INTO gpolygon_tbl VALUES ( '(1000,0,0,1000)' );
++ERROR:  relation "gpolygon_tbl" does not exist
++LINE 1: INSERT INTO gpolygon_tbl VALUES ( '(1000,0,0,1000)' );
++                    ^
+ INSERT INTO gpolygon_tbl VALUES ( '(0,1000,1000,1000)' );
++ERROR:  relation "gpolygon_tbl" does not exist
++LINE 1: INSERT INTO gpolygon_tbl VALUES ( '(0,1000,1000,1000)' );
++                    ^
+ CREATE TEMP TABLE gcircle_tbl AS
+     SELECT circle(home_base) AS f1 FROM slow_emp4000;
++ERROR:  relation "slow_emp4000" does not exist
++LINE 2:     SELECT circle(home_base) AS f1 FROM slow_emp4000;
++                                                ^
+ ANALYZE gcircle_tbl;
++ERROR:  relation "gcircle_tbl" does not exist
+ CREATE INDEX ggpolygonind ON gpolygon_tbl USING gist (f1);
++ERROR:  relation "gpolygon_tbl" does not exist
+ CREATE INDEX ggcircleind ON gcircle_tbl USING gist (f1);
++ERROR:  relation "gcircle_tbl" does not exist
+ SET optimizer_enable_tablescan = OFF;
+ --
+ -- Test GiST indexes
+@@ -82,178 +129,98 @@
+ SELECT * FROM fast_emp4000
+     WHERE home_base @ '(200,200),(2000,1000)'::box
+     ORDER BY (home_base[0])[0];
+-       home_base       
+-------------
+- (1444,403),(1346,344)
+- (337,455),(240,359)
+-(2 rows)
+-
++ERROR:  relation "fast_emp4000" does not exist
++LINE 1: SELECT * FROM fast_emp4000
++                      ^
+ SELECT count(*) FROM fast_emp4000 WHERE home_base && '(1000,1000,0,0)'::box;
+- count 
+--------
+-     2
+-(1 row)
+-
++ERROR:  relation "fast_emp4000" does not exist
++LINE 1: SELECT count(*) FROM fast_emp4000 WHERE home_base && '(1000,...
++                             ^
+ SELECT count(*) FROM fast_emp4000 WHERE home_base IS NULL;
+- count 
+--------
+-   278
+-(1 row)
+-
++ERROR:  relation "fast_emp4000" does not exist
++LINE 1: SELECT count(*) FROM fast_emp4000 WHERE home_base IS NULL;
++                             ^
+ SELECT * FROM polygon_tbl WHERE f1 ~ '((1,1),(2,2),(2,1))'::polygon
+     ORDER BY (poly_center(f1))[0];
+-         f1          
+-------------
+- ((2,0),(2,4),(0,0))
+-(1 row)
+-
++ERROR:  relation "polygon_tbl" does not exist
++LINE 1: SELECT * FROM polygon_tbl WHERE f1 ~ '((1,1),(2,2),(2,1))'::...
++                      ^
+ SELECT * FROM circle_tbl WHERE f1 && circle(point(1,-2), 1)
+     ORDER BY area(f1);
+-      f1       
+-------------
+- <(1,2),100>
+- <(1,2),3>
+- <(1,3),5>
+- <(100,1),115>
+-(4 rows)
+-
++ERROR:  relation "circle_tbl" does not exist
++LINE 1: SELECT * FROM circle_tbl WHERE f1 && circle(point(1,-2), 1)
++                      ^
+ SELECT count(*) FROM gpolygon_tbl WHERE f1 && '(1000,1000,0,0)'::polygon;
+- count 
+--------
+-     2
+-(1 row)
+-
++ERROR:  relation "gpolygon_tbl" does not exist
++LINE 1: SELECT count(*) FROM gpolygon_tbl WHERE f1 && '(1000,1000,0,...
++                             ^
+ SELECT count(*) FROM gcircle_tbl WHERE f1 && '<(500,500),500>'::circle;
+- count 
+--------
+-     2
+-(1 row)
+-
++ERROR:  relation "gcircle_tbl" does not exist
++LINE 1: SELECT count(*) FROM gcircle_tbl WHERE f1 && '<(500,500),500...
++                             ^
+ SELECT count(*) FROM point_tbl WHERE f1 <@ box '(0,0,100,100)';
+- count 
+--------
+-     3
+-(1 row)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 1: SELECT count(*) FROM point_tbl WHERE f1 <@ box '(0,0,100,100...
++                             ^
+ SELECT count(*) FROM point_tbl WHERE box '(0,0,100,100)' @> f1;
+- count 
+--------
+-     3
+-(1 row)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 1: SELECT count(*) FROM point_tbl WHERE box '(0,0,100,100)' @> ...
++                             ^
+ SELECT count(*) FROM point_tbl WHERE f1 <@ polygon '(0,0),(0,100),(100,100),(50,50),(100,0),(0,0)';
+- count 
+--------
+-     4
+-(1 row)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 1: SELECT count(*) FROM point_tbl WHERE f1 <@ polygon '(0,0),(0...
++                             ^
+ SELECT count(*) FROM point_tbl WHERE f1 <@ circle '<(50,50),50>';
+- count 
+--------
+-     1
+-(1 row)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 1: SELECT count(*) FROM point_tbl WHERE f1 <@ circle '<(50,50),...
++                             ^
+ SELECT count(*) FROM point_tbl p WHERE p.f1 << '(0.0, 0.0)';
+- count 
+--------
+-     3
+-(1 row)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 1: SELECT count(*) FROM point_tbl p WHERE p.f1 << '(0.0, 0.0)';
++                             ^
+ SELECT count(*) FROM point_tbl p WHERE p.f1 >> '(0.0, 0.0)';
+- count 
+--------
+-     3
+-(1 row)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 1: SELECT count(*) FROM point_tbl p WHERE p.f1 >> '(0.0, 0.0)';
++                             ^
+ SELECT count(*) FROM point_tbl p WHERE p.f1 <^ '(0.0, 0.0)';
+- count 
+--------
+-     1
+-(1 row)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 1: SELECT count(*) FROM point_tbl p WHERE p.f1 <^ '(0.0, 0.0)';
++                             ^
+ SELECT count(*) FROM point_tbl p WHERE p.f1 >^ '(0.0, 0.0)';
+- count 
+--------
+-     4
+-(1 row)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 1: SELECT count(*) FROM point_tbl p WHERE p.f1 >^ '(0.0, 0.0)';
++                             ^
+ SELECT count(*) FROM point_tbl p WHERE p.f1 ~= '(-5, -12)';
+- count 
+--------
+-     1
+-(1 row)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 1: SELECT count(*) FROM point_tbl p WHERE p.f1 ~= '(-5, -12)';
++                             ^
+ -- In gpdb, we intentional filter out point (1e-300, -1e-300) every order by related queries
+ -- in this test case file. It is an underflow point, rank it cause randomly results( (0,0),
+ -- (1e-300, -1e-300) are equal).
+ SELECT * FROM point_tbl WHERE NOT f1 ~= '(1e-300, -1e-300)' ORDER BY f1 <-> '0,1';
+-        f1         
+-------------
+- (-3,4)
+- (-10,0)
+- (10,10)
+- (-5,-12)
+- (5.1,34.5)
+- (1e+300,Infinity)
+- (NaN,NaN)
+-(7 rows)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 1: SELECT * FROM point_tbl WHERE NOT f1 ~= '(1e-300, -1e-300)' ...
++                      ^
+ SELECT * FROM point_tbl WHERE f1 IS NULL;
+- f1 
+-----
+- 
+-(1 row)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 1: SELECT * FROM point_tbl WHERE f1 IS NULL;
++                      ^
+ SELECT * FROM point_tbl WHERE NOT f1 ~= '(1e-300, -1e-300)' AND f1 IS NOT NULL ORDER BY f1 <-> '0,1';
+-        f1         
+-------------
+- (-3,4)
+- (-10,0)
+- (10,10)
+- (-5,-12)
+- (5.1,34.5)
+- (1e+300,Infinity)
+- (NaN,NaN)
+-(7 rows)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 1: SELECT * FROM point_tbl WHERE NOT f1 ~= '(1e-300, -1e-300)' ...
++                      ^
+ SELECT * FROM point_tbl WHERE NOT f1 ~= '(1e-300, -1e-300)' AND f1 <@ '(-10,-10),(10,10)':: box ORDER BY f1 <-> '0,1';
+-   f1    
+----------
+- (-3,4)
+- (-10,0)
+- (10,10)
+-(3 rows)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 1: SELECT * FROM point_tbl WHERE NOT f1 ~= '(1e-300, -1e-300)' ...
++                      ^
+ SELECT * FROM gpolygon_tbl ORDER BY f1 <-> '(0,0)'::point LIMIT 10;
+-                       f1                        
+-------------
+- ((240,359),(240,455),(337,455),(337,359))
+- ((662,163),(662,187),(759,187),(759,163))
+- ((1000,0),(0,1000))
+- ((0,1000),(1000,1000))
+- ((1346,344),(1346,403),(1444,403),(1444,344))
+- ((278,1409),(278,1457),(369,1457),(369,1409))
+- ((907,1156),(907,1201),(948,1201),(948,1156))
+- ((1517,971),(1517,1043),(1594,1043),(1594,971))
+- ((175,1820),(175,1850),(259,1850),(259,1820))
+- ((2424,81),(2424,160),(2424,160),(2424,81))
+-(10 rows)
+-
++ERROR:  relation "gpolygon_tbl" does not exist
++LINE 1: SELECT * FROM gpolygon_tbl ORDER BY f1 <-> '(0,0)'::point LI...
++                      ^
+ SELECT circle_center(f1), round(radius(f1)) as radius FROM gcircle_tbl ORDER BY f1 <-> '(200,300)'::point LIMIT 10;
+- circle_center  | radius 
+-----------------+--------
+- (288.5,407)    |     68
+- (710.5,175)    |     50
+- (323.5,1433)   |     51
+- (927.5,1178.5) |     30
+- (1395,373.5)   |     57
+- (1555.5,1007)  |     53
+- (217,1835)     |     45
+- (489,2421.5)   |     22
+- (2424,120.5)   |     40
+- (751.5,2655)   |     20
+-(10 rows)
+-
++ERROR:  relation "gcircle_tbl" does not exist
++LINE 1: ...rcle_center(f1), round(radius(f1)) as radius FROM gcircle_tb...
++                                                             ^
+ -- Now check the results from plain indexscan
+ SET enable_seqscan = OFF;
+ SET enable_indexscan = ON;
+@@ -262,467 +229,230 @@
+ SELECT * FROM fast_emp4000
+     WHERE home_base @ '(200,200),(2000,1000)'::box
+     ORDER BY (home_base[0])[0];
+-QUERY PLAN
+-___________
+- Result
+-   ->  Gather Motion 3:1  (slice1; segments: 3)
+-         Merge Key: ((home_base[0])[0])
+-         ->  Sort
+-               Sort Key: ((home_base[0])[0])
+-               ->  Index Scan using grect2ind on fast_emp4000
+-                     Index Cond: (home_base @ '(2000,1000),(200,200)'::box)
+-                     Filter: (home_base @ '(2000,1000),(200,200)'::box)
+-GP_IGNORE:(9 rows)
+-
++ERROR:  relation "fast_emp4000" does not exist
++LINE 2: SELECT * FROM fast_emp4000
++                      ^
+ SELECT * FROM fast_emp4000
+     WHERE home_base @ '(200,200),(2000,1000)'::box
+     ORDER BY (home_base[0])[0];
+-       home_base       
+-------------
+- (1444,403),(1346,344)
+- (337,455),(240,359)
+-(2 rows)
+-
++ERROR:  relation "fast_emp4000" does not exist
++LINE 1: SELECT * FROM fast_emp4000
++                      ^
+ EXPLAIN (COSTS OFF)
+ SELECT count(*) FROM fast_emp4000 WHERE home_base && '(1000,1000,0,0)'::box;
+-QUERY PLAN
+-___________
+- Finalize Aggregate
+-   ->  Gather Motion 3:1  (slice1; segments: 3)
+-         ->  Partial Aggregate
+-               ->  Index Scan using grect2ind on fast_emp4000
+-                     Index Cond: (home_base && '(1000,1000),(0,0)'::box)
+-                     Filter: (home_base && '(1000,1000),(0,0)'::box)
+-GP_IGNORE:(7 rows)
+-
++ERROR:  relation "fast_emp4000" does not exist
++LINE 2: SELECT count(*) FROM fast_emp4000 WHERE home_base && '(1000,...
++                             ^
+ SELECT count(*) FROM fast_emp4000 WHERE home_base && '(1000,1000,0,0)'::box;
+- count 
+--------
+-     2
+-(1 row)
+-
++ERROR:  relation "fast_emp4000" does not exist
++LINE 1: SELECT count(*) FROM fast_emp4000 WHERE home_base && '(1000,...
++                             ^
+ EXPLAIN (COSTS OFF)
+ SELECT count(*) FROM fast_emp4000 WHERE home_base IS NULL;
+-QUERY PLAN
+-___________
+- Finalize Aggregate
+-   ->  Gather Motion 3:1  (slice1; segments: 3)
+-         ->  Partial Aggregate
+-               ->  Index Only Scan using grect2ind on fast_emp4000
+-                     Index Cond: (home_base IS NULL)
+-GP_IGNORE:(6 rows)
+-
++ERROR:  relation "fast_emp4000" does not exist
++LINE 2: SELECT count(*) FROM fast_emp4000 WHERE home_base IS NULL;
++                             ^
+ SELECT count(*) FROM fast_emp4000 WHERE home_base IS NULL;
+- count 
+--------
+-   278
+-(1 row)
+-
++ERROR:  relation "fast_emp4000" does not exist
++LINE 1: SELECT count(*) FROM fast_emp4000 WHERE home_base IS NULL;
++                             ^
+ EXPLAIN (COSTS OFF)
+ SELECT * FROM polygon_tbl WHERE f1 ~ '((1,1),(2,2),(2,1))'::polygon
+     ORDER BY (poly_center(f1))[0];
+-QUERY PLAN
+-___________
+- Result
+-   ->  Gather Motion 3:1  (slice1; segments: 3)
+-         Merge Key: ((poly_center(f1))[0])
+-         ->  Sort
+-               Sort Key: ((poly_center(f1))[0])
+-               ->  Index Scan using gpolygonind on polygon_tbl
+-                     Index Cond: (f1 ~ '((1,1),(2,2),(2,1))'::polygon)
+-                     Filter: (f1 ~ '((1,1),(2,2),(2,1))'::polygon)
+-GP_IGNORE:(9 rows)
+-
++ERROR:  relation "polygon_tbl" does not exist
++LINE 2: SELECT * FROM polygon_tbl WHERE f1 ~ '((1,1),(2,2),(2,1))'::...
++                      ^
+ SELECT * FROM polygon_tbl WHERE f1 ~ '((1,1),(2,2),(2,1))'::polygon
+     ORDER BY (poly_center(f1))[0];
+-         f1          
+-------------
+- ((2,0),(2,4),(0,0))
+-(1 row)
+-
++ERROR:  relation "polygon_tbl" does not exist
++LINE 1: SELECT * FROM polygon_tbl WHERE f1 ~ '((1,1),(2,2),(2,1))'::...
++                      ^
+ EXPLAIN (COSTS OFF)
+ SELECT * FROM circle_tbl WHERE f1 && circle(point(1,-2), 1)
+     ORDER BY area(f1);
+-QUERY PLAN
+-___________
+- Result
+-   ->  Gather Motion 3:1  (slice1; segments: 3)
+-         Merge Key: (area(f1))
+-         ->  Sort
+-               Sort Key: (area(f1))
+-               ->  Index Scan using gcircleind on circle_tbl
+-                     Index Cond: (f1 && '<(1,-2),1>'::circle)
+-                     Filter: (f1 && '<(1,-2),1>'::circle)
+-GP_IGNORE:(9 rows)
+-
++ERROR:  relation "circle_tbl" does not exist
++LINE 2: SELECT * FROM circle_tbl WHERE f1 && circle(point(1,-2), 1)
++                      ^
+ SELECT * FROM circle_tbl WHERE f1 && circle(point(1,-2), 1)
+     ORDER BY area(f1);
+-      f1       
+-------------
+- <(1,2),100>
+- <(1,2),3>
+- <(1,3),5>
+- <(100,1),115>
+-(4 rows)
+-
++ERROR:  relation "circle_tbl" does not exist
++LINE 1: SELECT * FROM circle_tbl WHERE f1 && circle(point(1,-2), 1)
++                      ^
+ EXPLAIN (COSTS OFF)
+ SELECT count(*) FROM gpolygon_tbl WHERE f1 && '(1000,1000,0,0)'::polygon;
+-QUERY PLAN
+-___________
+- Finalize Aggregate
+-   ->  Gather Motion 3:1  (slice1; segments: 3)
+-         ->  Partial Aggregate
+-               ->  Index Scan using ggpolygonind on gpolygon_tbl
+-                     Index Cond: (f1 && '((1000,1000),(0,0))'::polygon)
+-                     Filter: (f1 && '((1000,1000),(0,0))'::polygon)
+-GP_IGNORE:(7 rows)
+-
++ERROR:  relation "gpolygon_tbl" does not exist
++LINE 2: SELECT count(*) FROM gpolygon_tbl WHERE f1 && '(1000,1000,0,...
++                             ^
+ SELECT count(*) FROM gpolygon_tbl WHERE f1 && '(1000,1000,0,0)'::polygon;
+- count 
+--------
+-     2
+-(1 row)
+-
++ERROR:  relation "gpolygon_tbl" does not exist
++LINE 1: SELECT count(*) FROM gpolygon_tbl WHERE f1 && '(1000,1000,0,...
++                             ^
+ EXPLAIN (COSTS OFF)
+ SELECT count(*) FROM gcircle_tbl WHERE f1 && '<(500,500),500>'::circle;
+-QUERY PLAN
+-___________
+- Finalize Aggregate
+-   ->  Gather Motion 3:1  (slice1; segments: 3)
+-         ->  Partial Aggregate
+-               ->  Index Scan using ggcircleind on gcircle_tbl
+-                     Index Cond: (f1 && '<(500,500),500>'::circle)
+-                     Filter: (f1 && '<(500,500),500>'::circle)
+-GP_IGNORE:(7 rows)
+-
++ERROR:  relation "gcircle_tbl" does not exist
++LINE 2: SELECT count(*) FROM gcircle_tbl WHERE f1 && '<(500,500),500...
++                             ^
+ SELECT count(*) FROM gcircle_tbl WHERE f1 && '<(500,500),500>'::circle;
+- count 
+--------
+-     2
+-(1 row)
+-
++ERROR:  relation "gcircle_tbl" does not exist
++LINE 1: SELECT count(*) FROM gcircle_tbl WHERE f1 && '<(500,500),500...
++                             ^
+ EXPLAIN (COSTS OFF)
+ SELECT count(*) FROM point_tbl WHERE f1 <@ box '(0,0,100,100)';
+-QUERY PLAN
+-___________
+- Aggregate
+-   ->  Gather Motion 3:1  (slice1; segments: 3)
+-         ->  Index Scan using gpointind on point_tbl
+-               Index Cond: (f1 <@ '(100,100),(0,0)'::box)
+-               Filter: (f1 <@ '(100,100),(0,0)'::box)
+-GP_IGNORE:(6 rows)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 2: SELECT count(*) FROM point_tbl WHERE f1 <@ box '(0,0,100,100...
++                             ^
+ SELECT count(*) FROM point_tbl WHERE f1 <@ box '(0,0,100,100)';
+- count 
+--------
+-     3
+-(1 row)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 1: SELECT count(*) FROM point_tbl WHERE f1 <@ box '(0,0,100,100...
++                             ^
+ EXPLAIN (COSTS OFF)
+ SELECT count(*) FROM point_tbl WHERE box '(0,0,100,100)' @> f1;
+-QUERY PLAN
+-___________
+- Aggregate
+-   ->  Gather Motion 3:1  (slice1; segments: 3)
+-         ->  Index Scan using gpointind on point_tbl
+-               Index Cond: (f1 <@ '(100,100),(0,0)'::box)
+-               Filter: (f1 <@ '(100,100),(0,0)'::box)
+-GP_IGNORE:(6 rows)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 2: SELECT count(*) FROM point_tbl WHERE box '(0,0,100,100)' @> ...
++                             ^
+ SELECT count(*) FROM point_tbl WHERE box '(0,0,100,100)' @> f1;
+- count 
+--------
+-     3
+-(1 row)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 1: SELECT count(*) FROM point_tbl WHERE box '(0,0,100,100)' @> ...
++                             ^
+ EXPLAIN (COSTS OFF)
+ SELECT count(*) FROM point_tbl WHERE f1 <@ polygon '(0,0),(0,100),(100,100),(50,50),(100,0),(0,0)';
+-QUERY PLAN
+-___________
+- Aggregate
+-   ->  Gather Motion 3:1  (slice1; segments: 3)
+-         ->  Index Scan using gpointind on point_tbl
+-               Index Cond: (f1 <@ '((0,0),(0,100),(100,100),(50,50),(100,0),(0,0))'::polygon)
+-               Filter: (f1 <@ '((0,0),(0,100),(100,100),(50,50),(100,0),(0,0))'::polygon)
+-GP_IGNORE:(6 rows)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 2: SELECT count(*) FROM point_tbl WHERE f1 <@ polygon '(0,0),(0...
++                             ^
+ SELECT count(*) FROM point_tbl WHERE f1 <@ polygon '(0,0),(0,100),(100,100),(50,50),(100,0),(0,0)';
+- count 
+--------
+-     4
+-(1 row)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 1: SELECT count(*) FROM point_tbl WHERE f1 <@ polygon '(0,0),(0...
++                             ^
+ EXPLAIN (COSTS OFF)
+ SELECT count(*) FROM point_tbl WHERE f1 <@ circle '<(50,50),50>';
+-QUERY PLAN
+-___________
+- Aggregate
+-   ->  Gather Motion 3:1  (slice1; segments: 3)
+-         ->  Index Scan using gpointind on point_tbl
+-               Index Cond: (f1 <@ '<(50,50),50>'::circle)
+-               Filter: (f1 <@ '<(50,50),50>'::circle)
+-GP_IGNORE:(6 rows)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 2: SELECT count(*) FROM point_tbl WHERE f1 <@ circle '<(50,50),...
++                             ^
+ SELECT count(*) FROM point_tbl WHERE f1 <@ circle '<(50,50),50>';
+- count 
+--------
+-     1
+-(1 row)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 1: SELECT count(*) FROM point_tbl WHERE f1 <@ circle '<(50,50),...
++                             ^
+ EXPLAIN (COSTS OFF)
+ SELECT count(*) FROM point_tbl p WHERE p.f1 << '(0.0, 0.0)';
+-QUERY PLAN
+-___________
+- Aggregate
+-   ->  Gather Motion 3:1  (slice1; segments: 3)
+-         ->  Index Scan using gpointind on point_tbl p
+-               Index Cond: (f1 << '(0,0)'::point)
+-               Filter: (f1 << '(0,0)'::point)
+-GP_IGNORE:(6 rows)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 2: SELECT count(*) FROM point_tbl p WHERE p.f1 << '(0.0, 0.0)';
++                             ^
+ SELECT count(*) FROM point_tbl p WHERE p.f1 << '(0.0, 0.0)';
+- count 
+--------
+-     3
+-(1 row)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 1: SELECT count(*) FROM point_tbl p WHERE p.f1 << '(0.0, 0.0)';
++                             ^
+ EXPLAIN (COSTS OFF)
+ SELECT count(*) FROM point_tbl p WHERE p.f1 >> '(0.0, 0.0)';
+-QUERY PLAN
+-___________
+- Aggregate
+-   ->  Gather Motion 3:1  (slice1; segments: 3)
+-         ->  Index Scan using gpointind on point_tbl p
+-               Index Cond: (f1 >> '(0,0)'::point)
+-               Filter: (f1 >> '(0,0)'::point)
+-GP_IGNORE:(6 rows)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 2: SELECT count(*) FROM point_tbl p WHERE p.f1 >> '(0.0, 0.0)';
++                             ^
+ SELECT count(*) FROM point_tbl p WHERE p.f1 >> '(0.0, 0.0)';
+- count 
+--------
+-     3
+-(1 row)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 1: SELECT count(*) FROM point_tbl p WHERE p.f1 >> '(0.0, 0.0)';
++                             ^
+ EXPLAIN (COSTS OFF)
+ SELECT count(*) FROM point_tbl p WHERE p.f1 <^ '(0.0, 0.0)';
+-QUERY PLAN
+-___________
+- Aggregate
+-   ->  Gather Motion 3:1  (slice1; segments: 3)
+-         ->  Index Scan using gpointind on point_tbl p
+-               Index Cond: (f1 <^ '(0,0)'::point)
+-               Filter: (f1 <^ '(0,0)'::point)
+-GP_IGNORE:(6 rows)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 2: SELECT count(*) FROM point_tbl p WHERE p.f1 <^ '(0.0, 0.0)';
++                             ^
+ SELECT count(*) FROM point_tbl p WHERE p.f1 <^ '(0.0, 0.0)';
+- count 
+--------
+-     1
+-(1 row)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 1: SELECT count(*) FROM point_tbl p WHERE p.f1 <^ '(0.0, 0.0)';
++                             ^
+ EXPLAIN (COSTS OFF)
+ SELECT count(*) FROM point_tbl p WHERE p.f1 >^ '(0.0, 0.0)';
+-QUERY PLAN
+-___________
+- Aggregate
+-   ->  Gather Motion 3:1  (slice1; segments: 3)
+-         ->  Index Scan using gpointind on point_tbl p
+-               Index Cond: (f1 >^ '(0,0)'::point)
+-               Filter: (f1 >^ '(0,0)'::point)
+-GP_IGNORE:(6 rows)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 2: SELECT count(*) FROM point_tbl p WHERE p.f1 >^ '(0.0, 0.0)';
++                             ^
+ SELECT count(*) FROM point_tbl p WHERE p.f1 >^ '(0.0, 0.0)';
+- count 
+--------
+-     4
+-(1 row)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 1: SELECT count(*) FROM point_tbl p WHERE p.f1 >^ '(0.0, 0.0)';
++                             ^
+ EXPLAIN (COSTS OFF)
+ SELECT count(*) FROM point_tbl p WHERE p.f1 ~= '(-5, -12)';
+-QUERY PLAN
+-___________
+- Aggregate
+-   ->  Gather Motion 3:1  (slice1; segments: 3)
+-         ->  Index Scan using gpointind on point_tbl p
+-               Index Cond: (f1 ~= '(-5,-12)'::point)
+-               Filter: (f1 ~= '(-5,-12)'::point)
+-GP_IGNORE:(6 rows)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 2: SELECT count(*) FROM point_tbl p WHERE p.f1 ~= '(-5, -12)';
++                             ^
+ SELECT count(*) FROM point_tbl p WHERE p.f1 ~= '(-5, -12)';
+- count 
+--------
+-     1
+-(1 row)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 1: SELECT count(*) FROM point_tbl p WHERE p.f1 ~= '(-5, -12)';
++                             ^
+ EXPLAIN (COSTS OFF)
+ SELECT * FROM point_tbl WHERE NOT f1 ~= '(1e-300, -1e-300)' ORDER BY f1 <-> '0,1';
+-QUERY PLAN
+-___________
+- Gather Motion 3:1  (slice1; segments: 3)
+-   Merge Key: ((f1 <-> '(0,1)'::point))
+-   ->  Index Only Scan using gpointind on point_tbl
+-         Order By: (f1 <-> '(0,1)'::point)
+-         Filter: (f1 <> '(1e-300,-1e-300)'::point)
+-GP_IGNORE:(6 rows)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 2: SELECT * FROM point_tbl WHERE NOT f1 ~= '(1e-300, -1e-300)' ...
++                      ^
+ SELECT * FROM point_tbl WHERE NOT f1 ~= '(1e-300, -1e-300)' ORDER BY f1 <-> '0,1';
+-        f1         
+-------------
+- (-3,4)
+- (-10,0)
+- (10,10)
+- (-5,-12)
+- (5.1,34.5)
+- (1e+300,Infinity)
+- (NaN,NaN)
+-(7 rows)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 1: SELECT * FROM point_tbl WHERE NOT f1 ~= '(1e-300, -1e-300)' ...
++                      ^
+ EXPLAIN (COSTS OFF)
+ SELECT * FROM point_tbl WHERE f1 IS NULL;
+-QUERY PLAN
+-___________
+- Gather Motion 3:1  (slice1; segments: 3)
+-   ->  Index Only Scan using gpointind on point_tbl
+-         Index Cond: (f1 IS NULL)
+-GP_IGNORE:(4 rows)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 2: SELECT * FROM point_tbl WHERE f1 IS NULL;
++                      ^
+ SELECT * FROM point_tbl WHERE f1 IS NULL;
+- f1 
+-----
+- 
+-(1 row)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 1: SELECT * FROM point_tbl WHERE f1 IS NULL;
++                      ^
+ EXPLAIN (COSTS OFF)
+ SELECT * FROM point_tbl WHERE NOT f1 ~= '(1e-300, -1e-300)' AND f1 IS NOT NULL ORDER BY f1 <-> '0,1';
+-QUERY PLAN
+-___________
+- Gather Motion 3:1  (slice1; segments: 3)
+-   Merge Key: ((f1 <-> '(0,1)'::point))
+-   ->  Index Only Scan using gpointind on point_tbl
+-         Index Cond: (f1 IS NOT NULL)
+-         Order By: (f1 <-> '(0,1)'::point)
+-         Filter: (f1 <> '(1e-300,-1e-300)'::point)
+-GP_IGNORE:(7 rows)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 2: SELECT * FROM point_tbl WHERE NOT f1 ~= '(1e-300, -1e-300)' ...
++                      ^
+ SELECT * FROM point_tbl WHERE NOT f1 ~= '(1e-300, -1e-300)' AND f1 IS NOT NULL ORDER BY f1 <-> '0,1';
+-        f1         
+-------------
+- (-3,4)
+- (-10,0)
+- (10,10)
+- (-5,-12)
+- (5.1,34.5)
+- (1e+300,Infinity)
+- (NaN,NaN)
+-(7 rows)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 1: SELECT * FROM point_tbl WHERE NOT f1 ~= '(1e-300, -1e-300)' ...
++                      ^
+ EXPLAIN (COSTS OFF)
+ SELECT * FROM point_tbl WHERE NOT f1 ~= '(1e-300, -1e-300)' AND f1 <@ '(-10,-10),(10,10)':: box ORDER BY f1 <-> '0,1';
+-QUERY PLAN
+-___________
+- Result
+-   ->  Sort
+-         Sort Key: ((f1 <-> '(0,1)'::point))
+-         ->  Result
+-               ->  Gather Motion 3:1  (slice1; segments: 3)
+-                     ->  Index Scan using gpointind on point_tbl
+-                           Index Cond: (f1 <@ '(10,10),(-10,-10)'::box)
+-                           Filter: ((f1 <> '(1e-300,-1e-300)'::point) AND (f1 <@ '(10,10),(-10,-10)'::box))
+-GP_IGNORE:(9 rows)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 2: SELECT * FROM point_tbl WHERE NOT f1 ~= '(1e-300, -1e-300)' ...
++                      ^
+ SELECT * FROM point_tbl WHERE NOT f1 ~= '(1e-300, -1e-300)' AND f1 <@ '(-10,-10),(10,10)':: box ORDER BY f1 <-> '0,1';
+-   f1    
+----------
+- (-3,4)
+- (-10,0)
+- (10,10)
+-(3 rows)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 1: SELECT * FROM point_tbl WHERE NOT f1 ~= '(1e-300, -1e-300)' ...
++                      ^
+ EXPLAIN (COSTS OFF)
+ SELECT * FROM gpolygon_tbl ORDER BY f1 <-> '(0,0)'::point LIMIT 10;
+-QUERY PLAN
+-___________
+- Limit
+-   ->  Gather Motion 3:1  (slice1; segments: 3)
+-         Merge Key: ((f1 <-> '(0,0)'::point))
+-         ->  Limit
+-               ->  Index Scan using ggpolygonind on gpolygon_tbl
+-                     Order By: (f1 <-> '(0,0)'::point)
+-GP_IGNORE:(7 rows)
+-
++ERROR:  relation "gpolygon_tbl" does not exist
++LINE 2: SELECT * FROM gpolygon_tbl ORDER BY f1 <-> '(0,0)'::point LI...
++                      ^
+ SELECT * FROM gpolygon_tbl ORDER BY f1 <-> '(0,0)'::point LIMIT 10;
+-                       f1                        
+-------------
+- ((240,359),(240,455),(337,455),(337,359))
+- ((662,163),(662,187),(759,187),(759,163))
+- ((1000,0),(0,1000))
+- ((0,1000),(1000,1000))
+- ((1346,344),(1346,403),(1444,403),(1444,344))
+- ((278,1409),(278,1457),(369,1457),(369,1409))
+- ((907,1156),(907,1201),(948,1201),(948,1156))
+- ((1517,971),(1517,1043),(1594,1043),(1594,971))
+- ((175,1820),(175,1850),(259,1850),(259,1820))
+- ((2424,81),(2424,160),(2424,160),(2424,81))
+-(10 rows)
+-
++ERROR:  relation "gpolygon_tbl" does not exist
++LINE 1: SELECT * FROM gpolygon_tbl ORDER BY f1 <-> '(0,0)'::point LI...
++                      ^
+ EXPLAIN (COSTS OFF)
+ SELECT circle_center(f1), round(radius(f1)) as radius FROM gcircle_tbl ORDER BY f1 <-> '(200,300)'::point LIMIT 10;
+-QUERY PLAN
+-___________
+- Limit
+-   ->  Gather Motion 3:1  (slice1; segments: 3)
+-         Merge Key: ((f1 <-> '(200,300)'::point))
+-         ->  Limit
+-               ->  Index Scan using ggcircleind on gcircle_tbl
+-                     Order By: (f1 <-> '(200,300)'::point)
+-GP_IGNORE:(7 rows)
+-
++ERROR:  relation "gcircle_tbl" does not exist
++LINE 2: ...rcle_center(f1), round(radius(f1)) as radius FROM gcircle_tb...
++                                                             ^
+ SELECT circle_center(f1), round(radius(f1)) as radius FROM gcircle_tbl ORDER BY f1 <-> '(200,300)'::point LIMIT 10;
+- circle_center  | radius 
+-----------------+--------
+- (288.5,407)    |     68
+- (710.5,175)    |     50
+- (323.5,1433)   |     51
+- (927.5,1178.5) |     30
+- (1395,373.5)   |     57
+- (1555.5,1007)  |     53
+- (217,1835)     |     45
+- (489,2421.5)   |     22
+- (2424,120.5)   |     40
+- (751.5,2655)   |     20
+-(10 rows)
+-
++ERROR:  relation "gcircle_tbl" does not exist
++LINE 1: ...rcle_center(f1), round(radius(f1)) as radius FROM gcircle_tb...
++                                                             ^
+ EXPLAIN (COSTS OFF)
+ SELECT point(x,x), (SELECT f1 FROM gpolygon_tbl ORDER BY f1 <-> point(x,x) LIMIT 1) as c FROM generate_series(0,10,1) x;
+-ERROR:  could not devise a query plan for the given query
++ERROR:  relation "gpolygon_tbl" does not exist
++LINE 2: SELECT point(x,x), (SELECT f1 FROM gpolygon_tbl ORDER BY f1 ...
++                                           ^
+ SELECT point(x,x), (SELECT f1 FROM gpolygon_tbl ORDER BY f1 <-> point(x,x) LIMIT 1) as c FROM generate_series(0,10,1) x;
+-ERROR:  could not devise a query plan for the given query
++ERROR:  relation "gpolygon_tbl" does not exist
++LINE 1: SELECT point(x,x), (SELECT f1 FROM gpolygon_tbl ORDER BY f1 ...
++                                           ^
+ -- Now check the results from bitmap indexscan
+ SET enable_seqscan = OFF;
+ SET enable_indexscan = OFF;
+ SET enable_bitmapscan = ON;
+ EXPLAIN (COSTS OFF)
+ SELECT * FROM point_tbl WHERE NOT f1 ~= '(1e-300, -1e-300)' AND f1 <@ '(-10,-10),(10,10)':: box ORDER BY f1 <-> '0,1';
+-QUERY PLAN
+-___________
+- Result
+-   ->  Sort
+-         Sort Key: ((f1 <-> '(0,1)'::point))
+-         ->  Result
+-               ->  Gather Motion 3:1  (slice1; segments: 3)
+-                     ->  Index Scan using gpointind on point_tbl
+-                           Index Cond: (f1 <@ '(10,10),(-10,-10)'::box)
+-                           Filter: ((f1 <> '(1e-300,-1e-300)'::point) AND (f1 <@ '(10,10),(-10,-10)'::box))
+-GP_IGNORE:(9 rows)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 2: SELECT * FROM point_tbl WHERE NOT f1 ~= '(1e-300, -1e-300)' ...
++                      ^
+ SELECT * FROM point_tbl WHERE NOT f1 ~= '(1e-300, -1e-300)' AND f1 <@ '(-10,-10),(10,10)':: box ORDER BY f1 <-> '0,1';
+-   f1    
+----------
+- (-3,4)
+- (-10,0)
+- (10,10)
+-(3 rows)
+-
++ERROR:  relation "point_tbl" does not exist
++LINE 1: SELECT * FROM point_tbl WHERE NOT f1 ~= '(1e-300, -1e-300)' ...
++                      ^
+ RESET enable_seqscan;
+ RESET enable_indexscan;
+ RESET enable_bitmapscan;
+@@ -735,536 +465,172 @@
+ SET enable_indexscan = OFF;
+ SET enable_bitmapscan = ON;
+ CREATE INDEX intarrayidx ON array_index_op_test USING gin (i);
++ERROR:  relation "array_index_op_test" does not exist
+ explain (costs off)
+ SELECT * FROM array_index_op_test WHERE i @> '{32}' ORDER BY seqno;
+-QUERY PLAN
+-___________
+- Gather Motion 3:1  (slice1; segments: 3)
+-   Merge Key: seqno
+-   ->  Sort
+-         Sort Key: seqno
+-         ->  Bitmap Heap Scan on array_index_op_test
+-               Recheck Cond: (i @> '{32}'::integer[])
+-               ->  Bitmap Index Scan on intarrayidx
+-                     Index Cond: (i @> '{32}'::integer[])
+-GP_IGNORE:(9 rows)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 2: SELECT * FROM array_index_op_test WHERE i @> '{32}' ORDER BY...
++                      ^
+ SELECT * FROM array_index_op_test WHERE i @> '{32}' ORDER BY seqno;
+- seqno |                i                |                                                                 t                                                                  
+--------+---------------------------------+------------------------------------------------------------------------------------------------------------------------------------
+-     6 | {39,35,5,94,17,92,60,32}        | {AAAAAAAAAAAAAAA35875,AAAAAAAAAAAAAAAA23657}
+-    74 | {32}                            | {AAAAAAAAAAAAAAAA1729,AAAAAAAAAAAAA22860,AAAAAA99807,AAAAA17383,AAAAAAAAAAAAAAA67062,AAAAAAAAAAA15165,AAAAAAAAAAA50956}
+-    77 | {97,15,32,17,55,59,18,37,50,39} | {AAAAAAAAAAAA67946,AAAAAA54032,AAAAAAAA81587,55847,AAAAAAAAAAAAAA28620,AAAAAAAAAAAAAAAAA43052,AAAAAA75463,AAAA49534,AAAAAAAA44066}
+-    89 | {40,32,17,6,30,88}              | {AA44673,AAAAAAAAAAA6119,AAAAAAAAAAAAAAAA23657,AAAAAAAAAAAAAAAAAA47955,AAAAAAAAAAAAAAAA33598,AAAAAAAAAAA33576,AA44673}
+-    98 | {38,34,32,89}                   | {AAAAAAAAAAAAAAAAAA71621,AAAA8857,AAAAAAAAAAAAAAAAAAA65037,AAAAAAAAAAAAAAAA31334,AAAAAAAAAA48845}
+-   100 | {85,32,57,39,49,84,32,3,30}     | {AAAAAAA80240,AAAAAAAAAAAAAAAA1729,AAAAA60038,AAAAAAAAAAA92631,AAAAAAAA9523}
+-(6 rows)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE i @> '{32}' ORDER BY...
++                      ^
+ SELECT * FROM array_index_op_test WHERE i && '{32}' ORDER BY seqno;
+- seqno |                i                |                                                                 t                                                                  
+--------+---------------------------------+------------------------------------------------------------------------------------------------------------------------------------
+-     6 | {39,35,5,94,17,92,60,32}        | {AAAAAAAAAAAAAAA35875,AAAAAAAAAAAAAAAA23657}
+-    74 | {32}                            | {AAAAAAAAAAAAAAAA1729,AAAAAAAAAAAAA22860,AAAAAA99807,AAAAA17383,AAAAAAAAAAAAAAA67062,AAAAAAAAAAA15165,AAAAAAAAAAA50956}
+-    77 | {97,15,32,17,55,59,18,37,50,39} | {AAAAAAAAAAAA67946,AAAAAA54032,AAAAAAAA81587,55847,AAAAAAAAAAAAAA28620,AAAAAAAAAAAAAAAAA43052,AAAAAA75463,AAAA49534,AAAAAAAA44066}
+-    89 | {40,32,17,6,30,88}              | {AA44673,AAAAAAAAAAA6119,AAAAAAAAAAAAAAAA23657,AAAAAAAAAAAAAAAAAA47955,AAAAAAAAAAAAAAAA33598,AAAAAAAAAAA33576,AA44673}
+-    98 | {38,34,32,89}                   | {AAAAAAAAAAAAAAAAAA71621,AAAA8857,AAAAAAAAAAAAAAAAAAA65037,AAAAAAAAAAAAAAAA31334,AAAAAAAAAA48845}
+-   100 | {85,32,57,39,49,84,32,3,30}     | {AAAAAAA80240,AAAAAAAAAAAAAAAA1729,AAAAA60038,AAAAAAAAAAA92631,AAAAAAAA9523}
+-(6 rows)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE i && '{32}' ORDER BY...
++                      ^
+ SELECT * FROM array_index_op_test WHERE i @> '{17}' ORDER BY seqno;
+- seqno |                i                |                                                                 t                                                                  
+--------+---------------------------------+------------------------------------------------------------------------------------------------------------------------------------
+-     6 | {39,35,5,94,17,92,60,32}        | {AAAAAAAAAAAAAAA35875,AAAAAAAAAAAAAAAA23657}
+-    12 | {17,99,18,52,91,72,0,43,96,23}  | {AAAAA33250,AAAAAAAAAAAAAAAAAAA85420,AAAAAAAAAAA33576}
+-    15 | {17,14,16,63,67}                | {AA6416,AAAAAAAAAA646,AAAAA95309}
+-    19 | {52,82,17,74,23,46,69,51,75}    | {AAAAAAAAAAAAA73084,AAAAA75968,AAAAAAAAAAAAAAAA14047,AAAAAAA80240,AAAAAAAAAAAAAAAAAAA1205,A68938}
+-    53 | {38,17}                         | {AAAAAAAAAAA21658}
+-    65 | {61,5,76,59,17}                 | {AAAAAA99807,AAAAA64741,AAAAAAAAAAA53908,AA21643,AAAAAAAAA10012}
+-    77 | {97,15,32,17,55,59,18,37,50,39} | {AAAAAAAAAAAA67946,AAAAAA54032,AAAAAAAA81587,55847,AAAAAAAAAAAAAA28620,AAAAAAAAAAAAAAAAA43052,AAAAAA75463,AAAA49534,AAAAAAAA44066}
+-    89 | {40,32,17,6,30,88}              | {AA44673,AAAAAAAAAAA6119,AAAAAAAAAAAAAAAA23657,AAAAAAAAAAAAAAAAAA47955,AAAAAAAAAAAAAAAA33598,AAAAAAAAAAA33576,AA44673}
+-(8 rows)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE i @> '{17}' ORDER BY...
++                      ^
+ SELECT * FROM array_index_op_test WHERE i && '{17}' ORDER BY seqno;
+- seqno |                i                |                                                                 t                                                                  
+--------+---------------------------------+------------------------------------------------------------------------------------------------------------------------------------
+-     6 | {39,35,5,94,17,92,60,32}        | {AAAAAAAAAAAAAAA35875,AAAAAAAAAAAAAAAA23657}
+-    12 | {17,99,18,52,91,72,0,43,96,23}  | {AAAAA33250,AAAAAAAAAAAAAAAAAAA85420,AAAAAAAAAAA33576}
+-    15 | {17,14,16,63,67}                | {AA6416,AAAAAAAAAA646,AAAAA95309}
+-    19 | {52,82,17,74,23,46,69,51,75}    | {AAAAAAAAAAAAA73084,AAAAA75968,AAAAAAAAAAAAAAAA14047,AAAAAAA80240,AAAAAAAAAAAAAAAAAAA1205,A68938}
+-    53 | {38,17}                         | {AAAAAAAAAAA21658}
+-    65 | {61,5,76,59,17}                 | {AAAAAA99807,AAAAA64741,AAAAAAAAAAA53908,AA21643,AAAAAAAAA10012}
+-    77 | {97,15,32,17,55,59,18,37,50,39} | {AAAAAAAAAAAA67946,AAAAAA54032,AAAAAAAA81587,55847,AAAAAAAAAAAAAA28620,AAAAAAAAAAAAAAAAA43052,AAAAAA75463,AAAA49534,AAAAAAAA44066}
+-    89 | {40,32,17,6,30,88}              | {AA44673,AAAAAAAAAAA6119,AAAAAAAAAAAAAAAA23657,AAAAAAAAAAAAAAAAAA47955,AAAAAAAAAAAAAAAA33598,AAAAAAAAAAA33576,AA44673}
+-(8 rows)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE i && '{17}' ORDER BY...
++                      ^
+ SELECT * FROM array_index_op_test WHERE i @> '{32,17}' ORDER BY seqno;
+- seqno |                i                |                                                                 t                                                                  
+--------+---------------------------------+------------------------------------------------------------------------------------------------------------------------------------
+-     6 | {39,35,5,94,17,92,60,32}        | {AAAAAAAAAAAAAAA35875,AAAAAAAAAAAAAAAA23657}
+-    77 | {97,15,32,17,55,59,18,37,50,39} | {AAAAAAAAAAAA67946,AAAAAA54032,AAAAAAAA81587,55847,AAAAAAAAAAAAAA28620,AAAAAAAAAAAAAAAAA43052,AAAAAA75463,AAAA49534,AAAAAAAA44066}
+-    89 | {40,32,17,6,30,88}              | {AA44673,AAAAAAAAAAA6119,AAAAAAAAAAAAAAAA23657,AAAAAAAAAAAAAAAAAA47955,AAAAAAAAAAAAAAAA33598,AAAAAAAAAAA33576,AA44673}
+-(3 rows)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE i @> '{32,17}' ORDER...
++                      ^
+ SELECT * FROM array_index_op_test WHERE i && '{32,17}' ORDER BY seqno;
+- seqno |                i                |                                                                 t                                                                  
+--------+---------------------------------+------------------------------------------------------------------------------------------------------------------------------------
+-     6 | {39,35,5,94,17,92,60,32}        | {AAAAAAAAAAAAAAA35875,AAAAAAAAAAAAAAAA23657}
+-    12 | {17,99,18,52,91,72,0,43,96,23}  | {AAAAA33250,AAAAAAAAAAAAAAAAAAA85420,AAAAAAAAAAA33576}
+-    15 | {17,14,16,63,67}                | {AA6416,AAAAAAAAAA646,AAAAA95309}
+-    19 | {52,82,17,74,23,46,69,51,75}    | {AAAAAAAAAAAAA73084,AAAAA75968,AAAAAAAAAAAAAAAA14047,AAAAAAA80240,AAAAAAAAAAAAAAAAAAA1205,A68938}
+-    53 | {38,17}                         | {AAAAAAAAAAA21658}
+-    65 | {61,5,76,59,17}                 | {AAAAAA99807,AAAAA64741,AAAAAAAAAAA53908,AA21643,AAAAAAAAA10012}
+-    74 | {32}                            | {AAAAAAAAAAAAAAAA1729,AAAAAAAAAAAAA22860,AAAAAA99807,AAAAA17383,AAAAAAAAAAAAAAA67062,AAAAAAAAAAA15165,AAAAAAAAAAA50956}
+-    77 | {97,15,32,17,55,59,18,37,50,39} | {AAAAAAAAAAAA67946,AAAAAA54032,AAAAAAAA81587,55847,AAAAAAAAAAAAAA28620,AAAAAAAAAAAAAAAAA43052,AAAAAA75463,AAAA49534,AAAAAAAA44066}
+-    89 | {40,32,17,6,30,88}              | {AA44673,AAAAAAAAAAA6119,AAAAAAAAAAAAAAAA23657,AAAAAAAAAAAAAAAAAA47955,AAAAAAAAAAAAAAAA33598,AAAAAAAAAAA33576,AA44673}
+-    98 | {38,34,32,89}                   | {AAAAAAAAAAAAAAAAAA71621,AAAA8857,AAAAAAAAAAAAAAAAAAA65037,AAAAAAAAAAAAAAAA31334,AAAAAAAAAA48845}
+-   100 | {85,32,57,39,49,84,32,3,30}     | {AAAAAAA80240,AAAAAAAAAAAAAAAA1729,AAAAA60038,AAAAAAAAAAA92631,AAAAAAAA9523}
+-(11 rows)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE i && '{32,17}' ORDER...
++                      ^
+ SELECT * FROM array_index_op_test WHERE i <@ '{38,34,32,89}' ORDER BY seqno;
+- seqno |       i       |                                                             t                                                              
+--------+---------------+----------------------------------------------------------------------------------------------------------------------------
+-    40 | {34}          | {AAAAAAAAAAAAAA10611,AAAAAAAAAAAAAAAAAAA1205,AAAAAAAAAAA50956,AAAAAAAAAAAAAAAA31334,AAAAA70466,AAAAAAAA81587,AAAAAAA74623}
+-    74 | {32}          | {AAAAAAAAAAAAAAAA1729,AAAAAAAAAAAAA22860,AAAAAA99807,AAAAA17383,AAAAAAAAAAAAAAA67062,AAAAAAAAAAA15165,AAAAAAAAAAA50956}
+-    98 | {38,34,32,89} | {AAAAAAAAAAAAAAAAAA71621,AAAA8857,AAAAAAAAAAAAAAAAAAA65037,AAAAAAAAAAAAAAAA31334,AAAAAAAAAA48845}
+-   101 | {}            | {}
+-(4 rows)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE i <@ '{38,34,32,89}'...
++                      ^
+ SELECT * FROM array_index_op_test WHERE i = '{47,77}' ORDER BY seqno;
+- seqno |    i    |                                                        t                                                        
+--------+---------+-----------------------------------------------------------------------------------------------------------------
+-    95 | {47,77} | {AAAAAAAAAAAAAAAAA764,AAAAAAAAAAA74076,AAAAAAAAAA18107,AAAAA40681,AAAAAAAAAAAAAAA35875,AAAAA60038,AAAAAAA56483}
+-(1 row)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE i = '{47,77}' ORDER ...
++                      ^
+ SELECT * FROM array_index_op_test WHERE i = '{}' ORDER BY seqno;
+- seqno | i  | t  
+--------+----+----
+-   101 | {} | {}
+-(1 row)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE i = '{}' ORDER BY se...
++                      ^
+ SELECT * FROM array_index_op_test WHERE i @> '{}' ORDER BY seqno;
+- seqno |                i                |                                                                                                       t                                                                                                        
+--------+---------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+-     1 | {92,75,71,52,64,83}             | {AAAAAAAA44066,AAAAAA1059,AAAAAAAAAAA176,AAAAAAA48038}
+-     2 | {3,6}                           | {AAAAAA98232,AAAAAAAA79710,AAAAAAAAAAAAAAAAA69675,AAAAAAAAAAAAAAAA55798,AAAAAAAAA12793}
+-     3 | {37,64,95,43,3,41,13,30,11,43}  | {AAAAAAAAAA48845,AAAAA75968,AAAAA95309,AAA54451,AAAAAAAAAA22292,AAAAAAA99836,A96617,AA17009,AAAAAAAAAAAAAA95246}
+-     4 | {71,39,99,55,33,75,45}          | {AAAAAAAAA53663,AAAAAAAAAAAAAAA67062,AAAAAAAAAA64777,AAA99043,AAAAAAAAAAAAAAAAAAA91804,39557}
+-     5 | {50,42,77,50,4}                 | {AAAAAAAAAAAAAAAAA26540,AAAAAAA79710,AAAAAAAAAAAAAAAAAAA1205,AAAAAAAAAAA176,AAAAA95309,AAAAAAAAAAA46154,AAAAAA66777,AAAAAAAAA27249,AAAAAAAAAA64777,AAAAAAAAAAAAAAAAAAA70104}
+-     6 | {39,35,5,94,17,92,60,32}        | {AAAAAAAAAAAAAAA35875,AAAAAAAAAAAAAAAA23657}
+-     7 | {12,51,88,64,8}                 | {AAAAAAAAAAAAAAAAAA12591,AAAAAAAAAAAAAAAAA50407,AAAAAAAAAAAA67946}
+-     8 | {60,84}                         | {AAAAAAA81898,AAAAAA1059,AAAAAAAAAAAA81511,AAAAA961,AAAAAAAAAAAAAAAA31334,AAAAA64741,AA6416,AAAAAAAAAAAAAAAAAA32918,AAAAAAAAAAAAAAAAA50407}
+-     9 | {56,52,35,27,80,44,81,22}       | {AAAAAAAAAAAAAAA73034,AAAAAAAAAAAAA7929,AAAAAAA66161,AA88409,39557,A27153,AAAAAAAA9523,AAAAAAAAAAA99000}
+-    10 | {71,5,45}                       | {AAAAAAAAAAA21658,AAAAAAAAAAAA21089,AAA54451,AAAAAAAAAAAAAAAAAA54141,AAAAAAAAAAAAAA28620,AAAAAAAAAAA21658,AAAAAAAAAAA74076,AAAAAAAAA27249}
+-    11 | {41,86,74,48,22,74,47,50}       | {AAAAAAAA9523,AAAAAAAAAAAA37562,AAAAAAAAAAAAAAAA14047,AAAAAAAAAAA46154,AAAA41702,AAAAAAAAAAAAAAAAA764,AAAAA62737,39557}
+-    12 | {17,99,18,52,91,72,0,43,96,23}  | {AAAAA33250,AAAAAAAAAAAAAAAAAAA85420,AAAAAAAAAAA33576}
+-    13 | {3,52,34,23}                    | {AAAAAA98232,AAAA49534,AAAAAAAAAAA21658}
+-    14 | {78,57,19}                      | {AAAA8857,AAAAAAAAAAAAAAA73034,AAAAAAAA81587,AAAAAAAAAAAAAAA68526,AAAAA75968,AAAAAAAAAAAAAA65909,AAAAAAAAA10012,AAAAAAAAAAAAAA65909}
+-    15 | {17,14,16,63,67}                | {AA6416,AAAAAAAAAA646,AAAAA95309}
+-    16 | {14,63,85,11}                   | {AAAAAA66777}
+-    17 | {7,10,81,85}                    | {AAAAAA43678,AAAAAAA12144,AAAAAAAAAAA50956,AAAAAAAAAAAAAAAAAAA15356}
+-    18 | {1}                             | {AAAAAAAAAAA33576,AAAAA95309,64261,AAA59323,AAAAAAAAAAAAAA95246,55847,AAAAAAAAAAAA67946,AAAAAAAAAAAAAAAAAA64374}
+-    19 | {52,82,17,74,23,46,69,51,75}    | {AAAAAAAAAAAAA73084,AAAAA75968,AAAAAAAAAAAAAAAA14047,AAAAAAA80240,AAAAAAAAAAAAAAAAAAA1205,A68938}
+-    20 | {72,89,70,51,54,37,8,49,79}     | {AAAAAA58494}
+-    21 | {2,8,65,10,5,79,43}             | {AAAAAAAAAAAAAAAAA88852,AAAAAAAAAAAAAAAAAAA91804,AAAAA64669,AAAAAAAAAAAAAAAA1443,AAAAAAAAAAAAAAAA23657,AAAAA12179,AAAAAAAAAAAAAAAAA88852,AAAAAAAAAAAAAAAA31334,AAAAAAAAAAAAAAAA41303,AAAAAAAAAAAAAAAAAAA85420}
+-    22 | {11,6,56,62,53,30}              | {AAAAAAAA72908}
+-    23 | {40,90,5,38,72,40,30,10,43,55}  | {A6053,AAAAAAAAAAA6119,AA44673,AAAAAAAAAAAAAAAAA764,AA17009,AAAAA17383,AAAAA70514,AAAAA33250,AAAAA95309,AAAAAAAAAAAA37562}
+-    24 | {94,61,99,35,48}                | {AAAAAAAAAAA50956,AAAAAAAAAAA15165,AAAA85070,AAAAAAAAAAAAAAA36627,AAAAA961,AAAAAAAAAA55219}
+-    25 | {31,1,10,11,27,79,38}           | {AAAAAAAAAAAAAAAAAA59334,45449}
+-    26 | {71,10,9,69,75}                 | {47735,AAAAAAA21462,AAAAAAAAAAAAAAAAA6897,AAAAAAAAAAAAAAAAAAA91804,AAAAAAAAA72121,AAAAAAAAAAAAAAAAAAA1205,AAAAA41597,AAAA8857,AAAAAAAAAAAAAAAAAAA15356,AA17009}
+-    27 | {94}                            | {AA6416,A6053,AAAAAAA21462,AAAAAAA57334,AAAAAAAAAAAAAAAAAA12591,AA88409,AAAAAAAAAAAAA70254}
+-    28 | {14,33,6,34,14}                 | {AAAAAAAAAAAAAAA13198,AAAAAAAA69452,AAAAAAAAAAA82945,AAAAAAA12144,AAAAAAAAA72121,AAAAAAAAAA18601}
+-    29 | {39,21}                         | {AAAAAAAAAAAAAAAAA6897,AAAAAAAAAAAAAAAAAAA38885,AAAA85070,AAAAAAAAAAAAAAAAAAA70104,AAAAA66674,AAAAAAAAAAAAA62007,AAAAAAAA69452,AAAAAAA1242,AAAAAAAAAAAAAAAA1729,AAAA35194}
+-    30 | {26,81,47,91,34}                | {AAAAAAAAAAAAAAAAAAA70104,AAAAAAA80240}
+-    31 | {80,24,18,21,54}                | {AAAAAAAAAAAAAAA13198,AAAAAAAAAAAAAAAAAAA70415,A27153,AAAAAAAAA53663,AAAAAAAAAAAAAAAAA50407,A68938}
+-    32 | {58,79,82,80,67,75,98,10,41}    | {AAAAAAAAAAAAAAAAAA61286,AAA54451,AAAAAAAAAAAAAAAAAAA87527,A96617,51533}
+-    33 | {74,73}                         | {A85417,AAAAAAA56483,AAAAA17383,AAAAAAAAAAAAA62159,AAAAAAAAAAAA52814,AAAAAAAAAAAAA85723,AAAAAAAAAAAAAAAAAA55796}
+-    34 | {70,45}                         | {AAAAAAAAAAAAAAAAAA71621,AAAAAAAAAAAAAA28620,AAAAAAAAAA55219,AAAAAAAA23648,AAAAAAAAAA22292,AAAAAAA1242}
+-    35 | {23,40}                         | {AAAAAAAAAAAA52814,AAAA48949,AAAAAAAAA34727,AAAA8857,AAAAAAAAAAAAAAAAAAA62179,AAAAAAAAAAAAAAA68526,AAAAAAA99836,AAAAAAAA50094,AAAA91194,AAAAAAAAAAAAA73084}
+-    36 | {79,82,14,52,30,5,79}           | {AAAAAAAAA53663,AAAAAAAAAAAAAAAA55798,AAAAAAAAAAAAAAAAAAA89194,AA88409,AAAAAAAAAAAAAAA81326,AAAAAAAAAAAAAAAAA63050,AAAAAAAAAAAAAAAA33598}
+-    37 | {53,11,81,39,3,78,58,64,74}     | {AAAAAAAAAAAAAAAAAAA17075,AAAAAAA66161,AAAAAAAA23648,AAAAAAAAAAAAAA10611}
+-    38 | {59,5,4,95,28}                  | {AAAAAAAAAAA82945,A96617,47735,AAAAA12179,AAAAA64669,AAAAAA99807,AA74433,AAAAAAAAAAAAAAAAA59387}
+-    39 | {82,43,99,16,74}                | {AAAAAAAAAAAAAAA67062,AAAAAAA57334,AAAAAAAAAAAAAA65909,A27153,AAAAAAAAAAAAAAAAAAA17075,AAAAAAAAAAAAAAAAA43052,AAAAAAAAAA64777,AAAAAAAAAAAA81511,AAAAAAAAAAAAAA65909,AAAAAAAAAAAAAA28620}
+-    40 | {34}                            | {AAAAAAAAAAAAAA10611,AAAAAAAAAAAAAAAAAAA1205,AAAAAAAAAAA50956,AAAAAAAAAAAAAAAA31334,AAAAA70466,AAAAAAAA81587,AAAAAAA74623}
+-    41 | {19,26,63,12,93,73,27,94}       | {AAAAAAA79710,AAAAAAAAAA55219,AAAA41702,AAAAAAAAAAAAAAAAAAA17075,AAAAAAAAAAAAAAAAAA71621,AAAAAAAAAAAAAAAAA63050,AAAAAAA99836,AAAAAAAAAAAAAA8666}
+-    42 | {15,76,82,75,8,91}              | {AAAAAAAAAAA176,AAAAAA38063,45449,AAAAAA54032,AAAAAAA81898,AA6416,AAAAAAAAAAAAAAAAAAA62179,45449,AAAAA60038,AAAAAAAA81587}
+-    43 | {39,87,91,97,79,28}             | {AAAAAAAAAAA74076,A96617,AAAAAAAAAAAAAAAAAAA89194,AAAAAAAAAAAAAAAAAA55796,AAAAAAAAAAAAAAAA23657,AAAAAAAAAAAA67946}
+-    44 | {40,58,68,29,54}                | {AAAAAAA81898,AAAAAA66777,AAAAAA98232}
+-    45 | {99,45}                         | {AAAAAAAA72908,AAAAAAAAAAAAAAAAAAA17075,AA88409,AAAAAAAAAAAAAAAAAA36842,AAAAAAA48038,AAAAAAAAAAAAAA10611}
+-    46 | {53,24}                         | {AAAAAAAAAAA53908,AAAAAA54032,AAAAA17383,AAAA48949,AAAAAAAAAA18601,AAAAA64669,45449,AAAAAAAAAAA98051,AAAAAAAAAAAAAAAAAA71621}
+-    47 | {98,23,64,12,75,61}             | {AAA59323,AAAAA95309,AAAAAAAAAAAAAAAA31334,AAAAAAAAA27249,AAAAA17383,AAAAAAAAAAAA37562,AAAAAA1059,A84822,55847,AAAAA70466}
+-    48 | {76,14}                         | {AAAAAAAAAAAAA59671,AAAAAAAAAAAAAAAAAAA91804,AAAAAA66777,AAAAAAAAAAAAAAAAAAA89194,AAAAAAAAAAAAAAA36627,AAAAAAAAAAAAAAAAAAA17075,AAAAAAAAAAAAA73084,AAAAAAA79710,AAAAAAAAAAAAAAA40402,AAAAAAAAAAAAAAAAAAA65037}
+-    49 | {56,5,54,37,49}                 | {AA21643,AAAAAAAAAAA92631,AAAAAAAA81587}
+-    50 | {20,12,37,64,93}                | {AAAAAAAAAA5483,AAAAAAAAAAAAAAAAAAA1205,AA6416,AAAAAAAAAAAAAAAAA63050,AAAAAAAAAAAAAAAAAA47955}
+-    51 | {47}                            | {AAAAAAAAAAAAAA96505,AAAAAAAAAAAAAAAAAA36842,AAAAA95309,AAAAAAAA81587,AA6416,AAAA91194,AAAAAA58494,AAAAAA1059,AAAAAAAA69452}
+-    52 | {89,0}                          | {AAAAAAAAAAAAAAAAAA47955,AAAAAAA48038,AAAAAAAAAAAAAAAAA43052,AAAAAAAAAAAAA73084,AAAAA70466,AAAAAAAAAAAAAAAAA764,AAAAAAAAAAA46154,AA66862}
+-    53 | {38,17}                         | {AAAAAAAAAAA21658}
+-    54 | {70,47}                         | {AAAAAAAAAAAAAAAAAA54141,AAAAA40681,AAAAAAA48038,AAAAAAAAAAAAAAAA29150,AAAAA41597,AAAAAAAAAAAAAAAAAA59334,AA15322}
+-    55 | {47,79,47,64,72,25,71,24,93}    | {AAAAAAAAAAAAAAAAAA55796,AAAAA62737}
+-    56 | {33,7,60,54,93,90,77,85,39}     | {AAAAAAAAAAAAAAAAAA32918,AA42406}
+-    57 | {23,45,10,42,36,21,9,96}        | {AAAAAAAAAAAAAAAAAAA70415}
+-    58 | {92}                            | {AAAAAAAAAAAAAAAA98414,AAAAAAAA23648,AAAAAAAAAAAAAAAAAA55796,AA25381,AAAAAAAAAAA6119}
+-    59 | {9,69,46,77}                    | {39557,AAAAAAA89932,AAAAAAAAAAAAAAAAA43052,AAAAAAAAAAAAAAAAA26540,AAA20874,AA6416,AAAAAAAAAAAAAAAAAA47955}
+-    60 | {62,2,59,38,89}                 | {AAAAAAA89932,AAAAAAAAAAAAAAAAAAA15356,AA99927,AA17009,AAAAAAAAAAAAAAA35875}
+-    61 | {72,2,44,95,54,54,13}           | {AAAAAAAAAAAAAAAAAAA91804}
+-    62 | {83,72,29,73}                   | {AAAAAAAAAAAAA15097,AAAA8857,AAAAAAAAAAAA35809,AAAAAAAAAAAA52814,AAAAAAAAAAAAAAAAAAA38885,AAAAAAAAAAAAAAAAAA24183,AAAAAA43678,A96617}
+-    63 | {11,4,61,87}                    | {AAAAAAAAA27249,AAAAAAAAAAAAAAAAAA32918,AAAAAAAAAAAAAAA13198,AAA20874,39557,51533,AAAAAAAAAAA53908,AAAAAAAAAAAAAA96505,AAAAAAAA78938}
+-    64 | {26,19,34,24,81,78}             | {A96617,AAAAAAAAAAAAAAAAAAA70104,A68938,AAAAAAAAAAA53908,AAAAAAAAAAAAAAA453,AA17009,AAAAAAA80240}
+-    65 | {61,5,76,59,17}                 | {AAAAAA99807,AAAAA64741,AAAAAAAAAAA53908,AA21643,AAAAAAAAA10012}
+-    66 | {31,23,70,52,4,33,48,25}        | {AAAAAAAAAAAAAAAAA69675,AAAAAAAA50094,AAAAAAAAAAA92631,AAAA35194,39557,AAAAAAA99836}
+-    67 | {31,94,7,10}                    | {AAAAAA38063,A96617,AAAA35194,AAAAAAAAAAAA67946}
+-    68 | {90,43,38}                      | {AA75092,AAAAAAAAAAAAAAAAA69675,AAAAAAAAAAA92631,AAAAAAAAA10012,AAAAAAAAAAAAA7929,AA21643}
+-    69 | {67,35,99,85,72,86,44}          | {AAAAAAAAAAAAAAAAAAA1205,AAAAAAAA50094,AAAAAAAAAAAAAAAA1729,AAAAAAAAAAAAAAAAAA47955}
+-    70 | {56,70,83}                      | {AAAA41702,AAAAAAAAAAA82945,AA21643,AAAAAAAAAAA99000,A27153,AA25381,AAAAAAAAAAAAAA96505,AAAAAAA1242}
+-    71 | {74,26}                         | {AAAAAAAAAAA50956,AA74433,AAAAAAA21462,AAAAAAAAAAAAAAAAAAA17075,AAAAAAAAAAAAAAA36627,AAAAAAAAAAAAA70254,AAAAAAAAAA43419,39557}
+-    72 | {22,1,16,78,20,91,83}           | {47735,AAAAAAA56483,AAAAAAAAAAAAA93788,AA42406,AAAAAAAAAAAAA73084,AAAAAAAA72908,AAAAAAAAAAAAAAAAAA61286,AAAAA66674,AAAAAAAAAAAAAAAAA50407}
+-    73 | {88,25,96,78,65,15,29,19}       | {AAA54451,AAAAAAAAA27249,AAAAAAA9228,AAAAAAAAAAAAAAA67062,AAAAAAAAAAAAAAAAAAA70415,AAAAA17383,AAAAAAAAAAAAAAAA33598}
+-    74 | {32}                            | {AAAAAAAAAAAAAAAA1729,AAAAAAAAAAAAA22860,AAAAAA99807,AAAAA17383,AAAAAAAAAAAAAAA67062,AAAAAAAAAAA15165,AAAAAAAAAAA50956}
+-    75 | {12,96,83,24,71,89,55}          | {AAAA48949,AAAAAAAA29716,AAAAAAAAAAAAAAAAAAA1205,AAAAAAAAAAAA67946,AAAAAAAAAAAAAAAA29150,AAA28075,AAAAAAAAAAAAAAAAA43052}
+-    76 | {92,55,10,7}                    | {AAAAAAAAAAAAAAA67062}
+-    77 | {97,15,32,17,55,59,18,37,50,39} | {AAAAAAAAAAAA67946,AAAAAA54032,AAAAAAAA81587,55847,AAAAAAAAAAAAAA28620,AAAAAAAAAAAAAAAAA43052,AAAAAA75463,AAAA49534,AAAAAAAA44066}
+-    78 | {55,89,44,84,34}                | {AAAAAAAAAAA6119,AAAAAAAAAAAAAA8666,AA99927,AA42406,AAAAAAA81898,AAAAAAA9228,AAAAAAAAAAA92631,AA21643,AAAAAAAAAAAAAA28620}
+-    79 | {45}                            | {AAAAAAAAAA646,AAAAAAAAAAAAAAAAAAA70415,AAAAAA43678,AAAAAAAA72908}
+-    80 | {74,89,44,80,0}                 | {AAAA35194,AAAAAAAA79710,AAA20874,AAAAAAAAAAAAAAAAAAA70104,AAAAAAAAAAAAA73084,AAAAAAA57334,AAAAAAA9228,AAAAAAAAAAAAA62007}
+-    81 | {63,77,54,48,61,53,97}          | {AAAAAAAAAAAAAAA81326,AAAAAAAAAA22292,AA25381,AAAAAAAAAAA74076,AAAAAAA81898,AAAAAAAAA72121}
+-    82 | {34,60,4,79,78,16,86,89,42,50}  | {AAAAA40681,AAAAAAAAAAAAAAAAAA12591,AAAAAAA80240,AAAAAAAAAAAAAAAA55798,AAAAAAAAAAAAAAAAAAA70104}
+-    83 | {14,10}                         | {AAAAAAAAAA22292,AAAAAAAAAAAAA70254,AAAAAAAAAAA6119}
+-    84 | {11,83,35,13,96,94}             | {AAAAA95309,AAAAAAAAAAAAAAAAAA32918,AAAAAAAAAAAAAAAAAA24183}
+-    85 | {39,60}                         | {AAAAAAAAAAAAAAAA55798,AAAAAAAAAA22292,AAAAAAA66161,AAAAAAA21462,AAAAAAAAAAAAAAAAAA12591,55847,AAAAAA98232,AAAAAAAAAAA46154}
+-    86 | {33,81,72,74,45,36,82}          | {AAAAAAAA81587,AAAAAAAAAAAAAA96505,45449,AAAA80176}
+-    87 | {57,27,50,12,97,68}             | {AAAAAAAAAAAAAAAAA26540,AAAAAAAAA10012,AAAAAAAAAAAA35809,AAAAAAAAAAAAAAAA29150,AAAAAAAAAAA82945,AAAAAA66777,31228,AAAAAAAAAAAAAAAA23657,AAAAAAAAAAAAAA28620,AAAAAAAAAAAAAA96505}
+-    88 | {41,90,77,24,6,24}              | {AAAA35194,AAAA35194,AAAAAAA80240,AAAAAAAAAAA46154,AAAAAA58494,AAAAAAAAAAAAAAAAAAA17075,AAAAAAAAAAAAAAAAAA59334,AAAAAAAAAAAAAAAAAAA91804,AA74433}
+-    89 | {40,32,17,6,30,88}              | {AA44673,AAAAAAAAAAA6119,AAAAAAAAAAAAAAAA23657,AAAAAAAAAAAAAAAAAA47955,AAAAAAAAAAAAAAAA33598,AAAAAAAAAAA33576,AA44673}
+-    90 | {88,75}                         | {AAAAA60038,AAAAAAAA23648,AAAAAAAAAAA99000,AAAA41702,AAAAAAAAAAAAA22860,AAAAAAAAAAAAAAA68526}
+-    91 | {78}                            | {AAAAAAAAAAAAA62007,AAA99043}
+-    92 | {85,63,49,45}                   | {AAAAAAA89932,AAAAAAAAAAAAA22860,AAAAAAAAAAAAAAAAAAA1205,AAAAAAAAAAAA21089}
+-    93 | {11}                            | {AAAAAAAAAAA176,AAAAAAAAAAAAAA8666,AAAAAAAAAAAAAAA453,AAAAAAAAAAAAA85723,A68938,AAAAAAAAAAAAA9821,AAAAAAA48038,AAAAAAAAAAAAAAAAA59387,AA99927,AAAAA17383}
+-    94 | {98,9,85,62,88,91,60,61,38,86}  | {AAAAAAAA81587,AAAAA17383,AAAAAAAA81587}
+-    95 | {47,77}                         | {AAAAAAAAAAAAAAAAA764,AAAAAAAAAAA74076,AAAAAAAAAA18107,AAAAA40681,AAAAAAAAAAAAAAA35875,AAAAA60038,AAAAAAA56483}
+-    96 | {23,97,43}                      | {AAAAAAAAAA646,A87088}
+-    97 | {54,2,86,65}                    | {47735,AAAAAAA99836,AAAAAAAAAAAAAAAAA6897,AAAAAAAAAAAAAAAA29150,AAAAAAA80240,AAAAAAAAAAAAAAAA98414,AAAAAAA56483,AAAAAAAAAAAAAAAA29150,AAAAAAA39692,AA21643}
+-    98 | {38,34,32,89}                   | {AAAAAAAAAAAAAAAAAA71621,AAAA8857,AAAAAAAAAAAAAAAAAAA65037,AAAAAAAAAAAAAAAA31334,AAAAAAAAAA48845}
+-    99 | {37,86}                         | {AAAAAAAAAAAAAAAAAA32918,AAAAA70514,AAAAAAAAA10012,AAAAAAAAAAAAAAAAA59387,AAAAAAAAAA64777,AAAAAAAAAAAAAAAAAAA15356}
+-   100 | {85,32,57,39,49,84,32,3,30}     | {AAAAAAA80240,AAAAAAAAAAAAAAAA1729,AAAAA60038,AAAAAAAAAAA92631,AAAAAAAA9523}
+-   101 | {}                              | {}
+-   102 | {NULL}                          | {NULL}
+-(102 rows)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE i @> '{}' ORDER BY s...
++                      ^
+ SELECT * FROM array_index_op_test WHERE i && '{}' ORDER BY seqno;
+- seqno | i | t 
+--------+---+---
+-(0 rows)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE i && '{}' ORDER BY s...
++                      ^
+ SELECT * FROM array_index_op_test WHERE i <@ '{}' ORDER BY seqno;
+- seqno | i  | t  
+--------+----+----
+-   101 | {} | {}
+-(1 row)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE i <@ '{}' ORDER BY s...
++                      ^
+ SELECT * FROM array_op_test WHERE i = '{NULL}' ORDER BY seqno;
+- seqno |   i    |   t    
+--------+--------+--------
+-   102 | {NULL} | {NULL}
+-(1 row)
+-
++ERROR:  relation "array_op_test" does not exist
++LINE 1: SELECT * FROM array_op_test WHERE i = '{NULL}' ORDER BY seqn...
++                      ^
+ SELECT * FROM array_op_test WHERE i @> '{NULL}' ORDER BY seqno;
+- seqno | i | t 
+--------+---+---
+-(0 rows)
+-
++ERROR:  relation "array_op_test" does not exist
++LINE 1: SELECT * FROM array_op_test WHERE i @> '{NULL}' ORDER BY seq...
++                      ^
+ SELECT * FROM array_op_test WHERE i && '{NULL}' ORDER BY seqno;
+- seqno | i | t 
+--------+---+---
+-(0 rows)
+-
++ERROR:  relation "array_op_test" does not exist
++LINE 1: SELECT * FROM array_op_test WHERE i && '{NULL}' ORDER BY seq...
++                      ^
+ SELECT * FROM array_op_test WHERE i <@ '{NULL}' ORDER BY seqno;
+- seqno | i  | t  
+--------+----+----
+-   101 | {} | {}
+-(1 row)
+-
++ERROR:  relation "array_op_test" does not exist
++LINE 1: SELECT * FROM array_op_test WHERE i <@ '{NULL}' ORDER BY seq...
++                      ^
+ CREATE INDEX textarrayidx ON array_index_op_test USING gin (t);
++ERROR:  relation "array_index_op_test" does not exist
+ explain (costs off)
+ SELECT * FROM array_index_op_test WHERE t @> '{AAAAAAAA72908}' ORDER BY seqno;
+-QUERY PLAN
+-___________
+- Gather Motion 3:1  (slice1; segments: 3)
+-   Merge Key: seqno
+-   ->  Sort
+-         Sort Key: seqno
+-         ->  Bitmap Heap Scan on array_index_op_test
+-               Recheck Cond: (t @> '{AAAAAAAA72908}'::text[])
+-               ->  Bitmap Index Scan on textarrayidx
+-                     Index Cond: (t @> '{AAAAAAAA72908}'::text[])
+-GP_IGNORE:(9 rows)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 2: SELECT * FROM array_index_op_test WHERE t @> '{AAAAAAAA72908...
++                      ^
+ SELECT * FROM array_index_op_test WHERE t @> '{AAAAAAAA72908}' ORDER BY seqno;
+- seqno |           i           |                                                                     t                                                                      
+--------+-----------------------+--------------------------------------------------------------------------------------------------------------------------------------------
+-    22 | {11,6,56,62,53,30}    | {AAAAAAAA72908}
+-    45 | {99,45}               | {AAAAAAAA72908,AAAAAAAAAAAAAAAAAAA17075,AA88409,AAAAAAAAAAAAAAAAAA36842,AAAAAAA48038,AAAAAAAAAAAAAA10611}
+-    72 | {22,1,16,78,20,91,83} | {47735,AAAAAAA56483,AAAAAAAAAAAAA93788,AA42406,AAAAAAAAAAAAA73084,AAAAAAAA72908,AAAAAAAAAAAAAAAAAA61286,AAAAA66674,AAAAAAAAAAAAAAAAA50407}
+-    79 | {45}                  | {AAAAAAAAAA646,AAAAAAAAAAAAAAAAAAA70415,AAAAAA43678,AAAAAAAA72908}
+-(4 rows)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE t @> '{AAAAAAAA72908...
++                      ^
+ SELECT * FROM array_index_op_test WHERE t && '{AAAAAAAA72908}' ORDER BY seqno;
+- seqno |           i           |                                                                     t                                                                      
+--------+-----------------------+--------------------------------------------------------------------------------------------------------------------------------------------
+-    22 | {11,6,56,62,53,30}    | {AAAAAAAA72908}
+-    45 | {99,45}               | {AAAAAAAA72908,AAAAAAAAAAAAAAAAAAA17075,AA88409,AAAAAAAAAAAAAAAAAA36842,AAAAAAA48038,AAAAAAAAAAAAAA10611}
+-    72 | {22,1,16,78,20,91,83} | {47735,AAAAAAA56483,AAAAAAAAAAAAA93788,AA42406,AAAAAAAAAAAAA73084,AAAAAAAA72908,AAAAAAAAAAAAAAAAAA61286,AAAAA66674,AAAAAAAAAAAAAAAAA50407}
+-    79 | {45}                  | {AAAAAAAAAA646,AAAAAAAAAAAAAAAAAAA70415,AAAAAA43678,AAAAAAAA72908}
+-(4 rows)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE t && '{AAAAAAAA72908...
++                      ^
+ SELECT * FROM array_index_op_test WHERE t @> '{AAAAAAAAAA646}' ORDER BY seqno;
+- seqno |        i         |                                 t                                  
+--------+------------------+--------------------------------------------------------------------
+-    15 | {17,14,16,63,67} | {AA6416,AAAAAAAAAA646,AAAAA95309}
+-    79 | {45}             | {AAAAAAAAAA646,AAAAAAAAAAAAAAAAAAA70415,AAAAAA43678,AAAAAAAA72908}
+-    96 | {23,97,43}       | {AAAAAAAAAA646,A87088}
+-(3 rows)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE t @> '{AAAAAAAAAA646...
++                      ^
+ SELECT * FROM array_index_op_test WHERE t && '{AAAAAAAAAA646}' ORDER BY seqno;
+- seqno |        i         |                                 t                                  
+--------+------------------+--------------------------------------------------------------------
+-    15 | {17,14,16,63,67} | {AA6416,AAAAAAAAAA646,AAAAA95309}
+-    79 | {45}             | {AAAAAAAAAA646,AAAAAAAAAAAAAAAAAAA70415,AAAAAA43678,AAAAAAAA72908}
+-    96 | {23,97,43}       | {AAAAAAAAAA646,A87088}
+-(3 rows)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE t && '{AAAAAAAAAA646...
++                      ^
+ SELECT * FROM array_index_op_test WHERE t @> '{AAAAAAAA72908,AAAAAAAAAA646}' ORDER BY seqno;
+- seqno |  i   |                                 t                                  
+--------+------+--------------------------------------------------------------------
+-    79 | {45} | {AAAAAAAAAA646,AAAAAAAAAAAAAAAAAAA70415,AAAAAA43678,AAAAAAAA72908}
+-(1 row)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE t @> '{AAAAAAAA72908...
++                      ^
+ SELECT * FROM array_index_op_test WHERE t && '{AAAAAAAA72908,AAAAAAAAAA646}' ORDER BY seqno;
+- seqno |           i           |                                                                     t                                                                      
+--------+-----------------------+--------------------------------------------------------------------------------------------------------------------------------------------
+-    15 | {17,14,16,63,67}      | {AA6416,AAAAAAAAAA646,AAAAA95309}
+-    22 | {11,6,56,62,53,30}    | {AAAAAAAA72908}
+-    45 | {99,45}               | {AAAAAAAA72908,AAAAAAAAAAAAAAAAAAA17075,AA88409,AAAAAAAAAAAAAAAAAA36842,AAAAAAA48038,AAAAAAAAAAAAAA10611}
+-    72 | {22,1,16,78,20,91,83} | {47735,AAAAAAA56483,AAAAAAAAAAAAA93788,AA42406,AAAAAAAAAAAAA73084,AAAAAAAA72908,AAAAAAAAAAAAAAAAAA61286,AAAAA66674,AAAAAAAAAAAAAAAAA50407}
+-    79 | {45}                  | {AAAAAAAAAA646,AAAAAAAAAAAAAAAAAAA70415,AAAAAA43678,AAAAAAAA72908}
+-    96 | {23,97,43}            | {AAAAAAAAAA646,A87088}
+-(6 rows)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE t && '{AAAAAAAA72908...
++                      ^
+ SELECT * FROM array_index_op_test WHERE t <@ '{AAAAAAAA72908,AAAAAAAAAAAAAAAAAAA17075,AA88409,AAAAAAAAAAAAAAAAAA36842,AAAAAAA48038,AAAAAAAAAAAAAA10611}' ORDER BY seqno;
+- seqno |         i          |                                                     t                                                     
+--------+--------------------+-----------------------------------------------------------------------------------------------------------
+-    22 | {11,6,56,62,53,30} | {AAAAAAAA72908}
+-    45 | {99,45}            | {AAAAAAAA72908,AAAAAAAAAAAAAAAAAAA17075,AA88409,AAAAAAAAAAAAAAAAAA36842,AAAAAAA48038,AAAAAAAAAAAAAA10611}
+-   101 | {}                 | {}
+-(3 rows)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE t <@ '{AAAAAAAA72908...
++                      ^
+ SELECT * FROM array_index_op_test WHERE t = '{AAAAAAAAAA646,A87088}' ORDER BY seqno;
+- seqno |     i      |           t            
+--------+------------+------------------------
+-    96 | {23,97,43} | {AAAAAAAAAA646,A87088}
+-(1 row)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE t = '{AAAAAAAAAA646,...
++                      ^
+ SELECT * FROM array_index_op_test WHERE t = '{}' ORDER BY seqno;
+- seqno | i  | t  
+--------+----+----
+-   101 | {} | {}
+-(1 row)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE t = '{}' ORDER BY se...
++                      ^
+ SELECT * FROM array_index_op_test WHERE t @> '{}' ORDER BY seqno;
+- seqno |                i                |                                                                                                       t                                                                                                        
+--------+---------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+-     1 | {92,75,71,52,64,83}             | {AAAAAAAA44066,AAAAAA1059,AAAAAAAAAAA176,AAAAAAA48038}
+-     2 | {3,6}                           | {AAAAAA98232,AAAAAAAA79710,AAAAAAAAAAAAAAAAA69675,AAAAAAAAAAAAAAAA55798,AAAAAAAAA12793}
+-     3 | {37,64,95,43,3,41,13,30,11,43}  | {AAAAAAAAAA48845,AAAAA75968,AAAAA95309,AAA54451,AAAAAAAAAA22292,AAAAAAA99836,A96617,AA17009,AAAAAAAAAAAAAA95246}
+-     4 | {71,39,99,55,33,75,45}          | {AAAAAAAAA53663,AAAAAAAAAAAAAAA67062,AAAAAAAAAA64777,AAA99043,AAAAAAAAAAAAAAAAAAA91804,39557}
+-     5 | {50,42,77,50,4}                 | {AAAAAAAAAAAAAAAAA26540,AAAAAAA79710,AAAAAAAAAAAAAAAAAAA1205,AAAAAAAAAAA176,AAAAA95309,AAAAAAAAAAA46154,AAAAAA66777,AAAAAAAAA27249,AAAAAAAAAA64777,AAAAAAAAAAAAAAAAAAA70104}
+-     6 | {39,35,5,94,17,92,60,32}        | {AAAAAAAAAAAAAAA35875,AAAAAAAAAAAAAAAA23657}
+-     7 | {12,51,88,64,8}                 | {AAAAAAAAAAAAAAAAAA12591,AAAAAAAAAAAAAAAAA50407,AAAAAAAAAAAA67946}
+-     8 | {60,84}                         | {AAAAAAA81898,AAAAAA1059,AAAAAAAAAAAA81511,AAAAA961,AAAAAAAAAAAAAAAA31334,AAAAA64741,AA6416,AAAAAAAAAAAAAAAAAA32918,AAAAAAAAAAAAAAAAA50407}
+-     9 | {56,52,35,27,80,44,81,22}       | {AAAAAAAAAAAAAAA73034,AAAAAAAAAAAAA7929,AAAAAAA66161,AA88409,39557,A27153,AAAAAAAA9523,AAAAAAAAAAA99000}
+-    10 | {71,5,45}                       | {AAAAAAAAAAA21658,AAAAAAAAAAAA21089,AAA54451,AAAAAAAAAAAAAAAAAA54141,AAAAAAAAAAAAAA28620,AAAAAAAAAAA21658,AAAAAAAAAAA74076,AAAAAAAAA27249}
+-    11 | {41,86,74,48,22,74,47,50}       | {AAAAAAAA9523,AAAAAAAAAAAA37562,AAAAAAAAAAAAAAAA14047,AAAAAAAAAAA46154,AAAA41702,AAAAAAAAAAAAAAAAA764,AAAAA62737,39557}
+-    12 | {17,99,18,52,91,72,0,43,96,23}  | {AAAAA33250,AAAAAAAAAAAAAAAAAAA85420,AAAAAAAAAAA33576}
+-    13 | {3,52,34,23}                    | {AAAAAA98232,AAAA49534,AAAAAAAAAAA21658}
+-    14 | {78,57,19}                      | {AAAA8857,AAAAAAAAAAAAAAA73034,AAAAAAAA81587,AAAAAAAAAAAAAAA68526,AAAAA75968,AAAAAAAAAAAAAA65909,AAAAAAAAA10012,AAAAAAAAAAAAAA65909}
+-    15 | {17,14,16,63,67}                | {AA6416,AAAAAAAAAA646,AAAAA95309}
+-    16 | {14,63,85,11}                   | {AAAAAA66777}
+-    17 | {7,10,81,85}                    | {AAAAAA43678,AAAAAAA12144,AAAAAAAAAAA50956,AAAAAAAAAAAAAAAAAAA15356}
+-    18 | {1}                             | {AAAAAAAAAAA33576,AAAAA95309,64261,AAA59323,AAAAAAAAAAAAAA95246,55847,AAAAAAAAAAAA67946,AAAAAAAAAAAAAAAAAA64374}
+-    19 | {52,82,17,74,23,46,69,51,75}    | {AAAAAAAAAAAAA73084,AAAAA75968,AAAAAAAAAAAAAAAA14047,AAAAAAA80240,AAAAAAAAAAAAAAAAAAA1205,A68938}
+-    20 | {72,89,70,51,54,37,8,49,79}     | {AAAAAA58494}
+-    21 | {2,8,65,10,5,79,43}             | {AAAAAAAAAAAAAAAAA88852,AAAAAAAAAAAAAAAAAAA91804,AAAAA64669,AAAAAAAAAAAAAAAA1443,AAAAAAAAAAAAAAAA23657,AAAAA12179,AAAAAAAAAAAAAAAAA88852,AAAAAAAAAAAAAAAA31334,AAAAAAAAAAAAAAAA41303,AAAAAAAAAAAAAAAAAAA85420}
+-    22 | {11,6,56,62,53,30}              | {AAAAAAAA72908}
+-    23 | {40,90,5,38,72,40,30,10,43,55}  | {A6053,AAAAAAAAAAA6119,AA44673,AAAAAAAAAAAAAAAAA764,AA17009,AAAAA17383,AAAAA70514,AAAAA33250,AAAAA95309,AAAAAAAAAAAA37562}
+-    24 | {94,61,99,35,48}                | {AAAAAAAAAAA50956,AAAAAAAAAAA15165,AAAA85070,AAAAAAAAAAAAAAA36627,AAAAA961,AAAAAAAAAA55219}
+-    25 | {31,1,10,11,27,79,38}           | {AAAAAAAAAAAAAAAAAA59334,45449}
+-    26 | {71,10,9,69,75}                 | {47735,AAAAAAA21462,AAAAAAAAAAAAAAAAA6897,AAAAAAAAAAAAAAAAAAA91804,AAAAAAAAA72121,AAAAAAAAAAAAAAAAAAA1205,AAAAA41597,AAAA8857,AAAAAAAAAAAAAAAAAAA15356,AA17009}
+-    27 | {94}                            | {AA6416,A6053,AAAAAAA21462,AAAAAAA57334,AAAAAAAAAAAAAAAAAA12591,AA88409,AAAAAAAAAAAAA70254}
+-    28 | {14,33,6,34,14}                 | {AAAAAAAAAAAAAAA13198,AAAAAAAA69452,AAAAAAAAAAA82945,AAAAAAA12144,AAAAAAAAA72121,AAAAAAAAAA18601}
+-    29 | {39,21}                         | {AAAAAAAAAAAAAAAAA6897,AAAAAAAAAAAAAAAAAAA38885,AAAA85070,AAAAAAAAAAAAAAAAAAA70104,AAAAA66674,AAAAAAAAAAAAA62007,AAAAAAAA69452,AAAAAAA1242,AAAAAAAAAAAAAAAA1729,AAAA35194}
+-    30 | {26,81,47,91,34}                | {AAAAAAAAAAAAAAAAAAA70104,AAAAAAA80240}
+-    31 | {80,24,18,21,54}                | {AAAAAAAAAAAAAAA13198,AAAAAAAAAAAAAAAAAAA70415,A27153,AAAAAAAAA53663,AAAAAAAAAAAAAAAAA50407,A68938}
+-    32 | {58,79,82,80,67,75,98,10,41}    | {AAAAAAAAAAAAAAAAAA61286,AAA54451,AAAAAAAAAAAAAAAAAAA87527,A96617,51533}
+-    33 | {74,73}                         | {A85417,AAAAAAA56483,AAAAA17383,AAAAAAAAAAAAA62159,AAAAAAAAAAAA52814,AAAAAAAAAAAAA85723,AAAAAAAAAAAAAAAAAA55796}
+-    34 | {70,45}                         | {AAAAAAAAAAAAAAAAAA71621,AAAAAAAAAAAAAA28620,AAAAAAAAAA55219,AAAAAAAA23648,AAAAAAAAAA22292,AAAAAAA1242}
+-    35 | {23,40}                         | {AAAAAAAAAAAA52814,AAAA48949,AAAAAAAAA34727,AAAA8857,AAAAAAAAAAAAAAAAAAA62179,AAAAAAAAAAAAAAA68526,AAAAAAA99836,AAAAAAAA50094,AAAA91194,AAAAAAAAAAAAA73084}
+-    36 | {79,82,14,52,30,5,79}           | {AAAAAAAAA53663,AAAAAAAAAAAAAAAA55798,AAAAAAAAAAAAAAAAAAA89194,AA88409,AAAAAAAAAAAAAAA81326,AAAAAAAAAAAAAAAAA63050,AAAAAAAAAAAAAAAA33598}
+-    37 | {53,11,81,39,3,78,58,64,74}     | {AAAAAAAAAAAAAAAAAAA17075,AAAAAAA66161,AAAAAAAA23648,AAAAAAAAAAAAAA10611}
+-    38 | {59,5,4,95,28}                  | {AAAAAAAAAAA82945,A96617,47735,AAAAA12179,AAAAA64669,AAAAAA99807,AA74433,AAAAAAAAAAAAAAAAA59387}
+-    39 | {82,43,99,16,74}                | {AAAAAAAAAAAAAAA67062,AAAAAAA57334,AAAAAAAAAAAAAA65909,A27153,AAAAAAAAAAAAAAAAAAA17075,AAAAAAAAAAAAAAAAA43052,AAAAAAAAAA64777,AAAAAAAAAAAA81511,AAAAAAAAAAAAAA65909,AAAAAAAAAAAAAA28620}
+-    40 | {34}                            | {AAAAAAAAAAAAAA10611,AAAAAAAAAAAAAAAAAAA1205,AAAAAAAAAAA50956,AAAAAAAAAAAAAAAA31334,AAAAA70466,AAAAAAAA81587,AAAAAAA74623}
+-    41 | {19,26,63,12,93,73,27,94}       | {AAAAAAA79710,AAAAAAAAAA55219,AAAA41702,AAAAAAAAAAAAAAAAAAA17075,AAAAAAAAAAAAAAAAAA71621,AAAAAAAAAAAAAAAAA63050,AAAAAAA99836,AAAAAAAAAAAAAA8666}
+-    42 | {15,76,82,75,8,91}              | {AAAAAAAAAAA176,AAAAAA38063,45449,AAAAAA54032,AAAAAAA81898,AA6416,AAAAAAAAAAAAAAAAAAA62179,45449,AAAAA60038,AAAAAAAA81587}
+-    43 | {39,87,91,97,79,28}             | {AAAAAAAAAAA74076,A96617,AAAAAAAAAAAAAAAAAAA89194,AAAAAAAAAAAAAAAAAA55796,AAAAAAAAAAAAAAAA23657,AAAAAAAAAAAA67946}
+-    44 | {40,58,68,29,54}                | {AAAAAAA81898,AAAAAA66777,AAAAAA98232}
+-    45 | {99,45}                         | {AAAAAAAA72908,AAAAAAAAAAAAAAAAAAA17075,AA88409,AAAAAAAAAAAAAAAAAA36842,AAAAAAA48038,AAAAAAAAAAAAAA10611}
+-    46 | {53,24}                         | {AAAAAAAAAAA53908,AAAAAA54032,AAAAA17383,AAAA48949,AAAAAAAAAA18601,AAAAA64669,45449,AAAAAAAAAAA98051,AAAAAAAAAAAAAAAAAA71621}
+-    47 | {98,23,64,12,75,61}             | {AAA59323,AAAAA95309,AAAAAAAAAAAAAAAA31334,AAAAAAAAA27249,AAAAA17383,AAAAAAAAAAAA37562,AAAAAA1059,A84822,55847,AAAAA70466}
+-    48 | {76,14}                         | {AAAAAAAAAAAAA59671,AAAAAAAAAAAAAAAAAAA91804,AAAAAA66777,AAAAAAAAAAAAAAAAAAA89194,AAAAAAAAAAAAAAA36627,AAAAAAAAAAAAAAAAAAA17075,AAAAAAAAAAAAA73084,AAAAAAA79710,AAAAAAAAAAAAAAA40402,AAAAAAAAAAAAAAAAAAA65037}
+-    49 | {56,5,54,37,49}                 | {AA21643,AAAAAAAAAAA92631,AAAAAAAA81587}
+-    50 | {20,12,37,64,93}                | {AAAAAAAAAA5483,AAAAAAAAAAAAAAAAAAA1205,AA6416,AAAAAAAAAAAAAAAAA63050,AAAAAAAAAAAAAAAAAA47955}
+-    51 | {47}                            | {AAAAAAAAAAAAAA96505,AAAAAAAAAAAAAAAAAA36842,AAAAA95309,AAAAAAAA81587,AA6416,AAAA91194,AAAAAA58494,AAAAAA1059,AAAAAAAA69452}
+-    52 | {89,0}                          | {AAAAAAAAAAAAAAAAAA47955,AAAAAAA48038,AAAAAAAAAAAAAAAAA43052,AAAAAAAAAAAAA73084,AAAAA70466,AAAAAAAAAAAAAAAAA764,AAAAAAAAAAA46154,AA66862}
+-    53 | {38,17}                         | {AAAAAAAAAAA21658}
+-    54 | {70,47}                         | {AAAAAAAAAAAAAAAAAA54141,AAAAA40681,AAAAAAA48038,AAAAAAAAAAAAAAAA29150,AAAAA41597,AAAAAAAAAAAAAAAAAA59334,AA15322}
+-    55 | {47,79,47,64,72,25,71,24,93}    | {AAAAAAAAAAAAAAAAAA55796,AAAAA62737}
+-    56 | {33,7,60,54,93,90,77,85,39}     | {AAAAAAAAAAAAAAAAAA32918,AA42406}
+-    57 | {23,45,10,42,36,21,9,96}        | {AAAAAAAAAAAAAAAAAAA70415}
+-    58 | {92}                            | {AAAAAAAAAAAAAAAA98414,AAAAAAAA23648,AAAAAAAAAAAAAAAAAA55796,AA25381,AAAAAAAAAAA6119}
+-    59 | {9,69,46,77}                    | {39557,AAAAAAA89932,AAAAAAAAAAAAAAAAA43052,AAAAAAAAAAAAAAAAA26540,AAA20874,AA6416,AAAAAAAAAAAAAAAAAA47955}
+-    60 | {62,2,59,38,89}                 | {AAAAAAA89932,AAAAAAAAAAAAAAAAAAA15356,AA99927,AA17009,AAAAAAAAAAAAAAA35875}
+-    61 | {72,2,44,95,54,54,13}           | {AAAAAAAAAAAAAAAAAAA91804}
+-    62 | {83,72,29,73}                   | {AAAAAAAAAAAAA15097,AAAA8857,AAAAAAAAAAAA35809,AAAAAAAAAAAA52814,AAAAAAAAAAAAAAAAAAA38885,AAAAAAAAAAAAAAAAAA24183,AAAAAA43678,A96617}
+-    63 | {11,4,61,87}                    | {AAAAAAAAA27249,AAAAAAAAAAAAAAAAAA32918,AAAAAAAAAAAAAAA13198,AAA20874,39557,51533,AAAAAAAAAAA53908,AAAAAAAAAAAAAA96505,AAAAAAAA78938}
+-    64 | {26,19,34,24,81,78}             | {A96617,AAAAAAAAAAAAAAAAAAA70104,A68938,AAAAAAAAAAA53908,AAAAAAAAAAAAAAA453,AA17009,AAAAAAA80240}
+-    65 | {61,5,76,59,17}                 | {AAAAAA99807,AAAAA64741,AAAAAAAAAAA53908,AA21643,AAAAAAAAA10012}
+-    66 | {31,23,70,52,4,33,48,25}        | {AAAAAAAAAAAAAAAAA69675,AAAAAAAA50094,AAAAAAAAAAA92631,AAAA35194,39557,AAAAAAA99836}
+-    67 | {31,94,7,10}                    | {AAAAAA38063,A96617,AAAA35194,AAAAAAAAAAAA67946}
+-    68 | {90,43,38}                      | {AA75092,AAAAAAAAAAAAAAAAA69675,AAAAAAAAAAA92631,AAAAAAAAA10012,AAAAAAAAAAAAA7929,AA21643}
+-    69 | {67,35,99,85,72,86,44}          | {AAAAAAAAAAAAAAAAAAA1205,AAAAAAAA50094,AAAAAAAAAAAAAAAA1729,AAAAAAAAAAAAAAAAAA47955}
+-    70 | {56,70,83}                      | {AAAA41702,AAAAAAAAAAA82945,AA21643,AAAAAAAAAAA99000,A27153,AA25381,AAAAAAAAAAAAAA96505,AAAAAAA1242}
+-    71 | {74,26}                         | {AAAAAAAAAAA50956,AA74433,AAAAAAA21462,AAAAAAAAAAAAAAAAAAA17075,AAAAAAAAAAAAAAA36627,AAAAAAAAAAAAA70254,AAAAAAAAAA43419,39557}
+-    72 | {22,1,16,78,20,91,83}           | {47735,AAAAAAA56483,AAAAAAAAAAAAA93788,AA42406,AAAAAAAAAAAAA73084,AAAAAAAA72908,AAAAAAAAAAAAAAAAAA61286,AAAAA66674,AAAAAAAAAAAAAAAAA50407}
+-    73 | {88,25,96,78,65,15,29,19}       | {AAA54451,AAAAAAAAA27249,AAAAAAA9228,AAAAAAAAAAAAAAA67062,AAAAAAAAAAAAAAAAAAA70415,AAAAA17383,AAAAAAAAAAAAAAAA33598}
+-    74 | {32}                            | {AAAAAAAAAAAAAAAA1729,AAAAAAAAAAAAA22860,AAAAAA99807,AAAAA17383,AAAAAAAAAAAAAAA67062,AAAAAAAAAAA15165,AAAAAAAAAAA50956}
+-    75 | {12,96,83,24,71,89,55}          | {AAAA48949,AAAAAAAA29716,AAAAAAAAAAAAAAAAAAA1205,AAAAAAAAAAAA67946,AAAAAAAAAAAAAAAA29150,AAA28075,AAAAAAAAAAAAAAAAA43052}
+-    76 | {92,55,10,7}                    | {AAAAAAAAAAAAAAA67062}
+-    77 | {97,15,32,17,55,59,18,37,50,39} | {AAAAAAAAAAAA67946,AAAAAA54032,AAAAAAAA81587,55847,AAAAAAAAAAAAAA28620,AAAAAAAAAAAAAAAAA43052,AAAAAA75463,AAAA49534,AAAAAAAA44066}
+-    78 | {55,89,44,84,34}                | {AAAAAAAAAAA6119,AAAAAAAAAAAAAA8666,AA99927,AA42406,AAAAAAA81898,AAAAAAA9228,AAAAAAAAAAA92631,AA21643,AAAAAAAAAAAAAA28620}
+-    79 | {45}                            | {AAAAAAAAAA646,AAAAAAAAAAAAAAAAAAA70415,AAAAAA43678,AAAAAAAA72908}
+-    80 | {74,89,44,80,0}                 | {AAAA35194,AAAAAAAA79710,AAA20874,AAAAAAAAAAAAAAAAAAA70104,AAAAAAAAAAAAA73084,AAAAAAA57334,AAAAAAA9228,AAAAAAAAAAAAA62007}
+-    81 | {63,77,54,48,61,53,97}          | {AAAAAAAAAAAAAAA81326,AAAAAAAAAA22292,AA25381,AAAAAAAAAAA74076,AAAAAAA81898,AAAAAAAAA72121}
+-    82 | {34,60,4,79,78,16,86,89,42,50}  | {AAAAA40681,AAAAAAAAAAAAAAAAAA12591,AAAAAAA80240,AAAAAAAAAAAAAAAA55798,AAAAAAAAAAAAAAAAAAA70104}
+-    83 | {14,10}                         | {AAAAAAAAAA22292,AAAAAAAAAAAAA70254,AAAAAAAAAAA6119}
+-    84 | {11,83,35,13,96,94}             | {AAAAA95309,AAAAAAAAAAAAAAAAAA32918,AAAAAAAAAAAAAAAAAA24183}
+-    85 | {39,60}                         | {AAAAAAAAAAAAAAAA55798,AAAAAAAAAA22292,AAAAAAA66161,AAAAAAA21462,AAAAAAAAAAAAAAAAAA12591,55847,AAAAAA98232,AAAAAAAAAAA46154}
+-    86 | {33,81,72,74,45,36,82}          | {AAAAAAAA81587,AAAAAAAAAAAAAA96505,45449,AAAA80176}
+-    87 | {57,27,50,12,97,68}             | {AAAAAAAAAAAAAAAAA26540,AAAAAAAAA10012,AAAAAAAAAAAA35809,AAAAAAAAAAAAAAAA29150,AAAAAAAAAAA82945,AAAAAA66777,31228,AAAAAAAAAAAAAAAA23657,AAAAAAAAAAAAAA28620,AAAAAAAAAAAAAA96505}
+-    88 | {41,90,77,24,6,24}              | {AAAA35194,AAAA35194,AAAAAAA80240,AAAAAAAAAAA46154,AAAAAA58494,AAAAAAAAAAAAAAAAAAA17075,AAAAAAAAAAAAAAAAAA59334,AAAAAAAAAAAAAAAAAAA91804,AA74433}
+-    89 | {40,32,17,6,30,88}              | {AA44673,AAAAAAAAAAA6119,AAAAAAAAAAAAAAAA23657,AAAAAAAAAAAAAAAAAA47955,AAAAAAAAAAAAAAAA33598,AAAAAAAAAAA33576,AA44673}
+-    90 | {88,75}                         | {AAAAA60038,AAAAAAAA23648,AAAAAAAAAAA99000,AAAA41702,AAAAAAAAAAAAA22860,AAAAAAAAAAAAAAA68526}
+-    91 | {78}                            | {AAAAAAAAAAAAA62007,AAA99043}
+-    92 | {85,63,49,45}                   | {AAAAAAA89932,AAAAAAAAAAAAA22860,AAAAAAAAAAAAAAAAAAA1205,AAAAAAAAAAAA21089}
+-    93 | {11}                            | {AAAAAAAAAAA176,AAAAAAAAAAAAAA8666,AAAAAAAAAAAAAAA453,AAAAAAAAAAAAA85723,A68938,AAAAAAAAAAAAA9821,AAAAAAA48038,AAAAAAAAAAAAAAAAA59387,AA99927,AAAAA17383}
+-    94 | {98,9,85,62,88,91,60,61,38,86}  | {AAAAAAAA81587,AAAAA17383,AAAAAAAA81587}
+-    95 | {47,77}                         | {AAAAAAAAAAAAAAAAA764,AAAAAAAAAAA74076,AAAAAAAAAA18107,AAAAA40681,AAAAAAAAAAAAAAA35875,AAAAA60038,AAAAAAA56483}
+-    96 | {23,97,43}                      | {AAAAAAAAAA646,A87088}
+-    97 | {54,2,86,65}                    | {47735,AAAAAAA99836,AAAAAAAAAAAAAAAAA6897,AAAAAAAAAAAAAAAA29150,AAAAAAA80240,AAAAAAAAAAAAAAAA98414,AAAAAAA56483,AAAAAAAAAAAAAAAA29150,AAAAAAA39692,AA21643}
+-    98 | {38,34,32,89}                   | {AAAAAAAAAAAAAAAAAA71621,AAAA8857,AAAAAAAAAAAAAAAAAAA65037,AAAAAAAAAAAAAAAA31334,AAAAAAAAAA48845}
+-    99 | {37,86}                         | {AAAAAAAAAAAAAAAAAA32918,AAAAA70514,AAAAAAAAA10012,AAAAAAAAAAAAAAAAA59387,AAAAAAAAAA64777,AAAAAAAAAAAAAAAAAAA15356}
+-   100 | {85,32,57,39,49,84,32,3,30}     | {AAAAAAA80240,AAAAAAAAAAAAAAAA1729,AAAAA60038,AAAAAAAAAAA92631,AAAAAAAA9523}
+-   101 | {}                              | {}
+-   102 | {NULL}                          | {NULL}
+-(102 rows)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE t @> '{}' ORDER BY s...
++                      ^
+ SELECT * FROM array_index_op_test WHERE t && '{}' ORDER BY seqno;
+- seqno | i | t 
+--------+---+---
+-(0 rows)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE t && '{}' ORDER BY s...
++                      ^
+ SELECT * FROM array_index_op_test WHERE t <@ '{}' ORDER BY seqno;
+- seqno | i  | t  
+--------+----+----
+-   101 | {} | {}
+-(1 row)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE t <@ '{}' ORDER BY s...
++                      ^
+ -- And try it with a multicolumn GIN index
+ DROP INDEX intarrayidx, textarrayidx;
++ERROR:  index "intarrayidx" does not exist
+ CREATE INDEX botharrayidx ON array_index_op_test USING gin (i, t);
++ERROR:  relation "array_index_op_test" does not exist
+ SELECT * FROM array_index_op_test WHERE i @> '{32}' ORDER BY seqno;
+- seqno |                i                |                                                                 t                                                                  
+--------+---------------------------------+------------------------------------------------------------------------------------------------------------------------------------
+-     6 | {39,35,5,94,17,92,60,32}        | {AAAAAAAAAAAAAAA35875,AAAAAAAAAAAAAAAA23657}
+-    74 | {32}                            | {AAAAAAAAAAAAAAAA1729,AAAAAAAAAAAAA22860,AAAAAA99807,AAAAA17383,AAAAAAAAAAAAAAA67062,AAAAAAAAAAA15165,AAAAAAAAAAA50956}
+-    77 | {97,15,32,17,55,59,18,37,50,39} | {AAAAAAAAAAAA67946,AAAAAA54032,AAAAAAAA81587,55847,AAAAAAAAAAAAAA28620,AAAAAAAAAAAAAAAAA43052,AAAAAA75463,AAAA49534,AAAAAAAA44066}
+-    89 | {40,32,17,6,30,88}              | {AA44673,AAAAAAAAAAA6119,AAAAAAAAAAAAAAAA23657,AAAAAAAAAAAAAAAAAA47955,AAAAAAAAAAAAAAAA33598,AAAAAAAAAAA33576,AA44673}
+-    98 | {38,34,32,89}                   | {AAAAAAAAAAAAAAAAAA71621,AAAA8857,AAAAAAAAAAAAAAAAAAA65037,AAAAAAAAAAAAAAAA31334,AAAAAAAAAA48845}
+-   100 | {85,32,57,39,49,84,32,3,30}     | {AAAAAAA80240,AAAAAAAAAAAAAAAA1729,AAAAA60038,AAAAAAAAAAA92631,AAAAAAAA9523}
+-(6 rows)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE i @> '{32}' ORDER BY...
++                      ^
+ SELECT * FROM array_index_op_test WHERE i && '{32}' ORDER BY seqno;
+- seqno |                i                |                                                                 t                                                                  
+--------+---------------------------------+------------------------------------------------------------------------------------------------------------------------------------
+-     6 | {39,35,5,94,17,92,60,32}        | {AAAAAAAAAAAAAAA35875,AAAAAAAAAAAAAAAA23657}
+-    74 | {32}                            | {AAAAAAAAAAAAAAAA1729,AAAAAAAAAAAAA22860,AAAAAA99807,AAAAA17383,AAAAAAAAAAAAAAA67062,AAAAAAAAAAA15165,AAAAAAAAAAA50956}
+-    77 | {97,15,32,17,55,59,18,37,50,39} | {AAAAAAAAAAAA67946,AAAAAA54032,AAAAAAAA81587,55847,AAAAAAAAAAAAAA28620,AAAAAAAAAAAAAAAAA43052,AAAAAA75463,AAAA49534,AAAAAAAA44066}
+-    89 | {40,32,17,6,30,88}              | {AA44673,AAAAAAAAAAA6119,AAAAAAAAAAAAAAAA23657,AAAAAAAAAAAAAAAAAA47955,AAAAAAAAAAAAAAAA33598,AAAAAAAAAAA33576,AA44673}
+-    98 | {38,34,32,89}                   | {AAAAAAAAAAAAAAAAAA71621,AAAA8857,AAAAAAAAAAAAAAAAAAA65037,AAAAAAAAAAAAAAAA31334,AAAAAAAAAA48845}
+-   100 | {85,32,57,39,49,84,32,3,30}     | {AAAAAAA80240,AAAAAAAAAAAAAAAA1729,AAAAA60038,AAAAAAAAAAA92631,AAAAAAAA9523}
+-(6 rows)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE i && '{32}' ORDER BY...
++                      ^
+ SELECT * FROM array_index_op_test WHERE t @> '{AAAAAAA80240}' ORDER BY seqno;
+- seqno |               i                |                                                                              t                                                                              
+--------+--------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------
+-    19 | {52,82,17,74,23,46,69,51,75}   | {AAAAAAAAAAAAA73084,AAAAA75968,AAAAAAAAAAAAAAAA14047,AAAAAAA80240,AAAAAAAAAAAAAAAAAAA1205,A68938}
+-    30 | {26,81,47,91,34}               | {AAAAAAAAAAAAAAAAAAA70104,AAAAAAA80240}
+-    64 | {26,19,34,24,81,78}            | {A96617,AAAAAAAAAAAAAAAAAAA70104,A68938,AAAAAAAAAAA53908,AAAAAAAAAAAAAAA453,AA17009,AAAAAAA80240}
+-    82 | {34,60,4,79,78,16,86,89,42,50} | {AAAAA40681,AAAAAAAAAAAAAAAAAA12591,AAAAAAA80240,AAAAAAAAAAAAAAAA55798,AAAAAAAAAAAAAAAAAAA70104}
+-    88 | {41,90,77,24,6,24}             | {AAAA35194,AAAA35194,AAAAAAA80240,AAAAAAAAAAA46154,AAAAAA58494,AAAAAAAAAAAAAAAAAAA17075,AAAAAAAAAAAAAAAAAA59334,AAAAAAAAAAAAAAAAAAA91804,AA74433}
+-    97 | {54,2,86,65}                   | {47735,AAAAAAA99836,AAAAAAAAAAAAAAAAA6897,AAAAAAAAAAAAAAAA29150,AAAAAAA80240,AAAAAAAAAAAAAAAA98414,AAAAAAA56483,AAAAAAAAAAAAAAAA29150,AAAAAAA39692,AA21643}
+-   100 | {85,32,57,39,49,84,32,3,30}    | {AAAAAAA80240,AAAAAAAAAAAAAAAA1729,AAAAA60038,AAAAAAAAAAA92631,AAAAAAAA9523}
+-(7 rows)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE t @> '{AAAAAAA80240}...
++                      ^
+ SELECT * FROM array_index_op_test WHERE t && '{AAAAAAA80240}' ORDER BY seqno;
+- seqno |               i                |                                                                              t                                                                              
+--------+--------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------
+-    19 | {52,82,17,74,23,46,69,51,75}   | {AAAAAAAAAAAAA73084,AAAAA75968,AAAAAAAAAAAAAAAA14047,AAAAAAA80240,AAAAAAAAAAAAAAAAAAA1205,A68938}
+-    30 | {26,81,47,91,34}               | {AAAAAAAAAAAAAAAAAAA70104,AAAAAAA80240}
+-    64 | {26,19,34,24,81,78}            | {A96617,AAAAAAAAAAAAAAAAAAA70104,A68938,AAAAAAAAAAA53908,AAAAAAAAAAAAAAA453,AA17009,AAAAAAA80240}
+-    82 | {34,60,4,79,78,16,86,89,42,50} | {AAAAA40681,AAAAAAAAAAAAAAAAAA12591,AAAAAAA80240,AAAAAAAAAAAAAAAA55798,AAAAAAAAAAAAAAAAAAA70104}
+-    88 | {41,90,77,24,6,24}             | {AAAA35194,AAAA35194,AAAAAAA80240,AAAAAAAAAAA46154,AAAAAA58494,AAAAAAAAAAAAAAAAAAA17075,AAAAAAAAAAAAAAAAAA59334,AAAAAAAAAAAAAAAAAAA91804,AA74433}
+-    97 | {54,2,86,65}                   | {47735,AAAAAAA99836,AAAAAAAAAAAAAAAAA6897,AAAAAAAAAAAAAAAA29150,AAAAAAA80240,AAAAAAAAAAAAAAAA98414,AAAAAAA56483,AAAAAAAAAAAAAAAA29150,AAAAAAA39692,AA21643}
+-   100 | {85,32,57,39,49,84,32,3,30}    | {AAAAAAA80240,AAAAAAAAAAAAAAAA1729,AAAAA60038,AAAAAAAAAAA92631,AAAAAAAA9523}
+-(7 rows)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE t && '{AAAAAAA80240}...
++                      ^
+ SELECT * FROM array_index_op_test WHERE i @> '{32}' AND t && '{AAAAAAA80240}' ORDER BY seqno;
+- seqno |              i              |                                      t                                       
+--------+-----------------------------+------------------------------------------------------------------------------
+-   100 | {85,32,57,39,49,84,32,3,30} | {AAAAAAA80240,AAAAAAAAAAAAAAAA1729,AAAAA60038,AAAAAAAAAAA92631,AAAAAAAA9523}
+-(1 row)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE i @> '{32}' AND t &&...
++                      ^
+ SELECT * FROM array_index_op_test WHERE i && '{32}' AND t @> '{AAAAAAA80240}' ORDER BY seqno;
+- seqno |              i              |                                      t                                       
+--------+-----------------------------+------------------------------------------------------------------------------
+-   100 | {85,32,57,39,49,84,32,3,30} | {AAAAAAA80240,AAAAAAAAAAAAAAAA1729,AAAAA60038,AAAAAAAAAAA92631,AAAAAAAA9523}
+-(1 row)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE i && '{32}' AND t @>...
++                      ^
+ SELECT * FROM array_index_op_test WHERE t = '{}' ORDER BY seqno;
+- seqno | i  | t  
+--------+----+----
+-   101 | {} | {}
+-(1 row)
+-
++ERROR:  relation "array_index_op_test" does not exist
++LINE 1: SELECT * FROM array_index_op_test WHERE t = '{}' ORDER BY se...
++                      ^
+ SELECT * FROM array_op_test WHERE i = '{NULL}' ORDER BY seqno;
+- seqno |   i    |   t    
+--------+--------+--------
+-   102 | {NULL} | {NULL}
+-(1 row)
+-
++ERROR:  relation "array_op_test" does not exist
++LINE 1: SELECT * FROM array_op_test WHERE i = '{NULL}' ORDER BY seqn...
++                      ^
+ SELECT * FROM array_op_test WHERE i <@ '{NULL}' ORDER BY seqno;
+- seqno | i  | t  
+--------+----+----
+-   101 | {} | {}
+-(1 row)
+-
++ERROR:  relation "array_op_test" does not exist
++LINE 1: SELECT * FROM array_op_test WHERE i <@ '{NULL}' ORDER BY seq...
++                      ^
+ RESET enable_seqscan;
+ RESET enable_indexscan;
+ RESET enable_bitmapscan;
+@@ -1279,7 +645,7 @@
+  count 
+ -------
+   2000
+-(1 row)
++GP_IGNORE:(1 row)
+ 
+ DROP TABLE array_gin_test;
+ --
+@@ -1287,21 +653,19 @@
+ --
+ CREATE INDEX gin_relopts_test ON array_index_op_test USING gin (i)
+   WITH (FASTUPDATE=on, GIN_PENDING_LIST_LIMIT=128);
++ERROR:  relation "array_index_op_test" does not exist
+ \d+ gin_relopts_test
+-                Index "public.gin_relopts_test"
+- Column |  Type   | Key? | Definition | Storage | Stats target 
+---------+---------+------+------------+---------+--------------
+- i      | integer | yes  | i          | plain   | 
+-gin, for table "public.array_index_op_test"
+-Options: fastupdate=on, gin_pending_list_limit=128
+-
+ --
+ -- HASH
+ --
+ CREATE INDEX hash_i4_index ON hash_i4_heap USING hash (random int4_ops);
++ERROR:  relation "hash_i4_heap" does not exist
+ CREATE INDEX hash_name_index ON hash_name_heap USING hash (random name_ops);
++ERROR:  relation "hash_name_heap" does not exist
+ CREATE INDEX hash_txt_index ON hash_txt_heap USING hash (random text_ops);
++ERROR:  relation "hash_txt_heap" does not exist
+ CREATE INDEX hash_f8_index ON hash_f8_heap USING hash (random float8_ops) WITH (fillfactor=60);
++ERROR:  relation "hash_f8_heap" does not exist
+ CREATE UNLOGGED TABLE unlogged_hash_table (id int4);
+ CREATE INDEX unlogged_hash_index ON unlogged_hash_table USING hash (id int4_ops);
+ DROP TABLE unlogged_hash_table;
+@@ -1310,24 +674,18 @@
+ -- maintenance_work_mem setting and fillfactor:
+ SET maintenance_work_mem = '1MB';
+ CREATE INDEX hash_tuplesort_idx ON tenk1 USING hash (stringu1 name_ops) WITH (fillfactor = 10);
++ERROR:  relation "tenk1" does not exist
+ EXPLAIN (COSTS OFF)
+ SELECT count(*) FROM tenk1 WHERE stringu1 = 'TVAAAA';
+-QUERY PLAN
+-___________
+- Finalize Aggregate
+-   ->  Gather Motion 3:1  (slice1; segments: 3)
+-         ->  Partial Aggregate
+-               ->  Index Scan using hash_tuplesort_idx on tenk1
+-                     Index Cond: (stringu1 = 'TVAAAA'::name)
+-GP_IGNORE:(6 rows)
+-
++ERROR:  relation "tenk1" does not exist
++LINE 2: SELECT count(*) FROM tenk1 WHERE stringu1 = 'TVAAAA';
++                             ^
+ SELECT count(*) FROM tenk1 WHERE stringu1 = 'TVAAAA';
+- count 
+--------
+-    14
+-(1 row)
+-
++ERROR:  relation "tenk1" does not exist
++LINE 1: SELECT count(*) FROM tenk1 WHERE stringu1 = 'TVAAAA';
++                             ^
+ DROP INDEX hash_tuplesort_idx;
++ERROR:  index "hash_tuplesort_idx" does not exist
+ RESET maintenance_work_mem;
+ --
+ -- Test functional index
+@@ -1415,8 +773,11 @@
+ -- tables that already contain data.
+ --
+ create index hash_f8_index_1 on hash_f8_heap(abs(random));
++ERROR:  relation "hash_f8_heap" does not exist
+ create index hash_f8_index_2 on hash_f8_heap((seqno + 1), random);
++ERROR:  relation "hash_f8_heap" does not exist
+ create index hash_f8_index_3 on hash_f8_heap(random) where seqno > 1000;
++ERROR:  relation "hash_f8_heap" does not exist
+ --
+ -- Try some concurrent index builds
+ --
+@@ -1655,377 +1016,271 @@
+ -- Tests for IS NULL/IS NOT NULL with b-tree indexes
+ --
+ CREATE TABLE onek_with_null AS SELECT unique1, unique2 FROM onek DISTRIBUTED BY (unique1);
++ERROR:  relation "onek" does not exist
++LINE 1: ...LE onek_with_null AS SELECT unique1, unique2 FROM onek DISTR...
++                                                             ^
+ INSERT INTO onek_with_null (unique1,unique2) VALUES (NULL, -1), (NULL, NULL);
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: INSERT INTO onek_with_null (unique1,unique2) VALUES (NULL, -...
++                    ^
+ CREATE UNIQUE INDEX onek_nulltest ON onek_with_null (unique2,unique1);
++ERROR:  relation "onek_with_null" does not exist
+ SET enable_seqscan = OFF;
+ SET enable_indexscan = ON;
+ SET enable_bitmapscan = ON;
+ SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL;
+- count 
+--------
+-     2
+-(1 row)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL;
++                             ^
+ SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique2 IS NULL;
+- count 
+--------
+-     1
+-(1 row)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AN...
++                             ^
+ SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NULL;
+- count 
+--------
+-  1000
+-(1 row)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NUL...
++                             ^
+ SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique2 IS NOT NULL;
+- count 
+--------
+-     1
+-(1 row)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AN...
++                             ^
+ SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NULL AND unique1 > 500;
+- count 
+--------
+-   499
+-(1 row)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NUL...
++                             ^
+ SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique1 > 500;
+- count 
+--------
+-     0
+-(1 row)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AN...
++                             ^
+ DROP INDEX onek_nulltest;
++ERROR:  index "onek_nulltest" does not exist
+ CREATE UNIQUE INDEX onek_nulltest ON onek_with_null (unique2 desc,unique1);
++ERROR:  relation "onek_with_null" does not exist
+ SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL;
+- count 
+--------
+-     2
+-(1 row)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL;
++                             ^
+ SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique2 IS NULL;
+- count 
+--------
+-     1
+-(1 row)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AN...
++                             ^
+ SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NULL;
+- count 
+--------
+-  1000
+-(1 row)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NUL...
++                             ^
+ SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique2 IS NOT NULL;
+- count 
+--------
+-     1
+-(1 row)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AN...
++                             ^
+ SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NULL AND unique1 > 500;
+- count 
+--------
+-   499
+-(1 row)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NUL...
++                             ^
+ SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique1 > 500;
+- count 
+--------
+-     0
+-(1 row)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AN...
++                             ^
+ DROP INDEX onek_nulltest;
++ERROR:  index "onek_nulltest" does not exist
+ CREATE UNIQUE INDEX onek_nulltest ON onek_with_null (unique2 desc nulls last,unique1);
++ERROR:  relation "onek_with_null" does not exist
+ SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL;
+- count 
+--------
+-     2
+-(1 row)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL;
++                             ^
+ SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique2 IS NULL;
+- count 
+--------
+-     1
+-(1 row)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AN...
++                             ^
+ SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NULL;
+- count 
+--------
+-  1000
+-(1 row)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NUL...
++                             ^
+ SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique2 IS NOT NULL;
+- count 
+--------
+-     1
+-(1 row)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AN...
++                             ^
+ SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NULL AND unique1 > 500;
+- count 
+--------
+-   499
+-(1 row)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NUL...
++                             ^
+ SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique1 > 500;
+- count 
+--------
+-     0
+-(1 row)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AN...
++                             ^
+ DROP INDEX onek_nulltest;
++ERROR:  index "onek_nulltest" does not exist
+ CREATE UNIQUE INDEX onek_nulltest ON onek_with_null (unique2  nulls first,unique1);
++ERROR:  relation "onek_with_null" does not exist
+ SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL;
+- count 
+--------
+-     2
+-(1 row)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL;
++                             ^
+ SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique2 IS NULL;
+- count 
+--------
+-     1
+-(1 row)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AN...
++                             ^
+ SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NULL;
+- count 
+--------
+-  1000
+-(1 row)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NUL...
++                             ^
+ SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique2 IS NOT NULL;
+- count 
+--------
+-     1
+-(1 row)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AN...
++                             ^
+ SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NULL AND unique1 > 500;
+- count 
+--------
+-   499
+-(1 row)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NUL...
++                             ^
+ SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique1 > 500;
+- count 
+--------
+-     0
+-(1 row)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AN...
++                             ^
+ DROP INDEX onek_nulltest;
++ERROR:  index "onek_nulltest" does not exist
+ -- Check initial-positioning logic too
+ CREATE UNIQUE INDEX onek_nulltest ON onek_with_null (unique2);
+-DETAIL:  Distribution key column "unique1" is not included in the constraint.
+-ERROR:  UNIQUE index must contain all columns in the table's distribution key
++ERROR:  relation "onek_with_null" does not exist
+ SET enable_seqscan = OFF;
+ SET enable_indexscan = ON;
+ SET enable_bitmapscan = OFF;
+ SELECT unique1, unique2 FROM onek_with_null
+   ORDER BY unique2 LIMIT 2;
+- unique1 | unique2 
+----------+---------
+-         |      -1
+-     147 |       0
+-(2 rows)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT unique1, unique2 FROM onek_with_null
++                                     ^
+ SELECT unique1, unique2 FROM onek_with_null WHERE unique2 >= -1
+   ORDER BY unique2 LIMIT 2;
+- unique1 | unique2 
+----------+---------
+-         |      -1
+-     147 |       0
+-(2 rows)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT unique1, unique2 FROM onek_with_null WHERE unique2 >=...
++                                     ^
+ SELECT unique1, unique2 FROM onek_with_null WHERE unique2 >= 0
+   ORDER BY unique2 LIMIT 2;
+- unique1 | unique2 
+----------+---------
+-     147 |       0
+-     931 |       1
+-(2 rows)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT unique1, unique2 FROM onek_with_null WHERE unique2 >=...
++                                     ^
+ SELECT unique1, unique2 FROM onek_with_null
+   ORDER BY unique2 DESC LIMIT 2;
+- unique1 | unique2 
+----------+---------
+-         |        
+-     278 |     999
+-(2 rows)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT unique1, unique2 FROM onek_with_null
++                                     ^
+ SELECT unique1, unique2 FROM onek_with_null WHERE unique2 >= -1
+   ORDER BY unique2 DESC LIMIT 2;
+- unique1 | unique2 
+----------+---------
+-       0 |     998
+-     278 |     999
+-(2 rows)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT unique1, unique2 FROM onek_with_null WHERE unique2 >=...
++                                     ^
+ SELECT unique1, unique2 FROM onek_with_null WHERE unique2 < 999
+   ORDER BY unique2 DESC LIMIT 2;
+- unique1 | unique2 
+----------+---------
+-       0 |     998
+-     744 |     997
+-(2 rows)
+-
++ERROR:  relation "onek_with_null" does not exist
++LINE 1: SELECT unique1, unique2 FROM onek_with_null WHERE unique2 < ...
++                                     ^
+ RESET enable_seqscan;
+ RESET enable_indexscan;
+ RESET enable_bitmapscan;
+ DROP TABLE onek_with_null;
++ERROR:  table "onek_with_null" does not exist
+ --
+ -- Check bitmap index path planning
+ --
+ EXPLAIN (COSTS OFF)
+ SELECT * FROM tenk1
+   WHERE thousand = 42 AND (tenthous = 1 OR tenthous = 3 OR tenthous = 42);
+-QUERY PLAN
+-___________
+- Gather Motion 3:1  (slice1; segments: 3)
+-   ->  Index Scan using tenk1_thous_tenthous on tenk1
+-         Index Cond: (thousand = 42)
+-         Filter: ((tenthous = 1) OR (tenthous = 3) OR (tenthous = 42))
+-GP_IGNORE:(5 rows)
+-
++ERROR:  relation "tenk1" does not exist
++LINE 2: SELECT * FROM tenk1
++                      ^
+ SELECT * FROM tenk1
+   WHERE thousand = 42 AND (tenthous = 1 OR tenthous = 3 OR tenthous = 42);
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-      42 |    5530 |   0 |    2 |   2 |      2 |      42 |       42 |          42 |        42 |       42 |  84 |   85 | QBAAAA   | SEIAAA   | OOOOxx
+-(1 row)
+-
++ERROR:  relation "tenk1" does not exist
++LINE 1: SELECT * FROM tenk1
++                      ^
+ EXPLAIN (COSTS OFF)
+ SELECT count(*) FROM tenk1
+   WHERE hundred = 42 AND (thousand = 42 OR thousand = 99);
+-QUERY PLAN
+-___________
+- Aggregate
+-   ->  Gather Motion 3:1  (slice1; segments: 3)
+-         ->  Index Scan using tenk1_hundred on tenk1
+-               Index Cond: (hundred = 42)
+-               Filter: ((thousand = 42) OR (thousand = 99))
+-GP_IGNORE:(6 rows)
+-
++ERROR:  relation "tenk1" does not exist
++LINE 2: SELECT count(*) FROM tenk1
++                             ^
+ SELECT count(*) FROM tenk1
+   WHERE hundred = 42 AND (thousand = 42 OR thousand = 99);
+- count 
+--------
+-    10
+-(1 row)
+-
++ERROR:  relation "tenk1" does not exist
++LINE 1: SELECT count(*) FROM tenk1
++                             ^
+ --
+ -- Check behavior with duplicate index column contents
+ --
+ CREATE TABLE dupindexcols AS
+   SELECT unique1 as id, stringu2::text as f1 FROM tenk1;
++ERROR:  relation "tenk1" does not exist
++LINE 2:   SELECT unique1 as id, stringu2::text as f1 FROM tenk1;
++                                                          ^
+ CREATE INDEX dupindexcols_i ON dupindexcols (f1, id, f1 text_pattern_ops);
++ERROR:  relation "dupindexcols" does not exist
+ ANALYZE dupindexcols;
++ERROR:  relation "dupindexcols" does not exist
+ EXPLAIN (COSTS OFF)
+   SELECT count(*) FROM dupindexcols
+     WHERE f1 BETWEEN 'WA' AND 'ZZZ' and id < 1000 and f1 ~<~ 'YX';
+-QUERY PLAN
+-___________
+- Finalize Aggregate
+-   ->  Gather Motion 3:1  (slice1; segments: 3)
+-         ->  Partial Aggregate
+-               ->  Bitmap Heap Scan on dupindexcols
+-                     Recheck Cond: ((f1 >= 'WA'::text) AND (f1 <= 'ZZZ'::text) AND (id < 1000) AND (f1 ~<~ 'YX'::text))
+-                     ->  Bitmap Index Scan on dupindexcols_i
+-                           Index Cond: ((f1 >= 'WA'::text) AND (f1 <= 'ZZZ'::text) AND (id < 1000) AND (f1 ~<~ 'YX'::text))
+-GP_IGNORE:(8 rows)
+-
++ERROR:  relation "dupindexcols" does not exist
++LINE 2:   SELECT count(*) FROM dupindexcols
++                               ^
+ SELECT count(*) FROM dupindexcols
+   WHERE f1 BETWEEN 'WA' AND 'ZZZ' and id < 1000 and f1 ~<~ 'YX';
+- count 
+--------
+-    97
+-(1 row)
+-
++ERROR:  relation "dupindexcols" does not exist
++LINE 1: SELECT count(*) FROM dupindexcols
++                             ^
+ --
+ -- Check ordering of =ANY indexqual results (bug in 9.2.0)
+ --
+ vacuum tenk1;		-- ensure we get consistent plans here
++ERROR:  relation "tenk1" does not exist
+ explain (costs off)
+ SELECT unique1 FROM tenk1
+ WHERE unique1 IN (1,42,7)
+ ORDER BY unique1;
+-QUERY PLAN
+-___________
+- Gather Motion 3:1  (slice1; segments: 3)
+-   Merge Key: unique1
+-   ->  Index Only Scan using tenk1_unique1 on tenk1
+-         Index Cond: (unique1 = ANY ('{1,42,7}'::integer[]))
+-GP_IGNORE:(5 rows)
+-
++ERROR:  relation "tenk1" does not exist
++LINE 2: SELECT unique1 FROM tenk1
++                            ^
+ SELECT unique1 FROM tenk1
+ WHERE unique1 IN (1,42,7)
+ ORDER BY unique1;
+- unique1 
+----------
+-       1
+-       7
+-      42
+-(3 rows)
+-
++ERROR:  relation "tenk1" does not exist
++LINE 1: SELECT unique1 FROM tenk1
++                            ^
+ explain (costs off)
+ SELECT thousand, tenthous FROM tenk1
+ WHERE thousand < 2 AND tenthous IN (1001,3000)
+ ORDER BY thousand;
+-QUERY PLAN
+-___________
+- Gather Motion 3:1  (slice1; segments: 3)
+-   Merge Key: thousand
+-   ->  Sort
+-         Sort Key: thousand
+-         ->  Index Only Scan using tenk1_thous_tenthous on tenk1
+-               Index Cond: (thousand < 2)
+-               Filter: (tenthous = ANY ('{1001,3000}'::integer[]))
+-GP_IGNORE:(8 rows)
+-
++ERROR:  relation "tenk1" does not exist
++LINE 2: SELECT thousand, tenthous FROM tenk1
++                                       ^
+ SELECT thousand, tenthous FROM tenk1
+ WHERE thousand < 2 AND tenthous IN (1001,3000)
+ ORDER BY thousand;
+- thousand | tenthous 
+-----------+----------
+-        0 |     3000
+-        1 |     1001
+-(2 rows)
+-
++ERROR:  relation "tenk1" does not exist
++LINE 1: SELECT thousand, tenthous FROM tenk1
++                                       ^
+ SET enable_indexonlyscan = OFF;
+ explain (costs off)
+ SELECT thousand, tenthous FROM tenk1
+ WHERE thousand < 2 AND tenthous IN (1001,3000)
+ ORDER BY thousand;
+-QUERY PLAN
+-___________
+- Gather Motion 3:1  (slice1; segments: 3)
+-   Merge Key: thousand
+-   ->  Sort
+-         Sort Key: thousand
+-         ->  Index Only Scan using tenk1_thous_tenthous on tenk1
+-               Index Cond: (thousand < 2)
+-               Filter: (tenthous = ANY ('{1001,3000}'::integer[]))
+-GP_IGNORE:(8 rows)
+-
++ERROR:  relation "tenk1" does not exist
++LINE 2: SELECT thousand, tenthous FROM tenk1
++                                       ^
+ SELECT thousand, tenthous FROM tenk1
+ WHERE thousand < 2 AND tenthous IN (1001,3000)
+ ORDER BY thousand;
+- thousand | tenthous 
+-----------+----------
+-        0 |     3000
+-        1 |     1001
+-(2 rows)
+-
++ERROR:  relation "tenk1" does not exist
++LINE 1: SELECT thousand, tenthous FROM tenk1
++                                       ^
+ RESET enable_indexonlyscan;
+ --
+ -- Check elimination of constant-NULL subexpressions
+ --
+ explain (costs off)
+   select * from tenk1 where (thousand, tenthous) in ((1,1001), (null,null));
+-QUERY PLAN
+-___________
+- Gather Motion 3:1  (slice1; segments: 3)
+-   ->  Index Scan using tenk1_thous_tenthous on tenk1
+-         Index Cond: ((thousand = 1) AND (tenthous = 1001))
+-GP_IGNORE:(4 rows)
+-
++ERROR:  relation "tenk1" does not exist
++LINE 2:   select * from tenk1 where (thousand, tenthous) in ((1,1001...
++                        ^
+ --
+ -- Check matching of boolean index columns to WHERE conditions and sort keys
+ --
+diff -I HINT: -I CONTEXT: -I GP_IGNORE: -U3 /Users/mingli.zhang/work/whpg8/src/test/regress/expected/portals_optimizer.out /Users/mingli.zhang/work/whpg8/src/test/regress/results/portals.out
+--- /Users/mingli.zhang/work/whpg8/src/test/regress/expected/portals_optimizer.out	2026-09-03 11:21:04.669160009 +0000
++++ /Users/mingli.zhang/work/whpg8/src/test/regress/results/portals.out	2026-09-03 11:21:04.679160009 +0000
+@@ -5,450 +5,128 @@
+ --
+ BEGIN;
+ DECLARE foo1 SCROLL CURSOR FOR SELECT * FROM tenk1 ORDER BY unique2;
++ERROR:  relation "tenk1" does not exist
++LINE 1: DECLARE foo1 SCROLL CURSOR FOR SELECT * FROM tenk1 ORDER BY ...
++                                                     ^
+ DECLARE foo2 CURSOR FOR SELECT * FROM tenk2 ORDER BY 1,2,3,4;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ DECLARE foo3 SCROLL CURSOR FOR SELECT * FROM tenk1 ORDER BY unique2;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ DECLARE foo4 CURSOR FOR SELECT * FROM tenk2 ORDER BY 1,2,3,4;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ DECLARE foo5 SCROLL CURSOR FOR SELECT * FROM tenk1 ORDER BY unique2;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ DECLARE foo6 CURSOR FOR SELECT * FROM tenk2 ORDER BY 1,2,3,4;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ DECLARE foo7 SCROLL CURSOR FOR SELECT * FROM tenk1 ORDER BY unique2;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ DECLARE foo8 CURSOR FOR SELECT * FROM tenk2 ORDER BY 1,2,3,4;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ DECLARE foo9 SCROLL CURSOR FOR SELECT * FROM tenk1 ORDER BY unique2;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ DECLARE foo10 CURSOR FOR SELECT * FROM tenk2 ORDER BY 1,2,3,4;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ DECLARE foo11 SCROLL CURSOR FOR SELECT * FROM tenk1 ORDER BY unique2;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ DECLARE foo12 CURSOR FOR SELECT * FROM tenk2 ORDER BY 1,2,3,4;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ DECLARE foo13 SCROLL CURSOR FOR SELECT * FROM tenk1 ORDER BY unique2;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ DECLARE foo14 CURSOR FOR SELECT * FROM tenk2 ORDER BY 1,2,3,4;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ DECLARE foo15 SCROLL CURSOR FOR SELECT * FROM tenk1 ORDER BY unique2;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ DECLARE foo16 CURSOR FOR SELECT * FROM tenk2 ORDER BY 1,2,3,4;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ DECLARE foo17 SCROLL CURSOR FOR SELECT * FROM tenk1 ORDER BY unique2;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ DECLARE foo18 CURSOR FOR SELECT * FROM tenk2 ORDER BY 1,2,3,4;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ DECLARE foo19 SCROLL CURSOR FOR SELECT * FROM tenk1 ORDER BY unique2;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ DECLARE foo20 CURSOR FOR SELECT * FROM tenk2 ORDER BY 1,2,3,4;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ DECLARE foo21 SCROLL CURSOR FOR SELECT * FROM tenk1 ORDER BY unique2;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ DECLARE foo22 CURSOR FOR SELECT * FROM tenk2 ORDER BY 1,2,3,4;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ DECLARE foo23 SCROLL CURSOR FOR SELECT * FROM tenk1 ORDER BY unique2;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ FETCH 1 in foo1;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-    8800 |       0 |   0 |    0 |   0 |      0 |       0 |      800 |         800 |      3800 |     8800 |   0 |    1 | MAAAAA   | AAAAAA   | AAAAxx
+-(1 row)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ FETCH 2 in foo2;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-       0 |    9998 |   0 |    0 |   0 |      0 |       0 |        0 |           0 |         0 |        0 |   0 |    1 | AAAAAA   | OUOAAA   | OOOOxx
+-       1 |    2838 |   1 |    1 |   1 |      1 |       1 |        1 |           1 |         1 |        1 |   2 |    3 | BAAAAA   | EFEAAA   | OOOOxx
+-(2 rows)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ FETCH 3 in foo3;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-    1891 |       1 |   1 |    3 |   1 |     11 |      91 |      891 |        1891 |      1891 |     1891 | 182 |  183 | TUAAAA   | BAAAAA   | HHHHxx
+-    3420 |       2 |   0 |    0 |   0 |      0 |      20 |      420 |        1420 |      3420 |     3420 |  40 |   41 | OBAAAA   | CAAAAA   | OOOOxx
+-    8800 |       0 |   0 |    0 |   0 |      0 |       0 |      800 |         800 |      3800 |     8800 |   0 |    1 | MAAAAA   | AAAAAA   | AAAAxx
+-(3 rows)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ FETCH 4 in foo4;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-       0 |    9998 |   0 |    0 |   0 |      0 |       0 |        0 |           0 |         0 |        0 |   0 |    1 | AAAAAA   | OUOAAA   | OOOOxx
+-       1 |    2838 |   1 |    1 |   1 |      1 |       1 |        1 |           1 |         1 |        1 |   2 |    3 | BAAAAA   | EFEAAA   | OOOOxx
+-       2 |    2716 |   0 |    2 |   2 |      2 |       2 |        2 |           2 |         2 |        2 |   4 |    5 | CAAAAA   | MAEAAA   | AAAAxx
+-       3 |    5679 |   1 |    3 |   3 |      3 |       3 |        3 |           3 |         3 |        3 |   6 |    7 | DAAAAA   | LKIAAA   | VVVVxx
+-(4 rows)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ FETCH 5 in foo5;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-    1891 |       1 |   1 |    3 |   1 |     11 |      91 |      891 |        1891 |      1891 |     1891 | 182 |  183 | TUAAAA   | BAAAAA   | HHHHxx
+-    3420 |       2 |   0 |    0 |   0 |      0 |      20 |      420 |        1420 |      3420 |     3420 |  40 |   41 | OBAAAA   | CAAAAA   | OOOOxx
+-    7164 |       4 |   0 |    0 |   4 |      4 |      64 |      164 |        1164 |      2164 |     7164 | 128 |  129 | OPAAAA   | EAAAAA   | AAAAxx
+-    8800 |       0 |   0 |    0 |   0 |      0 |       0 |      800 |         800 |      3800 |     8800 |   0 |    1 | MAAAAA   | AAAAAA   | AAAAxx
+-    9850 |       3 |   0 |    2 |   0 |     10 |      50 |      850 |        1850 |      4850 |     9850 | 100 |  101 | WOAAAA   | DAAAAA   | VVVVxx
+-(5 rows)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ FETCH 6 in foo6;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-       0 |    9998 |   0 |    0 |   0 |      0 |       0 |        0 |           0 |         0 |        0 |   0 |    1 | AAAAAA   | OUOAAA   | OOOOxx
+-       1 |    2838 |   1 |    1 |   1 |      1 |       1 |        1 |           1 |         1 |        1 |   2 |    3 | BAAAAA   | EFEAAA   | OOOOxx
+-       2 |    2716 |   0 |    2 |   2 |      2 |       2 |        2 |           2 |         2 |        2 |   4 |    5 | CAAAAA   | MAEAAA   | AAAAxx
+-       3 |    5679 |   1 |    3 |   3 |      3 |       3 |        3 |           3 |         3 |        3 |   6 |    7 | DAAAAA   | LKIAAA   | VVVVxx
+-       4 |    1621 |   0 |    0 |   4 |      4 |       4 |        4 |           4 |         4 |        4 |   8 |    9 | EAAAAA   | JKCAAA   | HHHHxx
+-       5 |    5557 |   1 |    1 |   5 |      5 |       5 |        5 |           5 |         5 |        5 |  10 |   11 | FAAAAA   | TFIAAA   | HHHHxx
+-(6 rows)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ FETCH 7 in foo7;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-    1891 |       1 |   1 |    3 |   1 |     11 |      91 |      891 |        1891 |      1891 |     1891 | 182 |  183 | TUAAAA   | BAAAAA   | HHHHxx
+-    3420 |       2 |   0 |    0 |   0 |      0 |      20 |      420 |        1420 |      3420 |     3420 |  40 |   41 | OBAAAA   | CAAAAA   | OOOOxx
+-    5057 |       6 |   1 |    1 |   7 |     17 |      57 |       57 |        1057 |        57 |     5057 | 114 |  115 | NMAAAA   | GAAAAA   | OOOOxx
+-    7164 |       4 |   0 |    0 |   4 |      4 |      64 |      164 |        1164 |      2164 |     7164 | 128 |  129 | OPAAAA   | EAAAAA   | AAAAxx
+-    8009 |       5 |   1 |    1 |   9 |      9 |       9 |        9 |           9 |      3009 |     8009 |  18 |   19 | BWAAAA   | FAAAAA   | HHHHxx
+-    8800 |       0 |   0 |    0 |   0 |      0 |       0 |      800 |         800 |      3800 |     8800 |   0 |    1 | MAAAAA   | AAAAAA   | AAAAxx
+-    9850 |       3 |   0 |    2 |   0 |     10 |      50 |      850 |        1850 |      4850 |     9850 | 100 |  101 | WOAAAA   | DAAAAA   | VVVVxx
+-(7 rows)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ FETCH 8 in foo8;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-       0 |    9998 |   0 |    0 |   0 |      0 |       0 |        0 |           0 |         0 |        0 |   0 |    1 | AAAAAA   | OUOAAA   | OOOOxx
+-       1 |    2838 |   1 |    1 |   1 |      1 |       1 |        1 |           1 |         1 |        1 |   2 |    3 | BAAAAA   | EFEAAA   | OOOOxx
+-       2 |    2716 |   0 |    2 |   2 |      2 |       2 |        2 |           2 |         2 |        2 |   4 |    5 | CAAAAA   | MAEAAA   | AAAAxx
+-       3 |    5679 |   1 |    3 |   3 |      3 |       3 |        3 |           3 |         3 |        3 |   6 |    7 | DAAAAA   | LKIAAA   | VVVVxx
+-       4 |    1621 |   0 |    0 |   4 |      4 |       4 |        4 |           4 |         4 |        4 |   8 |    9 | EAAAAA   | JKCAAA   | HHHHxx
+-       5 |    5557 |   1 |    1 |   5 |      5 |       5 |        5 |           5 |         5 |        5 |  10 |   11 | FAAAAA   | TFIAAA   | HHHHxx
+-       6 |    2855 |   0 |    2 |   6 |      6 |       6 |        6 |           6 |         6 |        6 |  12 |   13 | GAAAAA   | VFEAAA   | VVVVxx
+-       7 |    8518 |   1 |    3 |   7 |      7 |       7 |        7 |           7 |         7 |        7 |  14 |   15 | HAAAAA   | QPMAAA   | OOOOxx
+-(8 rows)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ FETCH 9 in foo9;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-    1891 |       1 |   1 |    3 |   1 |     11 |      91 |      891 |        1891 |      1891 |     1891 | 182 |  183 | TUAAAA   | BAAAAA   | HHHHxx
+-    3420 |       2 |   0 |    0 |   0 |      0 |      20 |      420 |        1420 |      3420 |     3420 |  40 |   41 | OBAAAA   | CAAAAA   | OOOOxx
+-    4321 |       8 |   1 |    1 |   1 |      1 |      21 |      321 |         321 |      4321 |     4321 |  42 |   43 | FKAAAA   | IAAAAA   | AAAAxx
+-    5057 |       6 |   1 |    1 |   7 |     17 |      57 |       57 |        1057 |        57 |     5057 | 114 |  115 | NMAAAA   | GAAAAA   | OOOOxx
+-    6701 |       7 |   1 |    1 |   1 |      1 |       1 |      701 |         701 |      1701 |     6701 |   2 |    3 | TXAAAA   | HAAAAA   | VVVVxx
+-    7164 |       4 |   0 |    0 |   4 |      4 |      64 |      164 |        1164 |      2164 |     7164 | 128 |  129 | OPAAAA   | EAAAAA   | AAAAxx
+-    8009 |       5 |   1 |    1 |   9 |      9 |       9 |        9 |           9 |      3009 |     8009 |  18 |   19 | BWAAAA   | FAAAAA   | HHHHxx
+-    8800 |       0 |   0 |    0 |   0 |      0 |       0 |      800 |         800 |      3800 |     8800 |   0 |    1 | MAAAAA   | AAAAAA   | AAAAxx
+-    9850 |       3 |   0 |    2 |   0 |     10 |      50 |      850 |        1850 |      4850 |     9850 | 100 |  101 | WOAAAA   | DAAAAA   | VVVVxx
+-(9 rows)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ FETCH 10 in foo10;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-       0 |    9998 |   0 |    0 |   0 |      0 |       0 |        0 |           0 |         0 |        0 |   0 |    1 | AAAAAA   | OUOAAA   | OOOOxx
+-       1 |    2838 |   1 |    1 |   1 |      1 |       1 |        1 |           1 |         1 |        1 |   2 |    3 | BAAAAA   | EFEAAA   | OOOOxx
+-       2 |    2716 |   0 |    2 |   2 |      2 |       2 |        2 |           2 |         2 |        2 |   4 |    5 | CAAAAA   | MAEAAA   | AAAAxx
+-       3 |    5679 |   1 |    3 |   3 |      3 |       3 |        3 |           3 |         3 |        3 |   6 |    7 | DAAAAA   | LKIAAA   | VVVVxx
+-       4 |    1621 |   0 |    0 |   4 |      4 |       4 |        4 |           4 |         4 |        4 |   8 |    9 | EAAAAA   | JKCAAA   | HHHHxx
+-       5 |    5557 |   1 |    1 |   5 |      5 |       5 |        5 |           5 |         5 |        5 |  10 |   11 | FAAAAA   | TFIAAA   | HHHHxx
+-       6 |    2855 |   0 |    2 |   6 |      6 |       6 |        6 |           6 |         6 |        6 |  12 |   13 | GAAAAA   | VFEAAA   | VVVVxx
+-       7 |    8518 |   1 |    3 |   7 |      7 |       7 |        7 |           7 |         7 |        7 |  14 |   15 | HAAAAA   | QPMAAA   | OOOOxx
+-       8 |    5435 |   0 |    0 |   8 |      8 |       8 |        8 |           8 |         8 |        8 |  16 |   17 | IAAAAA   | BBIAAA   | VVVVxx
+-       9 |    4463 |   1 |    1 |   9 |      9 |       9 |        9 |           9 |         9 |        9 |  18 |   19 | JAAAAA   | RPGAAA   | VVVVxx
+-(10 rows)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ FETCH 11 in foo11;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-    1314 |      10 |   0 |    2 |   4 |     14 |      14 |      314 |        1314 |      1314 |     1314 |  28 |   29 | OYAAAA   | KAAAAA   | OOOOxx
+-    1891 |       1 |   1 |    3 |   1 |     11 |      91 |      891 |        1891 |      1891 |     1891 | 182 |  183 | TUAAAA   | BAAAAA   | HHHHxx
+-    3043 |       9 |   1 |    3 |   3 |      3 |      43 |       43 |        1043 |      3043 |     3043 |  86 |   87 | BNAAAA   | JAAAAA   | HHHHxx
+-    3420 |       2 |   0 |    0 |   0 |      0 |      20 |      420 |        1420 |      3420 |     3420 |  40 |   41 | OBAAAA   | CAAAAA   | OOOOxx
+-    4321 |       8 |   1 |    1 |   1 |      1 |      21 |      321 |         321 |      4321 |     4321 |  42 |   43 | FKAAAA   | IAAAAA   | AAAAxx
+-    5057 |       6 |   1 |    1 |   7 |     17 |      57 |       57 |        1057 |        57 |     5057 | 114 |  115 | NMAAAA   | GAAAAA   | OOOOxx
+-    6701 |       7 |   1 |    1 |   1 |      1 |       1 |      701 |         701 |      1701 |     6701 |   2 |    3 | TXAAAA   | HAAAAA   | VVVVxx
+-    7164 |       4 |   0 |    0 |   4 |      4 |      64 |      164 |        1164 |      2164 |     7164 | 128 |  129 | OPAAAA   | EAAAAA   | AAAAxx
+-    8009 |       5 |   1 |    1 |   9 |      9 |       9 |        9 |           9 |      3009 |     8009 |  18 |   19 | BWAAAA   | FAAAAA   | HHHHxx
+-    8800 |       0 |   0 |    0 |   0 |      0 |       0 |      800 |         800 |      3800 |     8800 |   0 |    1 | MAAAAA   | AAAAAA   | AAAAxx
+-    9850 |       3 |   0 |    2 |   0 |     10 |      50 |      850 |        1850 |      4850 |     9850 | 100 |  101 | WOAAAA   | DAAAAA   | VVVVxx
+-(11 rows)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ FETCH 12 in foo12;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-       0 |    9998 |   0 |    0 |   0 |      0 |       0 |        0 |           0 |         0 |        0 |   0 |    1 | AAAAAA   | OUOAAA   | OOOOxx
+-       1 |    2838 |   1 |    1 |   1 |      1 |       1 |        1 |           1 |         1 |        1 |   2 |    3 | BAAAAA   | EFEAAA   | OOOOxx
+-       2 |    2716 |   0 |    2 |   2 |      2 |       2 |        2 |           2 |         2 |        2 |   4 |    5 | CAAAAA   | MAEAAA   | AAAAxx
+-       3 |    5679 |   1 |    3 |   3 |      3 |       3 |        3 |           3 |         3 |        3 |   6 |    7 | DAAAAA   | LKIAAA   | VVVVxx
+-       4 |    1621 |   0 |    0 |   4 |      4 |       4 |        4 |           4 |         4 |        4 |   8 |    9 | EAAAAA   | JKCAAA   | HHHHxx
+-       5 |    5557 |   1 |    1 |   5 |      5 |       5 |        5 |           5 |         5 |        5 |  10 |   11 | FAAAAA   | TFIAAA   | HHHHxx
+-       6 |    2855 |   0 |    2 |   6 |      6 |       6 |        6 |           6 |         6 |        6 |  12 |   13 | GAAAAA   | VFEAAA   | VVVVxx
+-       7 |    8518 |   1 |    3 |   7 |      7 |       7 |        7 |           7 |         7 |        7 |  14 |   15 | HAAAAA   | QPMAAA   | OOOOxx
+-       8 |    5435 |   0 |    0 |   8 |      8 |       8 |        8 |           8 |         8 |        8 |  16 |   17 | IAAAAA   | BBIAAA   | VVVVxx
+-       9 |    4463 |   1 |    1 |   9 |      9 |       9 |        9 |           9 |         9 |        9 |  18 |   19 | JAAAAA   | RPGAAA   | VVVVxx
+-      10 |    8788 |   0 |    2 |   0 |     10 |      10 |       10 |          10 |        10 |       10 |  20 |   21 | KAAAAA   | AANAAA   | AAAAxx
+-      11 |    8396 |   1 |    3 |   1 |     11 |      11 |       11 |          11 |        11 |       11 |  22 |   23 | LAAAAA   | YKMAAA   | AAAAxx
+-(12 rows)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ FETCH 13 in foo13;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-    1314 |      10 |   0 |    2 |   4 |     14 |      14 |      314 |        1314 |      1314 |     1314 |  28 |   29 | OYAAAA   | KAAAAA   | OOOOxx
+-    1504 |      11 |   0 |    0 |   4 |      4 |       4 |      504 |        1504 |      1504 |     1504 |   8 |    9 | WFAAAA   | LAAAAA   | VVVVxx
+-    1891 |       1 |   1 |    3 |   1 |     11 |      91 |      891 |        1891 |      1891 |     1891 | 182 |  183 | TUAAAA   | BAAAAA   | HHHHxx
+-    3043 |       9 |   1 |    3 |   3 |      3 |      43 |       43 |        1043 |      3043 |     3043 |  86 |   87 | BNAAAA   | JAAAAA   | HHHHxx
+-    3420 |       2 |   0 |    0 |   0 |      0 |      20 |      420 |        1420 |      3420 |     3420 |  40 |   41 | OBAAAA   | CAAAAA   | OOOOxx
+-    4321 |       8 |   1 |    1 |   1 |      1 |      21 |      321 |         321 |      4321 |     4321 |  42 |   43 | FKAAAA   | IAAAAA   | AAAAxx
+-    5057 |       6 |   1 |    1 |   7 |     17 |      57 |       57 |        1057 |        57 |     5057 | 114 |  115 | NMAAAA   | GAAAAA   | OOOOxx
+-    5222 |      12 |   0 |    2 |   2 |      2 |      22 |      222 |        1222 |       222 |     5222 |  44 |   45 | WSAAAA   | MAAAAA   | AAAAxx
+-    6701 |       7 |   1 |    1 |   1 |      1 |       1 |      701 |         701 |      1701 |     6701 |   2 |    3 | TXAAAA   | HAAAAA   | VVVVxx
+-    7164 |       4 |   0 |    0 |   4 |      4 |      64 |      164 |        1164 |      2164 |     7164 | 128 |  129 | OPAAAA   | EAAAAA   | AAAAxx
+-    8009 |       5 |   1 |    1 |   9 |      9 |       9 |        9 |           9 |      3009 |     8009 |  18 |   19 | BWAAAA   | FAAAAA   | HHHHxx
+-    8800 |       0 |   0 |    0 |   0 |      0 |       0 |      800 |         800 |      3800 |     8800 |   0 |    1 | MAAAAA   | AAAAAA   | AAAAxx
+-    9850 |       3 |   0 |    2 |   0 |     10 |      50 |      850 |        1850 |      4850 |     9850 | 100 |  101 | WOAAAA   | DAAAAA   | VVVVxx
+-(13 rows)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ FETCH 14 in foo14;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-       0 |    9998 |   0 |    0 |   0 |      0 |       0 |        0 |           0 |         0 |        0 |   0 |    1 | AAAAAA   | OUOAAA   | OOOOxx
+-       1 |    2838 |   1 |    1 |   1 |      1 |       1 |        1 |           1 |         1 |        1 |   2 |    3 | BAAAAA   | EFEAAA   | OOOOxx
+-       2 |    2716 |   0 |    2 |   2 |      2 |       2 |        2 |           2 |         2 |        2 |   4 |    5 | CAAAAA   | MAEAAA   | AAAAxx
+-       3 |    5679 |   1 |    3 |   3 |      3 |       3 |        3 |           3 |         3 |        3 |   6 |    7 | DAAAAA   | LKIAAA   | VVVVxx
+-       4 |    1621 |   0 |    0 |   4 |      4 |       4 |        4 |           4 |         4 |        4 |   8 |    9 | EAAAAA   | JKCAAA   | HHHHxx
+-       5 |    5557 |   1 |    1 |   5 |      5 |       5 |        5 |           5 |         5 |        5 |  10 |   11 | FAAAAA   | TFIAAA   | HHHHxx
+-       6 |    2855 |   0 |    2 |   6 |      6 |       6 |        6 |           6 |         6 |        6 |  12 |   13 | GAAAAA   | VFEAAA   | VVVVxx
+-       7 |    8518 |   1 |    3 |   7 |      7 |       7 |        7 |           7 |         7 |        7 |  14 |   15 | HAAAAA   | QPMAAA   | OOOOxx
+-       8 |    5435 |   0 |    0 |   8 |      8 |       8 |        8 |           8 |         8 |        8 |  16 |   17 | IAAAAA   | BBIAAA   | VVVVxx
+-       9 |    4463 |   1 |    1 |   9 |      9 |       9 |        9 |           9 |         9 |        9 |  18 |   19 | JAAAAA   | RPGAAA   | VVVVxx
+-      10 |    8788 |   0 |    2 |   0 |     10 |      10 |       10 |          10 |        10 |       10 |  20 |   21 | KAAAAA   | AANAAA   | AAAAxx
+-      11 |    8396 |   1 |    3 |   1 |     11 |      11 |       11 |          11 |        11 |       11 |  22 |   23 | LAAAAA   | YKMAAA   | AAAAxx
+-      12 |    6605 |   0 |    0 |   2 |     12 |      12 |       12 |          12 |        12 |       12 |  24 |   25 | MAAAAA   | BUJAAA   | HHHHxx
+-      13 |    5696 |   1 |    1 |   3 |     13 |      13 |       13 |          13 |        13 |       13 |  26 |   27 | NAAAAA   | CLIAAA   | AAAAxx
+-(14 rows)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ FETCH 15 in foo15;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-    1314 |      10 |   0 |    2 |   4 |     14 |      14 |      314 |        1314 |      1314 |     1314 |  28 |   29 | OYAAAA   | KAAAAA   | OOOOxx
+-    1504 |      11 |   0 |    0 |   4 |      4 |       4 |      504 |        1504 |      1504 |     1504 |   8 |    9 | WFAAAA   | LAAAAA   | VVVVxx
+-    1891 |       1 |   1 |    3 |   1 |     11 |      91 |      891 |        1891 |      1891 |     1891 | 182 |  183 | TUAAAA   | BAAAAA   | HHHHxx
+-    3043 |       9 |   1 |    3 |   3 |      3 |      43 |       43 |        1043 |      3043 |     3043 |  86 |   87 | BNAAAA   | JAAAAA   | HHHHxx
+-    3420 |       2 |   0 |    0 |   0 |      0 |      20 |      420 |        1420 |      3420 |     3420 |  40 |   41 | OBAAAA   | CAAAAA   | OOOOxx
+-    4321 |       8 |   1 |    1 |   1 |      1 |      21 |      321 |         321 |      4321 |     4321 |  42 |   43 | FKAAAA   | IAAAAA   | AAAAxx
+-    5057 |       6 |   1 |    1 |   7 |     17 |      57 |       57 |        1057 |        57 |     5057 | 114 |  115 | NMAAAA   | GAAAAA   | OOOOxx
+-    5222 |      12 |   0 |    2 |   2 |      2 |      22 |      222 |        1222 |       222 |     5222 |  44 |   45 | WSAAAA   | MAAAAA   | AAAAxx
+-    5471 |      14 |   1 |    3 |   1 |     11 |      71 |      471 |        1471 |       471 |     5471 | 142 |  143 | LCAAAA   | OAAAAA   | OOOOxx
+-    6243 |      13 |   1 |    3 |   3 |      3 |      43 |      243 |         243 |      1243 |     6243 |  86 |   87 | DGAAAA   | NAAAAA   | HHHHxx
+-    6701 |       7 |   1 |    1 |   1 |      1 |       1 |      701 |         701 |      1701 |     6701 |   2 |    3 | TXAAAA   | HAAAAA   | VVVVxx
+-    7164 |       4 |   0 |    0 |   4 |      4 |      64 |      164 |        1164 |      2164 |     7164 | 128 |  129 | OPAAAA   | EAAAAA   | AAAAxx
+-    8009 |       5 |   1 |    1 |   9 |      9 |       9 |        9 |           9 |      3009 |     8009 |  18 |   19 | BWAAAA   | FAAAAA   | HHHHxx
+-    8800 |       0 |   0 |    0 |   0 |      0 |       0 |      800 |         800 |      3800 |     8800 |   0 |    1 | MAAAAA   | AAAAAA   | AAAAxx
+-    9850 |       3 |   0 |    2 |   0 |     10 |      50 |      850 |        1850 |      4850 |     9850 | 100 |  101 | WOAAAA   | DAAAAA   | VVVVxx
+-(15 rows)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ FETCH 16 in foo16;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-       0 |    9998 |   0 |    0 |   0 |      0 |       0 |        0 |           0 |         0 |        0 |   0 |    1 | AAAAAA   | OUOAAA   | OOOOxx
+-       1 |    2838 |   1 |    1 |   1 |      1 |       1 |        1 |           1 |         1 |        1 |   2 |    3 | BAAAAA   | EFEAAA   | OOOOxx
+-       2 |    2716 |   0 |    2 |   2 |      2 |       2 |        2 |           2 |         2 |        2 |   4 |    5 | CAAAAA   | MAEAAA   | AAAAxx
+-       3 |    5679 |   1 |    3 |   3 |      3 |       3 |        3 |           3 |         3 |        3 |   6 |    7 | DAAAAA   | LKIAAA   | VVVVxx
+-       4 |    1621 |   0 |    0 |   4 |      4 |       4 |        4 |           4 |         4 |        4 |   8 |    9 | EAAAAA   | JKCAAA   | HHHHxx
+-       5 |    5557 |   1 |    1 |   5 |      5 |       5 |        5 |           5 |         5 |        5 |  10 |   11 | FAAAAA   | TFIAAA   | HHHHxx
+-       6 |    2855 |   0 |    2 |   6 |      6 |       6 |        6 |           6 |         6 |        6 |  12 |   13 | GAAAAA   | VFEAAA   | VVVVxx
+-       7 |    8518 |   1 |    3 |   7 |      7 |       7 |        7 |           7 |         7 |        7 |  14 |   15 | HAAAAA   | QPMAAA   | OOOOxx
+-       8 |    5435 |   0 |    0 |   8 |      8 |       8 |        8 |           8 |         8 |        8 |  16 |   17 | IAAAAA   | BBIAAA   | VVVVxx
+-       9 |    4463 |   1 |    1 |   9 |      9 |       9 |        9 |           9 |         9 |        9 |  18 |   19 | JAAAAA   | RPGAAA   | VVVVxx
+-      10 |    8788 |   0 |    2 |   0 |     10 |      10 |       10 |          10 |        10 |       10 |  20 |   21 | KAAAAA   | AANAAA   | AAAAxx
+-      11 |    8396 |   1 |    3 |   1 |     11 |      11 |       11 |          11 |        11 |       11 |  22 |   23 | LAAAAA   | YKMAAA   | AAAAxx
+-      12 |    6605 |   0 |    0 |   2 |     12 |      12 |       12 |          12 |        12 |       12 |  24 |   25 | MAAAAA   | BUJAAA   | HHHHxx
+-      13 |    5696 |   1 |    1 |   3 |     13 |      13 |       13 |          13 |        13 |       13 |  26 |   27 | NAAAAA   | CLIAAA   | AAAAxx
+-      14 |    4341 |   0 |    2 |   4 |     14 |      14 |       14 |          14 |        14 |       14 |  28 |   29 | OAAAAA   | ZKGAAA   | HHHHxx
+-      15 |    1358 |   1 |    3 |   5 |     15 |      15 |       15 |          15 |        15 |       15 |  30 |   31 | PAAAAA   | GACAAA   | OOOOxx
+-(16 rows)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ FETCH 17 in foo17;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-    1314 |      10 |   0 |    2 |   4 |     14 |      14 |      314 |        1314 |      1314 |     1314 |  28 |   29 | OYAAAA   | KAAAAA   | OOOOxx
+-    1504 |      11 |   0 |    0 |   4 |      4 |       4 |      504 |        1504 |      1504 |     1504 |   8 |    9 | WFAAAA   | LAAAAA   | VVVVxx
+-    1891 |       1 |   1 |    3 |   1 |     11 |      91 |      891 |        1891 |      1891 |     1891 | 182 |  183 | TUAAAA   | BAAAAA   | HHHHxx
+-    3043 |       9 |   1 |    3 |   3 |      3 |      43 |       43 |        1043 |      3043 |     3043 |  86 |   87 | BNAAAA   | JAAAAA   | HHHHxx
+-    3420 |       2 |   0 |    0 |   0 |      0 |      20 |      420 |        1420 |      3420 |     3420 |  40 |   41 | OBAAAA   | CAAAAA   | OOOOxx
+-    4321 |       8 |   1 |    1 |   1 |      1 |      21 |      321 |         321 |      4321 |     4321 |  42 |   43 | FKAAAA   | IAAAAA   | AAAAxx
+-    5006 |      15 |   0 |    2 |   6 |      6 |       6 |        6 |        1006 |         6 |     5006 |  12 |   13 | OKAAAA   | PAAAAA   | VVVVxx
+-    5057 |       6 |   1 |    1 |   7 |     17 |      57 |       57 |        1057 |        57 |     5057 | 114 |  115 | NMAAAA   | GAAAAA   | OOOOxx
+-    5222 |      12 |   0 |    2 |   2 |      2 |      22 |      222 |        1222 |       222 |     5222 |  44 |   45 | WSAAAA   | MAAAAA   | AAAAxx
+-    5387 |      16 |   1 |    3 |   7 |      7 |      87 |      387 |        1387 |       387 |     5387 | 174 |  175 | FZAAAA   | QAAAAA   | AAAAxx
+-    5471 |      14 |   1 |    3 |   1 |     11 |      71 |      471 |        1471 |       471 |     5471 | 142 |  143 | LCAAAA   | OAAAAA   | OOOOxx
+-    6243 |      13 |   1 |    3 |   3 |      3 |      43 |      243 |         243 |      1243 |     6243 |  86 |   87 | DGAAAA   | NAAAAA   | HHHHxx
+-    6701 |       7 |   1 |    1 |   1 |      1 |       1 |      701 |         701 |      1701 |     6701 |   2 |    3 | TXAAAA   | HAAAAA   | VVVVxx
+-    7164 |       4 |   0 |    0 |   4 |      4 |      64 |      164 |        1164 |      2164 |     7164 | 128 |  129 | OPAAAA   | EAAAAA   | AAAAxx
+-    8009 |       5 |   1 |    1 |   9 |      9 |       9 |        9 |           9 |      3009 |     8009 |  18 |   19 | BWAAAA   | FAAAAA   | HHHHxx
+-    8800 |       0 |   0 |    0 |   0 |      0 |       0 |      800 |         800 |      3800 |     8800 |   0 |    1 | MAAAAA   | AAAAAA   | AAAAxx
+-    9850 |       3 |   0 |    2 |   0 |     10 |      50 |      850 |        1850 |      4850 |     9850 | 100 |  101 | WOAAAA   | DAAAAA   | VVVVxx
+-(17 rows)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ FETCH 18 in foo18;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-       0 |    9998 |   0 |    0 |   0 |      0 |       0 |        0 |           0 |         0 |        0 |   0 |    1 | AAAAAA   | OUOAAA   | OOOOxx
+-       1 |    2838 |   1 |    1 |   1 |      1 |       1 |        1 |           1 |         1 |        1 |   2 |    3 | BAAAAA   | EFEAAA   | OOOOxx
+-       2 |    2716 |   0 |    2 |   2 |      2 |       2 |        2 |           2 |         2 |        2 |   4 |    5 | CAAAAA   | MAEAAA   | AAAAxx
+-       3 |    5679 |   1 |    3 |   3 |      3 |       3 |        3 |           3 |         3 |        3 |   6 |    7 | DAAAAA   | LKIAAA   | VVVVxx
+-       4 |    1621 |   0 |    0 |   4 |      4 |       4 |        4 |           4 |         4 |        4 |   8 |    9 | EAAAAA   | JKCAAA   | HHHHxx
+-       5 |    5557 |   1 |    1 |   5 |      5 |       5 |        5 |           5 |         5 |        5 |  10 |   11 | FAAAAA   | TFIAAA   | HHHHxx
+-       6 |    2855 |   0 |    2 |   6 |      6 |       6 |        6 |           6 |         6 |        6 |  12 |   13 | GAAAAA   | VFEAAA   | VVVVxx
+-       7 |    8518 |   1 |    3 |   7 |      7 |       7 |        7 |           7 |         7 |        7 |  14 |   15 | HAAAAA   | QPMAAA   | OOOOxx
+-       8 |    5435 |   0 |    0 |   8 |      8 |       8 |        8 |           8 |         8 |        8 |  16 |   17 | IAAAAA   | BBIAAA   | VVVVxx
+-       9 |    4463 |   1 |    1 |   9 |      9 |       9 |        9 |           9 |         9 |        9 |  18 |   19 | JAAAAA   | RPGAAA   | VVVVxx
+-      10 |    8788 |   0 |    2 |   0 |     10 |      10 |       10 |          10 |        10 |       10 |  20 |   21 | KAAAAA   | AANAAA   | AAAAxx
+-      11 |    8396 |   1 |    3 |   1 |     11 |      11 |       11 |          11 |        11 |       11 |  22 |   23 | LAAAAA   | YKMAAA   | AAAAxx
+-      12 |    6605 |   0 |    0 |   2 |     12 |      12 |       12 |          12 |        12 |       12 |  24 |   25 | MAAAAA   | BUJAAA   | HHHHxx
+-      13 |    5696 |   1 |    1 |   3 |     13 |      13 |       13 |          13 |        13 |       13 |  26 |   27 | NAAAAA   | CLIAAA   | AAAAxx
+-      14 |    4341 |   0 |    2 |   4 |     14 |      14 |       14 |          14 |        14 |       14 |  28 |   29 | OAAAAA   | ZKGAAA   | HHHHxx
+-      15 |    1358 |   1 |    3 |   5 |     15 |      15 |       15 |          15 |        15 |       15 |  30 |   31 | PAAAAA   | GACAAA   | OOOOxx
+-      16 |    9675 |   0 |    0 |   6 |     16 |      16 |       16 |          16 |        16 |       16 |  32 |   33 | QAAAAA   | DIOAAA   | VVVVxx
+-      17 |    8274 |   1 |    1 |   7 |     17 |      17 |       17 |          17 |        17 |       17 |  34 |   35 | RAAAAA   | GGMAAA   | OOOOxx
+-(18 rows)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ FETCH 19 in foo19;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-    1314 |      10 |   0 |    2 |   4 |     14 |      14 |      314 |        1314 |      1314 |     1314 |  28 |   29 | OYAAAA   | KAAAAA   | OOOOxx
+-    1504 |      11 |   0 |    0 |   4 |      4 |       4 |      504 |        1504 |      1504 |     1504 |   8 |    9 | WFAAAA   | LAAAAA   | VVVVxx
+-    1891 |       1 |   1 |    3 |   1 |     11 |      91 |      891 |        1891 |      1891 |     1891 | 182 |  183 | TUAAAA   | BAAAAA   | HHHHxx
+-    3043 |       9 |   1 |    3 |   3 |      3 |      43 |       43 |        1043 |      3043 |     3043 |  86 |   87 | BNAAAA   | JAAAAA   | HHHHxx
+-    3420 |       2 |   0 |    0 |   0 |      0 |      20 |      420 |        1420 |      3420 |     3420 |  40 |   41 | OBAAAA   | CAAAAA   | OOOOxx
+-    4321 |       8 |   1 |    1 |   1 |      1 |      21 |      321 |         321 |      4321 |     4321 |  42 |   43 | FKAAAA   | IAAAAA   | AAAAxx
+-    5006 |      15 |   0 |    2 |   6 |      6 |       6 |        6 |        1006 |         6 |     5006 |  12 |   13 | OKAAAA   | PAAAAA   | VVVVxx
+-    5057 |       6 |   1 |    1 |   7 |     17 |      57 |       57 |        1057 |        57 |     5057 | 114 |  115 | NMAAAA   | GAAAAA   | OOOOxx
+-    5222 |      12 |   0 |    2 |   2 |      2 |      22 |      222 |        1222 |       222 |     5222 |  44 |   45 | WSAAAA   | MAAAAA   | AAAAxx
+-    5387 |      16 |   1 |    3 |   7 |      7 |      87 |      387 |        1387 |       387 |     5387 | 174 |  175 | FZAAAA   | QAAAAA   | AAAAxx
+-    5471 |      14 |   1 |    3 |   1 |     11 |      71 |      471 |        1471 |       471 |     5471 | 142 |  143 | LCAAAA   | OAAAAA   | OOOOxx
+-    5785 |      17 |   1 |    1 |   5 |      5 |      85 |      785 |        1785 |       785 |     5785 | 170 |  171 | NOAAAA   | RAAAAA   | HHHHxx
+-    6243 |      13 |   1 |    3 |   3 |      3 |      43 |      243 |         243 |      1243 |     6243 |  86 |   87 | DGAAAA   | NAAAAA   | HHHHxx
+-    6621 |      18 |   1 |    1 |   1 |      1 |      21 |      621 |         621 |      1621 |     6621 |  42 |   43 | RUAAAA   | SAAAAA   | OOOOxx
+-    6701 |       7 |   1 |    1 |   1 |      1 |       1 |      701 |         701 |      1701 |     6701 |   2 |    3 | TXAAAA   | HAAAAA   | VVVVxx
+-    7164 |       4 |   0 |    0 |   4 |      4 |      64 |      164 |        1164 |      2164 |     7164 | 128 |  129 | OPAAAA   | EAAAAA   | AAAAxx
+-    8009 |       5 |   1 |    1 |   9 |      9 |       9 |        9 |           9 |      3009 |     8009 |  18 |   19 | BWAAAA   | FAAAAA   | HHHHxx
+-    8800 |       0 |   0 |    0 |   0 |      0 |       0 |      800 |         800 |      3800 |     8800 |   0 |    1 | MAAAAA   | AAAAAA   | AAAAxx
+-    9850 |       3 |   0 |    2 |   0 |     10 |      50 |      850 |        1850 |      4850 |     9850 | 100 |  101 | WOAAAA   | DAAAAA   | VVVVxx
+-(19 rows)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ FETCH 20 in foo20;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-       0 |    9998 |   0 |    0 |   0 |      0 |       0 |        0 |           0 |         0 |        0 |   0 |    1 | AAAAAA   | OUOAAA   | OOOOxx
+-       1 |    2838 |   1 |    1 |   1 |      1 |       1 |        1 |           1 |         1 |        1 |   2 |    3 | BAAAAA   | EFEAAA   | OOOOxx
+-       2 |    2716 |   0 |    2 |   2 |      2 |       2 |        2 |           2 |         2 |        2 |   4 |    5 | CAAAAA   | MAEAAA   | AAAAxx
+-       3 |    5679 |   1 |    3 |   3 |      3 |       3 |        3 |           3 |         3 |        3 |   6 |    7 | DAAAAA   | LKIAAA   | VVVVxx
+-       4 |    1621 |   0 |    0 |   4 |      4 |       4 |        4 |           4 |         4 |        4 |   8 |    9 | EAAAAA   | JKCAAA   | HHHHxx
+-       5 |    5557 |   1 |    1 |   5 |      5 |       5 |        5 |           5 |         5 |        5 |  10 |   11 | FAAAAA   | TFIAAA   | HHHHxx
+-       6 |    2855 |   0 |    2 |   6 |      6 |       6 |        6 |           6 |         6 |        6 |  12 |   13 | GAAAAA   | VFEAAA   | VVVVxx
+-       7 |    8518 |   1 |    3 |   7 |      7 |       7 |        7 |           7 |         7 |        7 |  14 |   15 | HAAAAA   | QPMAAA   | OOOOxx
+-       8 |    5435 |   0 |    0 |   8 |      8 |       8 |        8 |           8 |         8 |        8 |  16 |   17 | IAAAAA   | BBIAAA   | VVVVxx
+-       9 |    4463 |   1 |    1 |   9 |      9 |       9 |        9 |           9 |         9 |        9 |  18 |   19 | JAAAAA   | RPGAAA   | VVVVxx
+-      10 |    8788 |   0 |    2 |   0 |     10 |      10 |       10 |          10 |        10 |       10 |  20 |   21 | KAAAAA   | AANAAA   | AAAAxx
+-      11 |    8396 |   1 |    3 |   1 |     11 |      11 |       11 |          11 |        11 |       11 |  22 |   23 | LAAAAA   | YKMAAA   | AAAAxx
+-      12 |    6605 |   0 |    0 |   2 |     12 |      12 |       12 |          12 |        12 |       12 |  24 |   25 | MAAAAA   | BUJAAA   | HHHHxx
+-      13 |    5696 |   1 |    1 |   3 |     13 |      13 |       13 |          13 |        13 |       13 |  26 |   27 | NAAAAA   | CLIAAA   | AAAAxx
+-      14 |    4341 |   0 |    2 |   4 |     14 |      14 |       14 |          14 |        14 |       14 |  28 |   29 | OAAAAA   | ZKGAAA   | HHHHxx
+-      15 |    1358 |   1 |    3 |   5 |     15 |      15 |       15 |          15 |        15 |       15 |  30 |   31 | PAAAAA   | GACAAA   | OOOOxx
+-      16 |    9675 |   0 |    0 |   6 |     16 |      16 |       16 |          16 |        16 |       16 |  32 |   33 | QAAAAA   | DIOAAA   | VVVVxx
+-      17 |    8274 |   1 |    1 |   7 |     17 |      17 |       17 |          17 |        17 |       17 |  34 |   35 | RAAAAA   | GGMAAA   | OOOOxx
+-      18 |     376 |   0 |    2 |   8 |     18 |      18 |       18 |          18 |        18 |       18 |  36 |   37 | SAAAAA   | MOAAAA   | AAAAxx
+-      19 |    7303 |   1 |    3 |   9 |     19 |      19 |       19 |          19 |        19 |       19 |  38 |   39 | TAAAAA   | XUKAAA   | VVVVxx
+-(20 rows)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ FETCH 21 in foo21;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-    1314 |      10 |   0 |    2 |   4 |     14 |      14 |      314 |        1314 |      1314 |     1314 |  28 |   29 | OYAAAA   | KAAAAA   | OOOOxx
+-    1504 |      11 |   0 |    0 |   4 |      4 |       4 |      504 |        1504 |      1504 |     1504 |   8 |    9 | WFAAAA   | LAAAAA   | VVVVxx
+-    1891 |       1 |   1 |    3 |   1 |     11 |      91 |      891 |        1891 |      1891 |     1891 | 182 |  183 | TUAAAA   | BAAAAA   | HHHHxx
+-    3043 |       9 |   1 |    3 |   3 |      3 |      43 |       43 |        1043 |      3043 |     3043 |  86 |   87 | BNAAAA   | JAAAAA   | HHHHxx
+-    3420 |       2 |   0 |    0 |   0 |      0 |      20 |      420 |        1420 |      3420 |     3420 |  40 |   41 | OBAAAA   | CAAAAA   | OOOOxx
+-    4321 |       8 |   1 |    1 |   1 |      1 |      21 |      321 |         321 |      4321 |     4321 |  42 |   43 | FKAAAA   | IAAAAA   | AAAAxx
+-    5006 |      15 |   0 |    2 |   6 |      6 |       6 |        6 |        1006 |         6 |     5006 |  12 |   13 | OKAAAA   | PAAAAA   | VVVVxx
+-    5057 |       6 |   1 |    1 |   7 |     17 |      57 |       57 |        1057 |        57 |     5057 | 114 |  115 | NMAAAA   | GAAAAA   | OOOOxx
+-    5222 |      12 |   0 |    2 |   2 |      2 |      22 |      222 |        1222 |       222 |     5222 |  44 |   45 | WSAAAA   | MAAAAA   | AAAAxx
+-    5387 |      16 |   1 |    3 |   7 |      7 |      87 |      387 |        1387 |       387 |     5387 | 174 |  175 | FZAAAA   | QAAAAA   | AAAAxx
+-    5471 |      14 |   1 |    3 |   1 |     11 |      71 |      471 |        1471 |       471 |     5471 | 142 |  143 | LCAAAA   | OAAAAA   | OOOOxx
+-    5785 |      17 |   1 |    1 |   5 |      5 |      85 |      785 |        1785 |       785 |     5785 | 170 |  171 | NOAAAA   | RAAAAA   | HHHHxx
+-    6243 |      13 |   1 |    3 |   3 |      3 |      43 |      243 |         243 |      1243 |     6243 |  86 |   87 | DGAAAA   | NAAAAA   | HHHHxx
+-    6621 |      18 |   1 |    1 |   1 |      1 |      21 |      621 |         621 |      1621 |     6621 |  42 |   43 | RUAAAA   | SAAAAA   | OOOOxx
+-    6701 |       7 |   1 |    1 |   1 |      1 |       1 |      701 |         701 |      1701 |     6701 |   2 |    3 | TXAAAA   | HAAAAA   | VVVVxx
+-    6969 |      19 |   1 |    1 |   9 |      9 |      69 |      969 |         969 |      1969 |     6969 | 138 |  139 | BIAAAA   | TAAAAA   | VVVVxx
+-    7164 |       4 |   0 |    0 |   4 |      4 |      64 |      164 |        1164 |      2164 |     7164 | 128 |  129 | OPAAAA   | EAAAAA   | AAAAxx
+-    8009 |       5 |   1 |    1 |   9 |      9 |       9 |        9 |           9 |      3009 |     8009 |  18 |   19 | BWAAAA   | FAAAAA   | HHHHxx
+-    8800 |       0 |   0 |    0 |   0 |      0 |       0 |      800 |         800 |      3800 |     8800 |   0 |    1 | MAAAAA   | AAAAAA   | AAAAxx
+-    9460 |      20 |   0 |    0 |   0 |      0 |      60 |      460 |        1460 |      4460 |     9460 | 120 |  121 | WZAAAA   | UAAAAA   | AAAAxx
+-    9850 |       3 |   0 |    2 |   0 |     10 |      50 |      850 |        1850 |      4850 |     9850 | 100 |  101 | WOAAAA   | DAAAAA   | VVVVxx
+-(21 rows)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ FETCH 22 in foo22;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-       0 |    9998 |   0 |    0 |   0 |      0 |       0 |        0 |           0 |         0 |        0 |   0 |    1 | AAAAAA   | OUOAAA   | OOOOxx
+-       1 |    2838 |   1 |    1 |   1 |      1 |       1 |        1 |           1 |         1 |        1 |   2 |    3 | BAAAAA   | EFEAAA   | OOOOxx
+-       2 |    2716 |   0 |    2 |   2 |      2 |       2 |        2 |           2 |         2 |        2 |   4 |    5 | CAAAAA   | MAEAAA   | AAAAxx
+-       3 |    5679 |   1 |    3 |   3 |      3 |       3 |        3 |           3 |         3 |        3 |   6 |    7 | DAAAAA   | LKIAAA   | VVVVxx
+-       4 |    1621 |   0 |    0 |   4 |      4 |       4 |        4 |           4 |         4 |        4 |   8 |    9 | EAAAAA   | JKCAAA   | HHHHxx
+-       5 |    5557 |   1 |    1 |   5 |      5 |       5 |        5 |           5 |         5 |        5 |  10 |   11 | FAAAAA   | TFIAAA   | HHHHxx
+-       6 |    2855 |   0 |    2 |   6 |      6 |       6 |        6 |           6 |         6 |        6 |  12 |   13 | GAAAAA   | VFEAAA   | VVVVxx
+-       7 |    8518 |   1 |    3 |   7 |      7 |       7 |        7 |           7 |         7 |        7 |  14 |   15 | HAAAAA   | QPMAAA   | OOOOxx
+-       8 |    5435 |   0 |    0 |   8 |      8 |       8 |        8 |           8 |         8 |        8 |  16 |   17 | IAAAAA   | BBIAAA   | VVVVxx
+-       9 |    4463 |   1 |    1 |   9 |      9 |       9 |        9 |           9 |         9 |        9 |  18 |   19 | JAAAAA   | RPGAAA   | VVVVxx
+-      10 |    8788 |   0 |    2 |   0 |     10 |      10 |       10 |          10 |        10 |       10 |  20 |   21 | KAAAAA   | AANAAA   | AAAAxx
+-      11 |    8396 |   1 |    3 |   1 |     11 |      11 |       11 |          11 |        11 |       11 |  22 |   23 | LAAAAA   | YKMAAA   | AAAAxx
+-      12 |    6605 |   0 |    0 |   2 |     12 |      12 |       12 |          12 |        12 |       12 |  24 |   25 | MAAAAA   | BUJAAA   | HHHHxx
+-      13 |    5696 |   1 |    1 |   3 |     13 |      13 |       13 |          13 |        13 |       13 |  26 |   27 | NAAAAA   | CLIAAA   | AAAAxx
+-      14 |    4341 |   0 |    2 |   4 |     14 |      14 |       14 |          14 |        14 |       14 |  28 |   29 | OAAAAA   | ZKGAAA   | HHHHxx
+-      15 |    1358 |   1 |    3 |   5 |     15 |      15 |       15 |          15 |        15 |       15 |  30 |   31 | PAAAAA   | GACAAA   | OOOOxx
+-      16 |    9675 |   0 |    0 |   6 |     16 |      16 |       16 |          16 |        16 |       16 |  32 |   33 | QAAAAA   | DIOAAA   | VVVVxx
+-      17 |    8274 |   1 |    1 |   7 |     17 |      17 |       17 |          17 |        17 |       17 |  34 |   35 | RAAAAA   | GGMAAA   | OOOOxx
+-      18 |     376 |   0 |    2 |   8 |     18 |      18 |       18 |          18 |        18 |       18 |  36 |   37 | SAAAAA   | MOAAAA   | AAAAxx
+-      19 |    7303 |   1 |    3 |   9 |     19 |      19 |       19 |          19 |        19 |       19 |  38 |   39 | TAAAAA   | XUKAAA   | VVVVxx
+-      20 |    5574 |   0 |    0 |   0 |      0 |      20 |       20 |          20 |        20 |       20 |  40 |   41 | UAAAAA   | KGIAAA   | OOOOxx
+-      21 |    1628 |   1 |    1 |   1 |      1 |      21 |       21 |          21 |        21 |       21 |  42 |   43 | VAAAAA   | QKCAAA   | AAAAxx
+-(22 rows)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ FETCH 23 in foo23;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-      59 |      21 |   1 |    3 |   9 |     19 |      59 |       59 |          59 |        59 |       59 | 118 |  119 | HCAAAA   | VAAAAA   | HHHHxx
+-    1314 |      10 |   0 |    2 |   4 |     14 |      14 |      314 |        1314 |      1314 |     1314 |  28 |   29 | OYAAAA   | KAAAAA   | OOOOxx
+-    1504 |      11 |   0 |    0 |   4 |      4 |       4 |      504 |        1504 |      1504 |     1504 |   8 |    9 | WFAAAA   | LAAAAA   | VVVVxx
+-    1891 |       1 |   1 |    3 |   1 |     11 |      91 |      891 |        1891 |      1891 |     1891 | 182 |  183 | TUAAAA   | BAAAAA   | HHHHxx
+-    3043 |       9 |   1 |    3 |   3 |      3 |      43 |       43 |        1043 |      3043 |     3043 |  86 |   87 | BNAAAA   | JAAAAA   | HHHHxx
+-    3420 |       2 |   0 |    0 |   0 |      0 |      20 |      420 |        1420 |      3420 |     3420 |  40 |   41 | OBAAAA   | CAAAAA   | OOOOxx
+-    4321 |       8 |   1 |    1 |   1 |      1 |      21 |      321 |         321 |      4321 |     4321 |  42 |   43 | FKAAAA   | IAAAAA   | AAAAxx
+-    5006 |      15 |   0 |    2 |   6 |      6 |       6 |        6 |        1006 |         6 |     5006 |  12 |   13 | OKAAAA   | PAAAAA   | VVVVxx
+-    5057 |       6 |   1 |    1 |   7 |     17 |      57 |       57 |        1057 |        57 |     5057 | 114 |  115 | NMAAAA   | GAAAAA   | OOOOxx
+-    5222 |      12 |   0 |    2 |   2 |      2 |      22 |      222 |        1222 |       222 |     5222 |  44 |   45 | WSAAAA   | MAAAAA   | AAAAxx
+-    5387 |      16 |   1 |    3 |   7 |      7 |      87 |      387 |        1387 |       387 |     5387 | 174 |  175 | FZAAAA   | QAAAAA   | AAAAxx
+-    5471 |      14 |   1 |    3 |   1 |     11 |      71 |      471 |        1471 |       471 |     5471 | 142 |  143 | LCAAAA   | OAAAAA   | OOOOxx
+-    5785 |      17 |   1 |    1 |   5 |      5 |      85 |      785 |        1785 |       785 |     5785 | 170 |  171 | NOAAAA   | RAAAAA   | HHHHxx
+-    6243 |      13 |   1 |    3 |   3 |      3 |      43 |      243 |         243 |      1243 |     6243 |  86 |   87 | DGAAAA   | NAAAAA   | HHHHxx
+-    6621 |      18 |   1 |    1 |   1 |      1 |      21 |      621 |         621 |      1621 |     6621 |  42 |   43 | RUAAAA   | SAAAAA   | OOOOxx
+-    6701 |       7 |   1 |    1 |   1 |      1 |       1 |      701 |         701 |      1701 |     6701 |   2 |    3 | TXAAAA   | HAAAAA   | VVVVxx
+-    6969 |      19 |   1 |    1 |   9 |      9 |      69 |      969 |         969 |      1969 |     6969 | 138 |  139 | BIAAAA   | TAAAAA   | VVVVxx
+-    7164 |       4 |   0 |    0 |   4 |      4 |      64 |      164 |        1164 |      2164 |     7164 | 128 |  129 | OPAAAA   | EAAAAA   | AAAAxx
+-    8009 |       5 |   1 |    1 |   9 |      9 |       9 |        9 |           9 |      3009 |     8009 |  18 |   19 | BWAAAA   | FAAAAA   | HHHHxx
+-    8020 |      22 |   0 |    0 |   0 |      0 |      20 |       20 |          20 |      3020 |     8020 |  40 |   41 | MWAAAA   | WAAAAA   | OOOOxx
+-    8800 |       0 |   0 |    0 |   0 |      0 |       0 |      800 |         800 |      3800 |     8800 |   0 |    1 | MAAAAA   | AAAAAA   | AAAAxx
+-    9460 |      20 |   0 |    0 |   0 |      0 |      60 |      460 |        1460 |      4460 |     9460 | 120 |  121 | WZAAAA   | UAAAAA   | AAAAxx
+-    9850 |       3 |   0 |    2 |   0 |     10 |      50 |      850 |        1850 |      4850 |     9850 | 100 |  101 | WOAAAA   | DAAAAA   | VVVVxx
+-(23 rows)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ CLOSE foo1;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ CLOSE foo2;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ CLOSE foo3;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ CLOSE foo4;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ CLOSE foo5;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ CLOSE foo6;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ CLOSE foo7;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ CLOSE foo8;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ CLOSE foo9;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ CLOSE foo10;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ CLOSE foo11;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ CLOSE foo12;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ -- leave some cursors open, to test that auto-close works.
+ -- record this in the system view as well (don't query the time field there
+ -- however)
+ SELECT name, statement, is_holdable, is_binary, is_scrollable FROM pg_cursors ORDER BY 1;
+- name  |                               statement                               | is_holdable | is_binary | is_scrollable 
+--------+-----------------------------------------------------------------------+-------------+-----------+---------------
+- foo13 | DECLARE foo13 SCROLL CURSOR FOR SELECT * FROM tenk1 ORDER BY unique2; | f           | f         | f
+- foo14 | DECLARE foo14 CURSOR FOR SELECT * FROM tenk2 ORDER BY 1,2,3,4;        | f           | f         | f
+- foo15 | DECLARE foo15 SCROLL CURSOR FOR SELECT * FROM tenk1 ORDER BY unique2; | f           | f         | f
+- foo16 | DECLARE foo16 CURSOR FOR SELECT * FROM tenk2 ORDER BY 1,2,3,4;        | f           | f         | f
+- foo17 | DECLARE foo17 SCROLL CURSOR FOR SELECT * FROM tenk1 ORDER BY unique2; | f           | f         | f
+- foo18 | DECLARE foo18 CURSOR FOR SELECT * FROM tenk2 ORDER BY 1,2,3,4;        | f           | f         | f
+- foo19 | DECLARE foo19 SCROLL CURSOR FOR SELECT * FROM tenk1 ORDER BY unique2; | f           | f         | f
+- foo20 | DECLARE foo20 CURSOR FOR SELECT * FROM tenk2 ORDER BY 1,2,3,4;        | f           | f         | f
+- foo21 | DECLARE foo21 SCROLL CURSOR FOR SELECT * FROM tenk1 ORDER BY unique2; | f           | f         | f
+- foo22 | DECLARE foo22 CURSOR FOR SELECT * FROM tenk2 ORDER BY 1,2,3,4;        | f           | f         | f
+- foo23 | DECLARE foo23 SCROLL CURSOR FOR SELECT * FROM tenk1 ORDER BY unique2; | f           | f         | f
+-(11 rows)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ END;
+ SELECT name, statement, is_holdable, is_binary, is_scrollable FROM pg_cursors;
+  name | statement | is_holdable | is_binary | is_scrollable 
+@@ -460,14 +138,13 @@
+ --
+ BEGIN;
+ DECLARE foo24 NO SCROLL CURSOR FOR SELECT * FROM tenk1 ORDER BY unique2;
++ERROR:  relation "tenk1" does not exist
++LINE 1: DECLARE foo24 NO SCROLL CURSOR FOR SELECT * FROM tenk1 ORDER...
++                                                         ^
+ FETCH 1 FROM foo24;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-    8800 |       0 |   0 |    0 |   0 |      0 |       0 |      800 |         800 |      3800 |     8800 |   0 |    1 | MAAAAA   | AAAAAA   | AAAAxx
+-(1 row)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ FETCH BACKWARD 1 FROM foo24; -- should fail
+-ERROR:  backward scan is not supported in this version of Greenplum Database
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ END;
+ --
+ -- Cursors outside transaction blocks
+@@ -479,76 +156,56 @@
+ 
+ BEGIN;
+ DECLARE foo25 CURSOR WITH HOLD FOR SELECT * FROM tenk2 ORDER BY 1,2,3,4;
++ERROR:  relation "tenk2" does not exist
++LINE 1: DECLARE foo25 CURSOR WITH HOLD FOR SELECT * FROM tenk2 ORDER...
++                                                         ^
+ FETCH FROM foo25;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-       0 |    9998 |   0 |    0 |   0 |      0 |       0 |        0 |           0 |         0 |        0 |   0 |    1 | AAAAAA   | OUOAAA   | OOOOxx
+-(1 row)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ FETCH FROM foo25;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-       1 |    2838 |   1 |    1 |   1 |      1 |       1 |        1 |           1 |         1 |        1 |   2 |    3 | BAAAAA   | EFEAAA   | OOOOxx
+-(1 row)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ COMMIT;
+ FETCH FROM foo25;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-       2 |    2716 |   0 |    2 |   2 |      2 |       2 |        2 |           2 |         2 |        2 |   4 |    5 | CAAAAA   | MAEAAA   | AAAAxx
+-(1 row)
+-
++ERROR:  cursor "foo25" does not exist
+ --FETCH BACKWARD FROM foo25; -- backwards scans not supported in GPDB
+ --FETCH ABSOLUTE -1 FROM foo25; -- backwards scans not supported in GPDB
+ SELECT name, statement, is_holdable, is_binary, is_scrollable FROM pg_cursors;
+- name  |                                statement                                 | is_holdable | is_binary | is_scrollable 
+--------+--------------------------------------------------------------------------+-------------+-----------+---------------
+- foo25 | DECLARE foo25 CURSOR WITH HOLD FOR SELECT * FROM tenk2 ORDER BY 1,2,3,4; | t           | f         | f
+-(1 row)
++ name | statement | is_holdable | is_binary | is_scrollable 
++------+-----------+-------------+-----------+---------------
++(0 rows)
+ 
+ CLOSE foo25;
++ERROR:  cursor "foo25" does not exist
+ BEGIN;
+ DECLARE foo25ns NO SCROLL CURSOR WITH HOLD FOR SELECT * FROM tenk2 ORDER BY 1,2,3,4;
++ERROR:  relation "tenk2" does not exist
++LINE 1: ...25ns NO SCROLL CURSOR WITH HOLD FOR SELECT * FROM tenk2 ORDE...
++                                                             ^
+ FETCH FROM foo25ns;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-       0 |    9998 |   0 |    0 |   0 |      0 |       0 |        0 |           0 |         0 |        0 |   0 |    1 | AAAAAA   | OUOAAA   | OOOOxx
+-(1 row)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ FETCH FROM foo25ns;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-       1 |    2838 |   1 |    1 |   1 |      1 |       1 |        1 |           1 |         1 |        1 |   2 |    3 | BAAAAA   | EFEAAA   | OOOOxx
+-(1 row)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ COMMIT;
+ FETCH FROM foo25ns;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-       2 |    2716 |   0 |    2 |   2 |      2 |       2 |        2 |           2 |         2 |        2 |   4 |    5 | CAAAAA   | MAEAAA   | AAAAxx
+-(1 row)
+-
++ERROR:  cursor "foo25ns" does not exist
+ FETCH ABSOLUTE 4 FROM foo25ns;
+- unique1 | unique2 | two | four | ten | twenty | hundred | thousand | twothousand | fivethous | tenthous | odd | even | stringu1 | stringu2 | string4 
+----------+---------+-----+------+-----+--------+---------+----------+-------------+-----------+----------+-----+------+----------+----------+---------
+-       3 |    5679 |   1 |    3 |   3 |      3 |       3 |        3 |           3 |         3 |        3 |   6 |    7 | DAAAAA   | LKIAAA   | VVVVxx
+-(1 row)
+-
++ERROR:  cursor "foo25ns" does not exist
+ FETCH ABSOLUTE 4 FROM foo25ns; -- fail
+-ERROR:  cursor can only scan forward
+-HINT:  Declare it with SCROLL option to enable backward scan.
++ERROR:  cursor "foo25ns" does not exist
+ SELECT name, statement, is_holdable, is_binary, is_scrollable FROM pg_cursors;
+-  name   |                                      statement                                       | is_holdable | is_binary | is_scrollable 
+----------+--------------------------------------------------------------------------------------+-------------+-----------+---------------
+- foo25ns | DECLARE foo25ns NO SCROLL CURSOR WITH HOLD FOR SELECT * FROM tenk2 ORDER BY 1,2,3,4; | t           | f         | f
+-(1 row)
++ name | statement | is_holdable | is_binary | is_scrollable 
++------+-----------+-------------+-----------+---------------
++(0 rows)
+ 
+ CLOSE foo25ns;
++ERROR:  cursor "foo25ns" does not exist
+ --
+ -- ROLLBACK should close holdable cursors
+ --
+ BEGIN;
+ DECLARE foo26 CURSOR WITH HOLD FOR SELECT * FROM tenk1 ORDER BY unique2;
++ERROR:  relation "tenk1" does not exist
++LINE 1: DECLARE foo26 CURSOR WITH HOLD FOR SELECT * FROM tenk1 ORDER...
++                                                         ^
+ ROLLBACK;
+ -- should fail
+ FETCH FROM foo26;
+@@ -561,32 +218,13 @@
+    RETURNS void
+    AS 'DECLARE c CURSOR FOR SELECT stringu1 FROM tenk1 WHERE stringu1 LIKE $1;'
+    LANGUAGE SQL READS SQL DATA;
++ERROR:  relation "tenk1" does not exist
++LINE 3:    AS 'DECLARE c CURSOR FOR SELECT stringu1 FROM tenk1 WHERE...
++                                                         ^
+ SELECT declares_cursor('AB%');
+- declares_cursor 
+-------------
+- 
+-(1 row)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ FETCH ALL FROM c;
+- stringu1 
+-----------
+- ABAAAA
+- ABAAAA
+- ABAAAA
+- ABAAAA
+- ABAAAA
+- ABAAAA
+- ABAAAA
+- ABAAAA
+- ABAAAA
+- ABAAAA
+- ABAAAA
+- ABAAAA
+- ABAAAA
+- ABAAAA
+- ABAAAA
+-(15 rows)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ ROLLBACK;
+ --
+ -- Test behavior of both volatile and stable functions inside a cursor;
+@@ -622,13 +260,11 @@
+ (1 row)
+ 
+ DECLARE bc BINARY CURSOR FOR SELECT * FROM tenk1;
++ERROR:  relation "tenk1" does not exist
++LINE 1: DECLARE bc BINARY CURSOR FOR SELECT * FROM tenk1;
++                                                   ^
+ SELECT name, statement, is_holdable, is_binary, is_scrollable FROM pg_cursors;
+- name |                              statement                               | is_holdable | is_binary | is_scrollable 
+-------+----------------------------------------------------------------------+-------------+-----------+---------------
+- bc   | DECLARE bc BINARY CURSOR FOR SELECT * FROM tenk1;                    | f           | t         | f
+- c2   | declare c2 cursor with hold for select count_tt1_v(), count_tt1_s(); | t           | f         | f
+-(2 rows)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ ROLLBACK;
+ -- We should not see the portal that is created internally to
+ -- implement EXECUTE in pg_cursors
+@@ -955,18 +591,25 @@
+ ERROR:  cursor "cx" is held from a previous transaction
+ BEGIN;
+ DECLARE c CURSOR FOR SELECT * FROM tenk2;
++ERROR:  relation "tenk2" does not exist
++LINE 1: DECLARE c CURSOR FOR SELECT * FROM tenk2;
++                                           ^
+ DELETE FROM uctest WHERE CURRENT OF c;  -- fail, cursor on wrong table
+-ERROR:  cursor "c" is not a simply updatable scan of table "uctest"
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ ROLLBACK;
+ BEGIN;
+ DECLARE c CURSOR FOR SELECT * FROM tenk2 FOR SHARE;
++ERROR:  relation "tenk2" does not exist
+ DELETE FROM uctest WHERE CURRENT OF c;  -- fail, cursor on wrong table
+-ERROR:  cursor "c" is not a simply updatable scan of table "uctest"
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ ROLLBACK;
+ BEGIN;
+ DECLARE c CURSOR FOR SELECT * FROM tenk1 JOIN tenk2 USING (unique1);
++ERROR:  relation "tenk1" does not exist
++LINE 1: DECLARE c CURSOR FOR SELECT * FROM tenk1 JOIN tenk2 USING (u...
++                                           ^
+ DELETE FROM tenk1 WHERE CURRENT OF c;  -- fail, cursor is on a join
+-ERROR:  cursor "c" is not a simply updatable scan of table "tenk1"
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ ROLLBACK;
+ BEGIN;
+ DECLARE c CURSOR FOR SELECT f1,count(*) FROM uctest GROUP BY f1;
+@@ -1012,26 +655,17 @@
+ BEGIN;
+ EXPLAIN (costs off)
+ DECLARE c1 CURSOR FOR SELECT stringu1 FROM onek WHERE stringu1 = 'DZAAAA';
+-QUERY PLAN
+-___________
+- Gather Motion 3:1  (slice1; segments: 3)
+-   ->  Index Scan using onek_stringu1 on onek
+-         Index Cond: (stringu1 = 'DZAAAA'::name)
+-GP_IGNORE:(4 rows)
+-
++ERROR:  relation "onek" does not exist
++LINE 2: DECLARE c1 CURSOR FOR SELECT stringu1 FROM onek WHERE string...
++                                                   ^
+ DECLARE c1 CURSOR FOR SELECT stringu1 FROM onek WHERE stringu1 = 'DZAAAA';
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ FETCH FROM c1;
+- stringu1 
+-----------
+- DZAAAA
+-(1 row)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ DELETE FROM onek WHERE CURRENT OF c1;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ SELECT stringu1 FROM onek WHERE stringu1 = 'DZAAAA';
+- stringu1 
+-----------
+-(0 rows)
+-
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ ROLLBACK;
+ GP_IGNORE:-- start_ignore
+ GP_IGNORE:-- ignore the block, because cursor can only scan forward
+@@ -1097,7 +731,7 @@
+  a | b 
+ ---+---
+  1 | 1
+-(1 row)
++GP_IGNORE:(1 row)
+ 
+ COMMIT;
+ DROP TABLE cursor;
+@@ -1113,18 +747,15 @@
+ create function nochange(int) returns int
+   as 'select $1 limit 1' language sql stable;
+ declare c cursor for select * from int8_tbl limit nochange(3);
++ERROR:  relation "int8_tbl" does not exist
++LINE 1: declare c cursor for select * from int8_tbl limit nochange(3...
++                                           ^
+ GP_IGNORE:-- start_ignore
+ GP_IGNORE:fetch all from c;
+-GP_IGNORE:        q1        |        q2         
+-GP_IGNORE:------------------+-------------------
+-GP_IGNORE: 4567890123456789 |               123
+-GP_IGNORE: 4567890123456789 |  4567890123456789
+-GP_IGNORE: 4567890123456789 | -4567890123456789
+-GP_IGNORE:(3 rows)
+-GP_IGNORE:
++GP_IGNORE:ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ GP_IGNORE:-- end_ignore
+ move backward all in c;
+-ERROR:  backward scan is not supported in this version of Greenplum Database
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ fetch all from c;
+ ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ rollback;
