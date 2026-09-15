@@ -25,6 +25,10 @@
  *
  * 3. Post-cleanup phase.
  *
+ *   Publish the horizon of the segments about to be recycled in a cleanup-info
+ *   WAL record, so that a hot standby cancels the readers whose snapshots still
+ *   see them before it replays the steps below.
+ *
  *   Truncate any old AWAITING_DROP segments, making them insertable again. If there
  *   are no other transactions running (TODO: or we're in "aggressive mode" and want
  *   to risk "snapshot too old" errors), this can truncate the old segments left
@@ -120,6 +124,7 @@
 #include "access/appendonlywriter.h"
 #include "access/appendonly_compaction.h"
 #include "access/genam.h"
+#include "access/heapam_xlog.h"
 #include "access/multixact.h"
 #include "access/visibilitymap.h"
 #include "access/xact.h"
@@ -458,6 +463,41 @@ ao_vacuum_rel(Relation rel, VacuumParams *params, BufferAccessStrategy bstrategy
 }
 
 /*
+ * Tell hot standbys which snapshots the coming recycle invalidates.
+ *
+ * Recycling truncates the dead segment files to zero and hands the same
+ * relfilenode and segment numbers back to new inserts, and the btree
+ * records written by the index vacuum carry no xid.  A standby reader
+ * whose snapshot predates the marking transaction still sees the segment
+ * as live in pg_aoseg and would read the truncated or refilled file at its
+ * old offsets, without any error to stop it.  So, like heap vacuum before
+ * its index pass, publish the horizon first: the record is the same
+ * table-AM-agnostic cleanup notice heap vacuum writes (conflict resolution
+ * needs only the database OID and the xid), and the standby cancels every
+ * reader at or below the horizon before it replays anything that follows.
+ *
+ * Unlike heap, where the horizon is the xid of some earlier DELETE, the
+ * horizon here is the xid of the VACUUM that marked the segment, so a
+ * recycle conflicts with every standby reader that started before that
+ * VACUUM committed, whether or not it ever looked at the removed rows.
+ * That is inherent in recycling whole segment files.
+ *
+ * The conflict test is the standard one on the reader's local xmin, as for
+ * every snapshot conflict on a hot standby.  Distributed snapshots are not
+ * consulted, so a reader whose distributed snapshot lags the mirror's
+ * replay is not caught; that limitation predates this record.
+ */
+static void
+ao_vacuum_log_cleanup_info(Relation rel, TransactionId latestRemovedXid)
+{
+	if (!RelationNeedsWAL(rel) || !XLogIsNeeded())
+		return;
+
+	if (TransactionIdIsValid(latestRemovedXid))
+		(void) log_heap_cleanup_info(rel->rd_node, latestRemovedXid);
+}
+
+/*
  * Recycling AWAITING_DROP segments.
  */
 static void
@@ -467,11 +507,18 @@ ao_vacuum_rel_recycle_dead_segments(Relation onerel, VacuumParams *params,
 	Bitmapset	*dead_segs;
 	int			options = params->options;
 	bool		need_drop;
+	TransactionId latestRemovedXid;
 
-	dead_segs = AppendOptimizedCollectDeadSegments(onerel);
+	dead_segs = AppendOptimizedCollectDeadSegments(onerel, &latestRemovedXid);
 	need_drop = !bms_is_empty(dead_segs);
 	if (need_drop)
 	{
+		/*
+		 * First of all, before any index or segment file is touched, let
+		 * hot standbys resolve the snapshot conflicts this recycle causes.
+		 */
+		ao_vacuum_log_cleanup_info(onerel, latestRemovedXid);
+
 		/*
 		 * Vacuum indexes only when we do find AWAITING_DROP segments.
 		 *

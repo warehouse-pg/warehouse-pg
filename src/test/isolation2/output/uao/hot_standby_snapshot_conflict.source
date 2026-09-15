@@ -1,0 +1,385 @@
+-- Snapshot conflicts raised on a hot standby by VACUUM of append-optimized
+-- tables (@amname@ variant).
+--
+-- Recycling a dead segment file truncates the same relfilenode and segment
+-- number to zero and hands it back to new inserts, and the btree records
+-- written by the index vacuum carry no xid.  Neither would ever cancel a
+-- standby reader on its own, so the recycle path has to publish the xid of
+-- the transaction that marked the segment AWAITING_DROP before it vacuums
+-- the indexes or touches the file.  The cases below hold a standby snapshot
+-- across such a recycle and check that the reader is cancelled with the
+-- ordinary snapshot-conflict error.
+--
+-- A VACUUM of an append-optimized table also prunes ordinary heap pages
+-- (the aux tables, and pg_stat_last_operation on the coordinator), and any
+-- of those can cancel the same reader for its own reasons.  To prove that
+-- the cancellation comes from the record written for THIS table, a fault
+-- point in the conflict resolver is armed with the table's relfilenode on
+-- the content-0 mirror: it fires only when the resolver finds a conflicting
+-- backend for a record carrying that relfilenode.  The metadata-tracking
+-- update on the coordinator is switched off for the duration of the test.
+
+-- Arm the resolver fault for p_relname's relfilenode on the content-0 mirror.
+create or replace function arm_ao_conflict_probe(p_relname text) returns text as $$ declare v_filenode text;	/* in func */ begin	/* in func */ select relfilenode::text into v_filenode	/* in func */ from gp_dist_random('pg_class')	/* in func */ where relname = p_relname and gp_segment_id = 0;	/* in func */ perform gp_inject_fault('resolve_snapshot_conflict', 'reset', dbid)	/* in func */ from gp_segment_configuration where content = 0 and role = 'm';	/* in func */ return (select gp_inject_fault('resolve_snapshot_conflict', 'skip', '', '', v_filenode, 1, -1, 0, dbid)	/* in func */ from gp_segment_configuration where content = 0 and role = 'm');	/* in func */ end;	/* in func */ $$ language plpgsql;
+CREATE FUNCTION
+
+-- Wait for the probe to fire once, then disarm it.
+create or replace function await_ao_conflict_probe() returns text as $$ begin	/* in func */ perform gp_wait_until_triggered_fault('resolve_snapshot_conflict', 1, dbid)	/* in func */ from gp_segment_configuration where content = 0 and role = 'm';	/* in func */ return (select gp_inject_fault('resolve_snapshot_conflict', 'reset', dbid)	/* in func */ from gp_segment_configuration where content = 0 and role = 'm');	/* in func */ end;	/* in func */ $$ language plpgsql;
+CREATE FUNCTION
+
+select gp_inject_fault_infinite('skip_meta_track_update', 'skip', dbid) from gp_segment_configuration where content = -1 and role = 'p';
+ gp_inject_fault_infinite 
+--------------------------
+ Success:                 
+(1 row)
+
+-- The suite runs with synchronous_commit = remote_apply, so a primary
+-- commit returns only after the standby has applied it, which for the
+-- VACUUM below means only after the conflicting reader is gone.  No
+-- deferral is in effect unless a case says so.
+show synchronous_commit;
+ synchronous_commit 
+--------------------
+ remote_apply       
+(1 row)
+show vacuum_defer_cleanup_age;
+ vacuum_defer_cleanup_age 
+--------------------------
+ 0                        
+(1 row)
+
+create table hs_ao_recycle_@amname@(a int, b int) using @amname@ distributed by (a);
+CREATE TABLE
+create index on hs_ao_recycle_@amname@(b);
+CREATE INDEX
+
+----------------------------------------------------------------------
+-- Case 1: a reader holding a snapshot across the recycle is cancelled.
+----------------------------------------------------------------------
+1: insert into hs_ao_recycle_@amname@ select i, i from generate_series(1, 30) i;
+INSERT 0 30
+-- the probe is armed on content 0 only, so content 0 must hold rows that
+-- the DELETE below removes; every case inserts this same series
+1: select count(*) > 0 from hs_ao_recycle_@amname@ where gp_segment_id = 0 and a % 2 = 0;
+ ?column? 
+----------
+ t        
+(1 row)
+
+-1S: begin transaction isolation level repeatable read;
+BEGIN
+-1S: select count(*) from hs_ao_recycle_@amname@;
+ count 
+-------
+ 30    
+(1 row)
+
+1: select arm_ao_conflict_probe('hs_ao_recycle_@amname@');
+ arm_ao_conflict_probe 
+-----------------------
+ Success:              
+(1 row)
+1: delete from hs_ao_recycle_@amname@ where a % 2 = 0;
+DELETE 15
+1: vacuum hs_ao_recycle_@amname@;
+VACUUM
+
+-1S: select count(*) from hs_ao_recycle_@amname@;
+ERROR:  terminating connection due to conflict with recovery  (seg0 slice1 127.0.0.1:8005 pid=2382249)
+DETAIL:  User query might have needed to see row versions that must be removed.
+HINT:  In a moment you should be able to reconnect to the database and repeat your command.
+-1S: end;
+ROLLBACK
+
+1: select await_ao_conflict_probe();
+ await_ao_conflict_probe 
+-------------------------
+ Success:                
+(1 row)
+1: truncate hs_ao_recycle_@amname@;
+TRUNCATE TABLE
+
+----------------------------------------------------------------------
+-- Case 2: a recycle deferred by a primary reader.  The first VACUUM marks
+-- the segment but cannot recycle it while a primary reader still needs
+-- it, so the standby reader survives that VACUUM; the second VACUUM,
+-- after the primary reader is gone, recycles and cancels the standby
+-- reader, whose snapshot predates the marking transaction.
+----------------------------------------------------------------------
+1: insert into hs_ao_recycle_@amname@ select i, i from generate_series(1, 30) i;
+INSERT 0 30
+2: begin transaction isolation level repeatable read;
+BEGIN
+2: select count(*) from hs_ao_recycle_@amname@;
+ count 
+-------
+ 30    
+(1 row)
+
+-1S: begin transaction isolation level repeatable read;
+BEGIN
+-1S: select count(*) from hs_ao_recycle_@amname@;
+ count 
+-------
+ 30    
+(1 row)
+
+1: select arm_ao_conflict_probe('hs_ao_recycle_@amname@');
+ arm_ao_conflict_probe 
+-----------------------
+ Success:              
+(1 row)
+1: delete from hs_ao_recycle_@amname@ where a % 2 = 0;
+DELETE 15
+1: vacuum hs_ao_recycle_@amname@;
+VACUUM
+
+-- nothing was recycled yet: the standby reader is untouched
+-1S: select count(*) from hs_ao_recycle_@amname@;
+ count 
+-------
+ 30    
+(1 row)
+
+2: end;
+COMMIT
+1: vacuum hs_ao_recycle_@amname@;
+VACUUM
+
+-1S: select count(*) from hs_ao_recycle_@amname@;
+ERROR:  terminating connection due to conflict with recovery  (seg0 slice1 127.0.0.1:8005 pid=2382279)
+DETAIL:  User query might have needed to see row versions that must be removed.
+HINT:  In a moment you should be able to reconnect to the database and repeat your command.
+-1S: end;
+ROLLBACK
+
+1: select await_ao_conflict_probe();
+ await_ao_conflict_probe 
+-------------------------
+ Success:                
+(1 row)
+1: truncate hs_ao_recycle_@amname@;
+TRUNCATE TABLE
+
+----------------------------------------------------------------------
+-- Case 3: the conflict is decided on the snapshot, not on the relation.
+-- A standby reader of an unrelated heap table is cancelled all the same.
+----------------------------------------------------------------------
+1: insert into hs_ao_recycle_@amname@ select i, i from generate_series(1, 30) i;
+INSERT 0 30
+1: create table hs_ao_bystander_@amname@(a int) using heap;
+CREATE TABLE
+1: insert into hs_ao_bystander_@amname@ select generate_series(1, 5);
+INSERT 0 5
+
+-1S: begin transaction isolation level repeatable read;
+BEGIN
+-1S: select count(*) from hs_ao_bystander_@amname@;
+ count 
+-------
+ 5     
+(1 row)
+
+1: select arm_ao_conflict_probe('hs_ao_recycle_@amname@');
+ arm_ao_conflict_probe 
+-----------------------
+ Success:              
+(1 row)
+1: delete from hs_ao_recycle_@amname@ where a % 2 = 0;
+DELETE 15
+1: vacuum hs_ao_recycle_@amname@;
+VACUUM
+
+-1S: select count(*) from hs_ao_bystander_@amname@;
+ERROR:  terminating connection due to conflict with recovery  (seg0 slice1 127.0.0.1:8005 pid=2382296)
+DETAIL:  User query might have needed to see row versions that must be removed.
+HINT:  In a moment you should be able to reconnect to the database and repeat your command.
+-1S: end;
+ROLLBACK
+
+1: select await_ao_conflict_probe();
+ await_ao_conflict_probe 
+-------------------------
+ Success:                
+(1 row)
+1: truncate hs_ao_recycle_@amname@;
+TRUNCATE TABLE
+1: drop table hs_ao_bystander_@amname@;
+DROP TABLE
+
+----------------------------------------------------------------------
+-- Case 4: a recycle in another database does not conflict.  The record
+-- carries the database OID and the resolver filters on it.
+----------------------------------------------------------------------
+1: insert into hs_ao_recycle_@amname@ select i, i from generate_series(1, 30) i;
+INSERT 0 30
+1: create database hs_ao_elsewhere_@amname@;
+CREATE DATABASE
+1q: ... <quitting>
+1:@db_name hs_ao_elsewhere_@amname@: create table hs_ao_remote(a int, b int) using @amname@ distributed by (a);
+CREATE TABLE
+1:@db_name hs_ao_elsewhere_@amname@: insert into hs_ao_remote select i, i from generate_series(1, 30) i;
+INSERT 0 30
+
+-1S: begin transaction isolation level repeatable read;
+BEGIN
+-1S: select count(*) from hs_ao_recycle_@amname@;
+ count 
+-------
+ 30    
+(1 row)
+
+1:@db_name hs_ao_elsewhere_@amname@: delete from hs_ao_remote where a % 2 = 0;
+DELETE 15
+1:@db_name hs_ao_elsewhere_@amname@: vacuum hs_ao_remote;
+VACUUM
+
+-- the reader in this database is untouched
+-1S: select count(*) from hs_ao_recycle_@amname@;
+ count 
+-------
+ 30    
+(1 row)
+-1S: end;
+COMMIT
+
+1q: ... <quitting>
+1: drop database hs_ao_elsewhere_@amname@;
+DROP DATABASE
+1: truncate hs_ao_recycle_@amname@;
+TRUNCATE TABLE
+
+----------------------------------------------------------------------
+-- Case 5: vacuum_defer_cleanup_age holds the recycle back on the primary,
+-- and with it the conflict, as it holds back heap cleanup.  For a standby
+-- that cannot feed its xmin back to the source (no hot_standby_feedback)
+-- it is the knob that delays this conflict.  The reader may be cancelled
+-- by any of the deferred cleanups the second VACUUM releases, so this
+-- case does not use the relfilenode probe; it only shows that the
+-- deferred VACUUM spares the reader and the later one does not.
+----------------------------------------------------------------------
+!\retcode gpconfig -c vacuum_defer_cleanup_age -v 1;
+-- start_ignore
+20260916:11:40:39:2382333 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c vacuum_defer_cleanup_age -v 1'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -u;
+-- start_ignore
+20260916:11:40:40:2382381 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20260916:11:40:40:2382381 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260916:11:40:40:2382381 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260916:11:40:40:2382381 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260916:11:40:40:2382381 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260916:11:40:40:2382381 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+
+-- end_ignore
+(exited with code 0)
+
+1: insert into hs_ao_recycle_@amname@ select i, i from generate_series(1, 30) i;
+INSERT 0 30
+
+-1S: begin transaction isolation level repeatable read;
+BEGIN
+-1S: select count(*) from hs_ao_recycle_@amname@;
+ count 
+-------
+ 30    
+(1 row)
+
+1: delete from hs_ao_recycle_@amname@ where a % 2 = 0;
+DELETE 15
+1: vacuum hs_ao_recycle_@amname@;
+VACUUM
+
+-- deferred: the marking transaction is still within the age window
+-1S: select count(*) from hs_ao_recycle_@amname@;
+ count 
+-------
+ 30    
+(1 row)
+
+-- one more transaction on the primary moves the window past it
+1: create temp table hs_ao_tick(a int);
+CREATE TABLE
+1: vacuum hs_ao_recycle_@amname@;
+VACUUM
+
+-1S: select count(*) from hs_ao_recycle_@amname@;
+ERROR:  terminating connection due to conflict with recovery  (seg0 slice1 127.0.0.1:8005 pid=2382318)
+DETAIL:  User query might have needed to see row versions that must be removed.
+HINT:  In a moment you should be able to reconnect to the database and repeat your command.
+-1S: end;
+ROLLBACK
+
+1: drop table hs_ao_tick;
+DROP TABLE
+!\retcode gpconfig -r vacuum_defer_cleanup_age;
+-- start_ignore
+20260916:11:40:41:2382407 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-r vacuum_defer_cleanup_age'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -u;
+-- start_ignore
+20260916:11:40:41:2382456 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20260916:11:40:41:2382456 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260916:11:40:41:2382456 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260916:11:40:41:2382456 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260916:11:40:41:2382456 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260916:11:40:41:2382456 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+
+-- end_ignore
+(exited with code 0)
+
+1: truncate hs_ao_recycle_@amname@;
+TRUNCATE TABLE
+
+----------------------------------------------------------------------
+-- Case 6: the recycled segment is refilled straight away.  Without the
+-- conflict record a reader that survived the recycle would read the new
+-- rows at the old offsets as if they belonged to its snapshot; the reader
+-- must be cancelled while replay catches up, never returning rows.
+----------------------------------------------------------------------
+1: insert into hs_ao_recycle_@amname@ select i, i from generate_series(1, 30) i;
+INSERT 0 30
+
+-1S: begin transaction isolation level repeatable read;
+BEGIN
+-1S: select count(*) from hs_ao_recycle_@amname@;
+ count 
+-------
+ 30    
+(1 row)
+
+1: delete from hs_ao_recycle_@amname@ where a % 2 = 0;
+DELETE 15
+1: vacuum hs_ao_recycle_@amname@;
+VACUUM
+1: insert into hs_ao_recycle_@amname@ select i, -i from generate_series(31, 60) i;
+INSERT 0 30
+
+-1S: select count(*) from hs_ao_recycle_@amname@;
+ERROR:  terminating connection due to conflict with recovery  (seg0 slice1 127.0.0.1:8005 pid=2382479)
+DETAIL:  User query might have needed to see row versions that must be removed.
+HINT:  In a moment you should be able to reconnect to the database and repeat your command.
+-1S: end;
+ROLLBACK
+
+-- cleanup
+1: drop table hs_ao_recycle_@amname@;
+DROP TABLE
+select gp_inject_fault('skip_meta_track_update', 'reset', dbid) from gp_segment_configuration where content = -1 and role = 'p';
+ gp_inject_fault 
+-----------------
+ Success:        
+(1 row)
+select gp_inject_fault('resolve_snapshot_conflict', 'reset', dbid) from gp_segment_configuration where content = 0 and role = 'm';
+ gp_inject_fault 
+-----------------
+ Success:        
+(1 row)
+drop function await_ao_conflict_probe();
+DROP FUNCTION
+drop function arm_ao_conflict_probe(text);
+DROP FUNCTION
