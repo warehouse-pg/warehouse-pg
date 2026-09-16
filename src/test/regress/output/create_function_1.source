@@ -25,11 +25,11 @@ CREATE FUNCTION int44out(city_budget)
 NOTICE:  argument type city_budget is only a shell
 CREATE FUNCTION check_primary_key ()
 	RETURNS trigger
-	AS '@libdir@/regress@DLSUFFIX@'
+	AS '@libdir@/refint@DLSUFFIX@'
 	LANGUAGE C READS SQL DATA;
 CREATE FUNCTION check_foreign_key ()
 	RETURNS trigger
-	AS '@libdir@/regress@DLSUFFIX@'
+	AS '@libdir@/refint@DLSUFFIX@'
 	LANGUAGE C READS SQL DATA;
 CREATE FUNCTION autoinc ()
 	RETURNS trigger
