@@ -103,7 +103,7 @@ Assisted-by: Google Gemini
 Maintainers reserve the right to close any PR that appears to be a "low-effort"
 AI contribution without providing a detailed technical critique. Our time is
 better spent supporting contributors who are deeply invested in the
-CloudNativePG ecosystem.
+WarehousePG ecosystem.
 
 ---
 
