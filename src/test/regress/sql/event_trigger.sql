@@ -314,8 +314,6 @@ BEGIN
         RAISE NOTICE 'END: command_tag=% type=% identity=%',
             r.command_tag, r.object_type, r.object_identity;
     END LOOP;
-EXCEPTION WHEN SQLSTATE 'XX000' THEN
-	RAISE NOTICE 'END: got internal exception';
 END; $$;
 CREATE EVENT TRIGGER regress_event_trigger_report_end ON ddl_command_end
   EXECUTE PROCEDURE event_trigger_report_end();
