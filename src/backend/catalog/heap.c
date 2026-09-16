@@ -88,6 +88,7 @@
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
+#include "utils/faultinjector.h"
 #include "utils/fmgroids.h"
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
@@ -940,6 +941,13 @@ void MetaTrackUpdObject(Oid		classid,
 
 	if (IsBootstrapProcessingMode())
 		return;
+
+#ifdef FAULT_INJECTOR
+	/* tests that must not see this update's heap traffic can skip it */
+	if (FaultInjector_InjectFaultIfSet("skip_meta_track_update",
+									   DDLNotSpecified, "", "") == FaultInjectorTypeSkip)
+		return;
+#endif
 
 	if (IsSharedRelation(classid))
 	{
