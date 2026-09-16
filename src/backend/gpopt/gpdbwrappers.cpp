@@ -485,7 +485,12 @@ gpdb::TypeCollation(Oid type)
 		Oid typcollation = get_typcollation(type);
 		if (OidIsValid(typcollation))
 		{
-			if (type == NAMEOID)
+			// name (and name[]) carry a built-in C collation rather than the
+			// database default; return it so ORCA's reconstructed quals sort
+			// the same way the type and its indexes do. Keeping name[] on the
+			// default here would stamp its quals with a different collation
+			// than its C-ordered index, mis-descending on non-C locales.
+			if (type == NAMEOID || type == NAMEARRAYOID)
 			{
 				return typcollation;  // As of v12, this is C_COLLATION_OID
 			}
@@ -762,6 +767,18 @@ gpdb::GetAttStats(Oid relid, AttrNumber attnum)
 	}
 	GP_WRAP_END;
 	return nullptr;
+}
+
+Oid
+gpdb::GetAttType(Oid relid, AttrNumber attnum)
+{
+	GP_WRAP_START;
+	{
+		/* catalog tables: pg_attribute */
+		return get_atttype(relid, attnum);
+	}
+	GP_WRAP_END;
+	return InvalidOid;
 }
 
 List *
