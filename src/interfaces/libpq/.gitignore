@@ -22,6 +22,7 @@
 /strlcpy.c
 /system.c
 /thread.c
+/timingsafe_bcmp.c
 /unicode_norm.c
 /win32error.c
 /win32setlocale.c
