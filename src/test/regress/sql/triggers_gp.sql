@@ -1,0 +1,91 @@
+--
+-- Extra WHPG tests for triggers.
+--
+-- This is the WHPG_6X_STABLE counterpart of the same-named file on main.
+-- It only carries the parts that apply to this branch; the rest of that
+-- file covers behaviour this branch does not have.
+--
+-- contrib/spi refint on replicated tables.
+--
+-- On a segment, a trigger function's SPI queries may only touch replicated
+-- relations (see querytree_safe_for_qe), so hash-distributed tables never get
+-- past SPI_prepare() in check_primary_key()/check_foreign_key(); that is what
+-- the upstream 'triggers' test shows.  Replicated tables are the one setup
+-- where the functions run to completion, so exercise them here: the primary
+-- key lookup, cascade DELETE and UPDATE (DML on a segment additionally needs
+-- allow_segment_DML), a NULL new key, and re-preparing after the key columns
+-- change type.
+--
+-- Each segment fires the trigger and emits its own NOTICE, in arbitrary
+-- order, so silence them.
+set client_min_messages = warning;
+create table refint_rp (pk int) distributed replicated;
+create table refint_rf (fk int) distributed replicated;
+create trigger refint_rf_pk after insert or update on refint_rf
+	for each row execute procedure check_primary_key ('fk', 'refint_rp', 'pk');
+create trigger refint_rp_cascade after delete or update on refint_rp
+	for each row execute procedure check_foreign_key (1, 'cascade', 'pk', 'refint_rf', 'fk');
+insert into refint_rp values (1), (10);
+insert into refint_rf values (1);
+insert into refint_rf values (2);		-- fails: no such key
+-- cascading DML from a segment needs allow_segment_DML
+delete from refint_rp where pk = 1;		-- fails
+set allow_segment_DML = on;
+delete from refint_rp where pk = 1;
+select * from refint_rf;
+insert into refint_rf values (10);
+update refint_rp set pk = 11 where pk = 10;
+select * from refint_rf;
+update refint_rp set pk = null where pk = 11;	-- NULL new key
+select fk is null as fk_is_null from refint_rf;
+-- the key column changes type between two trigger invocations.  Only one
+-- side is altered each time, so nothing invalidates a plan prepared against
+-- the other table: the trigger must describe the key with its current type.
+delete from refint_rf;
+delete from refint_rp;
+insert into refint_rp values (5);
+insert into refint_rf values (5);
+alter table refint_rf alter column fk type numeric;
+insert into refint_rf values (5);
+insert into refint_rf values (6);		-- fails: no such key
+select * from refint_rf order by 1;
+alter table refint_rp alter column pk type numeric;
+delete from refint_rp where pk = 5;		-- cascades to refint_rf
+select * from refint_rf;
+-- a two-column key, the restrict and setnull actions, and an UPDATE that
+-- leaves the key unchanged
+create table refint_p2 (a int, b text) distributed replicated;
+create table refint_f2 (a int, b text, v int) distributed replicated;
+create trigger refint_f2_pk after insert or update on refint_f2
+	for each row execute procedure check_primary_key ('a', 'b', 'refint_p2', 'a', 'b');
+create trigger refint_p2_cascade after delete or update on refint_p2
+	for each row execute procedure check_foreign_key (1, 'cascade', 'a', 'b', 'refint_f2', 'a', 'b');
+insert into refint_p2 values (1, 'x');
+insert into refint_f2 values (1, 'x', 7);
+insert into refint_f2 values (1, 'y', 8);		-- fails: no such key
+update refint_p2 set a = 2, b = 'y' where a = 1;
+select * from refint_f2;
+update refint_p2 set b = b where a = 2;		-- key unchanged: nothing to cascade
+select * from refint_f2;
+create table refint_p3 (a int) distributed replicated;
+create table refint_f3 (a int) distributed replicated;
+create trigger refint_p3_restrict after delete or update on refint_p3
+	for each row execute procedure check_foreign_key (1, 'restrict', 'a', 'refint_f3', 'a');
+insert into refint_p3 values (1), (2);
+insert into refint_f3 values (1);
+delete from refint_p3 where a = 1;		-- fails: still referenced
+delete from refint_p3 where a = 2;
+select * from refint_p3;
+create table refint_p4 (a int) distributed replicated;
+create table refint_f4 (a int) distributed replicated;
+create trigger refint_p4_setnull after delete or update on refint_p4
+	for each row execute procedure check_foreign_key (1, 'setnull', 'a', 'refint_f4', 'a');
+insert into refint_p4 values (1);
+insert into refint_f4 values (1), (1);
+delete from refint_p4 where a = 1;
+select a is null as a_is_null from refint_f4;
+reset allow_segment_DML;
+reset client_min_messages;
+drop table refint_f4, refint_p4, refint_f3, refint_p3, refint_f2, refint_p2;
+drop table refint_rf;
+drop table refint_rp;
