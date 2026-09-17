@@ -8,6 +8,7 @@
 #include "cdb/cdbvars.h"
 #include "libpq/ifaddr.h"
 #include "libpq-fe.h"
+#include "cdb/cdbconn.h"
 #include "postmaster/fts.h"
 #include "utils/builtins.h"
 #include "utils/faultinjector.h"
@@ -119,15 +120,70 @@ gp_inject_fault(PG_FUNCTION_ARGS)
 	}
 	else
 	{
-		char conninfo[1024];
 		char msg[1024];
 		PGconn *conn;
 		PGresult *res;
+		const char *keywords[12];
+		const char *values[12];
+		char		portstr[16];
+		const char *sslmode;
+		const char *certfile;
+		const char *keyfile;
+		const char *rootcertfile;
+		char		certbuf[MAXPGPATH];
+		char		keybuf[MAXPGPATH];
+		char		rootbuf[MAXPGPATH];
+		int			n = 0;
 
 		getHostnameAndPort(dbid, &hostname, &port);
-		snprintf(conninfo, 1024, "host=%s port=%d %s=%s",
-				 hostname, port, GPCONN_TYPE, GPCONN_TYPE_FAULT);
-		conn = PQconnectdb(conninfo);
+
+		/*
+		 * This is an internal (marker) connection to another node, so it is
+		 * subject to gp_internal_tls just like dispatch and FTS: under
+		 * "verify-ca" it must present this node's cluster client certificate,
+		 * else the remote QE rejects it.  Build the parameters in keyword/value
+		 * form so cert/key/CA paths need no quoting.
+		 */
+		sslmode = cdbconn_internal_tls_resolve(certbuf, keybuf, rootbuf,
+											   &certfile, &keyfile, &rootcertfile);
+
+		keywords[n] = "host";
+		values[n] = hostname;
+		n++;
+		snprintf(portstr, sizeof(portstr), "%d", port);
+		keywords[n] = "port";
+		values[n] = portstr;
+		n++;
+		keywords[n] = GPCONN_TYPE;
+		values[n] = GPCONN_TYPE_FAULT;
+		n++;
+		keywords[n] = "sslmode";
+		values[n] = sslmode;
+		n++;
+		if (certfile)
+		{
+			keywords[n] = "sslcert";
+			values[n] = certfile;
+			n++;
+		}
+		if (keyfile)
+		{
+			keywords[n] = "sslkey";
+			values[n] = keyfile;
+			n++;
+		}
+		if (rootcertfile)
+		{
+			keywords[n] = "sslrootcert";
+			values[n] = rootcertfile;
+			n++;
+		}
+		keywords[n] = NULL;
+		values[n] = NULL;
+
+		Assert(n < lengthof(keywords));
+
+		conn = PQconnectdbParams(keywords, values, false);
 		if (PQstatus(conn) != CONNECTION_OK)
 			elog(ERROR, "connection to dbid %d %s:%d failed", dbid, hostname, port);
 

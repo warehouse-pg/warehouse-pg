@@ -541,6 +541,12 @@ static const struct config_enum_entry gp_interconnect_fc_methods[] = {
 	{NULL, 0}
 };
 
+static const struct config_enum_entry gp_internal_tls_options[] = {
+	{"disable", GP_INTERNAL_TLS_DISABLE},
+	{"verify-ca", GP_INTERNAL_TLS_VERIFY_CA},
+	{NULL, 0}
+};
+
 static const struct config_enum_entry gp_interconnect_types[] = {
 	{"udpifc", INTERCONNECT_TYPE_UDPIFC},
 	{"tcp", INTERCONNECT_TYPE_TCP},
@@ -4610,6 +4616,40 @@ struct config_real ConfigureNamesReal_gp[] =
 struct config_string ConfigureNamesString_gp[] =
 {
 	{
+		{"gp_internal_tls_cert_file", PGC_POSTMASTER, CONN_AUTH_SSL,
+			gettext_noop("Client certificate this node presents on internal QD-to-QE connections."),
+			gettext_noop("Identifies the node in the cluster's internal trust domain, "
+						 "kept separate from the external-facing ssl_cert_file. "
+						 "Required (no fallback) when gp_internal_tls is \"require\".")
+		},
+		&gp_internal_tls_cert_file,
+		"",
+		NULL, NULL, NULL
+	},
+
+	{
+		{"gp_internal_tls_key_file", PGC_POSTMASTER, CONN_AUTH_SSL,
+			gettext_noop("Private key for gp_internal_tls_cert_file."),
+			gettext_noop("Required (no fallback) when gp_internal_tls is \"require\".")
+		},
+		&gp_internal_tls_key_file,
+		"",
+		NULL, NULL, NULL
+	},
+
+	{
+		{"gp_internal_tls_ca_file", PGC_POSTMASTER, CONN_AUTH_SSL,
+			gettext_noop("Cluster CA used to verify peers on internal QD-to-QE connections."),
+			gettext_noop("The private CA that signs cluster node certificates, kept "
+						 "separate from the external-facing ssl_ca_file. "
+						 "Required (no fallback) when gp_internal_tls is \"require\".")
+		},
+		&gp_internal_tls_ca_file,
+		"",
+		NULL, NULL, NULL
+	},
+
+	{
 		{"memory_profiler_run_id", PGC_USERSET, DEVELOPER_OPTIONS,
 			gettext_noop("Set the unique run ID for memory profiling"),
 			gettext_noop("Any string is acceptable"),
@@ -4974,6 +5014,21 @@ struct config_enum ConfigureNamesEnum_gp[] =
 		},
 		&Gp_interconnect_fc_method,
 		INTERCONNECT_FC_METHOD_LOSS, gp_interconnect_fc_methods,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"gp_internal_tls", PGC_POSTMASTER, CONN_AUTH_SSL,
+			gettext_noop("Sets the TLS policy for internal QD-to-QE libpq connections."),
+			gettext_noop("Valid values are \"disable\" (legacy plaintext with the "
+						 "historical flag-based authentication bypass) and "
+						 "\"verify-ca\" (mandatory mutual TLS; the internal "
+						 "short-circuit is honored only after the peer certificate "
+						 "is verified against the internal cluster CA in "
+						 "gp_internal_tls_ca_file).")
+		},
+		&gp_internal_tls,
+		GP_INTERNAL_TLS_DISABLE, gp_internal_tls_options,
 		NULL, NULL, NULL
 	},
 
