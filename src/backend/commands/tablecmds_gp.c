@@ -992,15 +992,14 @@ AtExecGPSplitPartition(Relation rel, AlterTableCmd *cmd)
 		elem->options = p_reloptions;
 
 		/*
-		 * NOTE: both the new (non-default) half and the recreated default
-		 * half intentionally inherit storage/reloptions from the DEFAULT
-		 * partition being split (via the shared "elem" below), not from
-		 * the root table, even though the new half covers a brand new
-		 * range. This matches documented WHPG semantics ("partitions
-		 * created from a SPLIT PARTITION inherit the properties of the
-		 * split child", gpdb-doc/markdown/admin_guide/ddl/about-part-changes.html.md),
-		 * WHPG6's ATPExecPartSplit behavior, and the "inherit coordinator's
-		 * storage settings" case in the partition regression test.
+		 * NOTE: both halves intentionally inherit storage/reloptions from
+		 * the partition being split (default or not), via the shared
+		 * "elem" below, not from the root table, even though the new half
+		 * covers a brand new range. This matches documented WHPG semantics
+		 * ("partitions created from a SPLIT PARTITION inherit the
+		 * properties of the split child"), WHPG6's ATPExecPartSplit
+		 * behavior, and the "inherit coordinator's storage settings" case
+		 * in the partition regression test.
 		 *
 		 * Naming is unrelated to this: partcomp.tablename is left unset
 		 * for the new half regardless, so makePartitionCreateStmt() falls

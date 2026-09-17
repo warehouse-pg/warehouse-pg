@@ -2112,7 +2112,7 @@ pg_event_trigger_ddl_commands(PG_FUNCTION_ARGS)
 					/*
 					 * A command collected earlier in this transaction may
 					 * reference an object that no longer exists by the time this
-					 * function runs -- e.g. GPDB's SPLIT DEFAULT PARTITION
+					 * function runs -- e.g. WHPG's SPLIT DEFAULT PARTITION
 					 * renames a partition out of the way and later drops that
 					 * same relation within the same top-level statement.
 					 * getObjectTypeDescription()/getObjectIdentity() do a hard
