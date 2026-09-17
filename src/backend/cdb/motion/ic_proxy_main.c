@@ -23,6 +23,7 @@
 #include "ic_proxy_server.h"
 #include "ic_proxy_addr.h"
 #include "ic_proxy_pkt_cache.h"
+#include "ic_proxy_tls.h"
 
 #include <uv.h>
 
@@ -543,6 +544,14 @@ ic_proxy_server_main(void)
 	pg_atomic_exchange_u32(ic_proxy_peer_listener_failed, 0);
 	ic_proxy_pkt_cache_init(IC_PROXY_MAX_PKT_SIZE);
 
+	/*
+	 * Initialize TLS state for peer connections. Runs before the libuv
+	 * loop starts so a misconfigured cert / key fails the bgworker
+	 * startup rather than the first peer handshake. No-op when
+	 * gp_interconnect_proxy_tls_enable is off.
+	 */
+	ic_proxy_tls_init();
+
 	uv_loop_init(&ic_proxy_server_loop);
 
 	ic_proxy_reload_addresses(&ic_proxy_server_loop);
@@ -605,6 +614,7 @@ ic_proxy_server_main(void)
 #endif
 
 	ic_proxy_pkt_cache_uninit();
+	ic_proxy_tls_uninit();
 
 	elogif(gp_log_interconnect >= GPVARS_VERBOSITY_TERSE, LOG,
 		   "ic-proxy: server closed with code %d",
