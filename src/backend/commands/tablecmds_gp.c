@@ -991,6 +991,24 @@ AtExecGPSplitPartition(Relation rel, AlterTableCmd *cmd)
 		elem->colencs = p_colencs;
 		elem->options = p_reloptions;
 
+		/*
+		 * NOTE: both halves intentionally inherit storage/reloptions from
+		 * the partition being split (default or not), via the shared
+		 * "elem" below, not from the root table, even though the new half
+		 * covers a brand new range. This matches documented WHPG semantics
+		 * ("partitions created from a SPLIT PARTITION inherit the
+		 * properties of the split child"), WHPG6's ATPExecPartSplit
+		 * behavior, and the "inherit coordinator's storage settings" case
+		 * in the partition regression test.
+		 *
+		 * Naming is unrelated to this: partcomp.tablename is left unset
+		 * for the new half regardless, so makePartitionCreateStmt() falls
+		 * back to ChoosePartitionName(), which always names the new
+		 * partition off of the *root* table's name (the standard legacy
+		 * "<root>_<level>_prt_<name>" convention) -- never off of the
+		 * partition being split.
+		 */
+
 		/* create first partition stmt */
 		stmts = lappend(stmts, makePartitionCreateStmt(rel, partname1, boundspec1, NULL, elem, &partcomp, ORIGIN_GP_CLASSIC_ALTER_GEN));
 
