@@ -37,6 +37,7 @@
 #include "cdb/cdbdtxcontextinfo.h"
 
 #include "cdb/cdbvars.h"
+#include "access/parallel.h"
 #include "access/transam.h"
 #include "access/xact.h"
 #include "libpq-fe.h"
@@ -1622,10 +1623,15 @@ assign_gp_write_shared_snapshot(bool newval, void *extra)
 	/*
 	 * Make sure newval is "true". if it's "false" this could be a part of a
 	 * ROLLBACK so we don't want to set the snapshot then.
+	 *
+	 * A parallel worker shares the snapshot its leader installed for it and
+	 * never publishes a cursor snapshot: only the writer QE owns the shared
+	 * snapshot slot, and a worker must neither take a new snapshot while its
+	 * GUC state is being restored nor overwrite the writer's dump.
 	 */
 	if (newval)
 	{
-		if (Gp_role == GP_ROLE_EXECUTE)
+		if (Gp_role == GP_ROLE_EXECUTE && !IsParallelWorker())
 		{
 			PushActiveSnapshot(GetTransactionSnapshot());
 
