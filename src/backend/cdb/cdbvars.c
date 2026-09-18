@@ -20,6 +20,7 @@
 #include "catalog/pg_collation_d.h"
 #include "postgres.h"
 
+#include "access/parallel.h"
 #include "miscadmin.h"
 #include "regex/regex.h"
 #include "utils/guc.h"
@@ -427,6 +428,19 @@ check_gp_role(char **newval, void **extra, GucSource source)
 {
 	GpRoleValue newrole = string_to_role(*newval);
 
+	/*
+	 * A parallel worker's role is chosen by ParallelWorkerMain(), not by the
+	 * value restored from its leader: a worker of a dispatcher must not turn
+	 * into a dispatcher itself, or it would release the dispatcher's shared
+	 * snapshot slot when it exits.
+	 */
+	if (IsParallelWorker())
+	{
+		free(*newval);
+		*newval = strdup(role_to_string(Gp_role));
+		return *newval != NULL;
+	}
+
 	/* Force utility mode in a stand-alone backend. */
 	if (!IsPostmasterEnvironment && newrole != GP_ROLE_UTILITY)
 	{
@@ -453,6 +467,22 @@ assign_gp_role(const char *newval, void *extra)
 
 	if (Gp_role == GP_ROLE_UTILITY)
 		should_reject_connection = false;
+}
+
+/*
+ * Check hook routine for "gp_is_writer" option.
+ *
+ * A parallel worker is a reader QE of its leader's session whatever the
+ * leader is, so the value restored from a writer leader must not make it a
+ * writer: a writer releases the session's shared snapshot slot when it exits.
+ */
+bool
+check_gp_is_writer(bool *newval, void **extra, GucSource source)
+{
+	if (IsParallelWorker())
+		*newval = false;
+
+	return true;
 }
 
 /*
