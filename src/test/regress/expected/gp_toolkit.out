@@ -638,10 +638,13 @@ select 1;
         1
 (1 row)
 
-select n_queries_exec from pg_stat_resqueues where queuename = 'q';
- n_queries_exec 
-----------------
-              1
+-- The counter comes from the stats collector; a backend only reports after
+-- PGSTAT_STAT_INTERVAL (500ms) has passed, so wait it out before reading
+-- (same as resource_queue_stat).
+select pg_sleep(0.6), n_queries_exec from pg_stat_resqueues where queuename = 'q';
+ pg_sleep | n_queries_exec 
+----------+----------------
+          |              1
 (1 row)
 
 reset role;
