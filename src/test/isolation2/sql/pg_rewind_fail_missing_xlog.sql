@@ -5,6 +5,26 @@
 CREATE EXTENSION IF NOT EXISTS gp_inject_fault;
 include: helpers/server_helpers.sql;
 
+-- A mirror that FTS has just promoted refuses connections with "mirror is
+-- being promoted" until the promotion finishes, so gp_segment_configuration
+-- can already say role = 'p' while gp_inject_fault against that dbid still
+-- fails. Poll the segment in utility mode until it accepts a connection.
+CREATE OR REPLACE LANGUAGE plpythonu;
+CREATE OR REPLACE FUNCTION connectSeg(n int, port int, hostname text) RETURNS bool AS $$
+import os
+import subprocess
+import time
+for i in range(n):
+    try:
+        subprocess.check_call(["psql", "-h", str(hostname), "-p", str(port), "postgres", "-Xc", "select 1;"],
+                              env={"PGOPTIONS": "-c gp_session_role=utility", "PATH": os.getenv("PATH")})
+        return True
+    except Exception as e:
+        time.sleep(1)
+raise Exception("wait connection timeout")
+$$
+LANGUAGE plpythonu;
+
 SHOW gp_keep_all_xlog;
 CREATE TABLE tst_missing_tbl (a int);
 INSERT INTO tst_missing_tbl values(2),(1),(5);
@@ -96,6 +116,8 @@ INSERT INTO tst_missing_tbl values(2),(1),(5);
 -- Stop the primary immediately and promote the mirror.
 3: SELECT pg_ctl(datadir, 'stop', 'immediate') FROM gp_segment_configuration WHERE role='p' AND content = 1;
 3: SELECT gp_request_fts_probe_scan();
+-- Wait for the segment promotion finished and accept the connection
+3: select connectSeg(600,port,hostname) from gp_segment_configuration where content = 1 and role = 'p';
 -- Wait for the end of recovery CHECKPOINT completed after the mirror was promoted
 3: SELECT gp_inject_fault('checkpoint_after_redo_calculated', 'skip', dbid) FROM gp_segment_configuration WHERE role='p' AND content = 1;
 3: SELECT gp_wait_until_triggered_fault('checkpoint_after_redo_calculated', 1, dbid) FROM gp_segment_configuration WHERE role = 'p' AND content = 1;
@@ -224,6 +246,8 @@ INSERT INTO tst_missing_tbl values(2),(1),(5);
 3: SELECT pg_ctl(datadir, 'stop', 'immediate') FROM gp_segment_configuration WHERE role='p' AND content = 1;
 3: SELECT gp_request_fts_probe_scan();
 
+-- Wait for the segment promotion finished and accept the connection
+3: select connectSeg(600,port,hostname) from gp_segment_configuration where content = 1 and role = 'p';
 -- Reset faults and confirm FTS configuration
 3: SELECT gp_inject_fault('wal_sender_loop', 'reset', dbid) FROM gp_segment_configuration WHERE role='p' AND content = 1;
 3: SELECT gp_inject_fault('checkpoint_control_file_updated', 'reset', dbid) FROM gp_segment_configuration WHERE role = 'p' AND content = 1;
@@ -297,5 +321,6 @@ INSERT INTO tst_missing_tbl values(2),(1),(5);
 1Uq:
 
 5: DROP TABLE tst_missing_tbl;
+5: DROP FUNCTION connectSeg(int, int, text);
 !\retcode gpconfig -r wal_keep_segments;
 !\retcode gpstop -ari;
