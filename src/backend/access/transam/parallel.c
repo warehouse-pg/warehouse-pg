@@ -1431,10 +1431,6 @@ ParallelWorkerMain(Datum main_arg)
 	libraryspace = shm_toc_lookup(toc, PARALLEL_KEY_LIBRARY, false);
 	StartTransactionCommand();
 	RestoreLibraryState(libraryspace);
-
-	/* Restore GUC values from launching backend. */
-	gucspace = shm_toc_lookup(toc, PARALLEL_KEY_GUC, false);
-	RestoreGUCState(gucspace);
 	CommitTransactionCommand();
 
 	/* CDB: Parallel workers behave as Reader QEs. */
@@ -1444,7 +1440,16 @@ ParallelWorkerMain(Datum main_arg)
 	tstatespace = shm_toc_lookup(toc, PARALLEL_KEY_TRANSACTION_STATE, false);
 	StartParallelWorkerTransaction(tstatespace);
 
-	/* Restore combo CID state. */
+	/*
+	 * Restore state that affects catalog access.  Ideally we'd do this even
+	 * before calling InitPostgres, but that has order-of-initialization
+	 * problems, and also the relmapper would get confused during the
+	 * CommitTransactionCommand call above.
+	 */
+	relmapperspace = shm_toc_lookup(toc, PARALLEL_KEY_RELMAPPER_STATE, false);
+	RestoreRelationMap(relmapperspace);
+	reindexspace = shm_toc_lookup(toc, PARALLEL_KEY_REINDEX_STATE, false);
+	RestoreReindexState(reindexspace);
 	combocidspace = shm_toc_lookup(toc, PARALLEL_KEY_COMBO_CID, false);
 	RestoreComboCIDState(combocidspace);
 
@@ -1498,6 +1503,16 @@ ParallelWorkerMain(Datum main_arg)
 	InvalidateSystemCaches();
 
 	/*
+	 * Restore GUC values from launching backend.  We can't do this earlier,
+	 * because GUC check hooks that do catalog lookups need to see the same
+	 * database state as the leader.  Also, the check hooks for
+	 * session_authorization and role assume we already set the correct role
+	 * OIDs.
+	 */
+	gucspace = shm_toc_lookup(toc, PARALLEL_KEY_GUC, false);
+	RestoreGUCState(gucspace);
+
+	/*
 	 * Restore current user ID and security context.  No verification happens
 	 * here, we just blindly adopt the leader's state.  We can't do this till
 	 * after restoring GUCs, else we'll get complaints about restoring
@@ -1510,14 +1525,6 @@ ParallelWorkerMain(Datum main_arg)
 	/* Restore temp-namespace state to ensure search path matches leader's. */
 	SetTempNamespaceState(fps->temp_namespace_id,
 						  fps->temp_toast_namespace_id);
-
-	/* Restore reindex state. */
-	reindexspace = shm_toc_lookup(toc, PARALLEL_KEY_REINDEX_STATE, false);
-	RestoreReindexState(reindexspace);
-
-	/* Restore relmapper state. */
-	relmapperspace = shm_toc_lookup(toc, PARALLEL_KEY_RELMAPPER_STATE, false);
-	RestoreRelationMap(relmapperspace);
 
 	/* Restore uncommitted enums. */
 	uncommittedenumsspace = shm_toc_lookup(toc, PARALLEL_KEY_UNCOMMITTEDENUMS,
