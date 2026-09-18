@@ -363,7 +363,10 @@ create resource queue q with (active_statements = 10);
 create user resqueuetest with resource queue q;
 set role resqueuetest;
 select 1;
-select n_queries_exec from pg_stat_resqueues where queuename = 'q';
+-- The counter comes from the stats collector; a backend only reports after
+-- PGSTAT_STAT_INTERVAL (500ms) has passed, so wait it out before reading
+-- (same as resource_queue_stat).
+select pg_sleep(0.6), n_queries_exec from pg_stat_resqueues where queuename = 'q';
 reset role;
 drop role resqueuetest;
 drop resource queue q;
