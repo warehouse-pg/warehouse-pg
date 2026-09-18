@@ -7,6 +7,15 @@ CREATE
 include: helpers/server_helpers.sql;
 CREATE
 
+-- A mirror that FTS has just promoted refuses connections with "mirror is
+-- being promoted" until the promotion finishes, so gp_segment_configuration
+-- can already say role = 'p' while gp_inject_fault against that dbid still
+-- fails. Poll the segment in utility mode until it accepts a connection.
+CREATE OR REPLACE LANGUAGE plpythonu;
+CREATE
+CREATE OR REPLACE FUNCTION connectSeg(n int, port int, hostname text) RETURNS bool AS $$ import os import subprocess import time for i in range(n): try: subprocess.check_call(["psql", "-h", str(hostname), "-p", str(port), "postgres", "-Xc", "select 1;"], env={"PGOPTIONS": "-c gp_session_role=utility", "PATH": os.getenv("PATH")}) return True except Exception as e: time.sleep(1) raise Exception("wait connection timeout") $$ LANGUAGE plpythonu;
+CREATE
+
 SHOW gp_keep_all_xlog;
  gp_keep_all_xlog 
 ------------------
@@ -199,6 +208,12 @@ INSERT 3
  gp_request_fts_probe_scan 
 ---------------------------
  t                         
+(1 row)
+-- Wait for the segment promotion finished and accept the connection
+3: select connectSeg(600,port,hostname) from gp_segment_configuration where content = 1 and role = 'p';
+ connectseg 
+------------
+ t          
 (1 row)
 -- Wait for the end of recovery CHECKPOINT completed after the mirror was promoted
 3: SELECT gp_inject_fault('checkpoint_after_redo_calculated', 'skip', dbid) FROM gp_segment_configuration WHERE role='p' AND content = 1;
@@ -474,6 +489,12 @@ INSERT 3
  t                         
 (1 row)
 
+-- Wait for the segment promotion finished and accept the connection
+3: select connectSeg(600,port,hostname) from gp_segment_configuration where content = 1 and role = 'p';
+ connectseg 
+------------
+ t          
+(1 row)
 -- Reset faults and confirm FTS configuration
 3: SELECT gp_inject_fault('wal_sender_loop', 'reset', dbid) FROM gp_segment_configuration WHERE role='p' AND content = 1;
  gp_inject_fault 
@@ -638,6 +659,8 @@ DROP
 1Uq: ... <quitting>
 
 5: DROP TABLE tst_missing_tbl;
+DROP
+5: DROP FUNCTION connectSeg(int, int, text);
 DROP
 !\retcode gpconfig -r wal_keep_segments;
 -- start_ignore
