@@ -258,7 +258,34 @@ DistributedLog_AdvanceOldestXmin(TransactionId oldestLocalXmin,
 			{
 				Assert(LWLockHeldByMe(DistributedLogControlLock));
 				LWLockRelease(DistributedLogControlLock);
+				DistributedLogControlLockHeldByMe = false;
 			}
+
+			/*
+			 * Let a truncation in between pages.  The scan can cover many
+			 * thousands of pages when the horizon has fallen far behind (a
+			 * hot standby that sat idle for hours), and DistributedLog_redo
+			 * and DistributedLog_Truncate need the lock exclusively; on a
+			 * hot standby that is the startup process, and WAL replay must
+			 * not stall behind us.  Files at or above the shared horizon are
+			 * never removed, so after reacquiring the lock, catch up with a
+			 * horizon that moved past us before reading the next page.
+			 */
+			if (currPage != -1)
+			{
+				TransactionId sharedXmin;
+
+				LWLockRelease(DistributedLogTruncateLock);
+				LWLockAcquire(DistributedLogTruncateLock, LW_SHARED);
+				sharedXmin = (TransactionId)pg_atomic_read_u32((pg_atomic_uint32 *)&DistributedLogShared->oldestXmin);
+				if (TransactionIdPrecedes(oldestXmin, sharedXmin))
+				{
+					oldestXmin = sharedXmin;
+					currPage = -1;
+					continue;
+				}
+			}
+
 			slotno = SimpleLruReadPage_ReadOnly(DistributedLogCtl, page, oldestXmin);
 			DistributedLogControlLockHeldByMe = true;
 			currPage = page;
@@ -513,17 +540,30 @@ DistributedLog_CommittedCheck(
 
 
 	/*
-	 * Read the horizon under the same lock that protects the page read
-	 * below.  Truncation moves the horizon and removes the files under the
-	 * exclusive lock, so a horizon seen here is still the horizon when the
-	 * page is read; read unlocked, the page could vanish in between.
+	 * The horizon only ever advances, so an xid seen below it without the
+	 * lock stays below it: this is the per-tuple visibility fast path and
+	 * it costs one atomic load.
 	 */
-	LWLockAcquire(DistributedLogTruncateLock, LW_SHARED);
-
 	oldestXmin = (TransactionId)pg_atomic_read_u32((pg_atomic_uint32 *)&DistributedLogShared->oldestXmin);
 	if (oldestXmin == InvalidTransactionId)
 		elog(PANIC, "DistributedLog's OldestXmin not initialized yet");
 
+	if (TransactionIdPrecedes(localXid, oldestXmin))
+	{
+		*distribXid = 0;
+		return false;
+	}
+
+	/*
+	 * An xid at or above the horizon has to be checked again under the lock
+	 * that protects the page read: truncation moves the horizon and removes
+	 * the files under the exclusive lock, so the page could have vanished
+	 * between the unlocked test above and the read below.  A horizon seen
+	 * under the shared lock is still the horizon when the page is read.
+	 */
+	LWLockAcquire(DistributedLogTruncateLock, LW_SHARED);
+
+	oldestXmin = (TransactionId)pg_atomic_read_u32((pg_atomic_uint32 *)&DistributedLogShared->oldestXmin);
 	if (TransactionIdPrecedes(localXid, oldestXmin))
 	{
 		LWLockRelease(DistributedLogTruncateLock);
@@ -1126,53 +1166,42 @@ DistributedLog_redo(XLogReaderState *record)
 
 		oldestXmin = (TransactionId) pg_atomic_read_u32((pg_atomic_uint32 *)&DistributedLogShared->oldestXmin);
 
-		if (HotStandbyActiveInReplay())
+		/*
+		 * The horizon exists during replay only on a hot standby, where
+		 * DistributedLog_Startup runs before redo (StartupXLOG).  In crash
+		 * recovery, and in archive recovery without hot_standby, it is set
+		 * only once redo is done; no backend can read the log until then, so
+		 * we truncate as the primary did.
+		 *
+		 * On a hot standby the primary removed these pages because every
+		 * distributed snapshot it knew of had moved past them; our readers are
+		 * not among those.  They get their distributed snapshots from the
+		 * standby coordinator, which replays its own WAL stream and may lag
+		 * this mirror, so a snapshot taken here, even later, can still be
+		 * older than the mappings the primary is discarding, and without them
+		 * it would silently treat rows too new for it as visible.  That holds
+		 * before consistency is reached as well: no backend is connected yet,
+		 * but the readers admitted afterwards get their snapshots from a
+		 * standby coordinator that did not restart with us, and a restarted
+		 * mirror replays this record a second time whenever its restartpoint
+		 * lies before it, so removing what the first replay had kept would
+		 * make the same rows visible on this mirror and hidden on the others.
+		 *
+		 * Our own horizon is the bound those readers need: it is advanced
+		 * only by the snapshots dispatched to this mirror, checking each
+		 * entry's gxid against them (DistributedLog_AdvanceOldestXmin),
+		 * exactly as on the primary.  So remove nothing at or above the
+		 * horizon's page.  The rest goes when our horizon crosses the
+		 * segment on its own (DistributedLog_Truncate).  In particular the
+		 * horizon's own page, which DistributedLog_InitOldestXmin chose
+		 * among the pages present at startup, always stays readable.
+		 */
+		if (TransactionIdIsValid(oldestXmin))
 		{
-			/*
-			 * Backends may hold snapshots.  The primary removed these pages
-			 * because every distributed snapshot it knew of had moved past
-			 * them; our readers are not among those.  They get their
-			 * distributed snapshots from the standby coordinator, which
-			 * replays its own WAL stream and may lag this mirror, so a
-			 * snapshot taken here, even later, can still be older than the
-			 * mappings the primary is discarding, and without them it would
-			 * silently treat rows too new for it as visible.
-			 *
-			 * Our own horizon is the bound those readers need: it is advanced
-			 * only by the snapshots dispatched to this mirror, checking each
-			 * entry's gxid against them (DistributedLog_AdvanceOldestXmin),
-			 * exactly as on the primary.  So remove nothing at or above the
-			 * horizon's page.  The rest goes when our horizon crosses the
-			 * segment on its own (DistributedLog_Truncate).
-			 */
-			int			horizonPage;
+			int			horizonPage = TransactionIdToPage(oldestXmin);
 
-			Assert(TransactionIdIsValid(oldestXmin));
-			horizonPage = TransactionIdToPage(oldestXmin);
 			if (DistributedLog_PagePrecedes(horizonPage, page))
 				cutoffPage = horizonPage;
-		}
-		else
-		{
-			/*
-			 * No backend can hold a snapshot yet: crash recovery, archive
-			 * recovery, or a hot standby that has not reached consistency, so
-			 * nothing needs the removed pages.  Move our horizon past them, so
-			 * that the next DistributedLog_AdvanceOldestXmin() does not start
-			 * its scan on a page that no longer exists.  The horizon set at
-			 * startup can lie in a segment this record removes when a standby
-			 * restarts and replays the record a second time.  Only the
-			 * segments wholly before the page are removed (SimpleLruTruncate),
-			 * so the bound is the first xid of the page's segment; the
-			 * mappings between it and the page stay readable.
-			 */
-			TransactionId cutoffXid;
-
-			cutoffXid = (TransactionId) (page - page % SLRU_PAGES_PER_SEGMENT) *
-				(TransactionId) ENTRIES_PER_PAGE;
-			if (!TransactionIdIsValid(oldestXmin) ||
-				TransactionIdPrecedes(oldestXmin, cutoffXid))
-				pg_atomic_write_u32((pg_atomic_uint32 *)&DistributedLogShared->oldestXmin, cutoffXid);
 		}
 
 		/*
