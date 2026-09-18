@@ -340,5 +340,6 @@ extern List *updateEncodingList(List *current_encodings,
 								  ColumnReferenceStorageDirective *new_crsd, bool *is_updated);
 extern List *form_default_storage_directive(List *enc);
 extern bool is_storage_encoding_directive(char *name);
+extern List *get_cols_for_new_reloption_defaults(Relation rel, Datum newOptions);
 extern void free_options_deep(relopt_value *options, int num_options);
 #endif							/* RELOPTIONS_H */

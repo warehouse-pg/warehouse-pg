@@ -5758,6 +5758,30 @@ ATExecCmd(List **wqueue, AlteredTableInfo *tab, Relation rel,
 				{
 					tab->rewrite |= AT_REWRITE_ALTER_RELOPTS;
 					tab->newOptions = newOptions;
+
+					/*
+					 * For AOCO tables, columns without their own explicit
+					 * ENCODING only ever get a codec via the table-level
+					 * default, so make sure the rewrite this triggers
+					 * actually re-encodes them with the new default instead
+					 * of just relabeling pg_class.reloptions. Columns that
+					 * already carry an explicit override, or one from an
+					 * ALTER COLUMN ... SET ENCODING earlier in this same
+					 * command, are left untouched.
+					 */
+					if (RelationIsAoCols(rel))
+					{
+						List	   *default_updates = get_cols_for_new_reloption_defaults(rel, newOptions);
+						ListCell   *lc2;
+
+						foreach(lc2, default_updates)
+						{
+							ColumnReferenceStorageDirective *c = lfirst(lc2);
+
+							if (!find_crsd(c->column, tab->new_crsds))
+								tab->new_crsds = lappend(tab->new_crsds, c);
+						}
+					}
 				}
 			}
 			break;

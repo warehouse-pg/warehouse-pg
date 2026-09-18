@@ -122,6 +122,19 @@ execute attribute_encoding_check('aoco_relopt%');
 
 DROP TABLE aoco_relopt;
 
+-- A column with no ENCODING of its own should track a later change to
+-- the table-level compression options, not just keep whatever codec was
+-- in effect when the column was created. A column with its own explicit
+-- ENCODING should keep it.
+CREATE TABLE aoco_relopt_defaults(a int, b int ENCODING (compresstype=zstd, compresslevel=2))
+WITH (appendoptimized = true, orientation = column, compresstype=zlib, compresslevel=5);
+execute attribute_encoding_check('aoco_relopt_defaults%');
+
+ALTER TABLE aoco_relopt_defaults SET (compresstype=rle_type, compresslevel=3);
+execute attribute_encoding_check('aoco_relopt_defaults%');
+
+DROP TABLE aoco_relopt_defaults;
+
 -- Check mixed AMs in the partition hierarchy. Currently we error out.
 CREATE TABLE part_relopt2(a int, b int) PARTITION BY RANGE(a);
 CREATE TABLE part_relopt2_1 partition OF part_relopt2 FOR VALUES FROM (100) to (200);
