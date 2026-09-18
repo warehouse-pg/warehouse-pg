@@ -22,6 +22,9 @@ test: pg_dump_binary_upgrade
 
 test: gp_dispatch_keepalives
 
+# parallel worker startup on the coordinator and the segments
+test: gp_parallel_worker_for_extensions
+
 # copy command
 # copy form a file with different EOL
 test: copy_eol
