@@ -7090,6 +7090,8 @@ StartupXLOG(void)
 	 * with xmax = nextGxid + 1 would show them before the standby coordinator
 	 * has replayed the forget record. nextGxid - 1 keeps them hidden until
 	 * then. The primary overwrites this value at the end of recovery.
+	 *
+	 * The redo of a shutdown checkpoint replayed later applies the same rule.
 	 */
 	if (IS_QUERY_DISPATCHER() && wasShutdown)
 		ShmemVariableCache->latestCompletedGxid = checkPoint.nextGxid - 1;
@@ -9638,10 +9640,13 @@ CreateCheckPoint(int flags)
 		if (IS_QUERY_DISPATCHER())
 		{
 			/*
-			 * GPDB: write latestCompletedGxid too, because the standby needs this 
-			 * value for creating distributed snapshot. The standby cannot rely on
-			 * the nextGxid value to set latestCompletedGxid during restart (which 
-			 * the primary does) because nextGxid was bumped in the checkpoint.
+			 * GPDB: write latestCompletedGxid too, because the standby needs this
+			 * value for creating distributed snapshot. The standby cannot derive
+			 * it from the nextGxid of an online checkpoint (as the primary does
+			 * at the end of recovery) because that nextGxid was bumped past the
+			 * current batch above. A shutdown checkpoint records nextGxid
+			 * exactly, and the standby restores the value from it instead; see
+			 * StartupXLOG and the XLOG_CHECKPOINT_SHUTDOWN redo.
 			 */
 			LWLockAcquire(ProcArrayLock, LW_SHARED);
 			DistributedTransactionId lcgxid = ShmemVariableCache->latestCompletedGxid;
@@ -10779,6 +10784,21 @@ xlog_redo(XLogReaderState *record)
 		SpinLockAcquire(shmGxidGenLock);
 		ShmemVariableCache->nextGxid = checkPoint.nextGxid;
 		SpinLockRelease(shmGxidGenLock);
+
+		/*
+		 * GPDB: a shutdown checkpoint also tells a hot standby coordinator
+		 * that every distributed transaction below nextGxid has completed, the
+		 * same way it sets latestCompletedXid below.  See StartupXLOG for why
+		 * the value is nextGxid - 1.  Only raise it: the value learnt from
+		 * forget records and XLOG_LATESTCOMPLETED_GXID cannot go backwards.
+		 */
+		if (IS_QUERY_DISPATCHER())
+		{
+			LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+			if (ShmemVariableCache->latestCompletedGxid < checkPoint.nextGxid - 1)
+				ShmemVariableCache->latestCompletedGxid = checkPoint.nextGxid - 1;
+			LWLockRelease(ProcArrayLock);
+		}
 		LWLockAcquire(OidGenLock, LW_EXCLUSIVE);
 		ShmemVariableCache->nextOid = checkPoint.nextOid;
 		ShmemVariableCache->oidCount = 0;

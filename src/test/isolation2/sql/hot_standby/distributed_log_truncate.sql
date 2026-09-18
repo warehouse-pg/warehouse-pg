@@ -20,9 +20,12 @@
 -- any new commit.
 --
 -- One segment file holds 131072 xids (4096 entries per 32k page, 32 pages).
--- The xids are burnt on content 0 only, with ordinary single-statement
--- transactions in a utility session, so that the mirror removes each of them
--- from KnownAssignedXids as its commit record is replayed.  The inserts below
+-- The xids are burnt on content 0 only, by one utility-session transaction
+-- that assigns an xid to each of that many plpgsql subtransactions: every 64
+-- of them are logged in an XACT_ASSIGNMENT record, so the mirror moves them
+-- out of KnownAssignedXids as they are assigned rather than at commit, and no
+-- round trip per xid is needed.  txid_current() is a 64-bit value carrying
+-- the epoch; the segment file names use the 32-bit xid.  The inserts below
 -- must include a row on content 0 (34 hashes there): a two-phase commit that
 -- content 0 takes part in is what makes the primary wait, under remote_apply,
 -- for the mirror to have replayed everything before it, the truncate record
@@ -39,7 +42,7 @@
 -1S: select count(*) from hs_dlog_t;
 
 -- burn content 0 past the next segment-file boundary
-!\retcode port=$(psql -d postgres -Atc "select port from gp_segment_configuration where content = 0 and role = 'p'"); cur=$(PGOPTIONS='-c gp_role=utility' psql -p $port -d postgres -Atc 'select txid_current()'); need=$(( 131072 - cur % 131072 + 300 )); yes 'select txid_current();' | head -n "$need" | PGOPTIONS='-c gp_role=utility -c synchronous_commit=off' psql -p $port -d postgres -q -v ON_ERROR_STOP=1 -f - > /dev/null;
+!\retcode port=$(psql -d postgres -Atc "select port from gp_segment_configuration where content = 0 and role = 'p'"); cur=$(PGOPTIONS='-c gp_role=utility' psql -p $port -d postgres -Atc 'select txid_current()'); need=$(( 131072 - cur % 131072 + 300 )); PGOPTIONS='-c gp_role=utility' psql -p $port -d postgres -q -v ON_ERROR_STOP=1 -c "create temp table hs_dlog_burn(a int); do \$\$ begin for i in 1..$need loop begin insert into hs_dlog_burn values (i); exception when others then raise; end; end loop; end \$\$;" > /dev/null;
 
 -- a distributed snapshot on the primary advances its horizon across the
 -- boundary and removes the old segment file there; the two-phase insert
@@ -50,7 +53,7 @@
 
 -- the primary has dropped the old segment file, the mirror has kept it: its
 -- horizon, held back by the reader's snapshot, is still inside that segment
-!\retcode port=$(psql -d postgres -Atc "select port from gp_segment_configuration where content = 0 and role = 'p'"); seg=$(printf '%04X' $(( $(PGOPTIONS='-c gp_role=utility' psql -p $port -d postgres -Atc 'select txid_current()') / 131072 - 1 ))); pdir=$(psql -d postgres -Atc "select datadir from gp_segment_configuration where content = 0 and role = 'p'"); mdir=$(psql -d postgres -Atc "select datadir from gp_segment_configuration where content = 0 and role = 'm'"); test ! -e "$pdir/pg_distributedlog/$seg" && test -e "$mdir/pg_distributedlog/$seg";
+!\retcode port=$(psql -d postgres -Atc "select port from gp_segment_configuration where content = 0 and role = 'p'"); seg=$(printf '%04X' $(( $(PGOPTIONS='-c gp_role=utility' psql -p $port -d postgres -Atc 'select txid_current() % 4294967296') / 131072 - 1 ))); pdir=$(psql -d postgres -Atc "select datadir from gp_segment_configuration where content = 0 and role = 'p'"); mdir=$(psql -d postgres -Atc "select datadir from gp_segment_configuration where content = 0 and role = 'm'"); test ! -e "$pdir/pg_distributedlog/$seg" && test -e "$mdir/pg_distributedlog/$seg";
 
 -- the reader whose snapshot predates the truncation is neither cancelled nor
 -- given a wrong answer
@@ -61,7 +64,7 @@
 -- a fresh standby snapshot sees the new rows, and moves the mirror's horizon
 -- across the boundary, which drops the old segment file on the mirror too
 -1S: select count(*) from hs_dlog_t;
-!\retcode port=$(psql -d postgres -Atc "select port from gp_segment_configuration where content = 0 and role = 'p'"); seg=$(printf '%04X' $(( $(PGOPTIONS='-c gp_role=utility' psql -p $port -d postgres -Atc 'select txid_current()') / 131072 - 1 ))); mdir=$(psql -d postgres -Atc "select datadir from gp_segment_configuration where content = 0 and role = 'm'"); test ! -e "$mdir/pg_distributedlog/$seg";
+!\retcode port=$(psql -d postgres -Atc "select port from gp_segment_configuration where content = 0 and role = 'p'"); seg=$(printf '%04X' $(( $(PGOPTIONS='-c gp_role=utility' psql -p $port -d postgres -Atc 'select txid_current() % 4294967296') / 131072 - 1 ))); mdir=$(psql -d postgres -Atc "select datadir from gp_segment_configuration where content = 0 and role = 'm'"); test ! -e "$mdir/pg_distributedlog/$seg";
 -1Sq:
 
 -- a standby that starts after the old pages are gone answers correctly, and
