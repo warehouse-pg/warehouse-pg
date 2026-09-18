@@ -529,9 +529,20 @@ AppendOnlySegmentFileFullCompaction(Relation aorel,
  * 
  * Acquire AccessShareLock with cutoff_xid to scan and collect dead
  * segments.
+ *
+ * On return, *latestRemovedXid (which may be NULL when the caller has no
+ * use for it) is the newest xmin among the AWAITING_DROP row versions of
+ * the collected segments, or InvalidTransactionId when no segment was
+ * collected or every collected row version is frozen.  That xmin belongs
+ * to the transaction that marked the segment: a snapshot taken before it
+ * committed still sees the segment as live and would read the file, so it
+ * is exactly the horizon a hot standby has to cancel readers against
+ * before the segment is recycled.  Frozen row versions contribute nothing:
+ * the FREEZE_PAGE record that froze them already resolved the conflicts on
+ * the standby, so every snapshot still alive there sees them.
  */
 Bitmapset *
-AppendOptimizedCollectDeadSegments(Relation aorel)
+AppendOptimizedCollectDeadSegments(Relation aorel, TransactionId *latestRemovedXid)
 {
 	Relation	pg_aoseg_rel;
 	TupleDesc	pg_aoseg_dsc;
@@ -543,6 +554,9 @@ AppendOptimizedCollectDeadSegments(Relation aorel)
 	Bitmapset	*dead_segs = NULL;
 
 	Assert(RelationStorageIsAO(aorel));
+
+	if (latestRemovedXid)
+		*latestRemovedXid = InvalidTransactionId;
 
 	GetAppendOnlyEntryAuxOids(aorel,
 							  &segrelid, NULL, NULL);
@@ -626,6 +640,11 @@ AppendOptimizedCollectDeadSegments(Relation aorel)
 		}
 		if (!visible_to_all)
 			continue;
+
+		if (latestRemovedXid && xmin != FrozenTransactionId &&
+			(!TransactionIdIsValid(*latestRemovedXid) ||
+			 TransactionIdFollows(xmin, *latestRemovedXid)))
+			*latestRemovedXid = xmin;
 
 		/* collect dead segnos for dropping */
 		dead_segs = bms_add_member(dead_segs, segno);
