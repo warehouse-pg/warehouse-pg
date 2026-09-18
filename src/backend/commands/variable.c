@@ -520,14 +520,16 @@ check_transaction_read_only(bool *newval, void **extra, GucSource source)
  * We allow idempotent changes at any time, but otherwise this can only be
  * changed in a toplevel transaction that has not yet taken a snapshot.
  *
- * As in check_transaction_read_only, allow it if not inside a transaction.
+ * As in check_transaction_read_only, allow it if not inside a transaction,
+ * or if restoring state in a parallel worker.
  */
 bool
 check_XactIsoLevel(int *newval, void **extra, GucSource source)
 {
 	int			newXactIsoLevel = *newval;
 
-	if (newXactIsoLevel != XactIsoLevel && IsTransactionState())
+	if (newXactIsoLevel != XactIsoLevel &&
+		IsTransactionState() && !InitializingParallelWorker)
 	{
 		if (FirstSnapshotSet)
 		{
@@ -598,6 +600,10 @@ check_DefaultXactIsoLevel(int *newval, void **extra, GucSource source)
 bool
 check_transaction_deferrable(bool *newval, void **extra, GucSource source)
 {
+	/* Just accept the value when restoring state in a parallel worker */
+	if (InitializingParallelWorker)
+		return true;
+
 	if (IsSubTransaction())
 	{
 		GUC_check_errcode(ERRCODE_ACTIVE_SQL_TRANSACTION);
@@ -670,6 +676,24 @@ check_client_encoding(char **newval, void **extra, GucSource source)
 	canonical_name = pg_encoding_to_char(encoding);
 
 	/*
+	 * Parallel workers send data to the leader, not the client.  They always
+	 * send data using the database encoding; therefore, we should never
+	 * actually change the client encoding in a parallel worker.  However,
+	 * during parallel worker startup, we want to accept the leader's
+	 * client_encoding setting so that anyone who looks at the value in the
+	 * worker sees the same value that they would see in the leader.  A change
+	 * other than during startup, for example due to a SET clause attached to
+	 * a function definition, should be rejected, as there is nothing we can
+	 * do inside the worker to make it take effect.
+	 */
+	if (IsParallelWorker() && !InitializingParallelWorker)
+	{
+		GUC_check_errcode(ERRCODE_INVALID_TRANSACTION_STATE);
+		GUC_check_errdetail("Cannot change \"client_encoding\" during a parallel operation.");
+		return false;
+	}
+
+	/*
 	 * If we are not within a transaction then PrepareClientEncoding will not
 	 * be able to look up the necessary conversion procs.  If we are still
 	 * starting up, it will return "OK" anyway, and InitializeClientEncoding
@@ -679,11 +703,15 @@ check_client_encoding(char **newval, void **extra, GucSource source)
 	 * It seems like a bad idea for client_encoding to change that way anyhow,
 	 * so we don't go out of our way to support it.
 	 *
+	 * In a parallel worker, we might as well skip PrepareClientEncoding since
+	 * we're not going to use its results.
+	 *
 	 * Note: in the postmaster, or any other process that never calls
 	 * InitializeClientEncoding, PrepareClientEncoding will always succeed,
 	 * and so will SetClientEncoding; but they won't do anything, which is OK.
 	 */
-	if (PrepareClientEncoding(encoding) < 0)
+	if (!IsParallelWorker() &&
+		PrepareClientEncoding(encoding) < 0)
 	{
 		if (IsTransactionState())
 		{
@@ -737,28 +765,11 @@ assign_client_encoding(const char *newval, void *extra)
 	int			encoding = *((int *) extra);
 
 	/*
-	 * Parallel workers send data to the leader, not the client.  They always
-	 * send data using the database encoding.
+	 * In a parallel worker, we never override the client encoding that was
+	 * set by ParallelWorkerMain().
 	 */
 	if (IsParallelWorker())
-	{
-		/*
-		 * During parallel worker startup, we want to accept the leader's
-		 * client_encoding setting so that anyone who looks at the value in
-		 * the worker sees the same value that they would see in the leader.
-		 */
-		if (InitializingParallelWorker)
-			return;
-
-		/*
-		 * A change other than during startup, for example due to a SET clause
-		 * attached to a function definition, should be rejected, as there is
-		 * nothing we can do inside the worker to make it take effect.
-		 */
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_TRANSACTION_STATE),
-				 errmsg("cannot change client_encoding during a parallel operation")));
-	}
+		return;
 
 	/* We do not expect an error if PrepareClientEncoding succeeded */
 	if (SetClientEncoding(encoding) < 0)

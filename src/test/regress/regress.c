@@ -20,11 +20,15 @@
 #include <signal.h>
 
 #include "access/htup_details.h"
+#include "access/parallel.h"
 #include "access/transam.h"
 #include "access/tuptoaster.h"
 #include "access/xact.h"
 #include "catalog/pg_operator.h"
+#include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
+#include "cdb/cdbutil.h"
+#include "cdb/cdbvars.h"
 #include "commands/sequence.h"
 #include "commands/trigger.h"
 #include "executor/executor.h"
@@ -35,11 +39,13 @@
 #include "optimizer/optimizer.h"
 #include "optimizer/plancat.h"
 #include "port/atomics.h"
+#include "storage/shm_toc.h"
 #include "storage/spin.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/geo_decls.h"
 #include "utils/rel.h"
+#include "utils/syscache.h"
 #include "utils/typcache.h"
 #include "utils/memutils.h"
 
@@ -1270,4 +1276,147 @@ Datum
 test_valid_server_encoding(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_BOOL(pg_valid_server_encoding(text_to_cstring(PG_GETARG_TEXT_PP(0))) >= 0);
+}
+
+/*
+ * Parallel worker startup probe.
+ *
+ * regress_parallel_worker_probe(nworkers, fail) launches nworkers parallel
+ * workers from whatever process runs it (a QD, a QE or a utility-mode
+ * backend), lets each worker record how it sees itself, and reports the
+ * leader's identity and whether every worker came up as a reader QE of the
+ * leader's session.  With fail, every worker raises an error once it has
+ * recorded itself, so that a test can check that the leader's session
+ * survives a worker failure.  The probe exercises ParallelWorkerMain() end
+ * to end, including GUC and snapshot restoration, which nothing else in the
+ * regression suite does.
+ */
+#define PARALLEL_KEY_REGRESS_PROBE		UINT64CONST(0xA000000000000001)
+
+typedef struct RegressProbeWorker
+{
+	bool		done;
+	GpRoleValue	gp_role;
+	bool		is_writer;
+	int			session_id;
+	int			num_segments;
+} RegressProbeWorker;
+
+typedef struct RegressProbeShared
+{
+	int			nworkers;
+	bool		fail;
+	RegressProbeWorker workers[FLEXIBLE_ARRAY_MEMBER];
+} RegressProbeShared;
+
+PGDLLEXPORT void regress_parallel_worker_main(dsm_segment *seg, shm_toc *toc);
+
+PG_FUNCTION_INFO_V1(regress_parallel_worker_probe);
+Datum
+regress_parallel_worker_probe(PG_FUNCTION_ARGS)
+{
+	int			nworkers = PG_GETARG_INT32(0);
+	bool		fail = PG_GETARG_BOOL(1);
+	GpRoleValue	expected_role;
+	int			expected_segments = getgpsegmentCount();
+	HeapTuple	proctup;
+	Datum		probin;
+	bool		isnull;
+	char	   *library;
+	ParallelContext *pcxt;
+	RegressProbeShared *shared;
+	Size		size;
+	bool		role_ok = true;
+	bool		writer_ok = true;
+	bool		session_ok = true;
+	bool		segments_ok = true;
+	int			finished = 0;
+	int			i;
+	StringInfoData buf;
+
+	if (nworkers < 1)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("number of workers must be positive")));
+
+	/* Workers look their entry point up in the library this function lives in. */
+	proctup = SearchSysCache1(PROCOID, ObjectIdGetDatum(fcinfo->flinfo->fn_oid));
+	if (!HeapTupleIsValid(proctup))
+		elog(ERROR, "cache lookup failed for function %u", fcinfo->flinfo->fn_oid);
+	probin = SysCacheGetAttr(PROCOID, proctup, Anum_pg_proc_probin, &isnull);
+	if (isnull)
+		elog(ERROR, "function %u has no library", fcinfo->flinfo->fn_oid);
+	library = TextDatumGetCString(probin);
+	ReleaseSysCache(proctup);
+
+	/* A worker of a utility-mode leader stays in utility mode. */
+	expected_role = (Gp_role == GP_ROLE_UTILITY) ? GP_ROLE_UTILITY : GP_ROLE_EXECUTE;
+
+	EnterParallelMode();
+	pcxt = CreateParallelContext(library, "regress_parallel_worker_main",
+								 nworkers);
+
+	size = offsetof(RegressProbeShared, workers) +
+		nworkers * sizeof(RegressProbeWorker);
+	shm_toc_estimate_chunk(&pcxt->estimator, size);
+	shm_toc_estimate_keys(&pcxt->estimator, 1);
+	InitializeParallelDSM(pcxt);
+
+	shared = (RegressProbeShared *) shm_toc_allocate(pcxt->toc, size);
+	memset(shared, 0, size);
+	shared->nworkers = nworkers;
+	shared->fail = fail;
+	shm_toc_insert(pcxt->toc, PARALLEL_KEY_REGRESS_PROBE, shared);
+
+	LaunchParallelWorkers(pcxt);
+	WaitForParallelWorkersToFinish(pcxt);
+
+	for (i = 0; i < pcxt->nworkers_launched; i++)
+	{
+		RegressProbeWorker *w = &shared->workers[i];
+
+		if (!w->done)
+			continue;
+		finished++;
+		role_ok &= (w->gp_role == expected_role);
+		writer_ok &= !w->is_writer;
+		session_ok &= (w->session_id == gp_session_id);
+		segments_ok &= (w->num_segments == expected_segments);
+	}
+
+	initStringInfo(&buf);
+	appendStringInfo(&buf, "leader=%s content=%d launched=%d finished=%d role=%s writer=%s session=%s segments=%s",
+					 role_to_string(Gp_role), GpIdentity.segindex,
+					 pcxt->nworkers_launched, finished,
+					 role_ok ? "ok" : "mismatch",
+					 writer_ok ? "ok" : "mismatch",
+					 session_ok ? "ok" : "mismatch",
+					 segments_ok ? "ok" : "mismatch");
+
+	DestroyParallelContext(pcxt);
+	ExitParallelMode();
+
+	PG_RETURN_TEXT_P(cstring_to_text(buf.data));
+}
+
+void
+regress_parallel_worker_main(dsm_segment *seg, shm_toc *toc)
+{
+	RegressProbeShared *shared;
+	RegressProbeWorker *me;
+
+	shared = (RegressProbeShared *) shm_toc_lookup(toc, PARALLEL_KEY_REGRESS_PROBE,
+												  false);
+	me = &shared->workers[ParallelWorkerNumber];
+
+	me->gp_role = Gp_role;
+	me->is_writer = Gp_is_writer;
+	me->session_id = gp_session_id;
+	me->num_segments = getgpsegmentCount();
+	me->done = true;
+
+	if (shared->fail)
+		ereport(ERROR,
+				(errcode(ERRCODE_RAISE_EXCEPTION),
+				 errmsg("parallel worker failed on request")));
 }

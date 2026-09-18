@@ -1021,7 +1021,7 @@ struct config_bool ConfigureNamesBool_gp[] =
 		},
 		&Gp_is_writer,
 		false,
-		NULL, NULL, NULL
+		check_gp_is_writer, NULL, NULL
 	},
 
 	{

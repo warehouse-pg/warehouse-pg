@@ -1,0 +1,142 @@
+--
+-- Parallel worker startup on the coordinator and on the segments.
+--
+-- regress_parallel_worker_probe() launches parallel workers that record how
+-- they see themselves, and reports the leader's identity and whether every
+-- worker came up as a reader QE of the leader's session.  WarehousePG has no
+-- parallel query, so this is the only in-tree consumer of
+-- ParallelWorkerMain(); extensions that build indexes with parallel workers
+-- take the same path.
+--
+CREATE FUNCTION regress_parallel_worker_probe(int, bool DEFAULT false)
+   RETURNS text
+   AS '@libdir@/regress@DLSUFFIX@'
+   LANGUAGE C STRICT;
+CREATE TABLE regress_pw_tab (i int) DISTRIBUTED BY (i);
+INSERT INTO regress_pw_tab SELECT generate_series(1, 10);
+-- A coordinator leader: the workers join the coordinator's session.
+SELECT regress_parallel_worker_probe(2);
+                               regress_parallel_worker_probe                               
+-------------------------------------------------------------------------------------------
+ leader=dispatch content=-1 launched=2 finished=2 role=ok writer=ok session=ok segments=ok
+(1 row)
+
+-- A writer QE leader on every segment.
+SELECT gp_segment_id, regress_parallel_worker_probe(2)
+FROM gp_dist_random('gp_id') ORDER BY 1;
+ gp_segment_id |                              regress_parallel_worker_probe                              
+---------------+-----------------------------------------------------------------------------------------
+             0 | leader=execute content=0 launched=2 finished=2 role=ok writer=ok session=ok segments=ok
+             1 | leader=execute content=1 launched=2 finished=2 role=ok writer=ok session=ok segments=ok
+             2 | leader=execute content=2 launched=2 finished=2 role=ok writer=ok session=ok segments=ok
+(3 rows)
+
+-- A utility-mode leader on the coordinator and on a segment: there is no
+-- session to join, so the workers stay in utility mode.
+\! PGOPTIONS='-c gp_role=utility' psql -X -At -d regression -c "SELECT regress_parallel_worker_probe(1)"
+leader=utility content=-1 launched=1 finished=1 role=ok writer=ok session=ok segments=ok
+\! PGOPTIONS='-c gp_role=utility' psql -X -At -d regression -p $(psql -X -At -d regression -c "SELECT port FROM gp_segment_configuration WHERE content = 0 AND role = 'p'") -c "SELECT regress_parallel_worker_probe(1)"
+leader=utility content=0 launched=1 finished=1 role=ok writer=ok session=ok segments=ok
+-- A cursor makes the writer QEs publish their snapshot for reader gangs by
+-- setting gp_write_shared_snapshot, which every worker they launch later
+-- restores.  The workers must neither take a snapshot of their own nor
+-- overwrite the writer's published snapshot.
+BEGIN;
+DECLARE regress_pw_cur CURSOR FOR SELECT i FROM regress_pw_tab ORDER BY i;
+FETCH 1 FROM regress_pw_cur;
+ i 
+---
+ 1
+(1 row)
+
+SELECT gp_segment_id, regress_parallel_worker_probe(1)
+FROM gp_dist_random('gp_id') ORDER BY 1;
+ gp_segment_id |                              regress_parallel_worker_probe                              
+---------------+-----------------------------------------------------------------------------------------
+             0 | leader=execute content=0 launched=1 finished=1 role=ok writer=ok session=ok segments=ok
+             1 | leader=execute content=1 launched=1 finished=1 role=ok writer=ok session=ok segments=ok
+             2 | leader=execute content=2 launched=1 finished=1 role=ok writer=ok session=ok segments=ok
+(3 rows)
+
+SELECT regress_parallel_worker_probe(1);
+                               regress_parallel_worker_probe                               
+-------------------------------------------------------------------------------------------
+ leader=dispatch content=-1 launched=1 finished=1 role=ok writer=ok session=ok segments=ok
+(1 row)
+
+CLOSE regress_pw_cur;
+COMMIT;
+-- The same through a PL/pgSQL FOR loop, which opens a cursor implicitly.
+CREATE FUNCTION regress_pw_loop() RETURNS SETOF text AS $$
+DECLARE
+    r record;
+BEGIN
+    FOR r IN SELECT i FROM regress_pw_tab ORDER BY i LIMIT 1 LOOP
+        RETURN QUERY
+            SELECT 'seg' || gp_segment_id || ': ' || regress_parallel_worker_probe(1)
+            FROM gp_dist_random('gp_id') ORDER BY 1;
+        RETURN NEXT 'qd: ' || regress_parallel_worker_probe(1);
+    END LOOP;
+END;
+$$ LANGUAGE plpgsql;
+SELECT * FROM regress_pw_loop();
+                                        regress_pw_loop                                        
+-----------------------------------------------------------------------------------------------
+ seg0: leader=execute content=0 launched=1 finished=1 role=ok writer=ok session=ok segments=ok
+ seg1: leader=execute content=1 launched=1 finished=1 role=ok writer=ok session=ok segments=ok
+ seg2: leader=execute content=2 launched=1 finished=1 role=ok writer=ok session=ok segments=ok
+ qd: leader=dispatch content=-1 launched=1 finished=1 role=ok writer=ok session=ok segments=ok
+(4 rows)
+
+-- A worker that fails does not take the leader's session down with it: the
+-- worker is never the owner of the session's shared snapshot slot, so its
+-- exit must not release the slot.
+SELECT regress_parallel_worker_probe(1, true);
+ERROR:  parallel worker failed on request
+CONTEXT:  parallel worker
+SELECT gp_segment_id, regress_parallel_worker_probe(1, true)
+FROM gp_dist_random('gp_id') ORDER BY 1;
+ERROR:  parallel worker failed on request  (seg0 slice1 127.0.0.1:12002 pid=3574249)
+CONTEXT:  parallel worker
+-- The coordinator and the writer QEs kept their shared snapshot slots, so the
+-- session still works, including for a cursor's reader gangs.
+SELECT count(*) FROM regress_pw_tab;
+ count 
+-------
+    10
+(1 row)
+
+BEGIN;
+DECLARE regress_pw_cur CURSOR FOR SELECT i FROM regress_pw_tab ORDER BY i;
+FETCH 2 FROM regress_pw_cur;
+ i 
+---
+ 1
+ 2
+(2 rows)
+
+CLOSE regress_pw_cur;
+COMMIT;
+-- GUCs that need catalog lookups are restored with the leader's snapshot, so
+-- a worker sees an object its leader created in the same transaction.
+BEGIN;
+CREATE TEXT SEARCH CONFIGURATION regress_pw_tscfg (COPY = english);
+SET default_text_search_config = 'regress_pw_tscfg';
+SELECT regress_parallel_worker_probe(1);
+                               regress_parallel_worker_probe                               
+-------------------------------------------------------------------------------------------
+ leader=dispatch content=-1 launched=1 finished=1 role=ok writer=ok session=ok segments=ok
+(1 row)
+
+ROLLBACK;
+-- Likewise for a session role created in the same transaction.
+BEGIN;
+CREATE ROLE regress_pw_role;
+SET SESSION AUTHORIZATION regress_pw_role;
+SELECT regress_parallel_worker_probe(1);
+                               regress_parallel_worker_probe                               
+-------------------------------------------------------------------------------------------
+ leader=dispatch content=-1 launched=1 finished=1 role=ok writer=ok session=ok segments=ok
+(1 row)
+
+ROLLBACK;
