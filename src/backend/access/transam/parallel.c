@@ -91,6 +91,7 @@ typedef struct FixedParallelState
 	Oid			temp_namespace_id;
 	Oid			temp_toast_namespace_id;
 	int			sec_context;
+	GpRoleValue	gp_role;
 	int			session_id;
 	int			num_segments;
 	bool 		authenticated_user_is_superuser;
@@ -342,11 +343,15 @@ InitializeParallelDSM(ParallelContext *pcxt)
 	fps->serializable_xact_handle = ShareSerializableXact();
 	SpinLockInit(&fps->mutex);
 	fps->last_xlog_end = 0;
-	if (Gp_role == GP_ROLE_EXECUTE)
-	{
-		fps->session_id = gp_session_id;
-		fps->num_segments = numsegmentsFromQD;
-	}
+
+	/*
+	 * CDB: what a worker needs to act as a reader QE of this session.  Every
+	 * leader role has a session id and a segment count; only a QE has
+	 * numsegmentsFromQD, so use getgpsegmentCount().
+	 */
+	fps->gp_role = Gp_role;
+	fps->session_id = gp_session_id;
+	fps->num_segments = getgpsegmentCount();
 	shm_toc_insert(pcxt->toc, PARALLEL_KEY_FIXED, fps);
 
 	/* We can skip the rest of this if we're not budgeting for any workers. */
@@ -1324,10 +1329,15 @@ ParallelWorkerMain(Datum main_arg)
 	on_shmem_exit(ParallelWorkerShutdown, (Datum) 0);
 
 	/*
-	 * CDB: set Gp_role, gp_session_id, numsegmentsFromQD for
-	 * parallel background workers.
+	 * CDB: a parallel worker acts as a reader QE of its leader's session: it
+	 * shares the leader's snapshot, never writes and never dispatches.  Under
+	 * a utility-mode leader there is no session to join, so the worker stays
+	 * in utility mode.  The gp_role and gp_is_writer values restored from
+	 * the leader later on do not change this; see check_gp_role() and
+	 * check_gp_is_writer().
 	 */
-	Gp_role = GP_ROLE_EXECUTE;
+	Gp_role = (fps->gp_role == GP_ROLE_UTILITY) ? GP_ROLE_UTILITY : GP_ROLE_EXECUTE;
+	Gp_is_writer = false;
 	gp_session_id = fps->session_id;
 	numsegmentsFromQD = fps->num_segments;
 	MyProc->mppSessionId = gp_session_id;
@@ -1432,9 +1442,6 @@ ParallelWorkerMain(Datum main_arg)
 	StartTransactionCommand();
 	RestoreLibraryState(libraryspace);
 	CommitTransactionCommand();
-
-	/* CDB: Parallel workers behave as Reader QEs. */
-	Gp_is_writer = false;
 
 	/* Crank up a transaction state appropriate to a parallel worker. */
 	tstatespace = shm_toc_lookup(toc, PARALLEL_KEY_TRANSACTION_STATE, false);
