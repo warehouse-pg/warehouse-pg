@@ -87,44 +87,48 @@ select sum(distinct d), count(distinct i), count(distinct c),i,c from dqa_t1 gro
 explain (costs off) select sum(distinct d), count(distinct i), count(distinct c),i,c from dqa_t1 group by i,c order by i,c;
 
 -- multi args singledqa
-select corr(distinct d, i) from dqa_t1;
-explain (costs off) select corr(distinct d, i) from dqa_t1;
+--
+-- corr() is a float8 sum split across the segments and combined in whichever
+-- order the partial aggregates arrive, so the last digit of the raw result is
+-- not stable across runs; print it through to_char at a precision that is.
+select to_char(corr(distinct d, i), '9.99999999999999') from dqa_t1;
+explain (costs off) select to_char(corr(distinct d, i), '9.99999999999999') from dqa_t1;
 
 -- multi args singledqa with group by
-select corr(distinct d, i) from dqa_t1 group by d;
-explain (costs off) select corr(distinct d, i) from dqa_t1 group by d;
+select to_char(corr(distinct d, i), '9.99999999999999') from dqa_t1 group by d;
+explain (costs off) select to_char(corr(distinct d, i), '9.99999999999999') from dqa_t1 group by d;
 
 select to_char(corr(distinct d, i), '9.99999999999999') from dqa_t1 group by c;
 explain (costs off) select to_char(corr(distinct d, i), '9.99999999999999') from dqa_t1 group by c;
 
 -- multi args multidqa
-select count(distinct c), corr(distinct d, i) from dqa_t1;
-explain (costs off) select count(distinct c), corr(distinct d, i) from dqa_t1;
+select count(distinct c), to_char(corr(distinct d, i), '9.99999999999999') from dqa_t1;
+explain (costs off) select count(distinct c), to_char(corr(distinct d, i), '9.99999999999999') from dqa_t1;
 
-select count(distinct d), corr(distinct d, i) from dqa_t1;
-explain (costs off) select count(distinct d), corr(distinct d, i) from dqa_t1;
+select count(distinct d), to_char(corr(distinct d, i), '9.99999999999999') from dqa_t1;
+explain (costs off) select count(distinct d), to_char(corr(distinct d, i), '9.99999999999999') from dqa_t1;
 
-select count(distinct d), count(distinct i), corr(distinct d, i) from dqa_t1;
-explain (costs off) select count(distinct d), count(distinct i), corr(distinct d, i) from dqa_t1;
+select count(distinct d), count(distinct i), to_char(corr(distinct d, i), '9.99999999999999') from dqa_t1;
+explain (costs off) select count(distinct d), count(distinct i), to_char(corr(distinct d, i), '9.99999999999999') from dqa_t1;
 
-select count(distinct c), count(distinct d), count(distinct i), corr(distinct d, i) from dqa_t1;
-explain (costs off) select count(distinct c), count(distinct d), count(distinct i), corr(distinct d, i) from dqa_t1;
+select count(distinct c), count(distinct d), count(distinct i), to_char(corr(distinct d, i), '9.99999999999999') from dqa_t1;
+explain (costs off) select count(distinct c), count(distinct d), count(distinct i), to_char(corr(distinct d, i), '9.99999999999999') from dqa_t1;
 
 -- multi args multidqa with group by
-select count(distinct c), corr(distinct d, i), d from dqa_t1 group by d;
-explain (costs off) select count(distinct c), corr(distinct d, i), d from dqa_t1 group by d;
+select count(distinct c), to_char(corr(distinct d, i), '9.99999999999999'), d from dqa_t1 group by d;
+explain (costs off) select count(distinct c), to_char(corr(distinct d, i), '9.99999999999999'), d from dqa_t1 group by d;
 
-select count(distinct c), corr(distinct d, i), d, i from dqa_t1 group by d,i;
-explain (costs off) select count(distinct c), corr(distinct d, i), d, i from dqa_t1 group by d,i;
+select count(distinct c), to_char(corr(distinct d, i), '9.99999999999999'), d, i from dqa_t1 group by d,i;
+explain (costs off) select count(distinct c), to_char(corr(distinct d, i), '9.99999999999999'), d, i from dqa_t1 group by d,i;
 
-select count(distinct c), corr(distinct d, i), dt from dqa_t1 group by dt;
-explain (costs off) select count(distinct c), corr(distinct d, i), dt from dqa_t1 group by dt;
+select count(distinct c), to_char(corr(distinct d, i), '9.99999999999999'), dt from dqa_t1 group by dt;
+explain (costs off) select count(distinct c), to_char(corr(distinct d, i), '9.99999999999999'), dt from dqa_t1 group by dt;
 
-select count(distinct d), corr(distinct d, i), i from dqa_t1 group by i;
-explain (costs off) select count(distinct d), corr(distinct d, i), i from dqa_t1 group by i;
+select count(distinct d), to_char(corr(distinct d, i), '9.99999999999999'), i from dqa_t1 group by i;
+explain (costs off) select count(distinct d), to_char(corr(distinct d, i), '9.99999999999999'), i from dqa_t1 group by i;
 
-select count(distinct d), corr(distinct d, i), d from dqa_t1 group by d;
-explain (costs off) select count(distinct d), corr(distinct d, i), d from dqa_t1 group by d;
+select count(distinct d), to_char(corr(distinct d, i), '9.99999999999999'), d from dqa_t1 group by d;
+explain (costs off) select count(distinct d), to_char(corr(distinct d, i), '9.99999999999999'), d from dqa_t1 group by d;
 
 select count(distinct d),  to_char(corr(distinct d, i), '9.99999999999999'), c from dqa_t1 group by c;
 explain (costs off) select count(distinct d),  to_char(corr(distinct d, i), '9.99999999999999'), c from dqa_t1 group by c;
