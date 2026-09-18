@@ -192,6 +192,25 @@ DROP ROLE r_priv_test;
 
 -- Check how reltuples/relpages/relallvisible are updated on a table, on
 -- VACUUM ANALYZE.
+--
+-- relallvisible is only set for pages whose tuples are visible to every
+-- transaction. The dtx recovery and FTS background processes create gangs,
+-- and hence open transactions on the segments, at their own pace; one that
+-- straddles the INSERT below drags the segment's OldestXmin behind the
+-- inserted tuples and VACUUM leaves relallvisible at 0 (the vacuum_stats
+-- test documents the exact interleaving). Park both processes on skip
+-- faults while this section runs.
+CREATE EXTENSION IF NOT EXISTS gp_inject_fault;
+SELECT gp_inject_fault_infinite('before_orphaned_check', 'skip', dbid)
+FROM gp_segment_configuration WHERE role = 'p' AND content = -1;
+SELECT gp_inject_fault_infinite('fts_probe', 'skip', dbid)
+FROM gp_segment_configuration WHERE role = 'p' AND content = -1;
+SELECT gp_request_fts_probe_scan();
+SELECT gp_wait_until_triggered_fault('before_orphaned_check', 1, dbid)
+FROM gp_segment_configuration WHERE role = 'p' AND content = -1;
+SELECT gp_wait_until_triggered_fault('fts_probe', 1, dbid)
+FROM gp_segment_configuration WHERE role = 'p' AND content = -1;
+
 set gp_autostats_mode='none';
 CREATE TABLE vacuum_gp (a int) DISTRIBUTED BY (a);
 INSERT INTO vacuum_gp SELECT i FROM generate_series(1, 12)i;
@@ -199,6 +218,11 @@ SELECT relname, reltuples, relpages, relallvisible FROM pg_catalog.pg_class WHER
 VACUUM ANALYZE vacuum_gp;
 SELECT relname, reltuples, relpages, relallvisible FROM pg_catalog.pg_class WHERE relname like 'vacuum_gp%';
 reset gp_autostats_mode;
+
+SELECT gp_inject_fault('before_orphaned_check', 'reset', dbid)
+FROM gp_segment_configuration WHERE role = 'p' AND content = -1;
+SELECT gp_inject_fault('fts_probe', 'reset', dbid)
+FROM gp_segment_configuration WHERE role = 'p' AND content = -1;
 
 -- Check how reltuples/relpages are updated on a partitioned table, on
 -- VACUUM and ANALYZE.
