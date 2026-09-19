@@ -1814,12 +1814,12 @@ SELECT c.relname, a.attnum, attoptions
     WHERE c.relname LIKE 'at_part_w_external%' OR c.relname = 'at_external';
           relname           | attnum |                     attoptions                      
 ----------------------------+--------+-----------------------------------------------------
- at_part_w_external         |      2 | {compresstype=zlib,blocksize=65536,compresslevel=5}
- at_part_w_external         |      1 | {compresstype=zlib,blocksize=65536,compresslevel=5}
- at_part_w_external_1_prt_1 |      2 | {compresstype=zlib,blocksize=65536,compresslevel=5}
- at_part_w_external_1_prt_1 |      1 | {compresstype=zlib,blocksize=65536,compresslevel=5}
- at_part_w_external_1_prt_2 |      2 | {compresstype=zlib,blocksize=65536,compresslevel=5}
- at_part_w_external_1_prt_2 |      1 | {compresstype=zlib,blocksize=65536,compresslevel=5}
+ at_part_w_external         |      2 | {compresstype=zlib,blocksize=65536,compresslevel=8}
+ at_part_w_external         |      1 | {compresstype=zlib,blocksize=65536,compresslevel=8}
+ at_part_w_external_1_prt_1 |      2 | {compresstype=zlib,blocksize=65536,compresslevel=8}
+ at_part_w_external_1_prt_1 |      1 | {compresstype=zlib,blocksize=65536,compresslevel=8}
+ at_part_w_external_1_prt_2 |      2 | {compresstype=zlib,blocksize=65536,compresslevel=8}
+ at_part_w_external_1_prt_2 |      1 | {compresstype=zlib,blocksize=65536,compresslevel=8}
 (6 rows)
 
 -- ALTER TABLE ao_row with pg_attribute_encoding entries to ao_column
