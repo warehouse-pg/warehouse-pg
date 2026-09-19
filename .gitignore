@@ -29,7 +29,6 @@ lib*dll.defautom4te.cache
 **/test/*.t
 **/tags
 *.pyc
-**/vagrant-local.yml
 a.out.dSYM
 confdefs.h
 conftest.c
