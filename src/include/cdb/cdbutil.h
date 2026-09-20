@@ -116,6 +116,10 @@ struct CdbComponentDatabases
 	char	   *topology_signature; /* dispatch topology file identity this
 									 * table was built with; "" when the
 									 * feature is off */
+	bool		hot_standby_qd;	/* the dispatcher was a hot-standby QD when
+								 * this table was built: decides which rows
+								 * it counted and dispatches to, and a change
+								 * (promotion) rebuilds the table */
 };
 
 //

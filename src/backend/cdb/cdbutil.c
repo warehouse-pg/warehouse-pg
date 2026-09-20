@@ -509,6 +509,7 @@ getCdbComponentInfo(void)
 
 	bool		found;
 	HostPrimaryCountEntry *hsEntry;
+	bool		hot_standby_qd;
 	char		dispatch_role;
 
 	/*
@@ -576,12 +577,22 @@ getCdbComponentInfo(void)
 	 * and the two sides must agree: a host carrying only the other role (a
 	 * dedicated mirror host, or the standby coordinator's own host on a
 	 * multi-host cluster) otherwise has no entry for the rows read back.
+	 *
+	 * The recovery state is sampled once here and recorded in the table.
+	 * Lookups use the recorded state rather than re-evaluating
+	 * IS_HOT_STANDBY_QD(): a session can outlive an in-place promotion, and
+	 * a table counted for the mirrors must not start handing out its
+	 * (zero) primary counts once RecoveryInProgress() flips.  The rebuild
+	 * check in cdbcomponent_updateCdbComponents() treats a change of the
+	 * recorded state as a reason to rebuild.
 	 */
-	dispatch_role = (IS_HOT_STANDBY_QD() && topology_signature == NULL) ?
+	hot_standby_qd = IS_HOT_STANDBY_QD();
+	dispatch_role = (hot_standby_qd && topology_signature == NULL) ?
 		GP_SEGMENT_CONFIGURATION_ROLE_MIRROR :
 		GP_SEGMENT_CONFIGURATION_ROLE_PRIMARY;
 
 	component_databases = palloc0(sizeof(CdbComponentDatabases));
+	component_databases->hot_standby_qd = hot_standby_qd;
 
 	component_databases->numActiveQEs = 0;
 	component_databases->numIdleQEs = 0;
@@ -892,6 +903,7 @@ void
 cdbcomponent_updateCdbComponents(void)
 {
 	bool topo_matches;
+	bool role_matches;
 	uint8 ftsVersion= getFtsVersion();
 	int expandVersion = GetGpExpandVersion();
 
@@ -919,6 +931,17 @@ cdbcomponent_updateCdbComponents(void)
 		topo_matches = (cdb_component_dbs == NULL ||
 						dispatch_topology_signature_matches(cdb_component_dbs->topology_signature));
 
+		/*
+		 * A table built on a hot-standby QD counted and dispatches to the
+		 * mirrors; once this coordinator has been promoted in place the
+		 * session must dispatch to the primaries, which that table never
+		 * counted.  Rebuild instead of reusing it.  (The other direction, a
+		 * live QD re-entering recovery, needs a restart and cannot be seen
+		 * by a surviving session.)
+		 */
+		role_matches = (cdb_component_dbs == NULL ||
+						cdb_component_dbs->hot_standby_qd == IS_HOT_STANDBY_QD());
+
 		if (cdb_component_dbs == NULL)
 		{
 			cdb_component_dbs = getCdbComponentInfo();
@@ -927,7 +950,7 @@ cdbcomponent_updateCdbComponents(void)
 		}
 		else if ((cdb_component_dbs->fts_version != ftsVersion ||
 				 cdb_component_dbs->expand_version != expandVersion ||
-				 !topo_matches))
+				 !topo_matches || !role_matches))
 		{
 			if (TempNamespaceOidIsValid())
 			{
@@ -941,19 +964,26 @@ cdbcomponent_updateCdbComponents(void)
 				 * the stale segments' identities).  Normally unreachable —
 				 * a hot-standby session cannot create temp tables — but a
 				 * session can outlive an out-of-band promotion, and that
-				 * corner must fail closed.
+				 * corner must fail closed.  The same holds for a table
+				 * built under a recovery state this session no longer has.
 				 */
 				if (!topo_matches)
 					ereport(ERROR,
 							(errcode(ERRCODE_CONFIG_FILE_ERROR),
 							 errmsg("the dispatch topology changed, but this session holds temporary tables"),
 							 errhint("Reconnect (or drop the temporary tables) to pick up the new topology.")));
+				if (!role_matches)
+					ereport(ERROR,
+							(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+							 errmsg("the coordinator's recovery state changed, but this session holds temporary tables"),
+							 errhint("Reconnect (or drop the temporary tables) to dispatch as the new role.")));
 			}
 			else
 			{
-				ELOG_DISPATCHER_DEBUG("component table rebuilt (fts %d->%d, topo sig %s)",
+				ELOG_DISPATCHER_DEBUG("component table rebuilt (fts %d->%d, topo sig %s, hot standby %s)",
 									  cdb_component_dbs->fts_version, ftsVersion,
-									  topo_matches ? "same" : "changed");
+									  topo_matches ? "same" : "changed",
+									  role_matches ? "same" : "changed");
 				cdbcomponent_destroyCdbComponents();
 				cdb_component_dbs = getCdbComponentInfo();
 				cdb_component_dbs->fts_version = ftsVersion;
@@ -1282,8 +1312,11 @@ cdbcomponent_getComponentInfo(int contentId)
 		/*
 		 * For a standby QD, get the last entry db which can be the first (on
 		 * a replica cluster) or the second (on a mirrored cluster) entry.
+		 * The table's recorded recovery state is used, not the live one: a
+		 * surviving session sees the change as a rebuild, not as a switch
+		 * of targets inside a table counted for the other role.
 		 */
-		if (IS_HOT_STANDBY_QD())
+		if (cdbs->hot_standby_qd)
 			cdbInfo = &cdbs->entry_db_info[cdbs->total_entry_dbs - 1];
 		else
 			cdbInfo = &cdbs->entry_db_info[0];	
@@ -1305,8 +1338,8 @@ cdbcomponent_getComponentInfo(int contentId)
 		cdbInfo = &cdbs->segment_db_info[2 * contentId];
 
 		/* use the other segment if it is not what the QD wants */
-		if ((IS_HOT_STANDBY_QD() && SEGMENT_IS_ACTIVE_PRIMARY(cdbInfo)) 
-						|| (!IS_HOT_STANDBY_QD() && !SEGMENT_IS_ACTIVE_PRIMARY(cdbInfo)))
+		if ((cdbs->hot_standby_qd && SEGMENT_IS_ACTIVE_PRIMARY(cdbInfo))
+			|| (!cdbs->hot_standby_qd && !SEGMENT_IS_ACTIVE_PRIMARY(cdbInfo)))
 			cdbInfo = &cdbs->segment_db_info[2 * contentId + 1];
 
 		return cdbInfo;
