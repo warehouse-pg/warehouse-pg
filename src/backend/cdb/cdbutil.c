@@ -105,6 +105,12 @@ typedef struct SegIpEntry
 	char		hostinfo[NI_MAXHOST];
 } SegIpEntry;
 
+/*
+ * Per-host count of the segments this dispatcher sends QEs to: primaries
+ * under a live coordinator, mirrors under a hot-standby coordinator.  Each
+ * QE receives its host's count through gpqeid and divides the host's
+ * resources by it.
+ */
 typedef struct HostPrimaryCountEntry
 {
 	char		hostname[MAXHOSTNAMELEN];
@@ -503,6 +509,7 @@ getCdbComponentInfo(void)
 
 	bool		found;
 	HostPrimaryCountEntry *hsEntry;
+	char		dispatch_role;
 
 	/*
 	 * Every caller enters with no live component table (the rebuild path
@@ -556,6 +563,23 @@ getCdbComponentInfo(void)
 		configs = applyDispatchTopology(configs, &total_dbs, &topology_signature);
 		ELOG_DISPATCHER_DEBUG("dispatch topology applied to component table");
 	}
+
+	/*
+	 * The role this dispatcher sends QEs to.  A live coordinator dispatches
+	 * to the primaries; a hot-standby coordinator dispatches to the mirrors,
+	 * and its own entry database is the standby's role='m' row.  A
+	 * topology-built table has already been reduced to the dispatch targets
+	 * and stamps every row PRIMARY, so it is a primary layout no matter who
+	 * dispatches from it.
+	 *
+	 * The per-host count is entered and read back under this one predicate,
+	 * and the two sides must agree: a host carrying only the other role (a
+	 * dedicated mirror host, or the standby coordinator's own host on a
+	 * multi-host cluster) otherwise has no entry for the rows read back.
+	 */
+	dispatch_role = (IS_HOT_STANDBY_QD() && topology_signature == NULL) ?
+		GP_SEGMENT_CONFIGURATION_ROLE_MIRROR :
+		GP_SEGMENT_CONFIGURATION_ROLE_PRIMARY;
 
 	component_databases = palloc0(sizeof(CdbComponentDatabases));
 
@@ -628,7 +652,7 @@ getCdbComponentInfo(void)
 		pRow->numIdleQEs = 0;
 		pRow->numActiveQEs = 0;
 
-		if (config->role != GP_SEGMENT_CONFIGURATION_ROLE_PRIMARY)
+		if (config->role != dispatch_role)
 			continue;
 
 		hsEntry = (HostPrimaryCountEntry *) hash_search(hostPrimaryCountHash, config->hostname, HASH_ENTER, &found);
@@ -742,11 +766,13 @@ getCdbComponentInfo(void)
 	{
 		cdbInfo = &component_databases->segment_db_info[i];
 
-		if (!IS_HOT_STANDBY_QD() && cdbInfo->config->role != GP_SEGMENT_CONFIGURATION_ROLE_PRIMARY)
+		if (cdbInfo->config->role != dispatch_role)
 			continue;
 
 		hsEntry = (HostPrimaryCountEntry *) hash_search(hostPrimaryCountHash, cdbInfo->config->hostname, HASH_FIND, &found);
-		Assert(found);
+		if (!found)
+			elog(ERROR, "no dispatch-target count for host \"%s\" (dbid %d)",
+				 cdbInfo->config->hostname, cdbInfo->config->dbid);
 		cdbInfo->hostPrimaryCount = hsEntry->segmentCount;
 	}
 
@@ -754,11 +780,13 @@ getCdbComponentInfo(void)
 	{
 		cdbInfo = &component_databases->entry_db_info[i];
 
-		if (!IS_HOT_STANDBY_QD() && cdbInfo->config->role != GP_SEGMENT_CONFIGURATION_ROLE_PRIMARY)
+		if (cdbInfo->config->role != dispatch_role)
 			continue;
 
 		hsEntry = (HostPrimaryCountEntry *) hash_search(hostPrimaryCountHash, cdbInfo->config->hostname, HASH_FIND, &found);
-		Assert(found);
+		if (!found)
+			elog(ERROR, "no dispatch-target count for host \"%s\" (dbid %d)",
+				 cdbInfo->config->hostname, cdbInfo->config->dbid);
 		cdbInfo->hostPrimaryCount = hsEntry->segmentCount;
 	}
 

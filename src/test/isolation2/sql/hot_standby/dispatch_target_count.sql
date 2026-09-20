@@ -1,0 +1,36 @@
+-- Per-host dispatch-target counting on a hot standby.
+--
+-- The component table counts, per host, the segments the dispatcher sends
+-- QEs to, and hands each QE its host's count through gpqeid.  Under a
+-- hot-standby QD those are the mirrors, plus the standby coordinator itself
+-- for the entry database.  The demo cluster co-hosts every role, which hides
+-- a host that carries only such rows (a dedicated mirror host, or the
+-- standby coordinator's own host on any multi-host cluster): the count used
+-- to be entered for primaries only, so those rows found no entry to read
+-- back and every standby session crashed at connect time.
+--
+-- hostname is only a grouping label for that count (connections go by
+-- address), so relabel the segment mirrors onto a host of their own and
+-- check that a fresh standby session builds its component table and
+-- dispatches to all of them.  The standby coordinator's own row keeps its
+-- hostname because the test driver reaches -1S through it; the entry rows
+-- go through the same count and the same predicate as the segment rows.
+--
+-- Sessions: default is the primary QD, -1S is a dispatch session on the
+-- standby QD.
+
+set allow_system_table_mods to true;
+update gp_segment_configuration set hostname = 'hs_mirror_host' where role = 'm' and content >= 0;
+select content, role, hostname = 'hs_mirror_host' as relabeled from gp_segment_configuration order by content, role;
+
+-- the first -1S command opens the standby session, which builds its
+-- component table from the relabeled catalog at connect time, then
+-- dispatches to every mirror
+-1S: select count(*) from gp_dist_random('gp_id');
+-1S: select id, type, content from gp_backend_info() order by id;
+
+-- put the hostnames back
+update gp_segment_configuration set hostname = (select hostname from gp_segment_configuration where content = -1 and role = 'p') where role = 'm' and content >= 0;
+select count(*) as still_relabeled from gp_segment_configuration where hostname = 'hs_mirror_host';
+reset allow_system_table_mods;
+-1Sq:
