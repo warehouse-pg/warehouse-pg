@@ -67,9 +67,9 @@ struct CdbComponentDatabaseInfo
 
 	CdbComponentDatabases	*cdbs; /* point to owners */
 
-	int16		hostPrimaryCount;	/* number of dispatch targets (primaries, or
-									 * mirrors under a hot-standby QD) on the
-									 * same host */
+	int16		hostDispatchTargetCount;	/* segments this dispatcher sends QEs
+										 * to (primaries, or mirrors under a
+										 * hot-standby QD) on the same host */
 	List		*freelist;	/* list of idle segment dbs */
 	int			numIdleQEs;
 	List		*activelist;	/* list of active segment dbs */

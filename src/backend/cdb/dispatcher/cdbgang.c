@@ -66,7 +66,7 @@ int			qe_identifier = 0;
  * Note: This is only set on the segments and not on the coordinator. It is
  * used primarily by resource groups.
  */
-int			host_primary_segment_count = 0;
+int			host_dispatch_target_count = 0;
 
 /*
  * size of hash table of interconnect connections
@@ -622,7 +622,7 @@ cdbgang_parse_gpqeid_params(struct Port *port pg_attribute_unused(),
 
 	if (gpqeid_next_param(&cp, &np))
 	{
-		host_primary_segment_count = (int) strtol(cp, NULL, 10);
+		host_dispatch_target_count = (int) strtol(cp, NULL, 10);
 	}
 
 	if (gpqeid_next_param(&cp, &np))
@@ -724,7 +724,7 @@ cdbgang_parse_gpqeid_params(struct Port *port pg_attribute_unused(),
 		goto bad;
 
 	if (gp_session_id <= 0 || PgStartTime <= 0 || qe_identifier < 0 ||
-		host_primary_segment_count <= 0 || ic_htab_size <= 0)
+		host_dispatch_target_count <= 0 || ic_htab_size <= 0)
 		goto bad;
 
 	pfree(gpqeid);
@@ -845,7 +845,13 @@ getCdbProcessesForQD(int isPrimary)
 
 	qdinfo = cdbcomponent_getComponentInfo(COORDINATOR_CONTENT_ID);
 
-	Assert((qdinfo->config->segindex == -1 && SEGMENT_IS_ACTIVE_PRIMARY(qdinfo)) || IS_HOT_STANDBY_QD());
+	/*
+	 * Judge the row by the recovery state the table was built under: a
+	 * hot-standby table hands back the standby's own mirror row, and a
+	 * session promoted mid-command must not trip here on the live state
+	 * while it still holds that table.
+	 */
+	Assert((qdinfo->config->segindex == -1 && SEGMENT_IS_ACTIVE_PRIMARY(qdinfo)) || qdinfo->cdbs->hot_standby_qd);
 	Assert(qdinfo->config->hostip != NULL);
 
 	proc = makeNode(CdbProcess);

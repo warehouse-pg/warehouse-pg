@@ -171,7 +171,7 @@ create_gang_retry:
 			ret = build_gpqeid_param(gpqeid, sizeof(gpqeid),
 									 segdbDesc->isWriter,
 									 segdbDesc->identifier,
-									 segdbDesc->segment_database_info->hostPrimaryCount,
+									 segdbDesc->segment_database_info->hostDispatchTargetCount,
 									 totalSegs * 2,
 									 topology_dispatch ?
 									 segdbDesc->segment_database_info->config->dbid : 0,

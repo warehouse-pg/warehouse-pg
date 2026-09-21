@@ -91,7 +91,7 @@ static GpSegConfigEntry * readGpSegConfigFromCatalog(int *total_dbs);
 static GpSegConfigEntry * readGpSegConfigFromFTSFiles(int *total_dbs);
 
 static void getAddressesForDBid(GpSegConfigEntry *c, int elevel);
-static HTAB *hostPrimaryCountHashTableInit(void);
+static HTAB *hostDispatchTargetCountHashTableInit(void);
 
 static int nextQEIdentifer(CdbComponentDatabases *cdbs);
 
@@ -111,11 +111,11 @@ typedef struct SegIpEntry
  * QE receives its host's count through gpqeid and divides the host's
  * resources by it.
  */
-typedef struct HostPrimaryCountEntry
+typedef struct HostDispatchTargetCountEntry
 {
 	char		hostname[MAXHOSTNAMELEN];
 	int			segmentCount;
-} HostPrimaryCountEntry;
+} HostDispatchTargetCountEntry;
 
 /*
  * Helper functions for fetching latest gp_segment_configuration outside of
@@ -508,7 +508,7 @@ getCdbComponentInfo(void)
 	char	   *topology_signature = NULL;
 
 	bool		found;
-	HostPrimaryCountEntry *hsEntry;
+	HostDispatchTargetCountEntry *hsEntry;
 	bool		hot_standby_qd;
 	char		dispatch_role;
 
@@ -534,7 +534,7 @@ getCdbComponentInfo(void)
 
 	oldContext = MemoryContextSwitchTo(CdbComponentsContext);
 
-	HTAB	   *hostPrimaryCountHash = hostPrimaryCountHashTableInit();
+	HTAB	   *hostDispatchTargetCountHash = hostDispatchTargetCountHashTableInit();
 
 	if (IsTransactionState())
 		configs = readGpSegConfigFromCatalog(&total_dbs);
@@ -666,7 +666,7 @@ getCdbComponentInfo(void)
 		if (config->role != dispatch_role)
 			continue;
 
-		hsEntry = (HostPrimaryCountEntry *) hash_search(hostPrimaryCountHash, config->hostname, HASH_ENTER, &found);
+		hsEntry = (HostDispatchTargetCountEntry *) hash_search(hostDispatchTargetCountHash, config->hostname, HASH_ENTER, &found);
 		if (found)
 			hsEntry->segmentCount++;
 		else
@@ -780,11 +780,11 @@ getCdbComponentInfo(void)
 		if (cdbInfo->config->role != dispatch_role)
 			continue;
 
-		hsEntry = (HostPrimaryCountEntry *) hash_search(hostPrimaryCountHash, cdbInfo->config->hostname, HASH_FIND, &found);
+		hsEntry = (HostDispatchTargetCountEntry *) hash_search(hostDispatchTargetCountHash, cdbInfo->config->hostname, HASH_FIND, &found);
 		if (!found)
 			elog(ERROR, "no dispatch-target count for host \"%s\" (dbid %d)",
 				 cdbInfo->config->hostname, cdbInfo->config->dbid);
-		cdbInfo->hostPrimaryCount = hsEntry->segmentCount;
+		cdbInfo->hostDispatchTargetCount = hsEntry->segmentCount;
 	}
 
 	for (i = 0; i < component_databases->total_entry_dbs; i++)
@@ -794,14 +794,14 @@ getCdbComponentInfo(void)
 		if (cdbInfo->config->role != dispatch_role)
 			continue;
 
-		hsEntry = (HostPrimaryCountEntry *) hash_search(hostPrimaryCountHash, cdbInfo->config->hostname, HASH_FIND, &found);
+		hsEntry = (HostDispatchTargetCountEntry *) hash_search(hostDispatchTargetCountHash, cdbInfo->config->hostname, HASH_FIND, &found);
 		if (!found)
 			elog(ERROR, "no dispatch-target count for host \"%s\" (dbid %d)",
 				 cdbInfo->config->hostname, cdbInfo->config->dbid);
-		cdbInfo->hostPrimaryCount = hsEntry->segmentCount;
+		cdbInfo->hostDispatchTargetCount = hsEntry->segmentCount;
 	}
 
-	hash_destroy(hostPrimaryCountHash);
+	hash_destroy(hostDispatchTargetCountHash);
 
 	/*
 	 * Remember which topology configuration this table was built with.
@@ -1748,18 +1748,18 @@ getAddressesForDBid(GpSegConfigEntry *c, int elevel)
 }
 
 /*
- * hostPrimaryCountHashTableInit()
- *    Construct a hash table of HostPrimaryCountEntry
+ * hostDispatchTargetCountHashTableInit()
+ *    Construct a hash table of HostDispatchTargetCountEntry
  */
 static HTAB *
-hostPrimaryCountHashTableInit(void)
+hostDispatchTargetCountHashTableInit(void)
 {
 	HASHCTL		info;
 
 	/* Set key and entry sizes. */
 	MemSet(&info, 0, sizeof(info));
 	info.keysize = MAXHOSTNAMELEN;
-	info.entrysize = sizeof(HostPrimaryCountEntry);
+	info.entrysize = sizeof(HostDispatchTargetCountEntry);
 
 	/*
 	 * Tie the table to CdbComponentsContext (without HASH_CONTEXT it
