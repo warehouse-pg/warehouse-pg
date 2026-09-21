@@ -11,3 +11,4 @@ struct ResGroupCaps
 struct PlannerConfig
 struct ProjectionPath
 struct AppendRelInfo
+struct CdbComponentDatabaseInfo
