@@ -126,7 +126,7 @@ is_deeply(
 
 # Contents of these directories should not be copied.
 foreach my $dirname (
-	qw(pg_dynshmem pg_notify pg_replslot pg_serial pg_snapshots pg_stat_tmp pg_subtrans)
+	qw(pg_dynshmem pg_notify pg_replslot pg_serial pg_snapshots pg_anchor_snapshots pg_stat_tmp pg_subtrans)
   )
 {
 	is_deeply(

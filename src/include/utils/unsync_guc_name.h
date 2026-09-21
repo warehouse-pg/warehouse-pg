@@ -568,6 +568,8 @@
 		"wal_writer_flush_after",
 		"whpg_dispatch_topology_file",
 		"whpg_dispatch_topology_state",
+		"whpg_hot_standby_anchor_name",
+		"whpg_max_anchor_snapshots",
 		"writable_external_table_bufsize",
 		"xid_stop_limit",
 		"xid_warn_limit",

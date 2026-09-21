@@ -28,6 +28,7 @@
 #include "cdb/cdbendpoint.h"
 #include "cdb/cdbdisp.h"
 #include "cdb/cdbdisp_query.h"
+#include "access/anchorsnapshot.h"
 #include "cdb/cdbdispatchtopology.h"
 #include "cdb/cdbhash.h"
 #include "cdb/cdbsreh.h"
@@ -4432,6 +4433,21 @@ struct config_int ConfigureNamesInt_gp[] =
 	},
 #endif
 
+	{
+		{"whpg_max_anchor_snapshots", PGC_POSTMASTER, WAL_RECOVERY_TARGET,
+			gettext_noop("Capacity of the anchor snapshot registry on a hot standby; 0 disables anchor snapshots."),
+			gettext_noop("The startup process exports one anchor snapshot per replayed restore "
+						 "point and registers it in shared memory; when the registry is full "
+						 "the oldest anchor that is not the published one is evicted to make "
+						 "room, and the export is skipped only when every entry is the "
+						 "published anchor."),
+			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE | GUC_GPDB_NO_SYNC
+		},
+		&whpg_max_anchor_snapshots,
+		64, 0, 256,
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, 0, 0, 0, NULL, NULL
@@ -4824,6 +4840,20 @@ struct config_string ConfigureNamesString_gp[] =
 		&whpg_dispatch_topology_state_str,
 		"inactive",
 		NULL, NULL, show_whpg_dispatch_topology_state
+	},
+
+	{
+		{"whpg_hot_standby_anchor_name", PGC_SIGHUP, WAL_RECOVERY_TARGET,
+			gettext_noop("Restore point whose anchor snapshot hot-standby reads are pinned to; empty for none."),
+			gettext_noop("Set through the configuration file only. On reload the startup "
+						 "process retires every anchor registered before the named one; "
+						 "at server start only the named anchor's snapshot file is "
+						 "re-registered and every other file is swept."),
+			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE | GUC_GPDB_NO_SYNC
+		},
+		&whpg_hot_standby_anchor_name,
+		"",
+		NULL, NULL, NULL
 	},
 
 	/* End-of-list marker */

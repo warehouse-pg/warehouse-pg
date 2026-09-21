@@ -2,7 +2,7 @@ subdir=src/backend/access/transam
 top_builddir=../../../../..
 include $(top_builddir)/src/Makefile.global
 
-TARGETS=xact distributedlog xlog varsup
+TARGETS=xact distributedlog xlog varsup anchorsnapshot
 
 include $(top_srcdir)/src/backend/mock.mk
 
@@ -34,5 +34,9 @@ varsup.t: \
 	$(MOCK_DIR)/backend/commands/dbcommands_mock.o \
 	$(MOCK_DIR)/backend/storage/lmgr/lwlock_mock.o \
 	$(MOCK_DIR)/backend/utils/error/elog_mock.o \
+	$(MOCK_DIR)/backend/access/hash/hash_mock.o \
+	$(MOCK_DIR)/backend/utils/fmgr/fmgr_mock.o
+
+anchorsnapshot.t: \
 	$(MOCK_DIR)/backend/access/hash/hash_mock.o \
 	$(MOCK_DIR)/backend/utils/fmgr/fmgr_mock.o

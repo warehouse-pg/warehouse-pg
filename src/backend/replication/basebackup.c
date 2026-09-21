@@ -204,6 +204,12 @@ static const char *excludeDirContents[] =
 	/* Contents removed on startup, see DeleteAllExportedSnapshotFiles(). */
 	"pg_snapshots",
 
+	/*
+	 * Anchor snapshots belong to the node that exported them, see
+	 * AnchorSnapshotStartup().
+	 */
+	"pg_anchor_snapshots",
+
 	/* Contents zeroed on startup, see StartupSUBTRANS(). */
 	"pg_subtrans",
 

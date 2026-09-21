@@ -185,6 +185,7 @@ class DifferentialRecovery(Command):
             "pg_serial/*",
             "pg_stat_tmp/*",
             "pg_snapshots/*",
+            "pg_anchor_snapshots/*",
             "pg_subtrans/*",
             "pg_tblspc/*",  # excluding as the tablespace is handled in sync_tablespaces()
             "backups/*",

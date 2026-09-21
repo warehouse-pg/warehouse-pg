@@ -651,7 +651,7 @@ class DifferentialRecoveryRunTestCase(GpTestCase):
                                  'current_logfiles.tmp', 'postmaster.pid',
                                  'postmaster.opts', 'pg_dynshmem','tablespace_map',
                                  'pg_notify/*', 'pg_replslot/*', 'pg_serial/*',
-                                 'pg_stat_tmp/*', 'pg_snapshots/*',
+                                 'pg_stat_tmp/*', 'pg_snapshots/*', 'pg_anchor_snapshots/*',
                                  'pg_subtrans/*', 'pg_tblspc/*', 'backups/*', '/db_dumps',
                                  '/promote', '/some_log'}
         self.assertEqual(expected_exclude_list, self.mock_rsync_init.call_args_list[0][1]['exclude_list'])
@@ -671,7 +671,7 @@ class DifferentialRecoveryRunTestCase(GpTestCase):
                                  'current_logfiles.tmp', 'postmaster.pid',
                                  'postmaster.opts', 'pg_dynshmem', 'tablespace_map',
                                  'pg_notify/*', 'pg_replslot/*', 'pg_serial/*',
-                                 'pg_stat_tmp/*', 'pg_snapshots/*',
+                                 'pg_stat_tmp/*', 'pg_snapshots/*', 'pg_anchor_snapshots/*',
                                  'pg_subtrans/*', 'pg_tblspc/*', 'backups/*', '/db_dumps',
                                  '/promote'}
         self.assertEqual(expected_exclude_list, self.mock_rsync_init.call_args_list[0][1]['exclude_list'])
