@@ -198,7 +198,7 @@ extern Oid GetMyResGroupId(void);
 
 extern void ResGroupDumpInfo(StringInfo str);
 
-extern int ResGroupGetHostPrimaryCount(void);
+extern int ResGroupGetHostDispatchTargetCount(void);
 
 extern Bitmapset *CpusetToBitset(const char *cpuset,
 								 int len);

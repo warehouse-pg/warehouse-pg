@@ -453,7 +453,7 @@ InitResGroups(void)
 	{
 		Assert(IS_QUERY_DISPATCHER());
 		qdinfo = cdbcomponent_getComponentInfo(COORDINATOR_CONTENT_ID); 
-		pResGroupControl->segmentsOnCoordinator = qdinfo->hostPrimaryCount;
+		pResGroupControl->segmentsOnCoordinator = qdinfo->hostDispatchTargetCount;
 		Assert(pResGroupControl->segmentsOnCoordinator > 0);
 	}
 
@@ -940,9 +940,9 @@ ResGroupGetStat(Oid groupId, ResGroupStatType type)
  * Get the number of primary segments on this host
  */
 int
-ResGroupGetHostPrimaryCount()
+ResGroupGetHostDispatchTargetCount()
 {
-	return (Gp_role == GP_ROLE_EXECUTE ? host_primary_segment_count : pResGroupControl->segmentsOnCoordinator);
+	return (Gp_role == GP_ROLE_EXECUTE ? host_dispatch_target_count : pResGroupControl->segmentsOnCoordinator);
 }
 
 /*
@@ -1741,7 +1741,7 @@ SwitchResGroupOnSegment(const char *buf, int len)
 	Assert(group != NULL);
 
 	/* Init self */
-	Assert(host_primary_segment_count > 0);
+	Assert(host_dispatch_target_count > 0);
 	Assert(caps.concurrency > 0);
 	self->caps = caps;
 
