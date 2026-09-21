@@ -7065,7 +7065,7 @@ StartupXLOG(void)
 	XLogCtl->ckptFullXid = checkPoint.nextFullXid;
 
 	/*
-	 * GPDB: a hot standby coordinator learns latestCompletedGxid (its
+	 * WHPG: a hot standby coordinator learns latestCompletedGxid (its
 	 * distributed snapshots' xmax is this value plus one) only from WAL: the
 	 * record written with every online checkpoint, and the forget records of
 	 * two-phase commits. A shutdown checkpoint carries neither, and nothing
@@ -9640,7 +9640,7 @@ CreateCheckPoint(int flags)
 		if (IS_QUERY_DISPATCHER())
 		{
 			/*
-			 * GPDB: write latestCompletedGxid too, because the standby needs this
+			 * WHPG: write latestCompletedGxid too, because the standby needs this
 			 * value for creating distributed snapshot. The standby cannot derive
 			 * it from the nextGxid of an online checkpoint (as the primary does
 			 * at the end of recovery) because that nextGxid was bumped past the
@@ -10786,7 +10786,7 @@ xlog_redo(XLogReaderState *record)
 		SpinLockRelease(shmGxidGenLock);
 
 		/*
-		 * GPDB: a shutdown checkpoint also tells a hot standby coordinator
+		 * WHPG: a shutdown checkpoint also tells a hot standby coordinator
 		 * that every distributed transaction below nextGxid has completed, the
 		 * same way it sets latestCompletedXid below.  See StartupXLOG for why
 		 * the value is nextGxid - 1.  Only raise it: the value learnt from
