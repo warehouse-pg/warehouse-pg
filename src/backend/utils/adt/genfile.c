@@ -133,6 +133,21 @@ requireWriteServerFilesPrivilege(void)
 }
 
 /*
+ * check for superuser or membership in the 'pg_read_server_files' role,
+ * bark if neither.  Same idea as requireWriteServerFilesPrivilege(), for
+ * callers that only need a read-access privilege check (e.g. listing
+ * filenames rather than confining a path).
+ */
+static void
+requireReadServerFilesPrivilege(void)
+{
+	if (!is_member_of_role(GetUserId(), DEFAULT_ROLE_READ_SERVER_FILES))
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser or a member of the pg_read_server_files role to use this function")));
+}
+
+/*
  * Read a section of a file, returning it as bytea
  *
  * Caller is responsible for all permissions checking.
@@ -1066,12 +1081,13 @@ pg_logdir_ls(PG_FUNCTION_ARGS)
 /* ------------------------------------
  * pg_logdir_ls_v1_1 - Version 1.1
  *
- * No superuser check done here- instead privileges are handled by the
- * GRANT system.
+ * Restricted to superuser or pg_read_server_files members.
  */
 Datum
 pg_logdir_ls_v1_1(PG_FUNCTION_ARGS)
 {
+	requireReadServerFilesPrivilege();
+
 	return (pg_logdir_ls_internal(fcinfo));
 }
 

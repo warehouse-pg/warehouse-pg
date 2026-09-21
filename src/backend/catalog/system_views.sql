@@ -1845,6 +1845,12 @@ GRANT EXECUTE ON FUNCTION pg_file_write(text,text,boolean) TO pg_write_server_fi
 GRANT EXECUTE ON FUNCTION pg_file_rename(text,text,text) TO pg_write_server_files;
 GRANT EXECUTE ON FUNCTION pg_file_unlink(text) TO pg_write_server_files;
 
+-- pg_logdir_ls has the same omission (proacl NULL, _v1_1 body with no
+-- privilege check): it's a read-side listing, so gate it like the other
+-- read-side functions above (pg_read_server_files) rather than write.
+REVOKE EXECUTE ON FUNCTION pg_logdir_ls() FROM public;
+GRANT EXECUTE ON FUNCTION pg_logdir_ls() TO pg_read_server_files;
+
 --
 -- GPDB: These GPDB-specific catalog functions need to have their
 -- default permissions changed as well.
