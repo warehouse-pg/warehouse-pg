@@ -18,3 +18,4 @@ build_gpqeid_param
 AlterDomainAddConstraint
 host_primary_segment_count
 ResGroupGetHostPrimaryCount
+DistributedLog_InitOldestXmin

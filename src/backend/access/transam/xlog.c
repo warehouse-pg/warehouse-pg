@@ -7065,6 +7065,38 @@ StartupXLOG(void)
 	XLogCtl->ckptFullXid = checkPoint.nextFullXid;
 
 	/*
+	 * WHPG: a hot standby coordinator learns latestCompletedGxid (its
+	 * distributed snapshots' xmax is this value plus one) only from WAL: the
+	 * record written with every online checkpoint, and the forget records of
+	 * two-phase commits. A shutdown checkpoint carries neither, and nothing
+	 * may be written between its redo pointer and the record itself, so
+	 * restore the value from the checkpoint here instead. A shutdown
+	 * checkpoint records nextGxid exactly (CreateCheckPoint adds the
+	 * unassigned remainder of the current batch only for online
+	 * checkpoints), and at a clean shutdown every distributed transaction had
+	 * completed, so every gxid below nextGxid is complete. An end-of-recovery
+	 * checkpoint is a shutdown checkpoint too; the distributed transactions
+	 * it carries as committed but not yet forgotten are loaded into
+	 * shmCommittedGxidArray by its redo and treated as in progress by
+	 * CreateDistributedSnapshot, so the value is right for it as well. Left
+	 * invalid, the standby's snapshots would treat every distributed
+	 * transaction as still running until the next forget record was replayed,
+	 * and committed rows would be visible on some segments and hidden on
+	 * others.
+	 *
+	 * The primary sets this to nextGxid itself at the end of recovery, one
+	 * higher. On a standby that would be one too many: the primary can assign
+	 * and commit gxid nextGxid, the mirrors replay those rows, and a snapshot
+	 * with xmax = nextGxid + 1 would show them before the standby coordinator
+	 * has replayed the forget record. nextGxid - 1 keeps them hidden until
+	 * then. The primary overwrites this value at the end of recovery.
+	 *
+	 * The redo of a shutdown checkpoint replayed later applies the same rule.
+	 */
+	if (IS_QUERY_DISPATCHER() && wasShutdown)
+		ShmemVariableCache->latestCompletedGxid = checkPoint.nextGxid - 1;
+
+	/*
 	 * Initialize replication slots, before there's a chance to remove
 	 * required resources.
 	 */
@@ -9608,10 +9640,13 @@ CreateCheckPoint(int flags)
 		if (IS_QUERY_DISPATCHER())
 		{
 			/*
-			 * GPDB: write latestCompletedGxid too, because the standby needs this 
-			 * value for creating distributed snapshot. The standby cannot rely on
-			 * the nextGxid value to set latestCompletedGxid during restart (which 
-			 * the primary does) because nextGxid was bumped in the checkpoint.
+			 * WHPG: write latestCompletedGxid too, because the standby needs this
+			 * value for creating distributed snapshot. The standby cannot derive
+			 * it from the nextGxid of an online checkpoint (as the primary does
+			 * at the end of recovery) because that nextGxid was bumped past the
+			 * current batch above. A shutdown checkpoint records nextGxid
+			 * exactly, and the standby restores the value from it instead; see
+			 * StartupXLOG and the XLOG_CHECKPOINT_SHUTDOWN redo.
 			 */
 			LWLockAcquire(ProcArrayLock, LW_SHARED);
 			DistributedTransactionId lcgxid = ShmemVariableCache->latestCompletedGxid;
@@ -10749,6 +10784,21 @@ xlog_redo(XLogReaderState *record)
 		SpinLockAcquire(shmGxidGenLock);
 		ShmemVariableCache->nextGxid = checkPoint.nextGxid;
 		SpinLockRelease(shmGxidGenLock);
+
+		/*
+		 * WHPG: a shutdown checkpoint also tells a hot standby coordinator
+		 * that every distributed transaction below nextGxid has completed, the
+		 * same way it sets latestCompletedXid below.  See StartupXLOG for why
+		 * the value is nextGxid - 1.  Only raise it: the value learnt from
+		 * forget records and XLOG_LATESTCOMPLETED_GXID cannot go backwards.
+		 */
+		if (IS_QUERY_DISPATCHER())
+		{
+			LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+			if (ShmemVariableCache->latestCompletedGxid < checkPoint.nextGxid - 1)
+				ShmemVariableCache->latestCompletedGxid = checkPoint.nextGxid - 1;
+			LWLockRelease(ProcArrayLock);
+		}
 		LWLockAcquire(OidGenLock, LW_EXCLUSIVE);
 		ShmemVariableCache->nextOid = checkPoint.nextOid;
 		ShmemVariableCache->oidCount = 0;

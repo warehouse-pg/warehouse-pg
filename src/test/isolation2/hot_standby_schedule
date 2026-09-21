@@ -3,6 +3,7 @@ test: hot_standby/basic
 test: hot_standby/dispatch_target_count
 test: hot_standby/transaction_isolation
 test: hot_standby/query_conflict
+test: hot_standby/distributed_log_truncate
 test: hot_standby/faults
 test: hot_standby/dispatch_topology
 test: hot_standby/teardown
