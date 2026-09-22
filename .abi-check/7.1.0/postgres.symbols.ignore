@@ -19,3 +19,4 @@ AlterDomainAddConstraint
 host_primary_segment_count
 ResGroupGetHostPrimaryCount
 DistributedLog_InitOldestXmin
+AppendOptimizedCollectDeadSegments

@@ -338,6 +338,22 @@ ResolveRecoveryConflictWithSnapshot(TransactionId latestRemovedXid, RelFileNode 
 	backends = GetConflictingVirtualXIDs(latestRemovedXid,
 										 node.dbNode);
 
+#ifdef FAULT_INJECTOR
+	/*
+	 * Let a test tell which relation's record cancelled a reader: the
+	 * fault is armed with the relfilenode, in decimal, as its table name
+	 * and fires only when this record found someone to cancel.
+	 */
+	if (VirtualTransactionIdIsValid(*backends))
+	{
+		char		relnode[16];
+
+		snprintf(relnode, sizeof(relnode), "%u", node.relNode);
+		FaultInjector_InjectFaultIfSet("resolve_snapshot_conflict",
+									   DDLNotSpecified, "", relnode);
+	}
+#endif
+
 	ResolveRecoveryConflictWithVirtualXIDs(backends,
 										   PROCSIG_RECOVERY_CONFLICT_SNAPSHOT,
 										   true);
