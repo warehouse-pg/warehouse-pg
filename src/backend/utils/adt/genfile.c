@@ -118,6 +118,36 @@ requireSuperuser(void)
 }
 
 /*
+ * check for superuser or membership in the 'pg_write_server_files' role,
+ * bark if neither.  Unlike convert_and_check_filename()'s read-side check,
+ * this does not also gate the path itself: it is only appropriate for
+ * callers that need a write-access privilege check.
+ */
+static void
+requireWriteServerFilesPrivilege(void)
+{
+	if (!is_member_of_role(GetUserId(), DEFAULT_ROLE_WRITE_SERVER_FILES))
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser or a member of the pg_write_server_files role to use this function")));
+}
+
+/*
+ * check for superuser or membership in the 'pg_read_server_files' role,
+ * bark if neither.  Same idea as requireWriteServerFilesPrivilege(), for
+ * callers that only need a read-access privilege check (e.g. listing
+ * filenames rather than confining a path).
+ */
+static void
+requireReadServerFilesPrivilege(void)
+{
+	if (!is_member_of_role(GetUserId(), DEFAULT_ROLE_READ_SERVER_FILES))
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser or a member of the pg_read_server_files role to use this function")));
+}
+
+/*
  * Read a section of a file, returning it as bytea
  *
  * Caller is responsible for all permissions checking.
@@ -653,8 +683,7 @@ pg_file_write(PG_FUNCTION_ARGS)
 /* ------------------------------------
  * pg_file_write_v1_1 - Version 1.1
  *
- * No superuser check done here- instead privileges are handled by the
- * GRANT system.
+ * Restricted to superuser or pg_write_server_files members.
  */
 Datum
 pg_file_write_v1_1(PG_FUNCTION_ARGS)
@@ -663,6 +692,8 @@ pg_file_write_v1_1(PG_FUNCTION_ARGS)
 	text	   *data = PG_GETARG_TEXT_PP(1);
 	bool		replace = PG_GETARG_BOOL(2);
 	int64		count = 0;
+
+	requireWriteServerFilesPrivilege();
 
 	count = pg_file_write_internal(file, data, replace);
 
@@ -794,8 +825,7 @@ pg_file_rename(PG_FUNCTION_ARGS)
 /* ------------------------------------
  * pg_file_rename_v1_1 - Version 1.1
  *
- * No superuser check done here- instead privileges are handled by the
- * GRANT system.
+ * Restricted to superuser or pg_write_server_files members.
  */
 Datum
 pg_file_rename_v1_1(PG_FUNCTION_ARGS)
@@ -804,6 +834,8 @@ pg_file_rename_v1_1(PG_FUNCTION_ARGS)
 	text	   *file2;
 	text	   *file3;
 	bool		result;
+
+	requireWriteServerFilesPrivilege();
 
 	if (PG_ARGISNULL(0) || PG_ARGISNULL(1))
 		PG_RETURN_NULL();
@@ -859,13 +891,14 @@ pg_file_unlink(PG_FUNCTION_ARGS)
 /* ------------------------------------
  * pg_file_unlink_v1_1 - Version 1.1
  *
- * No superuser check done here- instead privileges are handled by the
- * GRANT system.
+ * Restricted to superuser or pg_write_server_files members.
  */
 Datum
 pg_file_unlink_v1_1(PG_FUNCTION_ARGS)
 {
 	char	   *filename;
+
+	requireWriteServerFilesPrivilege();
 
 	filename = convert_and_check_filename(PG_GETARG_TEXT_PP(0));
 
@@ -1048,12 +1081,13 @@ pg_logdir_ls(PG_FUNCTION_ARGS)
 /* ------------------------------------
  * pg_logdir_ls_v1_1 - Version 1.1
  *
- * No superuser check done here- instead privileges are handled by the
- * GRANT system.
+ * Restricted to superuser or pg_read_server_files members.
  */
 Datum
 pg_logdir_ls_v1_1(PG_FUNCTION_ARGS)
 {
+	requireReadServerFilesPrivilege();
+
 	return (pg_logdir_ls_internal(fcinfo));
 }
 
