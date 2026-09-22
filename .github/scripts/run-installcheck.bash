@@ -90,9 +90,11 @@ function run_installcheck() {
     ulimit -c unlimited
     echo "${RESULTS_DIR}/core-%p" | sudo tee /proc/sys/kernel/core_pattern || true
 
-    # Determine which directory to run from based on target
-    # installcheck-world runs from root, installcheck-small from src/test/regress
-    if [[ "${test_target}" == "installcheck-world" ]]; then
+    # Determine which directory to run from based on target.
+    # installcheck-world and installcheck-hot-standby are top-level targets
+    # (the latter runs the regress hot-standby tests, then the isolation2
+    # hot_standby schedule); installcheck-small/-good live in src/test/regress.
+    if [[ "${test_target}" == "installcheck-world" || "${test_target}" == "installcheck-hot-standby" ]]; then
         cd "${WHPG_SRC}"
     else
         cd "${WHPG_SRC}/src/test/regress"
