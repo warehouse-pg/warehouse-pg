@@ -29,8 +29,13 @@
 
 #include "access/xlog.h"
 #include "cdb/cdbdispatchtopology.h"
+#include "cdb/cdbgang.h"
+#include "cdb/cdbutil.h"
 #include "miscadmin.h"
 #include "storage/fd.h"
+#include "storage/ipc.h"
+#include "storage/latch.h"
+#include "storage/proc.h"
 #include "utils/builtins.h"
 
 /* GUC variables; definitions live in guc_gp.c's tables */
@@ -61,6 +66,93 @@ dispatch_topology_enabled(void)
 {
 	return whpg_dispatch_topology_file != NULL &&
 		whpg_dispatch_topology_file[0] != '\0';
+}
+
+/*
+ * dispatch_topology_bgworker_gated
+ *
+ * Gate for the coordinator's background workers that would act on the
+ * catalog in dispatch role (FTS, dtx recovery, the global deadlock
+ * detector, the autovacuum launcher).  While the GUC is set, gp_segment_configuration
+ * is not authoritative for this coordinator: its rows describe the cluster
+ * the WAL came from, not the nodes this dispatcher reaches (see the header
+ * comment).  None of these workers runs while the postmaster is in
+ * recovery, so the gate matters in exactly one window: right after this
+ * coordinator has left recovery (promotion), before the operator has fixed
+ * the catalog and retired the file.  Ungated, the first FTS cycle would
+ * dial the stale addresses and could send SYNCREP_OFF or PROMOTE to the
+ * source cluster's segments (whose FTS handler carries no cluster-identity
+ * check), and dtx recovery would terminate every QE there and roll back
+ * every prepared transaction it does not know.  A stray GUC on a live
+ * primary is gated the same way: user dispatch is already refused on such
+ * a node (applyDispatchTopology), and rows that must not be trusted are
+ * not acted on in any state.
+ *
+ * The predicate is the GUC itself, deliberately not
+ * whpg_dispatch_topology_state: that string reads "error" on any node out
+ * of recovery, which is exactly when the gate must hold.
+ *
+ * *gated is the caller's process-local record of the previous answer; the
+ * transitions are logged once each, so the server log records when the
+ * worker fell silent and when it resumed without a line per cycle.  A
+ * caller that caches a component table must discard it on the gated ->
+ * open transition (it was built from rows the gate declared untrusted) so
+ * the next transaction rebuilds from the corrected catalog.
+ */
+bool
+dispatch_topology_bgworker_gated(bool *gated, const char *worker,
+								 const char *activity)
+{
+	bool		now = dispatch_topology_enabled();
+
+	if (now && !*gated)
+		ereport(LOG,
+				(errmsg("%s: %s suspended while whpg_dispatch_topology_file is set",
+						worker, activity),
+				 errdetail("gp_segment_configuration is not authoritative while a dispatch topology file is in effect."),
+				 errhint("Clear whpg_dispatch_topology_file and reload the configuration to resume.")));
+	else if (!now && *gated)
+		ereport(LOG,
+				(errmsg("%s: %s resumed after whpg_dispatch_topology_file was cleared",
+						worker, activity)));
+
+	*gated = now;
+	return now;
+}
+
+/*
+ * One gated iteration of a background worker's loop: sleep on the process
+ * latch for the worker's usual period.  SIGHUP sets the latch, and the
+ * reload is what lifts the gate; the timeout only bounds the wait when a
+ * signal was missed.  Postmaster death ends the worker as it would in its
+ * own loop.
+ */
+void
+dispatch_topology_bgworker_wait(long timeout_ms, uint32 wait_event)
+{
+	int			rc;
+
+	rc = WaitLatch(&MyProc->procLatch,
+				   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
+				   timeout_ms, wait_event);
+	ResetLatch(&MyProc->procLatch);
+
+	if (rc & WL_POSTMASTER_DEATH)
+		proc_exit(1);
+}
+
+/*
+ * The gate has just lifted: the component table this worker built while
+ * the GUC was set describes rows the gate declared untrusted (background
+ * workers build from the raw catalog, see getCdbComponentInfo).  Discard it
+ * and any gang on it, so the worker's next transaction rebuilds from the
+ * catalog the operator has corrected in the meantime.
+ */
+void
+dispatch_topology_bgworker_discard_components(void)
+{
+	DisconnectAndDestroyAllGangs(true);
+	cdbcomponent_destroyCdbComponents();
 }
 
 /*

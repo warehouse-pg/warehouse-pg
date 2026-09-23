@@ -276,6 +276,7 @@ jobs:
           path: |
             gpAux/gpdemo/datadirs/qddir/demoDataDir-1/log/
             gpAux/gpdemo/datadirs/standby/log/
+            gpAux/gpdemo/datadirs/standby.fts_topology_gate/
             gpAux/gpdemo/datadirs/dbfast*/demoDataDir*/log/
             /home/gpadmin/gpAdminLogs/
           if-no-files-found: ignore

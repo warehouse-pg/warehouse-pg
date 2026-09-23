@@ -25,6 +25,9 @@
 #include "storage/procarray.h"
 
 #include "access/xact.h"
+#include "cdb/cdbdispatchtopology.h"
+#include "cdb/cdbgang.h"
+#include "cdb/cdbutil.h"
 #include "cdb/cdbvars.h"
 #include "executor/spi.h"
 #include "postmaster/postmaster.h"
@@ -146,6 +149,7 @@ static void
 GlobalDeadLockDetectorLoop(void)
 {
 	int	status;
+	bool	topology_gated = false;
 
 	/* Allocate MemoryContext */
 	gddContext = AllocSetContextCreate(TopMemoryContext,
@@ -158,12 +162,33 @@ GlobalDeadLockDetectorLoop(void)
 	{
 		int			rc;
 		int			timeout;
+		bool		was_gated = topology_gated;
 
 		if (got_SIGHUP)
 		{
 			got_SIGHUP = false;
 			ProcessConfigFile(PGC_SIGHUP);
 		}
+
+		/*
+		 * While the dispatch topology GUC is set, gp_segment_configuration
+		 * is not authoritative for this coordinator (see
+		 * cdbdispatchtopology.h): gp_dist_wait_status() would be dispatched
+		 * to the cluster the catalog describes.  Sleep instead; SIGHUP sets
+		 * the latch, and the reload is what lifts the gate.
+		 */
+		if (dispatch_topology_bgworker_gated(&topology_gated,
+											 "global deadlock detector",
+											 "deadlock checks"))
+		{
+			dispatch_topology_bgworker_wait(gp_global_deadlock_detector_period * 1000L,
+											WAIT_EVENT_GLOBAL_DEADLOCK_DETECTOR_MAIN);
+			continue;
+		}
+
+		/* the gate has just lifted: rebuild from the corrected catalog */
+		if (was_gated)
+			dispatch_topology_bgworker_discard_components();
 
 #ifdef FAULT_INJECTOR
 		if (SIMPLE_FAULT_INJECTOR("gdd_probe") == FaultInjectorTypeSkip)

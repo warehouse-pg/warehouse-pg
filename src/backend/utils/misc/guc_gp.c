@@ -4823,7 +4823,10 @@ struct config_string ConfigureNamesString_gp[] =
 						 "content's address from this file instead of gp_segment_configuration "
 						 "row selection; on any other node the component-table build refuses. "
 						 "Each row must carry the node's own identity (gp_dbid from "
-						 "internal.auto.conf). A relative path is relative to the data directory."),
+						 "internal.auto.conf). A relative path is relative to the data directory. "
+						 "While set, FTS, dtx recovery and the global deadlock detector on this "
+						 "coordinator stay dormant (gp_segment_configuration is not authoritative); "
+						 "clear it and reload to wake them."),
 			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE | GUC_GPDB_NO_SYNC
 		},
 		&whpg_dispatch_topology_file,

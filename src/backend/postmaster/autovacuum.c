@@ -156,6 +156,7 @@
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
 
+#include "cdb/cdbdispatchtopology.h"
 #include "cdb/cdbvars.h"
 #include "utils/faultinjector.h"
 
@@ -487,6 +488,7 @@ NON_EXEC_STATIC void
 AutoVacLauncherMain(int argc, char *argv[])
 {
 	sigjmp_buf	local_sigjmp_buf;
+	bool		topology_gated = false;
 
 	am_autovacuum_launcher = true;
 
@@ -696,6 +698,7 @@ AutoVacLauncherMain(int argc, char *argv[])
 		struct timeval nap;
 		TimestampTz current_time = 0;
 		bool		can_launch;
+		bool		topology_gated_now;
 
 		/*
 		 * This loop is a bit different from the normal use of WaitLatch,
@@ -786,10 +789,23 @@ AutoVacLauncherMain(int argc, char *argv[])
 		 * failed while starting up.
 		 */
 
+		/*
+		 * On a coordinator whose catalog is not authoritative (the dispatch
+		 * topology GUC is set, see cdbdispatchtopology.h) a worker would run
+		 * in dispatch role and be refused at its first component-table
+		 * build, once per naptime; launch none until the gate lifts.  Checked
+		 * outside the lock: the gate logs its transitions.
+		 */
+		topology_gated_now = IS_QUERY_DISPATCHER() &&
+			dispatch_topology_bgworker_gated(&topology_gated,
+											 "autovacuum launcher",
+											 "worker launches");
+
 		current_time = GetCurrentTimestamp();
 		LWLockAcquire(AutovacuumLock, LW_SHARED);
 
-		can_launch = !dlist_is_empty(&AutoVacuumShmem->av_freeWorkers);
+		can_launch = !topology_gated_now &&
+			!dlist_is_empty(&AutoVacuumShmem->av_freeWorkers);
 
 		if (AutoVacuumShmem->av_startingWorker != NULL)
 		{

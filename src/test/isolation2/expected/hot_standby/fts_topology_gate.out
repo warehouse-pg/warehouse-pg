@@ -1,0 +1,195 @@
+-- Dispatch-role background workers stay dormant while
+-- whpg_dispatch_topology_file is set.
+--
+-- FTS, dtx recovery and the global deadlock detector never run while the
+-- postmaster is in recovery; they start the moment recovery ends, and FTS
+-- probes (dtx recovery dispatches) before the first sleep.  On a
+-- coordinator whose catalog is not authoritative (a dispatch topology file
+-- is in effect) they would act on the catalog's stale addresses.  The gate
+-- (dispatch_topology_bgworker_gated) makes FTS skip its whole probe cycle
+-- -- catalog read, gpsegconfig_dump, status version, probe -- keeps the
+-- loop's counters moving, holds dtx recovery before recoverTM() (so
+-- *shmDtmStarted stays unset and dispatch connections are refused), and
+-- resumes both on clear + reload.
+--
+-- The scenario is driven on the suite's standby coordinator: set the GUC
+-- there, promote it (the only way to get a coordinator with the GUC set out
+-- of recovery), watch the workers start gated, clear the GUC, watch them
+-- wake.  The standby is destroyed and re-created at the end.
+--
+-- BLAST RADIUS -- this test must stay last in the schedule and must never
+-- run concurrently with anything: the promoted node is a clone of the
+-- coordinator, so once its gate lifts its dtx recovery dispatches into this
+-- cluster's live primaries: gp_terminate_mpp_backends() (every QE of every
+-- session) and ROLLBACK PREPARED of every prepared transaction it does not
+-- know.  While the gate holds none of that happens, which is what the
+-- first half asserts; the second half deliberately lets it happen while
+-- nothing else is running.  Not observable here: the deadlock detector
+-- (off in gpdemo, and it waits for the DTM the gate keeps unstarted) and
+-- the autovacuum launcher's gate (autovacuum is off in this suite).
+--
+-- Sessions: 1: primary QD; -1S: standby QD (dispatch); -1M: standby QD in
+-- utility mode.  The fts_probe fault is only reached by an un-gated FTS
+-- cycle, so its hit count is the proof that no probe was attempted; as a
+-- 'skip' it also keeps a woken FTS from really probing this cluster's
+-- primaries.  ftsLoop_topology_gated / dtx_recovery_topology_gated count
+-- the gated cycles of the two workers.  The faults live in the promoted
+-- node's shared memory and die with it, so they are never reset.
+
+-- Stage the topology file: the role='m' rows are what a hot-standby QD
+-- dispatches to (plus itself for content -1).  Set the GUC on the standby
+-- only, with a short probe interval, and record a mtime reference for the
+-- configuration dump file.
+!\retcode sdir=$(psql -X -d postgres -Atc "select datadir from gp_segment_configuration where content = -1 and role = 'm'"); psql -X -At -d postgres -c "select content, dbid, hostname, address, port, datadir from gp_segment_configuration where role = 'm' order by content" | tr '|' ' ' > "$sdir/whpg_fts_gate_topology" && echo "whpg_dispatch_topology_file = 'whpg_fts_gate_topology'" >> "$sdir/postgresql.conf" && echo "gp_fts_probe_interval = 10" >> "$sdir/postgresql.conf" && touch "$sdir/hs_fts_gate_marker" && pg_ctl reload -D "$sdir";
+-- start_ignore
+server signaled
+
+-- end_ignore
+(exited with code 0)
+
+-1S: show whpg_dispatch_topology_state;
+ whpg_dispatch_topology_state 
+------------------------------
+ active                       
+(1 row)
+-1Sq: ... <quitting>
+
+select gp_inject_fault_infinite('fts_probe', 'skip', dbid) from gp_segment_configuration where content = -1 and role = 'm';
+ gp_inject_fault_infinite 
+--------------------------
+ Success:                 
+(1 row)
+select gp_inject_fault_infinite('ftsLoop_topology_gated', 'skip', dbid) from gp_segment_configuration where content = -1 and role = 'm';
+ gp_inject_fault_infinite 
+--------------------------
+ Success:                 
+(1 row)
+select gp_inject_fault_infinite('dtx_recovery_topology_gated', 'skip', dbid) from gp_segment_configuration where content = -1 and role = 'm';
+ gp_inject_fault_infinite 
+--------------------------
+ Success:                 
+(1 row)
+
+----------------------------------------------------------------
+-- Promote the standby: recovery ends, the workers start, gated
+----------------------------------------------------------------
+select pg_ctl(datadir, 'promote') from gp_segment_configuration where content = -1 and role = 'm';
+ pg_ctl 
+--------
+ OK     
+(1 row)
+
+-- two gated FTS cycles and one gated dtx recovery cycle: both workers are
+-- up and skipping
+select gp_wait_until_triggered_fault('ftsLoop_topology_gated', 2, dbid) from gp_segment_configuration where content = -1 and role = 'm';
+ gp_wait_until_triggered_fault 
+-------------------------------
+ Success:                      
+(1 row)
+select gp_wait_until_triggered_fault('dtx_recovery_topology_gated', 1, dbid) from gp_segment_configuration where content = -1 and role = 'm';
+ gp_wait_until_triggered_fault 
+-------------------------------
+ Success:                      
+(1 row)
+
+-1M: select pg_is_in_recovery();
+ pg_is_in_recovery 
+-------------------
+ f                 
+(1 row)
+-- out of recovery with the GUC set the state string reads "error": it
+-- cannot be the gate, the GUC itself is
+-1M: show whpg_dispatch_topology_state;
+ whpg_dispatch_topology_state 
+------------------------------
+ error                        
+(1 row)
+-- no FTS cycle reached the probe stage
+select gp_inject_fault('fts_probe', 'status', dbid) like '%num times hit:''0''%' as never_probed from gp_segment_configuration where content = -1 and role = 'm';
+ never_probed 
+--------------
+ t            
+(1 row)
+-- no configuration dump was written; each worker logged its suspension
+-- once
+!\retcode sdir=$(psql -X -d postgres -Atc "select datadir from gp_segment_configuration where content = -1 and role = 'm'"); test ! "$sdir/gpsegconfig_dump" -nt "$sdir/hs_fts_gate_marker" && test "$(cat "$sdir"/log/*.csv | grep -c 'FTS: probing suspended while whpg_dispatch_topology_file is set')" = 1 && test "$(cat "$sdir"/log/*.csv | grep -c 'dtx recovery: dispatch suspended while whpg_dispatch_topology_file is set')" = 1;
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-- a dispatch connection to this node is refused outright while the GUC is
+-- set (the K1a contract; behind it the unstarted DTM would refuse too); the
+-- catalog fix of a promote runs in utility mode.  The refusal is also the
+-- FtsNotifyProber() waiter of the acceptance criteria: the component-table
+-- build notifies FTS on its error path, a gated FTS cycle completes the
+-- wait, otherwise psql would hang here.
+!\retcode shost=$(psql -X -d postgres -Atc "select hostname from gp_segment_configuration where content = -1 and role = 'm'"); sport=$(psql -X -d postgres -Atc "select port from gp_segment_configuration where content = -1 and role = 'm'"); psql -X -h "$shost" -p "$sport" -d postgres -c "select 1" 2>&1 | grep -q "whpg_dispatch_topology_file is set, but this dispatcher is not a hot standby";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+
+----------------------------------------------------------------
+-- Clear the GUC and reload: the workers wake on their next cycle
+----------------------------------------------------------------
+!\retcode sdir=$(psql -X -d postgres -Atc "select datadir from gp_segment_configuration where content = -1 and role = 'm'"); sed -i '/whpg_dispatch_topology_file/d' "$sdir/postgresql.conf" && pg_ctl reload -D "$sdir";
+-- start_ignore
+server signaled
+
+-- end_ignore
+(exited with code 0)
+
+-- the first un-gated FTS cycle reaches the probe stage (and is skipped
+-- there by the fault, so this cluster's primaries are never probed by a
+-- second coordinator)
+select gp_wait_until_triggered_fault('fts_probe', 1, dbid) from gp_segment_configuration where content = -1 and role = 'm';
+ gp_wait_until_triggered_fault 
+-------------------------------
+ Success:                      
+(1 row)
+-1M: show whpg_dispatch_topology_state;
+ whpg_dispatch_topology_state 
+------------------------------
+ inactive                     
+(1 row)
+-- the un-gated cycle wrote the configuration dump; both workers logged
+-- their resumption
+!\retcode sdir=$(psql -X -d postgres -Atc "select datadir from gp_segment_configuration where content = -1 and role = 'm'"); test "$sdir/gpsegconfig_dump" -nt "$sdir/hs_fts_gate_marker" && grep -q 'FTS: probing resumed after whpg_dispatch_topology_file was cleared' "$sdir"/log/*.csv && grep -q 'dtx recovery: dispatch resumed after whpg_dispatch_topology_file was cleared' "$sdir"/log/*.csv;
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-- dtx recovery then ran recoverTM() against this cluster's primaries (see
+-- BLAST RADIUS) and started the DTM: the framework retries this connection
+-- while the node still answers "in recovery mode", so the statement
+-- succeeding is the proof.  A probe requester gets its answer: the FTS
+-- loop's counters kept moving.
+-1S: select gp_request_fts_probe_scan();
+ gp_request_fts_probe_scan 
+---------------------------
+ t                         
+(1 row)
+-1Sq: ... <quitting>
+-1Mq: ... <quitting>
+
+----------------------------------------------------------------
+-- Rebuild the standby for the tests that follow
+----------------------------------------------------------------
+-- keep the promoted node's log next to the data directories: gpinitstandby
+-- deletes the directory, and that log is the only record of what the
+-- workers did (CI uploads it on failure)
+select pg_ctl(datadir, 'stop', 'immediate') from gp_segment_configuration where content = -1 and role = 'm';
+ pg_ctl 
+--------
+ OK     
+(1 row)
+!\retcode shost=$(psql -X -d postgres -Atc "select hostname from gp_segment_configuration where content = -1 and role = 'm'"); sport=$(psql -X -d postgres -Atc "select port from gp_segment_configuration where content = -1 and role = 'm'"); sdir=$(psql -X -d postgres -Atc "select datadir from gp_segment_configuration where content = -1 and role = 'm'"); keep="${sdir%/}.fts_topology_gate"; rm -rf "$keep" && mkdir -p "$keep" && cp -R "$sdir/log" "$keep/log" && gpinitstandby -ar > "$keep/gpinitstandby.log" 2>&1 && gpinitstandby -a -s "$shost" -S "$sdir" -P "$sport" >> "$keep/gpinitstandby.log" 2>&1;
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+select wait_until_standby_in_state('streaming');
+ wait_until_standby_in_state 
+-----------------------------
+ streaming                   
+(1 row)

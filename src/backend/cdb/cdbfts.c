@@ -144,10 +144,12 @@ FtsIsSegmentDown(CdbComponentDatabaseInfo *dBInfo)
 	 * the array with a file dbid would read some other segment's slot.
 	 * Since topology tables can only be built on a hot-standby dispatcher
 	 * (applyDispatchTopology refuses elsewhere), this branch is normally
-	 * inert: no FTS probe runs in recovery and the array stays zeroed.
-	 * Its remaining purpose is the promotion transition window — a
-	 * session's existing topology table outliving an out-of-band
-	 * pg_promote while the freshly started FTS probe begins filling the
+	 * inert: no FTS probe runs in recovery, and after a promotion FTS
+	 * stays dormant for as long as the GUC is set
+	 * (dispatch_topology_bgworker_gated), so the array stays zeroed.  Its
+	 * remaining purpose is the window after the GUC is cleared: a session's
+	 * existing topology table outliving the reload, until its next
+	 * transaction start rebuilds it, while the woken FTS begins filling the
 	 * array under catalog dbids.  Threadsafe: reads only memory owned by
 	 * the component table.
 	 */

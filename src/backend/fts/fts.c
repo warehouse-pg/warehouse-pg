@@ -37,6 +37,7 @@
 #include "cdb/cdbvars.h"
 #include "libpq-int.h"
 #include "cdb/cdbfts.h"
+#include "cdb/cdbdispatchtopology.h"
 #include "pgstat.h"
 #include "postmaster/fts.h"
 #include "postmaster/ftsprobe.h"
@@ -274,6 +275,7 @@ void FtsLoop()
 	MemoryContext probeContext = NULL, oldContext = NULL;
 	time_t elapsed,	probe_start_time, timeout;
 	CdbComponentDatabases *cdbs = NULL;
+	bool	topology_gated = false;
 
 	probeContext = AllocSetContextCreate(TopMemoryContext,
 										 "FtsProbeMemCtxt",
@@ -302,71 +304,93 @@ void FtsLoop()
 		ftsProbeInfo->start_count++;
 		SpinLockRelease(&ftsProbeInfo->lock);
 
-		/* Need a transaction to access the catalogs */
-		StartTransactionCommand();
-
-		cdbs = readCdbComponentInfoAndUpdateStatus();
-
-		/* Check here gp_segment_configuration if has mirror's */
-		has_mirrors = gp_segment_config_has_mirrors();
-
-		/* close the transaction we started above */
-		CommitTransactionCommand();
-
-		/* Reset this as we are performing the probe */
-		probe_requested = false;
-		skip_fts_probe = false;
-
-#ifdef FAULT_INJECTOR
-		if (SIMPLE_FAULT_INJECTOR("fts_probe") == FaultInjectorTypeSkip)
-			skip_fts_probe = true;
-#endif
-
-		if (skip_fts_probe || !has_mirrors)
+		if (dispatch_topology_bgworker_gated(&topology_gated, "FTS", "probing"))
 		{
-			elogif(gp_log_fts >= GPVARS_VERBOSITY_VERBOSE, LOG,
-				   "skipping FTS probes due to %s",
-				   !has_mirrors ? "no mirrors" : "fts_probe fault");
-
+			/*
+			 * gp_segment_configuration is not authoritative while the
+			 * dispatch topology GUC is set (see cdbdispatchtopology.h): skip
+			 * the whole cycle -- no catalog read, no GPSEGCONFIGDUMPFILE
+			 * dump, no status_version bump, no probe.  The start/done
+			 * counters still move (above and below), so a FtsNotifyProber()
+			 * waiter never spins -- the K1a refusal of a dispatch connection
+			 * is itself such a waiter (cdbcomponent_updateCdbComponents
+			 * notifies FTS on its error path); a pending request is consumed
+			 * here, since left set it would zero the wait timeout below and
+			 * turn this loop into a busy spin.  No component table is cached
+			 * across cycles, so nothing has to be discarded when the gate
+			 * lifts.
+			 */
+			probe_requested = false;
+			SIMPLE_FAULT_INJECTOR("ftsLoop_topology_gated");
 		}
 		else
 		{
-			elogif(gp_log_fts == GPVARS_VERBOSITY_DEBUG, LOG,
-				   "FTS: starting scan with %d segments and %d contents",
-				   cdbs->total_segment_dbs,
-				   cdbs->total_segments);
-			/*
-			 * We probe in a special context, some of the heap access
-			 * stuff palloc()s internally
-			 */
-			oldContext = MemoryContextSwitchTo(probeContext);
+			/* Need a transaction to access the catalogs */
+			StartTransactionCommand();
 
-			updated_probe_state = FtsWalRepMessageSegments(cdbs);
+			cdbs = readCdbComponentInfoAndUpdateStatus();
 
-			MemoryContextSwitchTo(oldContext);
+			/* Check here gp_segment_configuration if has mirror's */
+			has_mirrors = gp_segment_config_has_mirrors();
 
-			/* free any pallocs we made inside probeSegments() */
-			MemoryContextReset(probeContext);
+			/* close the transaction we started above */
+			CommitTransactionCommand();
 
-			/* Bump the version if configuration was updated. */
-			if (updated_probe_state)
+			/* Reset this as we are performing the probe */
+			probe_requested = false;
+			skip_fts_probe = false;
+
+#ifdef FAULT_INJECTOR
+			if (SIMPLE_FAULT_INJECTOR("fts_probe") == FaultInjectorTypeSkip)
+				skip_fts_probe = true;
+#endif
+
+			if (skip_fts_probe || !has_mirrors)
 			{
-				/*
-				 * File GPSEGCONFIGDUMPFILE under $PGDATA is used by other
-				 * components to fetch latest gp_segment_configuration outside
-				 * of a transaction. FTS updates this file in the first probe
-				 * and every probe which updated gp_segment_configuration.
-				 */
-				StartTransactionCommand();
-				writeGpSegConfigToFTSFiles();
-				CommitTransactionCommand();
+				elogif(gp_log_fts >= GPVARS_VERBOSITY_VERBOSE, LOG,
+					   "skipping FTS probes due to %s",
+					   !has_mirrors ? "no mirrors" : "fts_probe fault");
 
-				ftsProbeInfo->status_version++;
 			}
-		}
+			else
+			{
+				elogif(gp_log_fts == GPVARS_VERBOSITY_DEBUG, LOG,
+					   "FTS: starting scan with %d segments and %d contents",
+					   cdbs->total_segment_dbs,
+					   cdbs->total_segments);
+				/*
+				 * We probe in a special context, some of the heap access
+				 * stuff palloc()s internally
+				 */
+				oldContext = MemoryContextSwitchTo(probeContext);
 
-		/* free current components info and free ip addr caches */	
-		cdbcomponent_destroyCdbComponents();
+				updated_probe_state = FtsWalRepMessageSegments(cdbs);
+
+				MemoryContextSwitchTo(oldContext);
+
+				/* free any pallocs we made inside probeSegments() */
+				MemoryContextReset(probeContext);
+
+				/* Bump the version if configuration was updated. */
+				if (updated_probe_state)
+				{
+					/*
+					 * File GPSEGCONFIGDUMPFILE under $PGDATA is used by other
+					 * components to fetch latest gp_segment_configuration outside
+					 * of a transaction. FTS updates this file in the first probe
+					 * and every probe which updated gp_segment_configuration.
+					 */
+					StartTransactionCommand();
+					writeGpSegConfigToFTSFiles();
+					CommitTransactionCommand();
+
+					ftsProbeInfo->status_version++;
+				}
+			}
+
+			/* free current components info and free ip addr caches */
+			cdbcomponent_destroyCdbComponents();
+		}
 
 		SIMPLE_FAULT_INJECTOR("ftsLoop_after_probe");
 

@@ -30,6 +30,7 @@
 #include "utils/faultinjector.h"
 
 #include "access/xact.h"
+#include "cdb/cdbdispatchtopology.h"
 #include "cdb/cdbgang.h"
 #include "cdb/cdbutil.h"
 #include "cdb/cdbvars.h"
@@ -709,6 +710,9 @@ ResetDtxRecoveryEvent(DtxRecoveryEvent event)
 void
 DtxRecoveryMain(Datum main_arg)
 {
+	bool		startup_done = false;
+	bool		topology_gated = false;
+
 	*shmDtxRecoveryPid = MyProcPid;
 
 	/*
@@ -726,41 +730,11 @@ DtxRecoveryMain(Datum main_arg)
 	/* initialize progress */
 	pgstat_progress_start_command(PROGRESS_COMMAND_DTX_RECOVERY, InvalidOid);
 
-	/*
-	 * Do dtx recovery process.  It is possible that *shmDtmStarted is true
-	 * here if we terminate after this code block, e.g. due to error and then
-	 * postmaster restarts dtx recovery.
-	 */
-	if (!*shmDtmStarted)
-	{
-		set_ps_display("recovering", false);
-
-		StartTransactionCommand();
-		recoverTM();
-		CommitTransactionCommand();
-		DisconnectAndDestroyAllGangs(true);
-
-		set_ps_display("", false);
-	}
-
-	pgstat_progress_end_command();
-
-	/* Fetch the gxid batch in advance. */
-	bumpGxid();
-
-	/*
-	 * Normally we check with interval gp_dtx_recovery_interval, but sometimes
-	 * we want to be more frequent in a period, e.g. just after primary panic.
-	 * We do not use a guc to control the period, instead hardcode 12 times
-	 * with inteval 5 seconds simply.
-	 */
-	if (*shmCleanupBackends)
-		frequent_check_times = MAX_FREQ_CHECK_TIMES;
-
 	while (true)
 	{
 		int rc;
 		DtxRecoveryEvent event;
+		bool was_gated = topology_gated;
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -768,6 +742,73 @@ DtxRecoveryMain(Datum main_arg)
 		{
 			got_SIGHUP = false;
 			ProcessConfigFile(PGC_SIGHUP);
+		}
+
+		/*
+		 * While the dispatch topology GUC is set, gp_segment_configuration
+		 * is not authoritative for this coordinator (see
+		 * cdbdispatchtopology.h): nothing below may dispatch.  Not the
+		 * initial recovery -- TerminateMppBackends() and the ROLLBACK
+		 * PREPARED of in-doubt transactions would reach the cluster the
+		 * catalog describes -- and not the periodic orphan check.  So
+		 * *shmDtmStarted stays unset and dispatch connections keep being
+		 * refused with "waiting for distributed transaction recovery" until
+		 * the operator has fixed the catalog and cleared the GUC.  Sleep on
+		 * the latch: SIGHUP sets it, and the reload is what lifts the gate.
+		 */
+		if (dispatch_topology_bgworker_gated(&topology_gated,
+											 "dtx recovery", "dispatch"))
+		{
+			if (!was_gated)
+				set_ps_display("gated by whpg_dispatch_topology_file", false);
+			SIMPLE_FAULT_INJECTOR("dtx_recovery_topology_gated");
+			dispatch_topology_bgworker_wait(gp_dtx_recovery_interval * 1000L,
+											WAIT_EVENT_DTX_RECOVERY);
+			continue;
+		}
+
+		/* the gate has just lifted: rebuild from the corrected catalog */
+		if (was_gated)
+		{
+			set_ps_display("", false);
+			dispatch_topology_bgworker_discard_components();
+		}
+
+		if (!startup_done)
+		{
+			/*
+			 * Do dtx recovery process.  It is possible that *shmDtmStarted
+			 * is true here if we terminate after this code block, e.g. due
+			 * to error and then postmaster restarts dtx recovery.
+			 */
+			if (!*shmDtmStarted)
+			{
+				set_ps_display("recovering", false);
+
+				StartTransactionCommand();
+				recoverTM();
+				CommitTransactionCommand();
+				DisconnectAndDestroyAllGangs(true);
+
+				set_ps_display("", false);
+			}
+
+			pgstat_progress_end_command();
+
+			/* Fetch the gxid batch in advance. */
+			bumpGxid();
+
+			/*
+			 * Normally we check with interval gp_dtx_recovery_interval, but
+			 * sometimes we want to be more frequent in a period, e.g. just
+			 * after primary panic.  We do not use a guc to control the
+			 * period, instead hardcode 12 times with inteval 5 seconds
+			 * simply.
+			 */
+			if (*shmCleanupBackends)
+				frequent_check_times = MAX_FREQ_CHECK_TIMES;
+
+			startup_done = true;
 		}
 
 		event = GetDtxRecoveryEvent();

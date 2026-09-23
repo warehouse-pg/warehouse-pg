@@ -365,14 +365,16 @@ applyDispatchTopology(GpSegConfigEntry *catalog_configs, int *total_dbs,
 
 	/*
 	 * The topology file serves hot-standby dispatchers only.  On a live
-	 * primary dispatcher the catalog is the truth and FTS is authoritative
-	 * for segment health; dispatching by a file there would disable dead-
-	 * host detection and, after an FTS mirror promotion, keep committing
-	 * writes to the deposed primary.  Refuse instead of silently ignoring
-	 * the file: no silent fallback is this feature's contract.  (In
-	 * whpg-dr's promote flow the GUC is retired before any node reaches
-	 * normal operation; hitting this error means an interrupted promote or
-	 * a misplaced GUC — both want an operator, not a workaround.)
+	 * primary dispatcher the catalog is the truth; dispatching by a file
+	 * there would route writes past the catalog's role assignments (and,
+	 * with FTS dormant while the GUC is set, without any dead-host
+	 * detection).  Refuse instead of silently ignoring the file: no silent
+	 * fallback is this feature's contract.  (In whpg-dr's cold promote flow
+	 * the GUC is retired before any node reaches normal operation; in the
+	 * live flow it stays set until the catalog has been fixed over a
+	 * utility-mode connection, during which the background workers are
+	 * gated; hitting this error means an interrupted promote or a misplaced
+	 * GUC — both want an operator, not a workaround.)
 	 */
 	if (!IS_HOT_STANDBY_QD())
 		ereport(ERROR,
@@ -544,18 +546,31 @@ getCdbComponentInfo(void)
 	/*
 	 * With a dispatch topology file active, the catalog rows only supply
 	 * the authoritative content set; every address, port and dbid comes
-	 * from the file.  FTS keeps operating on the raw catalog rows.
+	 * from the file.  FTS reads the raw catalog rows, but does not act on
+	 * them while the GUC is set (dispatch_topology_bgworker_gated).
 	 *
 	 * applyDispatchTopology() refuses (ERROR) when this is not a hot-standby
 	 * dispatcher, which is the intended fail-closed behavior for a user
 	 * query.  But a background worker must never take that ERROR here: the
-	 * dtx-recovery worker builds a component table at startup, and if the
-	 * GUC is stray-set on a live primary its build would ERROR, crash-loop
-	 * the worker, and leave *shmDtmStarted unset — wedging the whole cluster
-	 * behind "waiting for distributed transaction recovery" after a restart.
-	 * On a live primary the catalog is authoritative, so a background worker
-	 * simply builds from it (ignoring the file); the stray GUC still refuses
-	 * ordinary user queries, and recovery completes so the cluster comes up.
+	 * dtx-recovery worker builds a component table while it connects, and
+	 * an ERROR there would crash-loop the worker.  So a background worker
+	 * builds from the raw catalog rows.  The kernel's own workers never
+	 * dispatch on them while the GUC is set: dtx recovery and the global
+	 * deadlock detector sleep behind dispatch_topology_bgworker_gated() and
+	 * discard this table when the gate lifts, FTS skips its cycle, the
+	 * autovacuum launcher starts no worker.  A GUC stray-set on a live
+	 * primary therefore refuses user dispatch (applyDispatchTopology) and
+	 * holds *shmDtmStarted unset until the GUC is cleared, with a LOG line
+	 * naming the cause.  One gap remains, pre-existing from the exemption
+	 * itself: a dispatch-role background worker that was already running
+	 * when the GUC was set (an extension's worker, say) keeps dispatching
+	 * on the raw catalog -- its table carries an empty topology signature,
+	 * so every cdbcomponent_updateCdbComponents() rebuilds it through this
+	 * same exemption -- and does so without failover detection or deadlock
+	 * checks until the GUC is cleared.  In the promotion window no such
+	 * worker exists (workers that wait for the DTM never start while the
+	 * gate holds); an ERROR on a non-startup rebuild would close the gap
+	 * for the stray-set case at the price of crash-looping such workers.
 	 */
 	if (Gp_role == GP_ROLE_DISPATCH && !am_ftsprobe &&
 		dispatch_topology_enabled() &&
