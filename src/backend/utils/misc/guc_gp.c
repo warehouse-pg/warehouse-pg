@@ -26,6 +26,7 @@
 #include "access/xlog_internal.h"
 #include "cdb/cdbappendonlyam.h"
 #include "cdb/cdbendpoint.h"
+#include "cdb/cdblivequery.h"
 #include "cdb/cdbdisp.h"
 #include "cdb/cdbdisp_query.h"
 #include "cdb/cdbdispatchtopology.h"
@@ -420,7 +421,7 @@ static int	gp_server_version_num;
 static char *gp_server_version_string;
 
 /* Query Metrics */
-bool		gp_enable_query_metrics = false;
+bool		gp_enable_query_metrics = true;
 int			gp_instrument_shmem_size = 5120;
 
 /* Security */
@@ -1555,7 +1556,7 @@ struct config_bool ConfigureNamesBool_gp[] =
 			NULL
 		},
 		&gp_enable_query_metrics,
-		false,
+		true,					/* default on; required for live query view */
 		NULL, NULL, NULL
 	},
 
@@ -3926,6 +3927,16 @@ struct config_int ConfigureNamesInt_gp[] =
 		},
 		&gp_instrument_shmem_size,
 		5120, 0, 131072,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"whpg_max_live_query_slots", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Maximum number of concurrently observable queries in whpg_live_query_plan."),
+			gettext_noop("Sizes the plan registry shared memory. 0 uses MaxBackends.")
+		},
+		&whpg_max_live_query_slots,
+		0, 0, INT_MAX,
 		NULL, NULL, NULL
 	},
 

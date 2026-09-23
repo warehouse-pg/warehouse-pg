@@ -105,6 +105,9 @@ jobs:
           fetch-depth: 1024
           fetch-tags: true
 
+      - name: Mark workspace as safe Git directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Container info
         run: |
           echo "OS: $(cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"')"
@@ -134,6 +137,8 @@ jobs:
         run: |
           # All build and CI dependencies are pre-installed in the container image
           # (see dockerfiles/Dockerfile.el*). Only WHPG 6 needs additional packages.
+          yum install -y --setopt=keepcache=1 glibc-langpack-en
+
           if [[ "${WHPG_MAJORVERSION}" == "6" ]]; then
             yum install -y --setopt=keepcache=1 python2-devel
           else
@@ -290,6 +295,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Mark workspace as safe Git directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Container info
         run: |

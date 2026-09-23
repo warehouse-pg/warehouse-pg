@@ -11597,3 +11597,19 @@
 
 { oid => 5066, descr => 'itemwise add two integer arrays',
    proname => 'array_add', prorettype => '_int4', proargtypes => '_int4 _int4', prosrc => 'array_int4_add' },
+
+{ oid => '9998', descr => 'return live execution plan with per-segment metrics for a running query',
+   proname => 'whpg_live_query_plan', provolatile => 'v', proretset => 't',
+   prorettype => 'record', proargtypes => 'int4',
+   proallargtypes => '{int4,int4,int4,int4,text,int4,float8,bool,int8,int8,float8,int8,int8,int8,int8}',
+   proargmodes => '{i,o,o,o,o,o,o,o,o,o,o,o,o,o,o}',
+   proargnames => '{pid,slice_id,plan_node_id,parent_node_id,node_type,segindex,plan_rows,running,tuples,ntuples_total,actual_ms,execmem_bytes,workmem_bytes,spill_bytes,bufusage_blocks}',
+   prosrc => 'whpg_live_query_plan' },
+
+{ oid => '9999', descr => 'collect per-node InstrumentationSlot metrics on a segment for whpg_live_query_plan',
+   proname => 'whpg_collect_segment_metrics', provolatile => 'v', proretset => 't',
+   prorettype => 'record', proargtypes => 'int4 int4',
+   proallargtypes => '{int4,int4,int4,int4,bool,int8,float8,int8,int8,int8,int8}',
+   proargmodes => '{i,i,o,o,o,o,o,o,o,o,o}',
+   proargnames => '{ssid,ccnt,plan_node_id,segindex,running,tuples,actual_ms,execmem_bytes,workmem_bytes,spill_bytes,bufusage_blocks}',
+   prosrc => 'whpg_collect_segment_metrics' },

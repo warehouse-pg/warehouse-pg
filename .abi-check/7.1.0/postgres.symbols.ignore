@@ -20,3 +20,5 @@ host_primary_segment_count
 ResGroupGetHostPrimaryCount
 DistributedLog_InitOldestXmin
 AppendOptimizedCollectDeadSegments
+fmgr_builtins
+fmgr_builtin_oid_index

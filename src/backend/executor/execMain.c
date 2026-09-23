@@ -108,6 +108,7 @@
 #include "cdb/cdbtargeteddispatch.h"
 #include "cdb/cdbutil.h"
 #include "cdb/cdbendpoint.h"
+#include "cdb/cdblivequery.h"
 
 #define IS_PARALLEL_RETRIEVE_CURSOR(queryDesc)	(queryDesc->ddesc &&	\
 										queryDesc->ddesc->parallelCursorName &&	\
@@ -738,6 +739,9 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
 		}
 	}
 
+	/* Publish plan tree to live-query registry (QD only, non-fatal) */
+	WhpgPlanRegistryAlloc(queryDesc);
+
 	MemoryContextSwitchTo(oldcontext);
 }
 
@@ -1182,6 +1186,9 @@ standard_ExecutorEnd(QueryDesc *queryDesc)
 	 * if needed, collect mpp dispatch results and tear down
 	 * all mpp specific resources (e.g. interconnect).
 	 */
+	/* Release live-query registry slot before tearing down the plan */
+	WhpgPlanRegistryFree(queryDesc);
+
 	PG_TRY();
 	{
 		mppExecutorFinishup(queryDesc);
