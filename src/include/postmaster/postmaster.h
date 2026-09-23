@@ -93,6 +93,6 @@ extern bool amAuxiliaryBgWorker(void);
  * relevant GUC check hooks and in RegisterBackgroundWorker().
  */
 #define MAX_BACKENDS	0x3FFFF
-#define MaxPMAuxProc	(4 + IC_PROXY_NUM_BGWORKER)
+#define MaxPMAuxProc	(5 + IC_PROXY_NUM_BGWORKER)
 
 #endif							/* _POSTMASTER_H */

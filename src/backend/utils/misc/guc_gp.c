@@ -27,6 +27,7 @@
 #include "cdb/cdbappendonlyam.h"
 #include "cdb/cdbendpoint.h"
 #include "cdb/cdblivequery.h"
+#include "cdb/cdbhistory.h"
 #include "cdb/cdbdisp.h"
 #include "cdb/cdbdisp_query.h"
 #include "cdb/cdbdispatchtopology.h"
@@ -3130,6 +3131,16 @@ struct config_bool ConfigureNamesBool_gp[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		{"whpg_query_history_enabled", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Enable writing query metrics to whpg_query_history at end of each query."),
+			NULL
+		},
+		&whpg_query_history_enabled,
+		true,
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, false, NULL, NULL
@@ -4442,6 +4453,36 @@ struct config_int ConfigureNamesInt_gp[] =
 		NULL, NULL, NULL
 	},
 #endif
+
+	{
+		{"whpg_query_history_min_duration_ms", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Only persist queries longer than this many milliseconds in whpg_query_history. 0 persists all."),
+			NULL
+		},
+		&whpg_query_history_min_duration_ms,
+		0, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"whpg_history_enqueue_timeout_ms", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Milliseconds to wait for space in the history queue before falling back to dropping the row."),
+			NULL
+		},
+		&whpg_history_enqueue_timeout_ms,
+		50, 0, 60000,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"whpg_avg_plan_bytes", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Per-slot arena size for the live-query plan registry."),
+			NULL
+		},
+		&whpg_avg_plan_bytes,
+		131072, 4096, 1073741824,
+		NULL, NULL, NULL
+	},
 
 	/* End-of-list marker */
 	{

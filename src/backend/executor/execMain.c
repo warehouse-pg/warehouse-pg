@@ -109,6 +109,7 @@
 #include "cdb/cdbutil.h"
 #include "cdb/cdbendpoint.h"
 #include "cdb/cdblivequery.h"
+#include "cdb/cdbhistory.h"
 
 #define IS_PARALLEL_RETRIEVE_CURSOR(queryDesc)	(queryDesc->ddesc &&	\
 										queryDesc->ddesc->parallelCursorName &&	\
@@ -1186,9 +1187,6 @@ standard_ExecutorEnd(QueryDesc *queryDesc)
 	 * if needed, collect mpp dispatch results and tear down
 	 * all mpp specific resources (e.g. interconnect).
 	 */
-	/* Release live-query registry slot before tearing down the plan */
-	WhpgPlanRegistryFree(queryDesc);
-
 	PG_TRY();
 	{
 		mppExecutorFinishup(queryDesc);
@@ -1217,6 +1215,12 @@ standard_ExecutorEnd(QueryDesc *queryDesc)
 		}
 
 		/*
+		 * Emit history before releasing the estate so planstate is still valid.
+		 */
+		WhpgEmitQueryHistory(queryDesc, true /* is_error */);
+		WhpgPlanRegistryFree(queryDesc);
+
+		/*
 		 * Release EState and per-query memory context.
 		 */
 		FreeExecutorState(estate);
@@ -1224,6 +1228,9 @@ standard_ExecutorEnd(QueryDesc *queryDesc)
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
+
+	WhpgEmitQueryHistory(queryDesc, false /* success */);
+	WhpgPlanRegistryFree(queryDesc);
 
 	/*
 	 * GPDB specific

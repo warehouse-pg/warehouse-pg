@@ -22,3 +22,6 @@ DistributedLog_InitOldestXmin
 AppendOptimizedCollectDeadSegments
 fmgr_builtins
 fmgr_builtin_oid_index
+whpg_query_history_enabled
+whpg_query_history_min_duration_ms
+whpg_history_enqueue_timeout_ms

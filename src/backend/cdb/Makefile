@@ -15,6 +15,7 @@ SUBDIRS := motion dispatcher endpoint
 
 
 OBJS = cdblivequery.o \
+       cdbhistory.o \
        cdbappendonlystorageformat.o \
        cdbappendonlystorageread.o cdbappendonlystoragewrite.o \
 	   cdbbufferedappend.o cdbbufferedread.o \

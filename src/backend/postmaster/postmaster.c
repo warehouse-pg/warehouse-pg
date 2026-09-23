@@ -152,6 +152,7 @@
 #include "cdb/cdbvars.h"
 #include "cdb/cdbendpoint.h"
 #include "cdb/ic_proxy_bgworker.h"
+#include "cdb/cdbhistory.h"
 #include "utils/metrics_utils.h"
 #include "utils/resgroup.h"
 #include "utils/resource_manager.h"
@@ -434,6 +435,13 @@ static BackgroundWorker PMAuxProcList[MaxPMAuxProc] =
 	 "postgres", "ICProxyMain", 0, {0}, 0,
 	 ICProxyStartRule},
 #endif  /* ENABLE_IC_PROXY */
+
+	{"whpg history writer", "whpg history writer",
+	 BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION,
+	 BgWorkerStart_RecoveryFinished,
+	 0,
+	 "postgres", "WhpgHistWriterMain", 0, {0}, 0,
+	 WhpgHistWriterStartRule},
 
 	/*
 	 * Remember to set the MaxPMAuxProc to the number of items in this list

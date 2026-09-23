@@ -70,6 +70,7 @@
 #include "utils/session_state.h"
 #include "cdb/cdbendpoint.h"
 #include "cdb/cdblivequery.h"
+#include "cdb/cdbhistory.h"
 #include "replication/gp_replication.h"
 #include "cdb/ic_proxy_bgworker.h"
 
@@ -227,6 +228,9 @@ CreateSharedMemoryAndSemaphores(int port)
 
 		/* size of live-query plan registry */
 		size = add_size(size, WhpgPlanRegistryShmemSize());
+
+		/* size of query history ring buffer */
+		size = add_size(size, WhpgHistShmemSize());
 
 		/* size of expand version */
 		size = add_size(size, GpExpandVersionShmemSize());
@@ -390,6 +394,10 @@ CreateSharedMemoryAndSemaphores(int port)
 	/* Set up live-query plan registry */
 	if (!IsUnderPostmaster)
 		WhpgPlanRegistryShmemInit();
+
+	/* Set up query history ring buffer */
+	if (!IsUnderPostmaster)
+		WhpgHistShmemInit();
 
 	GpExpandVersionShmemInit();
 

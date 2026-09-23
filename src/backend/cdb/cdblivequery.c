@@ -56,10 +56,11 @@ PG_FUNCTION_INFO_V1(whpg_live_query_plan);
 PG_FUNCTION_INFO_V1(whpg_collect_segment_metrics);
 
 /* ----------------------------------------------------------------
- * GUC variable
+ * GUC variables
  * ----------------------------------------------------------------
  */
 int			whpg_max_live_query_slots = 0;	/* 0 = use MaxBackends at startup */
+int			whpg_avg_plan_bytes = 131072;	/* per-slot arena size */
 
 /* Global pointer to the plan registry shared memory */
 WhpgPlanRegistry *WhpgRegistry = NULL;
@@ -82,8 +83,8 @@ WhpgPlanRegistry *WhpgRegistry = NULL;
  * Unknown tags fall through to a numeric fallback.
  * ----------------------------------------------------------------
  */
-static const char *
-whpg_node_type_str(NodeTag tag)
+const char *
+WhpgNodeTypeStr(NodeTag tag)
 {
 	switch (tag)
 	{
@@ -320,6 +321,8 @@ WhpgPlanRegistryAlloc(QueryDesc *queryDesc)
 	slot->session_id = gp_session_id;
 	slot->command_count = gp_command_count;
 	slot->backend_pid = MyProcPid;
+	slot->queryid = (queryDesc->plannedstmt != NULL)
+					? queryDesc->plannedstmt->queryId : 0;
 	slot->dbid = MyDatabaseId;
 	slot->userid = GetUserId();
 	slot->start_time = GetCurrentTimestamp();
@@ -356,12 +359,37 @@ WhpgPlanRegistryAlloc(QueryDesc *queryDesc)
 void
 WhpgPlanRegistryFree(QueryDesc *queryDesc)
 {
-	int			i;
+	WhpgLiveQuerySlot *slot;
 
 	if (Gp_role != GP_ROLE_DISPATCH)
 		return;
 	if (!gp_enable_query_metrics || WhpgRegistry == NULL)
 		return;
+
+	slot = WhpgFindActiveSlot();
+	if (slot == NULL)
+		return;
+
+	slot->in_use = false;
+	pg_write_barrier();
+}
+
+/* ----------------------------------------------------------------
+ * WhpgFindActiveSlot
+ *
+ * Returns the plan registry slot for the currently-executing query
+ * on this backend, or NULL if none is registered.  Used by both
+ * WhpgPlanRegistryFree (cdblivequery.c) and WhpgEmitQueryHistory
+ * (cdbhistory.c) to avoid duplicating the linear scan.
+ * ----------------------------------------------------------------
+ */
+WhpgLiveQuerySlot *
+WhpgFindActiveSlot(void)
+{
+	int		i;
+
+	if (WhpgRegistry == NULL)
+		return NULL;
 
 	for (i = 0; i < WhpgRegistry->n_slots; i++)
 	{
@@ -370,12 +398,9 @@ WhpgPlanRegistryFree(QueryDesc *queryDesc)
 		if (slot->in_use &&
 			slot->session_id == gp_session_id &&
 			slot->command_count == gp_command_count)
-		{
-			slot->in_use = false;
-			pg_write_barrier();
-			break;
-		}
+			return slot;
 	}
+	return NULL;
 }
 
 /* ----------------------------------------------------------------
@@ -705,7 +730,7 @@ whpg_live_query_plan(PG_FUNCTION_ARGS)
 	if (max_rows <= 0)
 		goto done;
 
-	rows = (LiveRow *) palloc0((Size) max_rows * sizeof(LiveRow));
+	rows = (LiveRow *) palloc0(mul_size((Size) max_rows, sizeof(LiveRow)));
 
 	/* ---- 2. QD-local InstrumentationSlot entries (coordinator = segindex -1) ---- */
 	nrows = collect_local_metrics(slot->session_id, slot->command_count,
@@ -809,7 +834,7 @@ whpg_live_query_plan(PG_FUNCTION_ARGS)
 		values[0]  = Int32GetDatum(r->slice_id);
 		values[1]  = Int32GetDatum(r->plan_node_id);
 		values[2]  = Int32GetDatum(r->parent_node_id);
-		values[3]  = CStringGetTextDatum(whpg_node_type_str((NodeTag) r->node_type));
+		values[3]  = CStringGetTextDatum(WhpgNodeTypeStr((NodeTag) r->node_type));
 		values[4]  = Int32GetDatum(r->segindex);
 		values[5]  = Float8GetDatum(r->plan_rows);
 		values[6]  = BoolGetDatum(r->running);

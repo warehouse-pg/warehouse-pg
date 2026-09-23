@@ -1754,6 +1754,60 @@ LANGUAGE INTERNAL
 STRICT IMMUTABLE PARALLEL SAFE
 AS 'jsonb_path_match';
 
+-- ----------------------------------------------------------------
+-- Live query history table and summary view
+-- ----------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS pg_catalog.whpg_query_history (
+    queryid                 int8        NOT NULL,
+    session_id              int4        NOT NULL,
+    command_count           int4        NOT NULL,
+    backend_pid             int4        NOT NULL,
+    dbid                    oid         NOT NULL,
+    userid                  oid         NOT NULL,
+    start_time              timestamptz NOT NULL,
+    end_time                timestamptz NOT NULL,
+    finish_status           text        NOT NULL,
+    slice_id                int4        NOT NULL,
+    segindex                int4        NOT NULL,
+    plan_node_id            int4        NOT NULL,
+    parent_node_id          int4,
+    node_type               text        NOT NULL,
+    actual_rows             int8,
+    actual_ms               float8,
+    execmem_bytes_peak      int8,
+    workmem_bytes_peak      int8,
+    spill_bytes             int8,
+    bufusage_shared_hit     int8,
+    bufusage_shared_read    int8,
+    cpu_user_ms             float8,
+    cpu_sys_ms              float8,
+    trace_id                bytea
+) WITH (appendoptimized=true, orientation=column, compresstype=zstd)
+DISTRIBUTED BY (queryid, segindex);
+
+REVOKE ALL ON pg_catalog.whpg_query_history FROM public;
+
+CREATE OR REPLACE VIEW pg_catalog.whpg_query_history_summary AS
+    SELECT
+        queryid,
+        session_id,
+        command_count,
+        userid,
+        start_time,
+        max(end_time)                   AS end_time,
+        max(finish_status)              AS finish_status,
+        EXTRACT(epoch FROM (max(end_time) - min(start_time))) * 1000.0 AS duration_ms,
+        sum(actual_rows)                AS total_rows,
+        sum(actual_ms)                  AS total_node_ms,
+        sum(execmem_bytes_peak)         AS total_execmem_bytes,
+        sum(workmem_bytes_peak)         AS total_workmem_bytes,
+        sum(spill_bytes)                AS total_spill_bytes
+    FROM pg_catalog.whpg_query_history
+    GROUP BY queryid, session_id, command_count, userid, start_time;
+
+REVOKE ALL ON pg_catalog.whpg_query_history_summary FROM public;
+
 CREATE OR REPLACE FUNCTION
   jsonb_path_query(target jsonb, path jsonpath, vars jsonb DEFAULT '{}',
                    silent boolean DEFAULT false)

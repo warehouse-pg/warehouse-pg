@@ -61,11 +61,13 @@ typedef struct WhpgLiveQuerySlot
 	bool		in_use;
 	bool		plan_truncated;		/* plan had > WHPG_MAX_PLAN_NODES nodes */
 	char		pad[2];
+	int64		queryid;			/* pg_stat_activity.queryid */
 
 	/* Query metadata */
 	Oid			dbid;
 	Oid			userid;
 	TimestampTz	start_time;
+	uint8		trace_id[16];		/* opaque distributed trace id */
 
 	/* Number of nodes actually stored */
 	int32		n_nodes;
@@ -92,6 +94,19 @@ extern WhpgPlanRegistry *WhpgRegistry;
  * ----------------------------------------------------------------
  */
 extern int	whpg_max_live_query_slots;
+extern int	whpg_avg_plan_bytes;
+
+/* ----------------------------------------------------------------
+ * Node-type helpers
+ * ----------------------------------------------------------------
+ */
+extern const char *WhpgNodeTypeStr(NodeTag tag);
+
+/* ----------------------------------------------------------------
+ * Slot lookup helper (shared by cdblivequery.c and cdbhistory.c)
+ * ----------------------------------------------------------------
+ */
+extern WhpgLiveQuerySlot *WhpgFindActiveSlot(void);
 
 /* ----------------------------------------------------------------
  * Shmem lifecycle API
@@ -145,5 +160,6 @@ whpg_i64_add_sat(int64 a, int64 b)
 		return (b > 0) ? INT64_MAX : INT64_MIN;
 	return r;
 }
+
 
 #endif							/* CDBLIVEQUERY_H */
