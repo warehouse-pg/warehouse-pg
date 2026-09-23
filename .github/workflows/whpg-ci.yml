@@ -13,6 +13,16 @@ name: WarehousePG CI
 #
 # Every installcheck job runs under BOTH query optimizers (matrix `optimizer`:
 # on = GPORCA, off = Postgres planner), forwarded to the sessions via PGOPTIONS.
+#
+# One extra matrix combination (suite = hot-standby: EL 8, Postgres planner)
+# runs the top-level installcheck-hot-standby target, i.e. the upstream
+# hot-standby regress tests (hs_primary_setup + standby_schedule against the
+# standby coordinator) followed by the isolation2 hot_standby schedule. Neither
+# is part of installcheck-good or installcheck-world (the schedule restarts
+# standbys, fails segments over and reconfigures the cluster), so until this
+# combination existed they ran only in the Concourse hot_standby job. It runs
+# on every PR and push with the Concourse job's options (optimizer off, jit
+# off) and ignores the el_version / installcheck_target dispatch inputs.
 # =============================================================================
 
 run-name: >-
@@ -73,7 +83,7 @@ concurrency:
 
 jobs:
   installcheck:
-    name: installcheck / EL${{ matrix.el_version }} / optimizer=${{ matrix.optimizer }}
+    name: installcheck${{ matrix.suite == 'hot-standby' && '-hot-standby' || '' }} / EL${{ matrix.el_version }} / optimizer=${{ matrix.optimizer }}
     if: github.event_name != 'workflow_dispatch' || inputs.test_type == 'all' || inputs.test_type == 'installcheck'
     runs-on: ubuntu-latest
     timeout-minutes: 180
@@ -84,14 +94,25 @@ jobs:
         el_version: ${{ fromJson((github.event_name == 'workflow_dispatch' && (inputs.el_version == 'all' && '["8","9"]' || format('["{0}"]', inputs.el_version))) || ((github.ref_name == 'main' || startsWith(github.ref_name, 'WHPG_')) && '["8","9"]' || '["8"]')) }}
         # Run the suite under both optimizers: on = GPORCA, off = Postgres planner
         optimizer: ['on', 'off']
+        # regress = the installcheck-good / installcheck-world target chosen below
+        suite: ['regress']
+        include:
+          # The hot-standby suite (top-level installcheck-hot-standby): EL 8 with
+          # the Postgres planner only, the shape of the Concourse hot_standby job.
+          # `suite` overrides a base-matrix value, so this is a new combination,
+          # not an addition to the EL 8 / optimizer=off regress one.
+          - el_version: '8'
+            optimizer: 'off'
+            suite: 'hot-standby'
     container:
       image: ghcr.io/warehouse-pg/whpg-${{ format('rocky{0}', matrix.el_version) }}-build
       options: --privileged
     env:
       WHPG_MAJORVERSION: '7'
       EL_VERSION: ${{ matrix.el_version }}
-      # push to main/stable -> installcheck-world; PRs and ci/** -> installcheck-good; dispatch -> chosen target
-      TEST_TARGET: ${{ (inputs.installcheck_target != '' && inputs.installcheck_target) || ((github.ref_name == 'main' || startsWith(github.ref_name, 'WHPG_')) && 'installcheck-world' || 'installcheck-good') }}
+      # hot-standby suite -> installcheck-hot-standby (always); regress suite: push to main/stable -> installcheck-world;
+      # PRs and ci/** -> installcheck-good; dispatch -> chosen target
+      TEST_TARGET: ${{ (matrix.suite == 'hot-standby' && 'installcheck-hot-standby') || (inputs.installcheck_target != '' && inputs.installcheck_target) || ((github.ref_name == 'main' || startsWith(github.ref_name, 'WHPG_')) && 'installcheck-world' || 'installcheck-good') }}
       WHPG_SRC: ${{ github.workspace }}
       RESULTS_DIR: /tmp/test-results
 
@@ -202,7 +223,8 @@ jobs:
         run: |
           export TEST_TARGET="${TEST_TARGET}"
           export MAKE_FLAGS="-k"
-          export PGOPTIONS="-c optimizer=${{ matrix.optimizer }}"
+          # the hot-standby suite adds jit=off, the same options the Concourse hot_standby job passes
+          export PGOPTIONS="-c optimizer=${{ matrix.optimizer }}${{ matrix.suite == 'hot-standby' && ' -c jit=off' || '' }}"
           bash .github/scripts/run-installcheck.bash
 
       - name: Installcheck Summary
@@ -216,6 +238,7 @@ jobs:
           echo "| EL Version | ${EL_VERSION} |" >> $GITHUB_STEP_SUMMARY
           echo "| Test Target | ${TEST_TARGET} |" >> $GITHUB_STEP_SUMMARY
           echo "| Optimizer | ${{ matrix.optimizer }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Suite | ${{ matrix.suite }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Step Results" >> $GITHUB_STEP_SUMMARY
           echo "| Step | Status |" >> $GITHUB_STEP_SUMMARY
@@ -234,20 +257,25 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results-el${{ matrix.el_version }}-optimizer-${{ matrix.optimizer }}
+          name: test-results-el${{ matrix.el_version }}-optimizer-${{ matrix.optimizer }}${{ matrix.suite == 'hot-standby' && '-hot-standby' || '' }}
           path: |
             /tmp/test-results/
             src/test/regress/regression.diffs
+            src/test/regress/regression.out
             src/test/regress/results/
+            src/test/isolation2/regression.diffs
+            src/test/isolation2/regression.out
+            src/test/isolation2/results/
           if-no-files-found: ignore
 
       - name: Upload cluster logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: cluster-logs-el${{ matrix.el_version }}-optimizer-${{ matrix.optimizer }}
+          name: cluster-logs-el${{ matrix.el_version }}-optimizer-${{ matrix.optimizer }}${{ matrix.suite == 'hot-standby' && '-hot-standby' || '' }}
           path: |
             gpAux/gpdemo/datadirs/qddir/demoDataDir-1/log/
+            gpAux/gpdemo/datadirs/standby/log/
             gpAux/gpdemo/datadirs/dbfast*/demoDataDir*/log/
             /home/gpadmin/gpAdminLogs/
           if-no-files-found: ignore

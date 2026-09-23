@@ -37,15 +37,26 @@ On push or PR, tests run automatically with these defaults:
 
 | Branch Type | Tests | EL Versions | Installcheck Target |
 |-------------|-------|-------------|---------------------|
-| `main` / `WHPG_*_STABLE` (push) | All (installcheck + orca-unit-tests) | All configured | `installcheck-world` |
-| `ci/**` (push) | All (installcheck + orca-unit-tests) | Default only | `installcheck-good` |
-| PRs targeting `main` / `WHPG_*_STABLE` | All (installcheck + orca-unit-tests) | Default only | `installcheck-good` |
+| `main` / `WHPG_*_STABLE` (push) | All (installcheck + orca-unit-tests) | All configured | `installcheck-world`, plus `installcheck-hot-standby` on EL 8 |
+| `ci/**` (push) | All (installcheck + orca-unit-tests) | Default only | `installcheck-good`, plus `installcheck-hot-standby` on EL 8 |
+| PRs targeting `main` / `WHPG_*_STABLE` | All (installcheck + orca-unit-tests) | Default only | `installcheck-good`, plus `installcheck-hot-standby` on EL 8 |
 
 > **Note:** Regular feature branch pushes (e.g., `feature/xyz`) do not trigger CI. Use `ci/` prefix or open a pull request.
 
 > **Optimizer:** every `installcheck` job runs twice — once with `optimizer=on`
 > (GPORCA) and once with `optimizer=off` (the Postgres planner) — via the
 > `optimizer` matrix dimension, so both planners are covered on every push and PR.
+
+> **Hot standby:** one extra `installcheck` matrix combination
+> (`installcheck-hot-standby / EL8 / optimizer=off`) runs the top-level
+> `installcheck-hot-standby` target: the upstream hot-standby regress tests
+> (`hs_primary_setup`, then `standby_schedule` against the standby coordinator)
+> followed by the isolation2 `hot_standby_schedule`. The schedule restarts
+> standbys, fails segments over and reconfigures the cluster, so it is not part
+> of `installcheck-good`/`installcheck-world`; before this combination it ran
+> only in the Concourse `hot_standby` job. It uses that job's options
+> (`optimizer=off`, `jit=off`), EL 8 only, and ignores the `el_version` /
+> `installcheck_target` dispatch inputs.
 
 #### Concurrency
 
@@ -106,7 +117,7 @@ On manual dispatch, you can customize:
 
 | Job | Description | Timeout |
 |-----|-------------|---------|
-| `installcheck` | Runs regression tests under both optimizers (GPORCA + Postgres planner) | 120 min |
+| `installcheck` | Runs regression tests under both optimizers (GPORCA + Postgres planner), plus the `hot-standby` suite combination on EL 8 | 180 min |
 | `orca-unit-tests` | Runs ORCA optimizer unit tests (see below) | 60 min |
 
 **ORCA Unit Tests Details:**
@@ -129,10 +140,13 @@ as literals in the `matrix` / `env` expressions.)
 | push to `main` / `WHPG_*_STABLE` | `8`, `9` | `installcheck-world` |
 | PRs and `ci/**` pushes | `8` | `installcheck-good` |
 | `workflow_dispatch` | per `el_version` input | per `installcheck_target` input |
+| any of the above (`suite: hot-standby` include) | `8` | `installcheck-hot-standby` |
 
 Every `installcheck` run is multiplied by the `optimizer` matrix
 (`on` = GPORCA, `off` = Postgres planner), so both query optimizers are
-exercised on every push and PR.
+exercised on every push and PR. The `suite` dimension is `regress` for all
+of those; the single `hot-standby` include is added on top and is not
+multiplied.
 
 #### Debugging
 
