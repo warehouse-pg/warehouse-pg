@@ -1,0 +1,382 @@
+<sect1 id="whpg-live-query-plan">
+ <title>Live Query Plan Viewer</title>
+
+ <indexterm zone="whpg-live-query-plan">
+  <primary>whpg_live_query_plan</primary>
+ </indexterm>
+
+ <para>
+  WarehousePG provides a set of functions for inspecting the current
+  execution plan and runtime metrics of a query running on the coordinator
+  backend.  This is useful for diagnosing long-running queries without
+  interrupting them.
+ </para>
+
+ <sect2 id="whpg-live-query-plan-overview">
+  <title>Overview</title>
+
+  <para>
+   The live query plan feature consists of two SQL functions and a
+   persistent history table:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     <function>pg_catalog.whpg_live_query_plan(pid int4)</function>
+     returns the current execution plan with per-node, per-segment
+     runtime counters for the query running on backend <parameter>pid</parameter>.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <function>pg_catalog.whpg_collect_segment_metrics(ssid int4, ccnt int4)</function>
+     is an internal function dispatched to each segment to collect
+     per-node <structname>InstrumentationSlot</structname> data.
+     It is not intended for direct use.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <structname>pg_catalog.whpg_query_history</structname> stores
+     end-of-query per-node execution metrics written asynchronously by
+     the <literal>whpg history writer</literal> background worker.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   The live view is pull-only and read-only.  It does not interrupt the
+   running query.  Counter values are approximate: a node that is
+   currently executing shows its last completed-cycle value.
+  </para>
+ </sect2>
+
+ <sect2 id="whpg-live-query-plan-prerequisites">
+  <title>Prerequisites</title>
+
+  <para>
+   The GUC <varname>gp_enable_query_metrics</varname> must be
+   <literal>on</literal> (the default since this feature was introduced).
+   With it off the plan registry is not populated and both functions
+   return empty result sets.
+  </para>
+ </sect2>
+
+ <sect2 id="whpg-live-query-plan-functions">
+  <title>Functions</title>
+
+  <refentry id="whpg-live-query-plan-func">
+   <refmeta>
+    <refentrytitle>whpg_live_query_plan</refentrytitle>
+   </refmeta>
+
+   <refnamediv>
+    <refname>whpg_live_query_plan</refname>
+    <refpurpose>return the live execution plan with per-segment metrics
+    for a running query</refpurpose>
+   </refnamediv>
+
+   <refsynopsisdiv>
+    <synopsis>
+pg_catalog.whpg_live_query_plan(pid int4)
+RETURNS TABLE (
+    slice_id        int4,
+    plan_node_id    int4,
+    parent_node_id  int4,
+    node_type       text,
+    segindex        int4,
+    plan_rows       float8,
+    running         boolean,
+    tuples          int8,
+    ntuples_total   int8,
+    actual_ms       float8,
+    execmem_bytes   int8,
+    workmem_bytes   int8,
+    spill_bytes     int8,
+    bufusage_blocks int8
+)
+    </synopsis>
+   </refsynopsisdiv>
+
+   <refsect1>
+    <title>Description</title>
+
+    <para>
+     <function>whpg_live_query_plan</function> returns one row per
+     <literal>(plan node, segment)</literal> pair for the query currently
+     executing on the coordinator backend identified by
+     <parameter>pid</parameter>.  If no query is running for that backend,
+     the function returns an empty set.
+    </para>
+
+    <para>
+     The function first reads the compact plan tree from the shared-memory
+     plan registry, then fans out
+     <function>whpg_collect_segment_metrics</function> to every segment
+     on a fresh gang so the running query is not interrupted.
+     Coordinator-local metrics use <literal>segindex = -1</literal>.
+    </para>
+   </refsect1>
+
+   <refsect1>
+    <title>Arguments</title>
+    <variablelist>
+     <varlistentry>
+      <term><parameter>pid</parameter></term>
+      <listitem>
+       <para>
+        The OS process ID of the coordinator backend running the target
+        query.  Use <literal>pg_stat_activity.pid</literal> to find it.
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </refsect1>
+
+   <refsect1>
+    <title>Return Columns</title>
+    <informaltable>
+     <tgroup cols="3">
+      <thead>
+       <row>
+        <entry>Column</entry>
+        <entry>Type</entry>
+        <entry>Description</entry>
+       </row>
+      </thead>
+      <tbody>
+       <row><entry>slice_id</entry><entry>int4</entry>
+        <entry>Execution slice the node belongs to.</entry></row>
+       <row><entry>plan_node_id</entry><entry>int4</entry>
+        <entry>Unique node identifier within this query.</entry></row>
+       <row><entry>parent_node_id</entry><entry>int4</entry>
+        <entry>Node ID of the parent; <literal>-1</literal> for the root.</entry></row>
+       <row><entry>node_type</entry><entry>text</entry>
+        <entry>Human-readable plan node name (e.g., <literal>Seq Scan</literal>).</entry></row>
+       <row><entry>segindex</entry><entry>int4</entry>
+        <entry>Segment that produced this row; <literal>-1</literal> for the coordinator.</entry></row>
+       <row><entry>plan_rows</entry><entry>float8</entry>
+        <entry>Optimizer row-count estimate.</entry></row>
+       <row><entry>running</entry><entry>boolean</entry>
+        <entry>True if the node is currently executing.</entry></row>
+       <row><entry>tuples</entry><entry>int8</entry>
+        <entry>Tuples emitted so far on this segment.</entry></row>
+       <row><entry>ntuples_total</entry><entry>int8</entry>
+        <entry>Tuples summed across all segments for this node.</entry></row>
+       <row><entry>actual_ms</entry><entry>float8</entry>
+        <entry>Elapsed execution time in milliseconds.</entry></row>
+       <row><entry>execmem_bytes</entry><entry>int8</entry>
+        <entry>Executor memory used (bytes).</entry></row>
+       <row><entry>workmem_bytes</entry><entry>int8</entry>
+        <entry>Work memory used (bytes).</entry></row>
+       <row><entry>spill_bytes</entry><entry>int8</entry>
+        <entry>Bytes written to workfiles (spill to disk).</entry></row>
+       <row><entry>bufusage_blocks</entry><entry>int8</entry>
+        <entry>Shared buffer blocks hit and read.</entry></row>
+      </tbody>
+     </tgroup>
+    </informaltable>
+   </refsect1>
+
+   <refsect1>
+    <title>Permissions</title>
+    <para>
+     Superusers may inspect any backend.  Non-superusers may only inspect
+     backends that they own (same role as the target backend's
+     <literal>usesysid</literal>).  Attempting to inspect another user's
+     backend raises <errorcode>ERRCODE_INSUFFICIENT_PRIVILEGE</errorcode>.
+    </para>
+   </refsect1>
+
+   <refsect1>
+    <title>Example</title>
+    <programlisting>
+-- Find the PID of a long-running query
+SELECT pid, query
+FROM pg_stat_activity
+WHERE state = 'active' AND pid &lt;&gt; pg_backend_pid();
+
+-- Inspect its live plan
+SELECT slice_id, plan_node_id, node_type, segindex,
+       tuples, actual_ms, spill_bytes
+FROM pg_catalog.whpg_live_query_plan(12345)
+ORDER BY slice_id, plan_node_id, segindex;
+    </programlisting>
+   </refsect1>
+  </refentry>
+ </sect2>
+
+ <sect2 id="whpg-query-history">
+  <title>Query History Table</title>
+
+  <para>
+   At the end of every query (subject to GUC settings),
+   <productname>WarehousePG</productname> enqueues one row per plan node
+   into a shared-memory ring buffer.  The
+   <literal>whpg history writer</literal> background worker drains this
+   buffer and inserts rows into
+   <structname>pg_catalog.whpg_query_history</structname> using SPI batch
+   inserts of up to 256 rows per transaction.
+  </para>
+
+  <para>
+   The table is created as a randomly distributed heap table during
+   <command>initdb</command> (the <literal>DISTRIBUTED BY</literal> and
+   append-optimized columnar storage options are not available in
+   single-user initdb mode).  Operators can apply them post-initdb using
+   <command>CREATE TABLE ... WITH (appendoptimized=true,
+   orientation=column, compresstype=zstd) AS SELECT * FROM
+   pg_catalog.whpg_query_history</command>.
+  </para>
+
+  <sect3 id="whpg-query-history-schema">
+   <title>Schema</title>
+
+   <programlisting>
+CREATE TABLE pg_catalog.whpg_query_history (
+    queryid                 int8        NOT NULL,
+    session_id              int4        NOT NULL,
+    command_count           int4        NOT NULL,
+    backend_pid             int4        NOT NULL,
+    dbid                    oid         NOT NULL,
+    userid                  oid         NOT NULL,
+    start_time              timestamptz NOT NULL,
+    end_time                timestamptz NOT NULL,
+    finish_status           text        NOT NULL,  -- 'ok', 'error'
+    slice_id                int4        NOT NULL,
+    segindex                int4        NOT NULL,  -- -1 = coordinator
+    plan_node_id            int4        NOT NULL,
+    parent_node_id          int4,                  -- NULL for root
+    node_type               text        NOT NULL,
+    actual_rows             int8,
+    actual_ms               float8,
+    execmem_bytes_peak      int8,
+    workmem_bytes_peak      int8,
+    spill_bytes             int8,
+    bufusage_shared_hit     int8,
+    bufusage_shared_read    int8,
+    cpu_user_ms             float8,
+    cpu_sys_ms              float8,
+    trace_id                bytea
+);
+   </programlisting>
+  </sect3>
+
+  <sect3 id="whpg-query-history-summary">
+   <title>Summary View</title>
+   <para>
+    <structname>pg_catalog.whpg_query_history_summary</structname>
+    aggregates per-node rows to one row per query, providing
+    <literal>duration_ms</literal>, <literal>total_rows</literal>,
+    <literal>total_node_ms</literal>, and peak resource totals.
+   </para>
+  </sect3>
+
+  <sect3 id="whpg-query-history-access">
+   <title>Access Control</title>
+   <para>
+    <literal>REVOKE ALL ON pg_catalog.whpg_query_history FROM public</literal>
+    is applied at <command>initdb</command> time.  Grant
+    <literal>SELECT</literal> explicitly to monitoring roles.
+   </para>
+  </sect3>
+ </sect2>
+
+ <sect2 id="whpg-live-query-plan-gucs">
+  <title>Configuration Parameters</title>
+
+  <variablelist>
+   <varlistentry id="guc-gp-enable-query-metrics">
+    <term><varname>gp_enable_query_metrics</varname> (<type>boolean</type>)</term>
+    <listitem>
+     <para>
+      Enables the shared-memory <structname>InstrumentationSlot</structname>
+      ring that backs both the live view and the history table.
+      Default: <literal>on</literal>.  Requires a server restart to take
+      effect.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="guc-whpg-max-live-query-slots">
+    <term><varname>whpg_max_live_query_slots</varname> (<type>integer</type>)</term>
+    <listitem>
+     <para>
+      Number of plan-registry slots in shared memory.  Each slot stores
+      the compact plan tree of one concurrently running query.
+      <literal>0</literal> (default) uses <varname>max_connections</varname>.
+      Requires a server restart to take effect.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="guc-whpg-avg-plan-bytes">
+    <term><varname>whpg_avg_plan_bytes</varname> (<type>integer</type>)</term>
+    <listitem>
+     <para>
+      Per-slot memory reserve in bytes for the plan registry arena.
+      Default: <literal>131072</literal> (128 KiB).
+      Requires a server restart to take effect.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="guc-whpg-query-history-enabled">
+    <term><varname>whpg_query_history_enabled</varname> (<type>boolean</type>)</term>
+    <listitem>
+     <para>
+      Master switch for end-of-query history persistence.
+      Default: <literal>on</literal>.  Can be changed without a restart
+      (<literal>PGC_SIGHUP</literal>).
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="guc-whpg-query-history-min-duration-ms">
+    <term><varname>whpg_query_history_min_duration_ms</varname> (<type>integer</type>)</term>
+    <listitem>
+     <para>
+      Only persist queries whose elapsed time exceeds this threshold
+      (in milliseconds).  <literal>0</literal> (default) persists all
+      queries.  Can be changed without a restart.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="guc-whpg-history-enqueue-timeout-ms">
+    <term><varname>whpg_history_enqueue_timeout_ms</varname> (<type>integer</type>)</term>
+    <listitem>
+     <para>
+      Milliseconds to wait for space in the history ring buffer before
+      dropping rows.  Default: <literal>50</literal>.  Can be changed
+      without a restart.
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect2>
+
+ <sect2 id="whpg-live-query-plan-arch">
+  <title>Architecture Notes</title>
+
+  <para>
+   The plan registry is a fixed-size shared-memory array of
+   <structname>WhpgLiveQuerySlot</structname> entries, one per
+   concurrently running query on the coordinator.  Each slot stores a
+   compact serialization of up to <literal>WHPG_MAX_PLAN_NODES</literal>
+   (1024) plan nodes.  Queries with larger plans are recorded with
+   <literal>plan_truncated = true</literal> and a
+   <literal>LOG</literal>-level message; they continue executing normally.
+  </para>
+
+  <para>
+   The background worker (<literal>whpg history writer</literal>) connects
+   to the database of the first queued entry and processes rows for that
+   database.  In multi-database deployments, entries for other databases
+   are logged and skipped; consider one coordinator per database for full
+   history coverage.
+  </para>
+ </sect2>
+
+</sect1>

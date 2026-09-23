@@ -26,6 +26,7 @@
 
 #include "postgres.h"
 
+#include "access/xact.h"
 #include "catalog/pg_type.h"
 #include "catalog/whpg_query_history.h"
 #include "cdb/cdbhistory.h"
@@ -37,6 +38,7 @@
 #include "miscadmin.h"
 #include "nodes/execnodes.h"
 #include "nodes/plannodes.h"
+#include "pgstat.h"
 #include "postmaster/bgworker.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
@@ -82,6 +84,24 @@ static WhpgHistQueue *WhpgHistQ = NULL;
  * Shmem sizing and initialisation
  * ----------------------------------------------------------------
  */
+
+/* ----------------------------------------------------------------
+ * Signal handling for the bgworker
+ * ----------------------------------------------------------------
+ */
+static volatile sig_atomic_t whpg_hist_got_sigterm = false;
+
+static void
+whpg_hist_sigterm(SIGNAL_ARGS)
+{
+	int save_errno = errno;
+
+	whpg_hist_got_sigterm = true;
+	if (MyLatch != NULL)
+		SetLatch(MyLatch);
+
+	errno = save_errno;
+}
 
 Size
 WhpgHistShmemSize(void)
@@ -335,56 +355,25 @@ WhpgEmitQueryHistory(QueryDesc *queryDesc, bool is_error)
 void
 WhpgHistWriterMain(Datum arg)
 {
-	Oid		connect_dbid = InvalidOid;
-
-	pqsignal(SIGTERM, die);
+	pqsignal(SIGTERM, whpg_hist_sigterm);
 	BackgroundWorkerUnblockSignals();
+
+	/*
+	 * Connect immediately to the default database, following the same pattern
+	 * as DtxRecoveryMain.  A BGWORKER_BACKEND_DATABASE_CONNECTION worker must
+	 * not wait before connecting; doing so leaves the process in an undefined
+	 * state and can cause the postmaster to panic.
+	 *
+	 * All history rows are written to DB_FOR_COMMON_ACCESS ("postgres").
+	 * The table exists there because system_views.sql runs for every database
+	 * created from template1 during initdb.
+	 */
+	BackgroundWorkerInitializeConnection(DB_FOR_COMMON_ACCESS, NULL, 0);
 
 	/* Register our latch so producers can wake us */
 	SpinLockAcquire(&WhpgHistQ->hdr.lock);
 	WhpgHistQ->hdr.bgworker_latch = MyLatch;
 	SpinLockRelease(&WhpgHistQ->hdr.lock);
-
-	/*
-	 * Wait until there is at least one entry in the queue before we try to
-	 * connect to a database.
-	 */
-	for (;;)
-	{
-		int rc;
-
-		if (WhpgHistQ != NULL &&
-			WhpgHistQ->hdr.head != WhpgHistQ->hdr.tail)
-			break;
-
-		rc = WaitLatch(MyLatch,
-					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-					   1000L,
-					   WAIT_EVENT_EXTENSION);
-		ResetLatch(MyLatch);
-
-		if (rc & WL_POSTMASTER_DEATH)
-			proc_exit(0);
-	}
-
-	/*
-	 * Pick the database from the first available entry.
-	 */
-	{
-		uint64 tail;
-
-		SpinLockAcquire(&WhpgHistQ->hdr.lock);
-		tail = WhpgHistQ->hdr.tail;
-		SpinLockRelease(&WhpgHistQ->hdr.lock);
-
-		connect_dbid =
-			WhpgHistQ->entries[tail & WHPG_HIST_QUEUE_MASK].dbid;
-	}
-
-	if (!OidIsValid(connect_dbid))
-		proc_exit(0);
-
-	BackgroundWorkerInitializeConnectionByOid(connect_dbid, InvalidOid, 0);
 
 	/*
 	 * Main processing loop.
@@ -407,10 +396,10 @@ WhpgHistWriterMain(Datum arg)
 			rc = WaitLatch(MyLatch,
 						   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
 						   1000L,
-						   WAIT_EVENT_EXTENSION);
+						   WAIT_EVENT_WHPG_HIST_WRITER);
 			ResetLatch(MyLatch);
 
-			if (rc & WL_POSTMASTER_DEATH)
+			if (whpg_hist_got_sigterm || (rc & WL_POSTMASTER_DEATH))
 				proc_exit(0);
 
 			continue;
@@ -452,16 +441,6 @@ WhpgHistWriterMain(Datum arg)
 					int				col;
 
 					entry = &WhpgHistQ->entries[t & WHPG_HIST_QUEUE_MASK];
-
-					if (entry->dbid != connect_dbid)
-					{
-						ereport(LOG,
-								(errmsg("whpg history writer: entry has dbid %u, "
-										"connected to %u; skipping (multi-db "
-										"limitation)",
-										entry->dbid, connect_dbid)));
-						continue;
-					}
 
 					finish_status_str[0] = entry->finish_status;
 					finish_status_str[1] = '\0';
@@ -547,7 +526,8 @@ WhpgHistWriterMain(Datum arg)
  * ----------------------------------------------------------------
  */
 bool
-WhpgHistWriterStartRule(BackgroundWorker *worker)
+WhpgHistWriterStartRule(Datum main_arg)
 {
+	(void) main_arg;
 	return whpg_query_history_enabled;
 }

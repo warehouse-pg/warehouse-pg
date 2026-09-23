@@ -1783,8 +1783,7 @@ CREATE TABLE IF NOT EXISTS pg_catalog.whpg_query_history (
     cpu_user_ms             float8,
     cpu_sys_ms              float8,
     trace_id                bytea
-) WITH (appendoptimized=true, orientation=column, compresstype=zstd)
-DISTRIBUTED BY (queryid, segindex);
+);
 
 REVOKE ALL ON pg_catalog.whpg_query_history FROM public;
 

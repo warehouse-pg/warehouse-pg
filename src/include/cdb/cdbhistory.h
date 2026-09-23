@@ -78,6 +78,6 @@ extern void WhpgEmitQueryHistory(QueryDesc *queryDesc, bool is_error);
  * ----------------------------------------------------------------
  */
 extern void WhpgHistWriterMain(Datum arg);
-extern bool WhpgHistWriterStartRule(BackgroundWorker *worker);
+extern bool WhpgHistWriterStartRule(Datum main_arg);
 
 #endif							/* CDBHISTORY_H */
