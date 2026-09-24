@@ -14,9 +14,10 @@
 #ifndef CDBDTXCONTEXTINFO_H
 #define CDBDTXCONTEXTINFO_H
 
+#include "access/xlog_internal.h"	/* MAXFNAMELEN */
 #include "utils/snapshot.h"
 
-#define DtxContextInfo_StaticInit {InvalidDistributedTransactionId,false,false,DistributedSnapshot_StaticInit,0,0,0,0}
+#define DtxContextInfo_StaticInit {InvalidDistributedTransactionId,false,false,DistributedSnapshot_StaticInit,0,0,0,0,{0}}
 
 typedef struct DtxContextInfo
 {
@@ -34,6 +35,13 @@ typedef struct DtxContextInfo
 
 	/* currentCommandId of QD, for debugging only */
 	CommandId				 		curcid;	
+
+	/*
+	 * Name of the anchor snapshot the dispatched snapshot carries (WHPG hot
+	 * standby, access/anchorsnapshot.h); meaningful, and on the wire, only
+	 * when distributedTxnOptions has GP_OPT_ANCHORED_SNAPSHOT set.
+	 */
+	char							anchorName[MAXFNAMELEN];
 } DtxContextInfo;
 
 extern DtxContextInfo QEDtxContextInfo;	

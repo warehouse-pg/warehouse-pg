@@ -474,9 +474,11 @@ GetLatestSnapshot(void)
 	/*
 	 * In an anchored session the latest snapshot is the session's anchor.
 	 * A transaction-snapshot transaction follows its first snapshot: the
-	 * pinned anchor if it had one, no anchor otherwise.
+	 * pinned anchor if it had one, no anchor otherwise.  An executor follows
+	 * the dispatch it is serving, whatever the isolation level.
 	 */
-	if (!IsolationUsesXactSnapshot() || AnchorSnapshotTransactionPinned())
+	if (!IsolationUsesXactSnapshot() || AnchorSnapshotTransactionPinned() ||
+		Gp_role == GP_ROLE_EXECUTE)
 		AnchorSnapshotInstall(SecondarySnapshot, false);
 
 	return SecondarySnapshot;
@@ -2488,6 +2490,7 @@ RestoreSnapshot(char *start_address)
 	snapshot->curcid = serialized_snapshot.curcid;
 	snapshot->whenTaken = serialized_snapshot.whenTaken;
 	snapshot->lsn = serialized_snapshot.lsn;
+	snapshot->anchorOrdinal = 0;	/* a restored snapshot is never dispatched */
 
 	/* Copy XIDs, if present. */
 	if (serialized_snapshot.xcnt > 0)

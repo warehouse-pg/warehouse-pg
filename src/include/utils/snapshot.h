@@ -210,6 +210,17 @@ typedef struct SnapshotData
 	 * distributed transaction, with cached local xids
 	 */
 	DistributedSnapshotWithLocalMapping	distribSnapshotWithLocalMapping;
+
+	/*
+	 * WHPG: registration ordinal of the anchor snapshot laid over this
+	 * snapshot on a hot standby (access/anchorsnapshot.h), 0 when none.
+	 * The dispatcher resolves it to the anchor's name when it ships the
+	 * snapshot's transaction context to the segments, so that every node
+	 * reads the cut this very snapshot describes; CopySnapshot() carries
+	 * it, GetSnapshotData() clears it.  Kept last: extensions built against
+	 * older headers see every preceding field at its old offset.
+	 */
+	uint64		anchorOrdinal;
 } SnapshotData;
 
 #endif							/* SNAPSHOT_H */

@@ -50,6 +50,7 @@
 #include "access/subtrans.h"
 #include "access/transam.h"
 #include "access/twophase.h"
+#include "access/anchorsnapshot.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "catalog/catalog.h"
@@ -1626,6 +1627,13 @@ updateSharedLocalSnapshot(DtxContextInfo *dtxContextInfo,
 	SharedLocalSnapshotSlot->snapshot.xcnt = snapshot->xcnt;
 	SharedLocalSnapshotSlot->snapshot.suboverflowed = snapshot->suboverflowed;
 	SharedLocalSnapshotSlot->snapshot.subxcnt = snapshot->subxcnt;
+	/*
+	 * A recovery snapshot keeps every known xid, top-level ones included, in
+	 * subxip and has an empty xip; readers must know that to search the
+	 * right array and to keep subxip when the snapshot overflowed (the dump
+	 * for cursor readers serializes this slot and drops subxip otherwise).
+	 */
+	SharedLocalSnapshotSlot->snapshot.takenDuringRecovery = snapshot->takenDuringRecovery;
 
 	if (snapshot->xcnt > 0)
 	{
@@ -1755,7 +1763,7 @@ updateSharedLocalSnapshot(DtxContextInfo *dtxContextInfo,
 	LWLockRelease(SharedLocalSnapshotSlot->slotLock);
 }
 
-static void
+void
 SnapshotResetDslm(Snapshot snapshot)
 {
 	DistributedSnapshotWithLocalMapping *dslm;
@@ -1791,6 +1799,7 @@ copyLocalSnapshot(Snapshot snapshot)
 	snapshot->xcnt = SharedLocalSnapshotSlot->snapshot.xcnt;
 	snapshot->suboverflowed = SharedLocalSnapshotSlot->snapshot.suboverflowed;
 	snapshot->subxcnt = SharedLocalSnapshotSlot->snapshot.subxcnt;
+	snapshot->takenDuringRecovery = SharedLocalSnapshotSlot->snapshot.takenDuringRecovery;
 
 	/* We now capture our current view of the xip/combocid arrays */
 	memcpy(snapshot->xip, SharedLocalSnapshotSlot->snapshot.xip, snapshot->xcnt * sizeof(TransactionId));
@@ -2420,6 +2429,8 @@ GetSnapshotData(Snapshot snapshot, DtxContext distributedTransactionContext)
 		   distributedTransactionContext == DTX_CONTEXT_QE_READER);
 
 	SnapshotResetDslm(snapshot);
+	snapshot->anchorOrdinal = 0;	/* set by the anchor installer, if at all */
+	AnchorSnapshotSetDeferredPublication(false);
 
 	/* executor copy distributed snapshot from QEDtxContextInfo */
 	if ((distributedTransactionContext == DTX_CONTEXT_QE_TWO_PHASE_EXPLICIT_WRITER ||
@@ -2744,7 +2755,17 @@ GetSnapshotData(Snapshot snapshot, DtxContext distributedTransactionContext)
 		distributedTransactionContext == DTX_CONTEXT_QE_AUTO_COMMIT_IMPLICIT)
 	{
 		Assert(SharedLocalSnapshotSlot != NULL);
-		updateSharedLocalSnapshot(&QEDtxContextInfo, distributedTransactionContext, snapshot, "GetSnapshotData");
+		/*
+		 * WHPG: under an anchored dispatch the anchor installer publishes
+		 * this snapshot instead, once it has laid the anchor's xid set over
+		 * it (AnchorSnapshotInstall, run by the snapshot funnel right after
+		 * this call); readers must never copy the replay-position set
+		 * computed here.
+		 */
+		if (AnchorSnapshotDispatched())
+			AnchorSnapshotSetDeferredPublication(true);
+		else
+			updateSharedLocalSnapshot(&QEDtxContextInfo, distributedTransactionContext, snapshot, "GetSnapshotData");
 	}
 
 	if (old_snapshot_threshold < 0)

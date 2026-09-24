@@ -21,3 +21,7 @@ host_primary_segment_count
 ResGroupGetHostPrimaryCount
 DistributedLog_InitOldestXmin
 AppendOptimizedCollectDeadSegments
+QEDtxContextInfo
+CatalogSnapshotData
+SnapshotSelfData
+SnapshotAnyData

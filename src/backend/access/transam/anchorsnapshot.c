@@ -61,6 +61,8 @@
 #include "access/transam.h"
 #include "access/xlog.h"
 #include "access/xlog_internal.h"
+#include "cdb/cdbdtxcontextinfo.h"
+#include "cdb/cdbtm.h"
 #include "cdb/cdbvars.h"
 #include "common/string.h"
 #include "lib/stringinfo.h"
@@ -75,6 +77,7 @@
 #include "utils/faultinjector.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
+#include "utils/sharedsnapshot.h"
 #include "utils/snapmgr.h"
 
 /* GUC variables; the entries live in guc_gp.c */
@@ -1508,13 +1511,16 @@ AnchorSnapshotClearAll(void)
 /* ------------------------------------------------------------------
  * Backend import
  *
- * The installer runs in dispatch-role backends of a hot standby, from the
- * per-statement snapshot funnel (snapmgr.c).  It never builds a snapshot
- * itself: GetSnapshotData() has just filled the SnapshotData it is given,
- * so every field the rest of the system relies on (the distributed
- * snapshot for the dispatcher, curcid, the old-snapshot bookkeeping, the
- * xid arrays) is in place; the installer lays the anchor's xid set over
- * the local half and lowers the session's xmin to the anchor's.
+ * The installer runs in the backends of a hot standby, from the
+ * per-statement snapshot funnel (snapmgr.c): in dispatch-role sessions it
+ * follows the mode GUC and the published name, in executors it follows the
+ * anchor the dispatcher announced in the transaction context.  It never
+ * builds a snapshot itself: GetSnapshotData() has just filled the
+ * SnapshotData it is given, so every field the rest of the system relies
+ * on (the distributed snapshot for the dispatcher, curcid, the
+ * old-snapshot bookkeeping, the xid arrays) is in place; the installer
+ * lays the anchor's xid set over the local half and lowers the session's
+ * xmin to the anchor's.
  * ------------------------------------------------------------------
  */
 
@@ -1665,40 +1671,18 @@ lowerXmin(TransactionId *target, TransactionId xmin)
 		*target = xmin;
 }
 
-bool
-AnchorSnapshotInstall(Snapshot snapshot, bool pin)
+/*
+ * The part of an installation common to the dispatcher and the executors:
+ * the registered anchor (name, xmin, ordinal) is read into the cache, its
+ * xmin published under ProcArrayLock after re-checking the registration,
+ * and its xid set laid over the snapshot's local half.
+ */
+static void
+installRegisteredAnchor(Snapshot snapshot, const char *name,
+						TransactionId regXmin, uint64 ordinal)
 {
-	const char *name;
-	TransactionId regXmin;
-	uint64		ordinal;
 	TransactionId recheck;
 	uint64		recheckOrdinal;
-
-	/*
-	 * A transaction that pinned an anchor reads it until it ends, whatever
-	 * the mode GUC says by now; every other snapshot follows the GUC.
-	 */
-	if (pinnedAnchor.pinned)
-	{
-		name = pinnedAnchor.name;
-		if (!AnchorSnapshotLookup(name, &regXmin, &ordinal) ||
-			ordinal != pinnedAnchor.ordinal)
-			anchorPinnedGoneError();
-	}
-	else if (!anchoredReadApplies())
-		return false;
-	else
-	{
-		name = whpg_hot_standby_anchor_name;
-		if (name == NULL || name[0] == '\0')
-			ereport(ERROR,
-					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-					 errmsg("anchored read requires a published anchor snapshot"),
-					 errdetail("whpg_hot_standby_anchor_name is not set on this hot standby."),
-					 errhint("Wait for the next publication, or SET whpg_hot_standby_snapshot_mode = unanchored for this session.")));
-		if (!AnchorSnapshotLookup(name, &regXmin, &ordinal))
-			anchorNotRegisteredError(name);
-	}
 
 	loadAnchorIntoCache(name, regXmin, ordinal);
 
@@ -1746,6 +1730,140 @@ AnchorSnapshotInstall(Snapshot snapshot, bool pin)
 	snapshot->suboverflowed = cachedAnchor.snap.suboverflowed;
 	snapshot->takenDuringRecovery = true;
 
+	/* the snapshot remembers which registration it carries (dispatch) */
+	snapshot->anchorOrdinal = ordinal;
+}
+
+/*
+ * Is this backend an executor serving an anchored dispatch?  The
+ * dispatcher announces the anchor in the transaction context it ships
+ * (GP_OPT_ANCHORED_SNAPSHOT and the name), which setupQEDtxContext copied
+ * into QEDtxContextInfo before the executor took any snapshot for it.
+ */
+bool
+AnchorSnapshotDispatched(void)
+{
+	return Gp_role == GP_ROLE_EXECUTE &&
+		isMppTxOptions_Anchored(QEDtxContextInfo.distributedTxnOptions);
+}
+
+/*
+ * GetSnapshotData() publishes an executor writer's snapshot to its reader
+ * gang before the snapshot funnel runs the installer; under an anchored
+ * dispatch it hands that publication to the installer instead, so that
+ * readers copy the anchored set.  The hand-off is per GetSnapshotData()
+ * call: set when a publication was skipped, cleared at the top of the
+ * next call and when the installer has published.
+ */
+static bool deferredPublication = false;
+
+void
+AnchorSnapshotSetDeferredPublication(bool deferred)
+{
+	deferredPublication = deferred;
+}
+
+/*
+ * Executor side: every executor backend that serves an anchored dispatch
+ * (writer, reader, cursor reader, the single segment of a direct dispatch,
+ * the entry-db singleton) installs ITS OWN node's anchor of the dispatched
+ * name, whatever DistributedTransactionContext it is in and whatever its
+ * own mode GUC says: a SET does not reach a busy cursor gang, and the
+ * dispatch is the only word on which cut the statement reads.  A reader
+ * has just copied the writer's (already anchored) set from the shared
+ * slot; installing again from the file gives the same set, and publishes
+ * the reader's xmin, which readers never do otherwise, so that conflict
+ * handling finds every process reading the anchor.
+ */
+static bool
+installDispatchedAnchor(Snapshot snapshot)
+{
+	const char *name = QEDtxContextInfo.anchorName;
+	TransactionId regXmin;
+	uint64		ordinal;
+
+	if (!isMppTxOptions_Anchored(QEDtxContextInfo.distributedTxnOptions))
+		return false;
+
+	if (!RecoveryInProgress() || !registryEnabled())
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("anchored dispatch reached a segment that cannot install anchor snapshots"),
+				 errdetail("The coordinator dispatched anchor snapshot \"%s\", but this segment is not in recovery or its anchor registry is disabled (whpg_max_anchor_snapshots = 0).",
+						   printableName(name)),
+				 errhint("Every node of an anchored standby cluster must be a hot standby with the anchor registry enabled.")));
+
+	if (!AnchorSnapshotLookup(name, &regXmin, &ordinal))
+		anchorNotRegisteredError(name);
+
+	installRegisteredAnchor(snapshot, name, regXmin, ordinal);
+
+	/*
+	 * Single-layer visibility: under the anchor the executor never consults
+	 * the distributed snapshot or the distributed log.  The distributed
+	 * snapshot the dispatcher shipped has already done its two jobs, in
+	 * GetSnapshotData(): selecting this executor's transaction context and
+	 * advancing the distributed-log horizon.  Resetting the mapping also
+	 * keeps CopySnapshot() and SerializeSnapshot() from carrying stale
+	 * distributed arrays.
+	 */
+	SnapshotResetDslm(snapshot);
+
+	/*
+	 * A writer publishes the snapshot for its reader gang only now, with the
+	 * anchor laid over it: GetSnapshotData() handed the publication over
+	 * when it skipped it for this snapshot (a snapshot it would not have
+	 * published, such as the latest or the catalog snapshot, is not
+	 * published here either).
+	 */
+	if (deferredPublication)
+	{
+		deferredPublication = false;
+		Assert(SharedLocalSnapshotSlot != NULL);
+		updateSharedLocalSnapshot(&QEDtxContextInfo, DistributedTransactionContext,
+								  snapshot, "AnchorSnapshotInstall");
+	}
+	return true;
+}
+
+bool
+AnchorSnapshotInstall(Snapshot snapshot, bool pin)
+{
+	const char *name;
+	TransactionId regXmin;
+	uint64		ordinal;
+
+	if (Gp_role == GP_ROLE_EXECUTE)
+		return installDispatchedAnchor(snapshot);
+
+	/*
+	 * A transaction that pinned an anchor reads it until it ends, whatever
+	 * the mode GUC says by now; every other snapshot follows the GUC.
+	 */
+	if (pinnedAnchor.pinned)
+	{
+		name = pinnedAnchor.name;
+		if (!AnchorSnapshotLookup(name, &regXmin, &ordinal) ||
+			ordinal != pinnedAnchor.ordinal)
+			anchorPinnedGoneError();
+	}
+	else if (!anchoredReadApplies())
+		return false;
+	else
+	{
+		name = whpg_hot_standby_anchor_name;
+		if (name == NULL || name[0] == '\0')
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("anchored read requires a published anchor snapshot"),
+					 errdetail("whpg_hot_standby_anchor_name is not set on this hot standby."),
+					 errhint("Wait for the next publication, or SET whpg_hot_standby_snapshot_mode = unanchored for this session.")));
+		if (!AnchorSnapshotLookup(name, &regXmin, &ordinal))
+			anchorNotRegisteredError(name);
+	}
+
+	installRegisteredAnchor(snapshot, name, regXmin, ordinal);
+
 	if (pin && !pinnedAnchor.pinned)
 	{
 		strlcpy(pinnedAnchor.name, name, MAXFNAMELEN);
@@ -1754,6 +1872,53 @@ AnchorSnapshotInstall(Snapshot snapshot, bool pin)
 		pinnedAnchor.pinned = true;
 	}
 	return true;
+}
+
+/*
+ * Dispatch side: the name of the anchor a snapshot carries (its
+ * anchorOrdinal), copied into name (MAXFNAMELEN bytes).  The registry is
+ * consulted every time so that a snapshot whose anchor was retired,
+ * evicted or invalidated after it was installed is refused here, before
+ * the statement is dispatched: the executors could not install that
+ * anchor anyway.
+ */
+void
+AnchorSnapshotNameForDispatch(uint64 ordinal, char *name)
+{
+	bool		found = false;
+	int			i;
+
+	Assert(ordinal != 0);
+
+	if (registryEnabled())
+	{
+		SpinLockAcquire(&anchorRegistry->lock);
+		for (i = 0; i < anchorRegistry->capacity; i++)
+		{
+			AnchorRegistryEntry *e = &anchorRegistry->entries[i];
+
+			if (e->valid && e->ordinal == ordinal)
+			{
+				strlcpy(name, e->rp_name, MAXFNAMELEN);
+				found = true;
+				break;
+			}
+		}
+		SpinLockRelease(&anchorRegistry->lock);
+	}
+
+	if (!found)
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("anchor snapshot of the snapshot being dispatched is no longer registered"),
+				 errdetail("The anchor was retired, evicted or invalidated after this statement's snapshot installed it."),
+				 errhint("Retry the statement; a REPEATABLE READ transaction must roll back first.")));
+}
+
+bool
+AnchorSnapshotNameIsValid(const char *name)
+{
+	return anchorNameIsValid(name);
 }
 
 void

@@ -12,3 +12,6 @@ struct PlannerConfig
 struct ProjectionPath
 struct AppendRelInfo
 struct CdbComponentDatabaseInfo
+struct SnapshotData
+struct SharedSnapshotSlot
+struct DtxContextInfo
