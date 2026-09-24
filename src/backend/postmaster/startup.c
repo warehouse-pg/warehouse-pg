@@ -22,6 +22,7 @@
 #include <signal.h>
 #include <unistd.h>
 
+#include "access/anchorsnapshot.h"
 #include "access/xlog.h"
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
@@ -152,6 +153,8 @@ HandleStartupProcInterrupts(void)
 	{
 		got_SIGHUP = false;
 		ProcessConfigFile(PGC_SIGHUP);
+		/* a newly published anchor retires the anchors before it */
+		AnchorSnapshotOnConfigReload();
 	}
 
 	/*

@@ -5047,6 +5047,43 @@ KnownAssignedXidsGet(TransactionId *xarray, TransactionId xmax)
 }
 
 /*
+ * GetKnownAssignedXidsSnapshot - the recovery half of GetSnapshotData for
+ * the startup process's anchor snapshot export.
+ *
+ * Fills xids (which must hold GetMaxSnapshotSubxidCount() entries) with the
+ * known-assigned xids below xmax, and returns their number; *xmin, *xmax
+ * and *suboverflowed are set as GetSnapshotData would set the snapshot's.
+ * Nothing else GetSnapshotData does happens here: no MyPgXact->xmin, no
+ * distributed snapshot, no RecentGlobalXmin, and no ERROR path -- the
+ * caller runs in the startup process, where an ERROR is FATAL.
+ *
+ * Caller must be in hot standby with standbyState == STANDBY_SNAPSHOT_READY.
+ */
+int
+GetKnownAssignedXidsSnapshot(TransactionId *xids, TransactionId *xmin,
+							 TransactionId *xmax, bool *suboverflowed)
+{
+	int			count;
+
+	Assert(standbyState == STANDBY_SNAPSHOT_READY);
+
+	LWLockAcquire(ProcArrayLock, LW_SHARED);
+
+	*xmax = ShmemVariableCache->latestCompletedXid;
+	Assert(TransactionIdIsNormal(*xmax));
+	TransactionIdAdvance(*xmax);
+	*xmin = *xmax;
+
+	count = KnownAssignedXidsGetAndSetXmin(xids, xmin, *xmax);
+	*suboverflowed = TransactionIdPrecedesOrEquals(*xmin,
+												   procArray->lastOverflowedXid);
+
+	LWLockRelease(ProcArrayLock);
+
+	return count;
+}
+
+/*
  * KnownAssignedXidsGetAndSetXmin - as KnownAssignedXidsGet, plus
  * we reduce *xmin to the lowest xid value seen if not already lower.
  *

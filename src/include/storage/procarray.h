@@ -81,6 +81,8 @@ extern void ExpireOldKnownAssignedTransactionIds(TransactionId xid);
 
 extern int	GetMaxSnapshotXidCount(void);
 extern int	GetMaxSnapshotSubxidCount(void);
+extern int	GetKnownAssignedXidsSnapshot(TransactionId *xids, TransactionId *xmin,
+										 TransactionId *xmax, bool *suboverflowed);
 
 extern Snapshot GetSnapshotData(Snapshot snapshot, DtxContext distributedTransactionContext);
 

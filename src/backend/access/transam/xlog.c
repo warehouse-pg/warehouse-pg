@@ -22,6 +22,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#include "access/anchorsnapshot.h"
 #include "access/clog.h"
 #include "access/commit_ts.h"
 #include "access/multixact.h"
@@ -7209,6 +7210,18 @@ StartupXLOG(void)
 	abortedRecPtr = InvalidXLogRecPtr;
 	missingContrecPtr = InvalidXLogRecPtr;
 
+	/*
+	 * Rebuild the anchor snapshot registry from the one file the anchor GUC
+	 * names and sweep the rest.  Runs at every start, recovery or not: a
+	 * primary keeps no anchors, and a data directory initialised by an older
+	 * binary gets the directory created here.  The anchor is registered now
+	 * only if its restore-point record lies before the redo start point;
+	 * otherwise the redo loop registers it when that record is replayed.
+	 */
+	AnchorSnapshotStartup((InRecovery && ArchiveRecoveryRequested) ?
+						  checkPoint.redo : InvalidXLogRecPtr,
+						  expectedTLEs);
+
 	/* REDO */
 	if (InRecovery)
 	{
@@ -7669,6 +7682,17 @@ StartupXLOG(void)
 
 				/* Pop the error context stack */
 				error_context_stack = errcallback.previous;
+
+				/*
+				 * Export this node's anchor snapshot at a replayed restore
+				 * point; also settles an anchor kept across a restart once
+				 * replay meets its record (or passes it).  This runs before
+				 * the replay position below is published (and before the
+				 * walreceiver reports it), so a replay position at or past a
+				 * restore-point record implies that the record's anchor is
+				 * registered on this node or was refused for good.
+				 */
+				AnchorSnapshotExportOnRestorePoint(xlogreader);
 
 				/*
 				 * Update lastReplayedEndRecPtr after this record has been
@@ -8324,6 +8348,12 @@ StartupXLOG(void)
 	 * commit timestamp.
 	 */
 	CompleteCommitTsInitialization();
+
+	/*
+	 * Anchor snapshots belong to recovery: clear the registry and the
+	 * directory before other processes can observe RECOVERY_STATE_DONE.
+	 */
+	AnchorSnapshotClearAll();
 
 	/*
 	 * All done with end-of-recovery actions.

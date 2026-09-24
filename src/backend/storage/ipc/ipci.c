@@ -16,6 +16,7 @@
 
 #include <signal.h>
 
+#include "access/anchorsnapshot.h"
 #include "access/clog.h"
 #include "access/commit_ts.h"
 #include "access/heapam.h"
@@ -186,6 +187,7 @@ CreateSharedMemoryAndSemaphores(int port)
 		size = add_size(size, ApplyLauncherShmemSize());
 		size = add_size(size, FTSReplicationStatusShmemSize());
 		size = add_size(size, SnapMgrShmemSize());
+		size = add_size(size, AnchorRegistryShmemSize());
 		size = add_size(size, BTreeShmemSize());
 		size = add_size(size, SyncScanShmemSize());
 		size = add_size(size, AsyncShmemSize());
@@ -370,6 +372,7 @@ CreateSharedMemoryAndSemaphores(int port)
 	 * Set up other modules that need some shared memory space
 	 */
 	SnapMgrInit();
+	AnchorRegistryShmemInit();
 	BTreeShmemInit();
 	SyncScanShmemInit();
 	AsyncShmemInit();

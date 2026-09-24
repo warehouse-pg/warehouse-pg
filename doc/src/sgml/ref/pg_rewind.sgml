@@ -317,6 +317,7 @@ GRANT EXECUTE ON function pg_catalog.pg_read_binary_file(text, bigint, bigint, b
       the contents of the directories <filename>pg_dynshmem/</filename>,
       <filename>pg_notify/</filename>, <filename>pg_replslot/</filename>,
       <filename>pg_serial/</filename>, <filename>pg_snapshots/</filename>,
+      <filename>pg_anchor_snapshots/</filename>,
       <filename>pg_stat_tmp/</filename>, and
       <filename>pg_subtrans/</filename> are omitted from the data copied
       from the source cluster. Any file or directory beginning with
