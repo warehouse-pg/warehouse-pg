@@ -118,6 +118,14 @@ int gp_gxid_prefetch_num;
 
 #define GP_OPT_EXPLICT_BEGIN      						0x0020
 
+/*
+ * bit 7: the dispatched snapshot is an anchor snapshot of a hot standby
+ * (access/anchorsnapshot.h); the anchor's name follows the options in the
+ * serialized DtxContextInfo, and every executor installs its own node's
+ * anchor of that name.
+ */
+#define GP_OPT_ANCHORED_SNAPSHOT						0x0040
+
 /*=========================================================================
  * FUNCTIONS PROTOTYPES
  */
@@ -1222,6 +1230,22 @@ bool
 isMppTxOptions_ExplicitBegin(int txnOptions)
 {
 	return ((txnOptions & GP_OPT_EXPLICT_BEGIN) != 0);
+}
+
+/*
+ * isMppTxOptions_Anchored / mppTxOptions_SetAnchored:
+ * the anchored-snapshot discriminator of a dispatch (GP_OPT_ANCHORED_SNAPSHOT).
+ */
+bool
+isMppTxOptions_Anchored(int txnOptions)
+{
+	return ((txnOptions & GP_OPT_ANCHORED_SNAPSHOT) != 0);
+}
+
+int
+mppTxOptions_SetAnchored(int txnOptions)
+{
+	return txnOptions | GP_OPT_ANCHORED_SNAPSHOT;
 }
 
 /*=========================================================================

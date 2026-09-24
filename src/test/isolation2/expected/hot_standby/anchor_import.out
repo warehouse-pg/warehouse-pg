@@ -1,0 +1,1072 @@
+-- Anchor snapshot import on the standby coordinator.
+--
+-- A dispatch session on a hot standby in anchored mode
+-- (whpg_hot_standby_snapshot_mode = anchored; the server default is
+-- unanchored, a read replica sets anchored in its configuration file)
+-- installs, for every statement, the anchor
+-- snapshot named by whpg_hot_standby_anchor_name: its transaction snapshot
+-- is the node's xid snapshot at that restore point and its xmin is the
+-- anchor's.  This test drives publication through gpconfig + reload, as
+-- anchor_export does, and observes the installed snapshot on the
+-- coordinator itself: txid_current_snapshot() shows the snapshot's xmin,
+-- pg_stat_activity.backend_xmin the published xmin, and a scan of pg_class
+-- (executed on the coordinator with the transaction snapshot) shows which
+-- catalog rows the anchor sees while the catalog snapshot, unanchored, still
+-- resolves every name.  Carrying the anchor to the segments is a later
+-- change; nothing here depends on segment data.
+--
+-- The other cases of the suite read at the replay position, the server
+-- default; anchored sessions here SET the mode.  A backend applies a
+-- pending reload before it runs the next command it reads, so the first
+-- statement a session runs after gpstop -u already sees the new anchor
+-- name; the startup process applies it at its next replayed record, which
+-- the barrier insert after every publication provides.
+--
+-- Session roles: 1: primary QD; -1S: standby QD (dispatch); -1M: standby
+-- QD utility.
+
+-- start_matchsubs
+-- m/\(seg\d+ [0-9.]+:\d+ pid=\d+\)/
+-- s/\(seg\d+ [0-9.]+:\d+ pid=\d+\)/(segN IP:PORT pid=PID)/
+-- end_matchsubs
+
+1: create table hs_imp_t(a int) distributed by (a);
+CREATE TABLE
+1: insert into hs_imp_t select generate_series(1, 10);
+INSERT 0 10
+
+----------------------------------------------------------------
+-- No published anchor: anchored statements fail, unanchored ones work
+----------------------------------------------------------------
+-1S: show whpg_hot_standby_snapshot_mode;
+ whpg_hot_standby_snapshot_mode 
+--------------------------------
+ unanchored                     
+(1 row)
+-1S: select count(*) from hs_imp_t;
+ count 
+-------
+ 10    
+(1 row)
+-1S: set whpg_hot_standby_snapshot_mode = anchored;
+SET
+-1S: select count(*) from hs_imp_t;
+ERROR:  anchored read requires a published anchor snapshot
+DETAIL:  whpg_hot_standby_anchor_name is not set on this hot standby.
+HINT:  Wait for the next publication, or SET whpg_hot_standby_snapshot_mode = unanchored for this session.
+-- SET and SHOW take no snapshot, so a session can always switch mode
+-1S: show whpg_hot_standby_snapshot_mode;
+ whpg_hot_standby_snapshot_mode 
+--------------------------------
+ anchored                       
+(1 row)
+-1S: set whpg_hot_standby_snapshot_mode = unanchored;
+SET
+-1S: select count(*) from hs_imp_t;
+ count 
+-------
+ 10    
+(1 row)
+-1S: set whpg_hot_standby_snapshot_mode = anchored;
+SET
+-- the refusal carries SQLSTATE 55000 (the mode set through PGOPTIONS); a
+-- utility-mode session is not anchored
+!\retcode sport=$(psql -d postgres -Atc "select port from gp_segment_configuration where content = -1 and role = 'm'"); PGOPTIONS='-c whpg_hot_standby_snapshot_mode=anchored' psql -X -v VERBOSITY=verbose -p "$sport" -d postgres -Atc 'select 1' 2>&1 | grep -q '^ERROR:  55000: anchored read requires a published anchor snapshot$' && PGOPTIONS='-c gp_role=utility -c whpg_hot_standby_snapshot_mode=anchored' psql -X -p "$sport" -d postgres -Atc 'select 1' | grep -q '^1$';
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+
+----------------------------------------------------------------
+-- A published anchor is installed: xmin, published xmin, and the cut
+----------------------------------------------------------------
+1: select count(*) from gp_create_restore_point('hs_imp_a');
+ count 
+-------
+ 4     
+(1 row)
+1: insert into hs_imp_t select generate_series(11, 20);
+INSERT 0 10
+1: create table hs_imp_after_a(a int) distributed by (a);
+CREATE TABLE
+1: insert into hs_imp_t select generate_series(21, 30);
+INSERT 0 10
+!\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_imp_a --skipvalidation;
+-- start_ignore
+20260924:15:43:39:1154196 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_a --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -u;
+-- start_ignore
+20260924:15:43:39:1154243 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20260924:15:43:39:1154243 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260924:15:43:39:1154243 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260924:15:43:39:1154243 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260924:15:43:39:1154243 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260924:15:43:39:1154243 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+
+-- end_ignore
+(exited with code 0)
+1: insert into hs_imp_t select generate_series(31, 40);
+INSERT 0 10
+-1Sq: ... <quitting>
+-1S: set whpg_hot_standby_snapshot_mode = anchored;
+SET
+-1S: select rp_name from gp_toolkit.whpg_anchor_snapshots() order by 1;
+ rp_name  
+----------
+ hs_imp_a 
+(1 row)
+-1S: select txid_snapshot_xmin(txid_current_snapshot()) = (select xmin::text::bigint from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_imp_a') as snapshot_at_anchor;
+ snapshot_at_anchor 
+--------------------
+ t                  
+(1 row)
+-1S: select backend_xmin::text::bigint = (select xmin::text::bigint from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_imp_a') as xmin_published from pg_stat_activity where pid = pg_backend_pid();
+ xmin_published 
+----------------
+ t              
+(1 row)
+-- table data as of the anchor: the pg_class row created after it is not
+-- visible to the transaction snapshot ...
+-1S: select count(*) from pg_class where relname = 'hs_imp_after_a';
+ count 
+-------
+ 0     
+(1 row)
+-- ... while the catalog snapshot, taken at the replay position, resolves it
+-1S: select 'hs_imp_after_a'::regclass::text;
+ text           
+----------------
+ hs_imp_after_a 
+(1 row)
+-- an unanchored statement of the same session reads at the replay position
+-1S: set whpg_hot_standby_snapshot_mode = unanchored;
+SET
+-1S: select count(*) from pg_class where relname = 'hs_imp_after_a';
+ count 
+-------
+ 1     
+(1 row)
+-1S: set whpg_hot_standby_snapshot_mode = anchored;
+SET
+-- a utility-mode session is never anchored, whatever the mode says
+-1M: set whpg_hot_standby_snapshot_mode = anchored;
+SET
+-1M: select count(*) from pg_class where relname = 'hs_imp_after_a';
+ count 
+-------
+ 1     
+(1 row)
+-1M: select rp_name from gp_toolkit.whpg_anchor_snapshots() order by 1;
+ rp_name  
+----------
+ hs_imp_a 
+(1 row)
+
+----------------------------------------------------------------
+-- READ COMMITTED follows the publication at its next statement
+----------------------------------------------------------------
+1: select count(*) from gp_create_restore_point('hs_imp_b');
+ count 
+-------
+ 4     
+(1 row)
+1: insert into hs_imp_t select generate_series(41, 50);
+INSERT 0 10
+1: create table hs_imp_after_b(a int) distributed by (a);
+CREATE TABLE
+1: insert into hs_imp_t select generate_series(51, 60);
+INSERT 0 10
+!\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_imp_b --skipvalidation;
+-- start_ignore
+20260924:15:43:40:1154279 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_b --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -u;
+-- start_ignore
+20260924:15:43:40:1154326 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20260924:15:43:40:1154326 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260924:15:43:40:1154326 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260924:15:43:40:1154326 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260924:15:43:40:1154326 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260924:15:43:40:1154326 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+
+-- end_ignore
+(exited with code 0)
+1: insert into hs_imp_t select generate_series(61, 70);
+INSERT 0 10
+-- the publication retired hs_imp_a; the session now reads at hs_imp_b
+-1S: select rp_name from gp_toolkit.whpg_anchor_snapshots() order by 1;
+ rp_name  
+----------
+ hs_imp_b 
+(1 row)
+-1S: select relname from pg_class where relname like 'hs_imp_after_%' order by 1;
+ relname        
+----------------
+ hs_imp_after_a 
+(1 row)
+-1S: select txid_snapshot_xmin(txid_current_snapshot()) = (select xmin::text::bigint from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_imp_b') as snapshot_at_anchor;
+ snapshot_at_anchor 
+--------------------
+ t                  
+(1 row)
+
+----------------------------------------------------------------
+-- REPEATABLE READ pins the anchor of its first snapshot
+----------------------------------------------------------------
+-1S: begin isolation level repeatable read;
+BEGIN
+-1S: select txid_snapshot_xmin(txid_current_snapshot()) = (select xmin::text::bigint from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_imp_b') as snapshot_at_anchor;
+ snapshot_at_anchor 
+--------------------
+ t                  
+(1 row)
+1: select count(*) from gp_create_restore_point('hs_imp_c');
+ count 
+-------
+ 4     
+(1 row)
+1: insert into hs_imp_t select generate_series(71, 80);
+INSERT 0 10
+1: create table hs_imp_after_c(a int) distributed by (a);
+CREATE TABLE
+1: insert into hs_imp_t select generate_series(81, 90);
+INSERT 0 10
+!\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_imp_c --skipvalidation;
+-- start_ignore
+20260924:15:43:40:1154349 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_c --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -u;
+-- start_ignore
+20260924:15:43:40:1154396 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20260924:15:43:40:1154396 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260924:15:43:40:1154396 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260924:15:43:40:1154396 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260924:15:43:40:1154396 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260924:15:43:40:1154396 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+
+-- end_ignore
+(exited with code 0)
+1: insert into hs_imp_t select generate_series(91, 100);
+INSERT 0 10
+-- publishing hs_imp_c retired hs_imp_b, which this transaction pinned
+-1S: select count(*) from hs_imp_t;
+ERROR:  anchor snapshot "hs_imp_b" pinned by this transaction is no longer registered
+DETAIL:  A later publication retired the anchor, it was evicted or invalidated, or recovery has ended on this node.
+HINT:  Roll back and start a new transaction.
+-1S: rollback;
+ROLLBACK
+-1S: begin isolation level repeatable read;
+BEGIN
+-1S: select txid_snapshot_xmin(txid_current_snapshot()) = (select xmin::text::bigint from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_imp_c') as snapshot_at_anchor;
+ snapshot_at_anchor 
+--------------------
+ t                  
+(1 row)
+-1S: select relname from pg_class where relname like 'hs_imp_after_%' order by 1;
+ relname        
+----------------
+ hs_imp_after_a 
+ hs_imp_after_b 
+(2 rows)
+-1S: commit;
+COMMIT
+
+-- the pin does not follow the GUC: while the transaction runs, the name is
+-- pointed at an anchor this node never registered; the pinned anchor keeps
+-- serving, and only the next transaction fails
+1: select count(*) from gp_create_restore_point('hs_imp_d');
+ count 
+-------
+ 4     
+(1 row)
+1: insert into hs_imp_t select generate_series(101, 110);
+INSERT 0 10
+1: create table hs_imp_after_d(a int) distributed by (a);
+CREATE TABLE
+1: insert into hs_imp_t select generate_series(111, 120);
+INSERT 0 10
+!\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_imp_d --skipvalidation;
+-- start_ignore
+20260924:15:43:40:1154419 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_d --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -u;
+-- start_ignore
+20260924:15:43:40:1154466 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20260924:15:43:40:1154466 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260924:15:43:40:1154466 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260924:15:43:40:1154466 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260924:15:43:40:1154466 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260924:15:43:40:1154466 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+
+-- end_ignore
+(exited with code 0)
+1: insert into hs_imp_t select generate_series(121, 130);
+INSERT 0 10
+-1S: begin isolation level repeatable read;
+BEGIN
+-1S: select txid_snapshot_xmin(txid_current_snapshot()) = (select xmin::text::bigint from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_imp_d') as snapshot_at_anchor;
+ snapshot_at_anchor 
+--------------------
+ t                  
+(1 row)
+!\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_imp_unknown --skipvalidation;
+-- start_ignore
+20260924:15:43:40:1154489 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_unknown --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -u;
+-- start_ignore
+20260924:15:43:40:1154536 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20260924:15:43:40:1154536 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260924:15:43:40:1154536 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260924:15:43:40:1154536 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260924:15:43:40:1154536 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260924:15:43:40:1154536 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+
+-- end_ignore
+(exited with code 0)
+1: insert into hs_imp_t select generate_series(131, 140);
+INSERT 0 10
+-1S: select relname from pg_class where relname like 'hs_imp_after_%' order by 1;
+ relname        
+----------------
+ hs_imp_after_a 
+ hs_imp_after_b 
+ hs_imp_after_c 
+(3 rows)
+-1S: select txid_snapshot_xmin(txid_current_snapshot()) = (select xmin::text::bigint from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_imp_d') as snapshot_at_anchor;
+ snapshot_at_anchor 
+--------------------
+ t                  
+(1 row)
+-1S: commit;
+COMMIT
+-1S: select count(*) from hs_imp_t;
+ERROR:  anchor snapshot "hs_imp_unknown" is not registered on this node
+DETAIL:  The restore point of that name has not been exported here, is pending replay confirmation after a restart, or the anchor has been retired, evicted or invalidated.
+HINT:  Wait for the next publication, or SET whpg_hot_standby_snapshot_mode = unanchored for this session.
+-- an unknown name retired nothing: hs_imp_d is still registered
+-1M: select rp_name from gp_toolkit.whpg_anchor_snapshots() order by 1;
+ rp_name  
+----------
+ hs_imp_d 
+(1 row)
+!\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_imp_d --skipvalidation;
+-- start_ignore
+20260924:15:43:40:1154559 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_d --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -u;
+-- start_ignore
+20260924:15:43:40:1154606 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20260924:15:43:40:1154606 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260924:15:43:40:1154606 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260924:15:43:40:1154606 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260924:15:43:40:1154606 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260924:15:43:40:1154606 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+
+-- end_ignore
+(exited with code 0)
+1: insert into hs_imp_t select generate_series(141, 150);
+INSERT 0 10
+-1S: select txid_snapshot_xmin(txid_current_snapshot()) = (select xmin::text::bigint from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_imp_d') as snapshot_at_anchor;
+ snapshot_at_anchor 
+--------------------
+ t                  
+(1 row)
+
+----------------------------------------------------------------
+-- A cursor keeps the anchor it was opened on across a publication
+----------------------------------------------------------------
+-1S: begin;
+BEGIN
+-1S: declare hs_imp_cur cursor for select relname from pg_class where relname like 'hs_imp_after_%' order by 1;
+DECLARE CURSOR
+1: select count(*) from gp_create_restore_point('hs_imp_e');
+ count 
+-------
+ 4     
+(1 row)
+1: insert into hs_imp_t select generate_series(151, 160);
+INSERT 0 10
+1: create table hs_imp_after_e(a int) distributed by (a);
+CREATE TABLE
+1: insert into hs_imp_t select generate_series(161, 170);
+INSERT 0 10
+!\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_imp_e --skipvalidation;
+-- start_ignore
+20260924:15:43:40:1154629 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_e --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -u;
+-- start_ignore
+20260924:15:43:40:1154676 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20260924:15:43:40:1154676 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260924:15:43:40:1154676 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260924:15:43:40:1154676 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260924:15:43:40:1154676 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260924:15:43:40:1154676 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+
+-- end_ignore
+(exited with code 0)
+1: insert into hs_imp_t select generate_series(171, 180);
+INSERT 0 10
+-1S: fetch all from hs_imp_cur;
+ relname        
+----------------
+ hs_imp_after_a 
+ hs_imp_after_b 
+ hs_imp_after_c 
+(3 rows)
+-1S: commit;
+COMMIT
+-1S: select relname from pg_class where relname like 'hs_imp_after_%' order by 1;
+ relname        
+----------------
+ hs_imp_after_a 
+ hs_imp_after_b 
+ hs_imp_after_c 
+ hs_imp_after_d 
+(4 rows)
+
+----------------------------------------------------------------
+-- Isolation levels: an explicit SERIALIZABLE request is refused on a hot
+-- standby (upstream behaviour); the serializable default falls back to
+-- REPEATABLE READ and is anchored like any other transaction
+----------------------------------------------------------------
+-1S: begin isolation level serializable;
+ERROR:  cannot use serializable mode in a hot standby
+HINT:  You can use REPEATABLE READ instead.
+-1S: rollback;
+ROLLBACK
+-1S: set default_transaction_isolation = serializable;
+SET
+-1S: begin;
+BEGIN
+-1S: show transaction_isolation;
+ transaction_isolation 
+-----------------------
+ repeatable read       
+(1 row)
+-1S: select txid_snapshot_xmin(txid_current_snapshot()) = (select xmin::text::bigint from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_imp_e') as snapshot_at_anchor;
+ snapshot_at_anchor 
+--------------------
+ t                  
+(1 row)
+-1S: commit;
+COMMIT
+-1S: reset default_transaction_isolation;
+RESET
+
+-- an anchored transaction cannot import another snapshot
+-1S: begin isolation level repeatable read;
+BEGIN
+-1S: set transaction snapshot '00000003-0000000A-1';
+ERROR:  cannot import a snapshot in anchored snapshot mode
+HINT:  SET whpg_hot_standby_snapshot_mode = unanchored to import a snapshot.
+-1S: rollback;
+ROLLBACK
+
+----------------------------------------------------------------
+-- A registered anchor whose file is gone is refused, not read around
+----------------------------------------------------------------
+!\retcode sdir=$(psql -d postgres -Atc "select datadir from gp_segment_configuration where content = -1 and role = 'm'"); rm "$sdir/pg_anchor_snapshots/hs_imp_e";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-- a new session reads the file (a session that already installed this
+-- anchor keeps its copy)
+-1Sq: ... <quitting>
+-1S: set whpg_hot_standby_snapshot_mode = anchored;
+SET
+-1S: select count(*) from hs_imp_t;
+ERROR:  anchor snapshot "hs_imp_e" could not be read: could not open anchor snapshot file "pg_anchor_snapshots/hs_imp_e": No such file or directory
+-- the registry still lists it: the refusal is the reader's, not a retirement
+-1M: select rp_name from gp_toolkit.whpg_anchor_snapshots() order by 1;
+ rp_name  
+----------
+ hs_imp_e 
+(1 row)
+1: select count(*) from gp_create_restore_point('hs_imp_f');
+ count 
+-------
+ 4     
+(1 row)
+1: insert into hs_imp_t select generate_series(181, 190);
+INSERT 0 10
+1: create table hs_imp_after_f(a int) distributed by (a);
+CREATE TABLE
+!\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_imp_f --skipvalidation;
+-- start_ignore
+20260924:15:43:40:1154713 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_f --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -u;
+-- start_ignore
+20260924:15:43:40:1154760 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20260924:15:43:40:1154760 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260924:15:43:40:1154760 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260924:15:43:40:1154760 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260924:15:43:40:1154760 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260924:15:43:40:1154760 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+
+-- end_ignore
+(exited with code 0)
+1: insert into hs_imp_t select generate_series(191, 200);
+INSERT 0 10
+-1S: select txid_snapshot_xmin(txid_current_snapshot()) = (select xmin::text::bigint from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_imp_f') as snapshot_at_anchor;
+ snapshot_at_anchor 
+--------------------
+ t                  
+(1 row)
+-1S: select relname from pg_class where relname like 'hs_imp_after_%' order by 1;
+ relname        
+----------------
+ hs_imp_after_a 
+ hs_imp_after_b 
+ hs_imp_after_c 
+ hs_imp_after_d 
+ hs_imp_after_e 
+(5 rows)
+
+----------------------------------------------------------------
+-- An overflowed anchor keeps its xid list: a transaction with more than 64
+-- subtransactions in flight at the restore point is invisible to the
+-- anchor after it commits (its top-level xid sits in the anchor's list and
+-- the overflow flag only routes its subtransactions through pg_subtrans)
+----------------------------------------------------------------
+-- 70 catalog rows written by 70 subtransactions of one open transaction:
+-- past 64 the primary logs an xid-assignment record, which makes the
+-- standby drop those subtransactions from its known-xid set (pg_subtrans
+-- keeps their parent) and mark the set as overflowed.  A catalog-writing
+-- transaction that commits afterwards (a coordinator xid: plain inserts
+-- assign none there) moves the standby's xmax past the open one, so the
+-- anchor exported next has the open transaction below its xmax: its
+-- top-level xid and the unreported tail in the list, sof:1
+2: begin;
+BEGIN
+2: do $$ begin for i in 1..70 loop begin execute format('create table hs_imp_sub_%s(a int) distributed by (a)', i); exception when others then raise; end; end loop; end $$;
+DO
+1: create table hs_imp_sof_mover(a int) distributed by (a);
+CREATE TABLE
+1: insert into hs_imp_t select generate_series(241, 250);
+INSERT 0 10
+1: select count(*) from gp_create_restore_point('hs_imp_sof');
+ count 
+-------
+ 4     
+(1 row)
+1: insert into hs_imp_t select generate_series(251, 260);
+INSERT 0 10
+!\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_imp_sof --skipvalidation;
+-- start_ignore
+20260924:15:43:41:1154792 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_sof --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -u;
+-- start_ignore
+20260924:15:43:41:1154839 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20260924:15:43:41:1154839 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260924:15:43:41:1154839 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260924:15:43:41:1154839 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260924:15:43:41:1154839 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260924:15:43:41:1154839 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+
+-- end_ignore
+(exited with code 0)
+1: insert into hs_imp_t select generate_series(261, 270);
+INSERT 0 10
+!\retcode sdir="$COORDINATOR_DATA_DIRECTORY/../../standby"; f="$sdir/pg_anchor_snapshots/hs_imp_sof"; grep -q '^sof:1$' "$f" && test "$(grep -c '^sxp:' "$f")" -ge 1 && test "$(grep -c '^sxp:' "$f")" -lt 64;
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-1S: select txid_snapshot_xmin(txid_current_snapshot()) = (select xmin::text::bigint from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_imp_sof') as snapshot_at_anchor;
+ snapshot_at_anchor 
+--------------------
+ t                  
+(1 row)
+-- in flight at the anchor: not visible
+-1S: select count(*) from pg_class where relname like 'hs_imp_sub_%';
+ count 
+-------
+ 0     
+(1 row)
+2: commit;
+COMMIT
+1: insert into hs_imp_t select generate_series(271, 280);
+INSERT 0 10
+-- committed after the anchor: still not visible to the anchor, visible at
+-- the replay position
+-1S: select count(*) from pg_class where relname like 'hs_imp_sub_%';
+ count 
+-------
+ 0     
+(1 row)
+-1S: set whpg_hot_standby_snapshot_mode = unanchored;
+SET
+-1S: select count(*) from pg_class where relname like 'hs_imp_sub_%';
+ count 
+-------
+ 70    
+(1 row)
+-1S: set whpg_hot_standby_snapshot_mode = anchored;
+SET
+2q: ... <quitting>
+
+----------------------------------------------------------------
+-- An overflowed anchor is not re-registered after a restart when its
+-- transactions were still running at the start checkpoint: the start
+-- zeroes the pg_subtrans pages from that checkpoint's oldest active xid on,
+-- and the assignment records that held the subtransactions' parents lie
+-- before the redo start point.  Registering it would show a committed
+-- transaction's subtransaction rows while hiding its top-level rows.
+----------------------------------------------------------------
+2: begin;
+BEGIN
+2: do $$ begin for i in 1..70 loop begin execute format('create table hs_imp_sub2_%s(a int) distributed by (a)', i); exception when others then raise; end; end loop; end $$;
+DO
+1: create table hs_imp_sof2_mover(a int) distributed by (a);
+CREATE TABLE
+1: insert into hs_imp_t select generate_series(201, 210);
+INSERT 0 10
+1: select count(*) from gp_create_restore_point('hs_imp_sof2');
+ count 
+-------
+ 4     
+(1 row)
+1: insert into hs_imp_t select generate_series(211, 220);
+INSERT 0 10
+-- a checkpoint on the primary while the transaction runs records it as the
+-- oldest active transaction; a checkpoint on the standby performs the
+-- restartpoint at that record, so the next start's redo begins there
+1: checkpoint;
+CHECKPOINT
+1: insert into hs_imp_t select generate_series(221, 230);
+INSERT 0 10
+-1M: checkpoint;
+CHECKPOINT
+2: commit;
+COMMIT
+1: insert into hs_imp_t select generate_series(231, 240);
+INSERT 0 10
+!\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_imp_sof2 --skipvalidation;
+-- start_ignore
+20260924:15:43:41:1154884 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_sof2 --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -u;
+-- start_ignore
+20260924:15:43:41:1154931 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20260924:15:43:41:1154931 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260924:15:43:41:1154931 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260924:15:43:41:1154931 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260924:15:43:41:1154931 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260924:15:43:41:1154931 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+
+-- end_ignore
+(exited with code 0)
+1: insert into hs_imp_t select generate_series(241, 250);
+INSERT 0 10
+-1S: select txid_snapshot_xmin(txid_current_snapshot()) = (select xmin::text::bigint from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_imp_sof2') as snapshot_at_anchor;
+ snapshot_at_anchor 
+--------------------
+ t                  
+(1 row)
+-1S: select count(*) from pg_class where relname like 'hs_imp_sub2_%';
+ count 
+-------
+ 0     
+(1 row)
+2q: ... <quitting>
+-1Sq: ... <quitting>
+-1Mq: ... <quitting>
+!\retcode pg_ctl restart -W -m immediate -D "$COORDINATOR_DATA_DIRECTORY/../../standby"; sport=$(psql -d postgres -Atc "select port from gp_segment_configuration where content = -1 and role = 'm'"); for i in $(seq 1 120); do PGOPTIONS='-c gp_role=utility' psql -p "$sport" -d postgres -Atc 'select pg_is_in_recovery()' 2> /dev/null | grep -q t && break; sleep 1; done; PGOPTIONS='-c gp_role=utility' psql -p "$sport" -d postgres -Atc 'select pg_is_in_recovery()';
+-- start_ignore
+waiting for server to shut down.... done
+server stopped
+server starting
+2026-09-24 15:43:41.579743 CST,,,p1154956,th-1986614304,,,,0,,,seg-1,,,,,"LOG","00000","starting PostgreSQL 12.12 (Greenplum Database 7.0.0-beta.0 build dev) on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14), 64-bit",,,,,,,,"PostmasterMain","postmaster.c",1242,
+2026-09-24 15:43:41.579987 CST,,,p1154956,th-1986614304,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv4 address ""0.0.0.0"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
+2026-09-24 15:43:41.580051 CST,,,p1154956,th-1986614304,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv6 address ""::"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
+2026-09-24 15:43:41.580171 CST,,,p1154956,th-1986614304,,,,0,,,seg-1,,,,,"LOG","00000","listening on Unix socket ""/tmp/.s.PGSQL.7001""",,,,,,,,"StreamServerPort","pqcomm.c",634,
+2026-09-24 15:43:41.590578 CST,,,p1154956,th-1986614304,,,,0,,,seg-1,,,,,"LOG","00000","redirecting log output to logging collector process",,"Future log output will appear in directory ""log"".",,,,,,"SysLogger_Start","syslogger.c",920,
+t
+
+-- end_ignore
+(exited with code 0)
+-- the anchor was refused at start and its file swept; anchored statements
+-- fail closed until the next publication
+-1M: select count(*) from gp_toolkit.whpg_anchor_snapshots();
+ count 
+-------
+ 0     
+(1 row)
+!\retcode sdir="$COORDINATOR_DATA_DIRECTORY/../../standby"; test ! -e "$sdir/pg_anchor_snapshots/hs_imp_sof2" && grep -q 'anchor snapshot for restore point ..hs_imp_sof2.. not re-registered: its overflowed transactions reach the pg_subtrans page of the start checkpoint' "$sdir"/log/*.csv;
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-1S: set whpg_hot_standby_snapshot_mode = anchored;
+SET
+-1S: select count(*) from hs_imp_t;
+ERROR:  anchor snapshot "hs_imp_sof2" is not registered on this node
+DETAIL:  The restore point of that name has not been exported here, is pending replay confirmation after a restart, or the anchor has been retired, evicted or invalidated.
+HINT:  Wait for the next publication, or SET whpg_hot_standby_snapshot_mode = unanchored for this session.
+-1S: set whpg_hot_standby_snapshot_mode = unanchored;
+SET
+-1S: select count(*) from pg_class where relname like 'hs_imp_sub2_%';
+ count 
+-------
+ 70    
+(1 row)
+-1S: set whpg_hot_standby_snapshot_mode = anchored;
+SET
+
+----------------------------------------------------------------
+-- After a crash the published anchor is pending until replay confirms its
+-- record; anchored statements fail meanwhile and never read a data state
+-- older than the anchor
+----------------------------------------------------------------
+-- The pause at hs_imp_pause lands only if the standby has not reached
+-- consistency past it when the record is met again: a clean restart first
+-- (its shutdown restartpoint writes every dirty page back, so no later
+-- page write can move minRecoveryPoint), then only restore points, inserts
+-- and reads until the crash.  The xid-assigning txid_current() moves the
+-- standby's xmax past hs_imp_g without dirtying a page, so an unanchored
+-- snapshot differs from the anchor afterwards.
+-1Sq: ... <quitting>
+-1Mq: ... <quitting>
+-- The restarted standby exports nothing until it has replayed a running-xacts
+-- record (its snapshot is incomplete before that, and a utility connection is
+-- admitted as soon as the walreceiver runs, so a connection proves nothing):
+-- a checkpoint on the primary writes that record, the barrier waits for its
+-- replay, and the standby's own checkpoint places the restartpoint there,
+-- before the two restore points below
+!\retcode pg_ctl restart -w -m fast -D "$COORDINATOR_DATA_DIRECTORY/../../standby";
+-- start_ignore
+waiting for server to shut down.... done
+server stopped
+waiting for server to start....2026-09-24 15:43:42.769093 CST,,,p1154999,th-1359524896,,,,0,,,seg-1,,,,,"LOG","00000","starting PostgreSQL 12.12 (Greenplum Database 7.0.0-beta.0 build dev) on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14), 64-bit",,,,,,,,"PostmasterMain","postmaster.c",1242,
+2026-09-24 15:43:42.769388 CST,,,p1154999,th-1359524896,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv4 address ""0.0.0.0"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
+2026-09-24 15:43:42.769449 CST,,,p1154999,th-1359524896,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv6 address ""::"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
+2026-09-24 15:43:42.769597 CST,,,p1154999,th-1359524896,,,,0,,,seg-1,,,,,"LOG","00000","listening on Unix socket ""/tmp/.s.PGSQL.7001""",,,,,,,,"StreamServerPort","pqcomm.c",634,
+2026-09-24 15:43:42.779519 CST,,,p1154999,th-1359524896,,,,0,,,seg-1,,,,,"LOG","00000","redirecting log output to logging collector process",,"Future log output will appear in directory ""log"".",,,,,,"SysLogger_Start","syslogger.c",920,
+ done
+server started
+
+-- end_ignore
+(exited with code 0)
+1: checkpoint;
+CHECKPOINT
+1: insert into hs_imp_t select generate_series(301, 310);
+INSERT 0 10
+-1M: checkpoint;
+CHECKPOINT
+1: select count(*) from gp_create_restore_point('hs_imp_pause');
+ count 
+-------
+ 4     
+(1 row)
+1: insert into hs_imp_t select generate_series(251, 260);
+INSERT 0 10
+1: select count(*) from gp_create_restore_point('hs_imp_g');
+ count 
+-------
+ 4     
+(1 row)
+1: insert into hs_imp_t select generate_series(261, 270);
+INSERT 0 10
+1: select txid_current() is not null;
+ ?column? 
+----------
+ t        
+(1 row)
+1: insert into hs_imp_t select generate_series(271, 280);
+INSERT 0 10
+!\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_imp_g --skipvalidation;
+-- start_ignore
+20260924:15:43:42:1155011 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_g --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -u;
+-- start_ignore
+20260924:15:43:42:1155058 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20260924:15:43:42:1155058 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260924:15:43:42:1155058 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260924:15:43:42:1155058 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260924:15:43:43:1155058 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260924:15:43:43:1155058 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+
+-- end_ignore
+(exited with code 0)
+1: insert into hs_imp_t select generate_series(281, 290);
+INSERT 0 10
+-1S: set whpg_hot_standby_snapshot_mode = anchored;
+SET
+-1S: select txid_snapshot_xmin(txid_current_snapshot()) = (select xmin::text::bigint from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_imp_g') as snapshot_at_anchor;
+ snapshot_at_anchor 
+--------------------
+ t                  
+(1 row)
+-1S: set whpg_hot_standby_snapshot_mode = unanchored;
+SET
+-1S: select txid_snapshot_xmin(txid_current_snapshot()) > (select xmin::text::bigint from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_imp_g') as unanchored_past_anchor;
+ unanchored_past_anchor 
+------------------------
+ t                      
+(1 row)
+-1S: set whpg_hot_standby_snapshot_mode = anchored;
+SET
+-1Sq: ... <quitting>
+-1Mq: ... <quitting>
+!\retcode echo "gp_pause_on_restore_point_replay = 'hs_imp_pause'" >> "$COORDINATOR_DATA_DIRECTORY/../../standby/postgresql.conf";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-- restart (not stop + start) keeps the postmaster options gpstart gave it;
+-- -W because a paused startup process never asks for the walreceiver pg_ctl
+-- would wait for; hot standby opens at once, so wait for the pause itself
+!\retcode pg_ctl restart -W -m immediate -D "$COORDINATOR_DATA_DIRECTORY/../../standby"; sport=$(psql -d postgres -Atc "select port from gp_segment_configuration where content = -1 and role = 'm'"); for i in $(seq 1 60); do PGOPTIONS='-c gp_role=utility' psql -p "$sport" -d postgres -Atc 'select pg_is_wal_replay_paused()' 2> /dev/null | grep -q t && break; sleep 1; done; PGOPTIONS='-c gp_role=utility' psql -p "$sport" -d postgres -Atc 'select pg_is_wal_replay_paused()';
+-- start_ignore
+waiting for server to shut down.... done
+server stopped
+server starting
+2026-09-24 15:43:43.157108 CST,,,p1155094,th-1172952096,,,,0,,,seg-1,,,,,"LOG","00000","starting PostgreSQL 12.12 (Greenplum Database 7.0.0-beta.0 build dev) on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14), 64-bit",,,,,,,,"PostmasterMain","postmaster.c",1242,
+2026-09-24 15:43:43.157298 CST,,,p1155094,th-1172952096,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv4 address ""0.0.0.0"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
+2026-09-24 15:43:43.157351 CST,,,p1155094,th-1172952096,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv6 address ""::"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
+2026-09-24 15:43:43.157458 CST,,,p1155094,th-1172952096,,,,0,,,seg-1,,,,,"LOG","00000","listening on Unix socket ""/tmp/.s.PGSQL.7001""",,,,,,,,"StreamServerPort","pqcomm.c",634,
+2026-09-24 15:43:43.169131 CST,,,p1155094,th-1172952096,,,,0,,,seg-1,,,,,"LOG","00000","redirecting log output to logging collector process",,"Future log output will appear in directory ""log"".",,,,,,"SysLogger_Start","syslogger.c",920,
+t
+
+-- end_ignore
+(exited with code 0)
+-- paused before hs_imp_g: the anchor is pending, not registered
+-1M: select pg_is_wal_replay_paused();
+ pg_is_wal_replay_paused 
+-------------------------
+ t                       
+(1 row)
+-1M: select count(*) from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_imp_g';
+ count 
+-------
+ 0     
+(1 row)
+!\retcode sdir="$COORDINATOR_DATA_DIRECTORY/../../standby"; test -s "$sdir/pg_anchor_snapshots/hs_imp_g" && grep -q 'anchor snapshot for restore point ..hs_imp_g.. held pending until replay reaches' "$sdir"/log/*.csv;
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-1S: set whpg_hot_standby_snapshot_mode = anchored;
+SET
+-1S: select count(*) from hs_imp_t;
+ERROR:  anchor snapshot "hs_imp_g" is not registered on this node
+DETAIL:  The restore point of that name has not been exported here, is pending replay confirmation after a restart, or the anchor has been retired, evicted or invalidated.
+HINT:  Wait for the next publication, or SET whpg_hot_standby_snapshot_mode = unanchored for this session.
+-- resume: replay meets the record, the anchor is registered from its file,
+-- and the same session's next statement reads it
+!\retcode sed -i '/hs_imp_pause/d' "$COORDINATOR_DATA_DIRECTORY/../../standby/postgresql.conf";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode pg_ctl reload -D "$COORDINATOR_DATA_DIRECTORY/../../standby";
+-- start_ignore
+server signaled
+
+-- end_ignore
+(exited with code 0)
+-1M: select pg_wal_replay_resume();
+ pg_wal_replay_resume 
+----------------------
+                      
+(1 row)
+1: insert into hs_imp_t select generate_series(291, 300);
+INSERT 0 10
+-1M: select rp_name from gp_toolkit.whpg_anchor_snapshots() order by 1;
+ rp_name  
+----------
+ hs_imp_g 
+(1 row)
+-1S: select txid_snapshot_xmin(txid_current_snapshot()) = (select xmin::text::bigint from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_imp_g') as snapshot_at_anchor;
+ snapshot_at_anchor 
+--------------------
+ t                  
+(1 row)
+-1S: select relname from pg_class where relname like 'hs_imp_after_%' order by 1;
+ relname        
+----------------
+ hs_imp_after_a 
+ hs_imp_after_b 
+ hs_imp_after_c 
+ hs_imp_after_d 
+ hs_imp_after_e 
+ hs_imp_after_f 
+(6 rows)
+
+----------------------------------------------------------------
+-- Outside recovery the anchored GUCs are inert: the primary, which carries
+-- the same anchor name in its configuration, takes ordinary snapshots
+----------------------------------------------------------------
+1: show whpg_hot_standby_anchor_name;
+ whpg_hot_standby_anchor_name 
+------------------------------
+ hs_imp_g                     
+(1 row)
+1: set whpg_hot_standby_snapshot_mode = anchored;
+SET
+1: select count(*) from hs_imp_t;
+ count 
+-------
+ 350   
+(1 row)
+1: select count(*) from pg_class where relname like 'hs_imp_after_%';
+ count 
+-------
+ 6     
+(1 row)
+1: reset whpg_hot_standby_snapshot_mode;
+RESET
+
+-- the GUC is known to a stopped data directory's binary (the capability
+-- probe of the tooling); the server default is unanchored
+!\retcode sdir=$(psql -d postgres -Atc "select datadir from gp_segment_configuration where content = -1 and role = 'm'"); test "$(postgres -C whpg_hot_standby_snapshot_mode -D "$sdir")" = unanchored;
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+
+----------------------------------------------------------------
+-- With the subsystem off (whpg_max_anchor_snapshots = 0) anchored mode is
+-- inert as well: today's snapshots, no error
+----------------------------------------------------------------
+1q: ... <quitting>
+-1Sq: ... <quitting>
+-1Mq: ... <quitting>
+!\retcode gpconfig -c whpg_max_anchor_snapshots -v 0 --skipvalidation;
+-- start_ignore
+20260924:15:43:44:1155137 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_max_anchor_snapshots -v 0 --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -ar;
+-- start_ignore
+20260924:15:43:44:1155184 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -ar
+20260924:15:43:44:1155184 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260924:15:43:44:1155184 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260924:15:43:44:1155184 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260924:15:43:44:1155184 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260924:15:43:44:1155184 gpstop:localhost:yjf-[INFO]:-Commencing Coordinator instance shutdown with mode='smart'
+20260924:15:43:44:1155184 gpstop:localhost:yjf-[INFO]:-Coordinator segment instance directory=/home/yjf/wpg-1790-wt/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
+20260924:15:43:44:1155184 gpstop:localhost:yjf-[INFO]:-Stopping coordinator segment and waiting for user connections to finish ...
+server shutting down
+20260924:15:43:45:1155184 gpstop:localhost:yjf-[INFO]:-Attempting forceful termination of any leftover coordinator process
+20260924:15:43:45:1155184 gpstop:localhost:yjf-[INFO]:-Terminating processes for segment /home/yjf/wpg-1790-wt/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
+20260924:15:43:45:1155184 gpstop:localhost:yjf-[INFO]:-Stopping coordinator standby host localhost.localdomain mode=smart
+20260924:15:43:45:1155184 gpstop:localhost:yjf-[INFO]:-Successfully shutdown standby process on localhost.localdomain
+20260924:15:43:45:1155184 gpstop:localhost:yjf-[INFO]:-Targeting dbid [2, 5, 3, 6, 4, 7] for shutdown
+20260924:15:43:45:1155184 gpstop:localhost:yjf-[INFO]:-Commencing parallel primary segment instance shutdown, please wait...
+20260924:15:43:45:1155184 gpstop:localhost:yjf-[INFO]:-0.00% of jobs completed
+20260924:15:43:48:1155184 gpstop:localhost:yjf-[INFO]:-100.00% of jobs completed
+20260924:15:43:48:1155184 gpstop:localhost:yjf-[INFO]:-Commencing parallel mirror segment instance shutdown, please wait...
+20260924:15:43:48:1155184 gpstop:localhost:yjf-[INFO]:-0.00% of jobs completed
+20260924:15:43:50:1155184 gpstop:localhost:yjf-[INFO]:-100.00% of jobs completed
+20260924:15:43:50:1155184 gpstop:localhost:yjf-[INFO]:-----------------------------------------------------
+20260924:15:43:50:1155184 gpstop:localhost:yjf-[INFO]:-   Segments stopped successfully      = 6
+20260924:15:43:50:1155184 gpstop:localhost:yjf-[INFO]:-   Segments with errors during stop   = 0
+20260924:15:43:50:1155184 gpstop:localhost:yjf-[INFO]:-----------------------------------------------------
+20260924:15:43:50:1155184 gpstop:localhost:yjf-[INFO]:-Successfully shutdown 6 of 6 segment instances 
+20260924:15:43:50:1155184 gpstop:localhost:yjf-[INFO]:-Database successfully shutdown with no errors reported
+20260924:15:43:50:1155184 gpstop:localhost:yjf-[INFO]:-Restarting System...
+
+-- end_ignore
+(exited with code 0)
+-1S: set whpg_hot_standby_snapshot_mode = anchored;
+SET
+-1S: select count(*) from gp_toolkit.whpg_anchor_snapshots();
+ count 
+-------
+ 0     
+(1 row)
+-1S: select count(*) from pg_class where relname like 'hs_imp_after_%';
+ count 
+-------
+ 6     
+(1 row)
+-1S: show whpg_hot_standby_anchor_name;
+ whpg_hot_standby_anchor_name 
+------------------------------
+ hs_imp_g                     
+(1 row)
+
+----------------------------------------------------------------
+-- Cleanup: default capacity, no published anchor
+----------------------------------------------------------------
+1: drop table hs_imp_t, hs_imp_after_a, hs_imp_after_b, hs_imp_after_c, hs_imp_after_d, hs_imp_after_e, hs_imp_after_f, hs_imp_sof_mover, hs_imp_sof2_mover;
+DROP TABLE
+1: do $$ begin for i in 1..70 loop execute format('drop table hs_imp_sub_%s', i); execute format('drop table hs_imp_sub2_%s', i); end loop; end $$;
+DO
+1q: ... <quitting>
+-1Sq: ... <quitting>
+!\retcode gpconfig -r whpg_max_anchor_snapshots --skipvalidation;
+-- start_ignore
+20260924:15:43:51:1157835 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-r whpg_max_anchor_snapshots --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpconfig -r whpg_hot_standby_anchor_name --skipvalidation;
+-- start_ignore
+20260924:15:43:51:1157882 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-r whpg_hot_standby_anchor_name --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -ar;
+-- start_ignore
+20260924:15:43:51:1157929 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -ar
+20260924:15:43:51:1157929 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260924:15:43:51:1157929 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260924:15:43:51:1157929 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260924:15:43:51:1157929 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260924:15:43:51:1157929 gpstop:localhost:yjf-[INFO]:-Commencing Coordinator instance shutdown with mode='smart'
+20260924:15:43:51:1157929 gpstop:localhost:yjf-[INFO]:-Coordinator segment instance directory=/home/yjf/wpg-1790-wt/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
+20260924:15:43:51:1157929 gpstop:localhost:yjf-[INFO]:-Stopping coordinator segment and waiting for user connections to finish ...
+server shutting down
+20260924:15:43:52:1157929 gpstop:localhost:yjf-[INFO]:-Attempting forceful termination of any leftover coordinator process
+20260924:15:43:52:1157929 gpstop:localhost:yjf-[INFO]:-Terminating processes for segment /home/yjf/wpg-1790-wt/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
+20260924:15:43:52:1157929 gpstop:localhost:yjf-[INFO]:-Stopping coordinator standby host localhost.localdomain mode=smart
+20260924:15:43:52:1157929 gpstop:localhost:yjf-[INFO]:-Successfully shutdown standby process on localhost.localdomain
+20260924:15:43:52:1157929 gpstop:localhost:yjf-[INFO]:-Targeting dbid [2, 5, 3, 6, 4, 7] for shutdown
+20260924:15:43:52:1157929 gpstop:localhost:yjf-[INFO]:-Commencing parallel primary segment instance shutdown, please wait...
+20260924:15:43:52:1157929 gpstop:localhost:yjf-[INFO]:-0.00% of jobs completed
+20260924:15:43:55:1157929 gpstop:localhost:yjf-[INFO]:-100.00% of jobs completed
+20260924:15:43:55:1157929 gpstop:localhost:yjf-[INFO]:-Commencing parallel mirror segment instance shutdown, please wait...
+20260924:15:43:55:1157929 gpstop:localhost:yjf-[INFO]:-0.00% of jobs completed
+20260924:15:43:57:1157929 gpstop:localhost:yjf-[INFO]:-100.00% of jobs completed
+20260924:15:43:57:1157929 gpstop:localhost:yjf-[INFO]:-----------------------------------------------------
+20260924:15:43:57:1157929 gpstop:localhost:yjf-[INFO]:-   Segments stopped successfully      = 6
+20260924:15:43:57:1157929 gpstop:localhost:yjf-[INFO]:-   Segments with errors during stop   = 0
+20260924:15:43:57:1157929 gpstop:localhost:yjf-[INFO]:-----------------------------------------------------
+20260924:15:43:57:1157929 gpstop:localhost:yjf-[INFO]:-Successfully shutdown 6 of 6 segment instances 
+20260924:15:43:57:1157929 gpstop:localhost:yjf-[INFO]:-Database successfully shutdown with no errors reported
+20260924:15:43:57:1157929 gpstop:localhost:yjf-[INFO]:-Restarting System...
+
+-- end_ignore
+(exited with code 0)

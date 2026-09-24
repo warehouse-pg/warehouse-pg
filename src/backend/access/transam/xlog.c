@@ -6591,6 +6591,8 @@ StartupXLOG(void)
 	TimeLineID	PrevTimeLineID;
 	XLogRecord *record;
 	TransactionId oldestActiveXID;
+	TransactionId *prescanXids = NULL;
+	int			nPrescanXids = 0;
 	bool		backupEndRequired = false;
 	bool		backupFromStandby = false;
 	DBState		dbstate_at_startup;
@@ -7217,10 +7219,26 @@ StartupXLOG(void)
 	 * binary gets the directory created here.  The anchor is registered now
 	 * only if its restore-point record lies before the redo start point;
 	 * otherwise the redo loop registers it when that record is replayed.
+	 *
+	 * The oldest transaction possibly running at the start checkpoint comes
+	 * from the checkpoint record, or from the prepared transactions after a
+	 * shutdown checkpoint.  The hot-standby initialization below needs the
+	 * same value (and the prepared xids), so the two-phase state is scanned
+	 * once here; the scan also removes stale two-phase files.
 	 */
+	if (InRecovery && ArchiveRecoveryRequested)
+	{
+		if (wasShutdown)
+			oldestActiveXID = PrescanPreparedTransactions(&prescanXids,
+														  &nPrescanXids);
+		else
+			oldestActiveXID = checkPoint.oldestActiveXid;
+	}
+	else
+		oldestActiveXID = InvalidTransactionId;
 	AnchorSnapshotStartup((InRecovery && ArchiveRecoveryRequested) ?
 						  checkPoint.redo : InvalidXLogRecPtr,
-						  expectedTLEs);
+						  expectedTLEs, oldestActiveXID);
 
 	/* REDO */
 	if (InRecovery)
@@ -7384,18 +7402,15 @@ StartupXLOG(void)
 		 */
 		if (ArchiveRecoveryRequested && EnableHotStandby)
 		{
-			TransactionId *xids;
-			int			nxids;
+			TransactionId *xids = prescanXids;
+			int			nxids = nPrescanXids;
 
 			ereport(DEBUG1,
 					(errmsg("initializing for hot standby")));
 
 			InitRecoveryTransactionEnvironment();
 
-			if (wasShutdown)
-				oldestActiveXID = PrescanPreparedTransactions(&xids, &nxids);
-			else
-				oldestActiveXID = checkPoint.oldestActiveXid;
+			/* oldestActiveXID and the prepared xids were determined above */
 			Assert(TransactionIdIsValid(oldestActiveXID));
 
 			/* Tell procarray about the range of xids it has to deal with */
@@ -10250,9 +10265,24 @@ CreateRestartPoint(int flags)
 	 * attempt to reference any pg_subtrans entry older than that (see Asserts
 	 * in subtrans.c).  When hot standby is disabled, though, we mustn't do
 	 * this because StartupSUBTRANS hasn't been called yet.
+	 *
+	 * A registered anchor snapshot is an xmin a future transaction may
+	 * install, and between its export and its import no backend holds it,
+	 * so the horizon also stops at the oldest registered anchor.  The
+	 * registry is read first: an anchor gone by the time GetOldestXmin()
+	 * runs was invalidated after every installer that saw it published its
+	 * xmin under ProcArrayLock, which GetOldestXmin() then sees.
 	 */
 	if (EnableHotStandby)
-		TruncateSUBTRANS(GetOldestXmin(NULL, PROCARRAY_FLAGS_DEFAULT));
+	{
+		TransactionId anchorXmin = AnchorSnapshotOldestXmin();
+		TransactionId cutoff = GetOldestXmin(NULL, PROCARRAY_FLAGS_DEFAULT);
+
+		if (TransactionIdIsValid(anchorXmin) &&
+			TransactionIdPrecedes(anchorXmin, cutoff))
+			cutoff = anchorXmin;
+		TruncateSUBTRANS(cutoff);
+	}
 
 	/* Real work is done, but log and update before releasing lock. */
 	LogCheckpointEnd(true);

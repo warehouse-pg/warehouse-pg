@@ -57,7 +57,7 @@
 -- the file exists on the mirror, opens with the format and rp_name lines,
 -- carries the record's timeline and LSN, exactly the fixed fields of the
 -- grammar (the sxp lines vary), and closes with the checksum line
-!\retcode mdir=$(psql -d postgres -Atc "select datadir from gp_segment_configuration where content = 0 and role = 'm'"); f="$mdir/pg_anchor_snapshots/hs_anchor_rp1"; test -s "$f" && head -2 "$f" | tr '\n' ' ' | grep -q '^fmt:1 rp_name:hs_anchor_rp1 $' && grep -q -E '^tli:[0-9]+$' "$f" && grep -q -E '^lsn:[0-9A-F]+/[0-9A-F]+$' "$f" && test "$(grep -E -c '^(fmt|rp_name|tli|lsn|xmin|xmax|xcnt|sof|rec|crc):' "$f")" = 10 && tail -1 "$f" | grep -q -E '^crc:[0-9A-F]{8}$';
+!\retcode mdir=$(psql -d postgres -Atc "select datadir from gp_segment_configuration where content = 0 and role = 'm'"); f="$mdir/pg_anchor_snapshots/hs_anchor_rp1"; test -s "$f" && head -2 "$f" | tr '\n' ' ' | grep -q '^fmt:2 rp_name:hs_anchor_rp1 $' && grep -q -E '^tli:[0-9]+$' "$f" && grep -q -E '^lsn:[0-9A-F]+/[0-9A-F]+$' "$f" && test "$(grep -E -c '^(fmt|rp_name|tli|lsn|xmin|xmax|xcnt|sof|rec|crc):' "$f")" = 10 && tail -1 "$f" | grep -q -E '^crc:[0-9A-F]{8}$';
 -- and the mirror logged the export
 !\retcode mdir=$(psql -d postgres -Atc "select datadir from gp_segment_configuration where content = 0 and role = 'm'"); grep -q 'exported anchor snapshot for restore point ..hs_anchor_rp1.. (xmin' "$mdir"/log/*.csv;
 

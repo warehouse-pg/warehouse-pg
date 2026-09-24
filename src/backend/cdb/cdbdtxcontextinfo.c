@@ -19,6 +19,7 @@
 #include "miscadmin.h"
 #include "access/transam.h"
 #include "cdb/cdbvars.h"
+#include "access/anchorsnapshot.h"
 #include "cdb/cdbtm.h"
 #include "access/xact.h"
 #include "utils/guc.h"
@@ -81,6 +82,25 @@ DtxContextInfo_CreateOnCoordinator(DtxContextInfo *dtxContextInfo, bool inCursor
 	}
 
 	dtxContextInfo->distributedTxnOptions = txnOptions;
+
+	/*
+	 * WHPG: a snapshot anchored on a hot standby (access/anchorsnapshot.h)
+	 * travels with its anchor's name, so that every executor installs its
+	 * own node's anchor of that name and the whole cluster reads the cut
+	 * this very snapshot describes.  The snapshot records the registration
+	 * it was installed from; an anchor retired since is refused here,
+	 * before anything is dispatched.  Only a dispatcher in recovery ever
+	 * installs anchors, so the field is not consulted elsewhere.
+	 */
+	dtxContextInfo->anchorName[0] = '\0';
+	if (snapshot != NULL && Gp_role == GP_ROLE_DISPATCH &&
+		snapshot->anchorOrdinal != 0)
+	{
+		AnchorSnapshotNameForDispatch(snapshot->anchorOrdinal,
+									  dtxContextInfo->anchorName);
+		dtxContextInfo->distributedTxnOptions =
+			mppTxOptions_SetAnchored(dtxContextInfo->distributedTxnOptions);
+	}
 
 	if (DEBUG5 >= log_min_messages || Debug_print_full_dtm)
 	{
@@ -147,6 +167,15 @@ DtxContextInfo_SerializeSize(DtxContextInfo *dtxContextInfo)
 
 	size += sizeof(int);		/* distributedTxnOptions */
 
+	/*
+	 * The anchor name is present only when the options say so; the
+	 * receiver must never infer it from the remaining length, because the
+	 * TMGIDSIZE counted above for a valid xid is never written and leaves
+	 * that many unwritten bytes at the end of the buffer.
+	 */
+	if (isMppTxOptions_Anchored(dtxContextInfo->distributedTxnOptions))
+		size += MAXFNAMELEN;	/* anchorName */
+
 	elog((Debug_print_full_dtm ? LOG : DEBUG5),
 		 "DtxContextInfo_SerializeSize is returning size = %d", size);
 
@@ -199,6 +228,13 @@ DtxContextInfo_Serialize(char *buffer, DtxContextInfo *dtxContextInfo)
 	memcpy(p, &dtxContextInfo->distributedTxnOptions, sizeof(int));
 	p += sizeof(int);
 
+	/* the anchor name follows the options, and only when they announce it */
+	if (isMppTxOptions_Anchored(dtxContextInfo->distributedTxnOptions))
+	{
+		memcpy(p, dtxContextInfo->anchorName, MAXFNAMELEN);
+		p += MAXFNAMELEN;
+	}
+
 	used = (p - buffer);
 
 	if (DEBUG5 >= log_min_messages || Debug_print_full_dtm || Debug_print_snapshot_dtm)
@@ -231,6 +267,8 @@ DtxContextInfo_Serialize(char *buffer, DtxContextInfo *dtxContextInfo)
 				 DtxContextToString(DistributedTransactionContext));
 		}
 		elog((Debug_print_full_dtm ? LOG : DEBUG5), "DtxContextInfo_Serialize txnOptions = 0x%x", dtxContextInfo->distributedTxnOptions);
+		if (isMppTxOptions_Anchored(dtxContextInfo->distributedTxnOptions))
+			elog((Debug_print_full_dtm ? LOG : DEBUG5), "DtxContextInfo_Serialize anchorName = \"%s\"", dtxContextInfo->anchorName);
 		elog((Debug_print_full_dtm ? LOG : DEBUG5), "DtxContextInfo_Serialize copied %d bytes", used);
 	}
 }
@@ -249,6 +287,8 @@ DtxContextInfo_Reset(DtxContextInfo *dtxContextInfo)
 	DistributedSnapshot_Reset(&dtxContextInfo->distributedSnapshot);
 
 	dtxContextInfo->distributedTxnOptions = 0;
+	/* the whole buffer travels when the bit is set: no stale tail bytes */
+	memset(dtxContextInfo->anchorName, 0, MAXFNAMELEN);
 }
 
 void
@@ -272,6 +312,7 @@ DtxContextInfo_Copy(
 								 &source->distributedSnapshot);
 
 	target->distributedTxnOptions = source->distributedTxnOptions;
+	memcpy(target->anchorName, source->anchorName, MAXFNAMELEN);
 
 	elog((Debug_print_full_dtm ? LOG : DEBUG5),
 		 "DtxContextInfo_Copy distributed {xid "UINT64_FORMAT"}, "
@@ -352,6 +393,25 @@ DtxContextInfo_Deserialize(const char *serializedDtxContextInfo,
 		memcpy(&dtxContextInfo->distributedTxnOptions, p, sizeof(int));
 		p += sizeof(int);
 
+		/*
+		 * The anchor name is announced by the options, never inferred from
+		 * the remaining length (see DtxContextInfo_SerializeSize).
+		 */
+		if (isMppTxOptions_Anchored(dtxContextInfo->distributedTxnOptions))
+		{
+			if (serializedDtxContextInfolen - (p - serializedDtxContextInfo) < MAXFNAMELEN)
+				ereport(ERROR,
+						(errcode(ERRCODE_PROTOCOL_VIOLATION),
+						 errmsg("dispatched transaction context announces an anchor snapshot name but is too short to hold one")));
+			memcpy(dtxContextInfo->anchorName, p, MAXFNAMELEN);
+			p += MAXFNAMELEN;
+			dtxContextInfo->anchorName[MAXFNAMELEN - 1] = '\0';
+			if (!AnchorSnapshotNameIsValid(dtxContextInfo->anchorName))
+				ereport(ERROR,
+						(errcode(ERRCODE_PROTOCOL_VIOLATION),
+						 errmsg("dispatched anchor snapshot name is not a valid anchor name")));
+		}
+
 		if (DEBUG5 >= log_min_messages || Debug_print_full_dtm)
 		{
 			elog((Debug_print_full_dtm ? LOG : DEBUG5),
@@ -385,6 +445,10 @@ DtxContextInfo_Deserialize(const char *serializedDtxContextInfo,
 			elog((Debug_print_full_dtm ? LOG : DEBUG5),
 				 "DtxContextInfo_Deserialize txnOptions = 0x%x",
 				 dtxContextInfo->distributedTxnOptions);
+			if (isMppTxOptions_Anchored(dtxContextInfo->distributedTxnOptions))
+				elog((Debug_print_full_dtm ? LOG : DEBUG5),
+					 "DtxContextInfo_Deserialize anchorName = \"%s\"",
+					 dtxContextInfo->anchorName);
 		}
 	}
 	else

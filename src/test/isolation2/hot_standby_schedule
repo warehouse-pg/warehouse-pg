@@ -9,5 +9,7 @@ test: uao/hot_standby_snapshot_conflict_column
 test: hot_standby/faults
 test: hot_standby/dispatch_topology
 test: hot_standby/anchor_export
+test: hot_standby/anchor_import
+test: hot_standby/anchor_dispatch
 test: hot_standby/fts_topology_gate
 test: hot_standby/teardown

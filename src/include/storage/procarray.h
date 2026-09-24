@@ -140,6 +140,7 @@ extern void updateSharedLocalSnapshot(struct DtxContextInfo *dtxContextInfo,
 									  DtxContext distributedTransactionContext,
 									  Snapshot snapshot,
 									  char *debugCaller);
+extern void SnapshotResetDslm(Snapshot snapshot);
 
 extern void GetSlotTableDebugInfo(void **snapshotArray, int *maxSlots);
 

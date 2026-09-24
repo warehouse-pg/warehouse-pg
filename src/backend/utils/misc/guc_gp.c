@@ -505,6 +505,12 @@ static const struct config_enum_entry optimizer_cost_model_options[] = {
 	{NULL, 0}
 };
 
+static const struct config_enum_entry whpg_hot_standby_snapshot_mode_options[] = {
+	{"anchored", WHPG_SNAPSHOT_MODE_ANCHORED},
+	{"unanchored", WHPG_SNAPSHOT_MODE_UNANCHORED},
+	{NULL, 0}
+};
+
 static const struct config_enum_entry explain_memory_verbosity_options[] = {
 	{"suppress", EXPLAIN_MEMORY_VERBOSITY_SUPPRESS},
 	{"summary", EXPLAIN_MEMORY_VERBOSITY_SUMMARY},
@@ -4851,7 +4857,9 @@ struct config_string ConfigureNamesString_gp[] =
 			gettext_noop("Set through the configuration file only. On reload the startup "
 						 "process retires every anchor registered before the named one; "
 						 "at server start only the named anchor's snapshot file is "
-						 "re-registered and every other file is swept."),
+						 "re-registered and every other file is swept. Dispatch sessions "
+						 "in anchored mode (whpg_hot_standby_snapshot_mode) import it; "
+						 "utility-mode sessions are not affected."),
 			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE | GUC_GPDB_NO_SYNC
 		},
 		&whpg_hot_standby_anchor_name,
@@ -4955,6 +4963,28 @@ struct config_enum ConfigureNamesEnum_gp[] =
 		},
 		&explain_memory_verbosity,
 		EXPLAIN_MEMORY_VERBOSITY_SUPPRESS, explain_memory_verbosity_options,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"whpg_hot_standby_snapshot_mode", PGC_USERSET, WAL_RECOVERY_TARGET,
+			gettext_noop("Snapshot a dispatch session on a hot standby reads with: the replay position, or the published anchor."),
+			gettext_noop("unanchored (the default) takes the ordinary hot-standby snapshot "
+						 "at the replay position. anchored installs the anchor snapshot "
+						 "named by whpg_hot_standby_anchor_name for every statement, so "
+						 "the session reads table data as of that restore point while "
+						 "the catalog is read as of the replay position; READ COMMITTED "
+						 "sees the same anchor until a publication moves it and is thereby "
+						 "REPEATABLE READ-equivalent, and a statement without a valid "
+						 "published anchor fails (SQLSTATE 55000). A read replica sets "
+						 "anchored in its configuration file. Only dispatch-role sessions "
+						 "of a server in recovery are affected; utility-mode sessions, "
+						 "servers not in recovery and servers with "
+						 "whpg_max_anchor_snapshots = 0 ignore the setting."),
+			GUC_NOT_IN_SAMPLE | GUC_GPDB_NO_SYNC
+		},
+		&whpg_hot_standby_snapshot_mode,
+		WHPG_SNAPSHOT_MODE_UNANCHORED, whpg_hot_standby_snapshot_mode_options,
 		NULL, NULL, NULL
 	},
 
