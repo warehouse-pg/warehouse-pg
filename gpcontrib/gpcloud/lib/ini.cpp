@@ -155,7 +155,7 @@ static void split_data(ini_t *ini) {
 }
 
 #define S3MAXPGPATH 1024
-const static int extssl_protocol  = CURL_SSLVERSION_TLSv1;
+const static int extssl_protocol  = CURL_SSLVERSION_TLSv1_2;
 static const char* extssl_cert = "gpfdists/client.crt";
 static const char* extssl_key = "gpfdists/client.key";
 static const char* extssl_ca = "gpfdists/root.crt";

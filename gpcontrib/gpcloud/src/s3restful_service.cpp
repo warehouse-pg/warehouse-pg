@@ -104,6 +104,8 @@ struct CURLWrapper {
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
         curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, lowSpeedLimit);
         curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, lowSpeedTime);
+        /* Never negotiate below TLS 1.2, whatever the host crypto policy allows. */
+        curl_easy_setopt(curl, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
 
         if (debugCurl) {
             curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
