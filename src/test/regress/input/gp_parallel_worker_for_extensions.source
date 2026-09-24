@@ -25,8 +25,8 @@ FROM gp_dist_random('gp_id') ORDER BY 1;
 
 -- A utility-mode leader on the coordinator and on a segment: there is no
 -- session to join, so the workers stay in utility mode.
-\! PGOPTIONS='-c gp_role=utility' psql -X -At -d regression -c "SELECT regress_parallel_worker_probe(1)"
-\! PGOPTIONS='-c gp_role=utility' psql -X -At -d regression -p $(psql -X -At -d regression -c "SELECT port FROM gp_segment_configuration WHERE content = 0 AND role = 'p'") -c "SELECT regress_parallel_worker_probe(1)"
+\! PGOPTIONS='-c gp_role=utility' psql -X -At -d regression -h "$PGHOST" -p $PGPORT -c "SELECT regress_parallel_worker_probe(1)"
+\! PGOPTIONS='-c gp_role=utility' psql -X -At -d regression -h "$PGHOST" -p $(psql -X -At -d regression -h "$PGHOST" -p $PGPORT -c "SELECT port FROM gp_segment_configuration WHERE content = 0 AND role = 'p'") -c "SELECT regress_parallel_worker_probe(1)"
 
 -- A cursor makes the writer QEs publish their snapshot for reader gangs by
 -- setting gp_write_shared_snapshot, which every worker they launch later
@@ -41,16 +41,28 @@ SELECT regress_parallel_worker_probe(1);
 CLOSE regress_pw_cur;
 COMMIT;
 
--- The same through a PL/pgSQL FOR loop, which opens a cursor implicitly.
+-- The same through a PL/pgSQL FOR loop, which opens a cursor implicitly.  The
+-- segment probes run in the RETURNING list of an UPDATE so that, like a
+-- CREATE INDEX issued from the loop, they execute on the writer QEs; a query
+-- over gp_dist_random() from inside the loop would be dispatched to a reader
+-- gang instead.  Every segment holds rows of regress_pw_tab, and the probes
+-- of one segment all report the same line.
 CREATE FUNCTION regress_pw_loop() RETURNS SETOF text AS $$
 DECLARE
     r record;
+    lines text[];
+    one_line text;
 BEGIN
     FOR r IN SELECT i FROM regress_pw_tab ORDER BY i LIMIT 1 LOOP
-        RETURN QUERY
-            SELECT 'seg' || gp_segment_id || ': ' || regress_parallel_worker_probe(1)
-            FROM gp_dist_random('gp_id') ORDER BY 1;
-        RETURN NEXT 'qd: ' || regress_parallel_worker_probe(1);
+        WITH probed AS (
+            UPDATE regress_pw_tab SET i = i
+            RETURNING 'seg' || gp_segment_id || ': ' || regress_parallel_worker_probe(1) AS probe_line
+        )
+        SELECT array_agg(DISTINCT probe_line ORDER BY probe_line) INTO lines FROM probed;
+        lines := lines || ('qd: ' || regress_parallel_worker_probe(1));
+    END LOOP;
+    FOREACH one_line IN ARRAY lines LOOP
+        RETURN NEXT one_line;
     END LOOP;
 END;
 $$ LANGUAGE plpgsql;
@@ -95,3 +107,7 @@ CREATE ROLE regress_pw_role;
 SET SESSION AUTHORIZATION regress_pw_role;
 SELECT regress_parallel_worker_probe(1);
 ROLLBACK;
+
+-- The probe function, regress_pw_loop() and regress_pw_tab are left in the
+-- regression database on purpose, like the other regress.so functions, for
+-- the tools that run against it afterwards.

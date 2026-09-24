@@ -1385,8 +1385,9 @@ regress_parallel_worker_probe(PG_FUNCTION_ARGS)
 	}
 
 	initStringInfo(&buf);
-	appendStringInfo(&buf, "leader=%s content=%d launched=%d finished=%d role=%s writer=%s session=%s segments=%s",
-					 role_to_string(Gp_role), GpIdentity.segindex,
+	appendStringInfo(&buf, "leader=%s leader_writer=%c content=%d launched=%d finished=%d role=%s writer=%s session=%s segments=%s",
+					 role_to_string(Gp_role), Gp_is_writer ? 't' : 'f',
+					 GpIdentity.segindex,
 					 pcxt->nworkers_launched, finished,
 					 role_ok ? "ok" : "mismatch",
 					 writer_ok ? "ok" : "mismatch",
