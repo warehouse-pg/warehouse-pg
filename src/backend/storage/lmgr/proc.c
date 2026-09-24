@@ -37,6 +37,7 @@
 #include <unistd.h>
 #include <sys/time.h>
 
+#include "access/parallel.h"
 #include "access/transam.h"
 #include "access/twophase.h"
 #include "access/xact.h"
@@ -1016,6 +1017,12 @@ ProcKill(int code, Datum arg)
 		 */
 		is_slot_creator = (Gp_role == GP_ROLE_DISPATCH ||
 						   (Gp_role == GP_ROLE_EXECUTE && Gp_is_writer));
+
+		/*
+		 * A parallel worker is a reader of its leader's session and never
+		 * the owner of the slot; releasing it here would break the leader.
+		 */
+		AssertImply(IsParallelWorker(), !is_slot_creator);
 
 		if (is_slot_creator)
 		{
