@@ -162,3 +162,39 @@ results rather than using the current results (ie: "piggybacking").
 Our implementation addresses these concerns with a probe start tick and probe
 end tick. We send a signal requesting fts results, then wait for a new loop to
 start, and then wait for that current loop to finish.
+
+Dormancy under a dispatch topology file
+=======================================
+While whpg_dispatch_topology_file is set on a coordinator (see
+src/include/cdb/cdbdispatchtopology.h), gp_segment_configuration is not
+authoritative: its rows describe the cluster the WAL came from, not the
+nodes this dispatcher reaches. FTS therefore skips its whole probe cycle
+for as long as the GUC is set -- no probe, no catalog update, no
+gp_segment_configuration dump, no status-version bump. The start and done
+counters of the loop keep moving, so FtsNotifyProber() waiters never spin
+(a gated cycle is a no-op for them: status[] and the dump are not
+refreshed), and a pending probe request is consumed by the skipped cycle.
+The same gate (dispatch_topology_bgworker_gated in cdbdispatchtopology.c)
+holds the other dispatch-role background workers: dtx recovery neither
+recovers nor aborts prepared transactions, so *shmDtmStarted stays unset
+and dispatch connections are refused with "waiting for distributed
+transaction recovery"; the global deadlock detector does not check; the
+autovacuum launcher on the coordinator starts no worker (a coordinator
+worker runs in dispatch role and would be refused at its first
+component-table build). Because the DTM stays unstarted, every background
+worker that waits for it (deadlock detector, sweepers, extension workers)
+does not start at all during that window; the deadlock detector's own gate
+matters only when the GUC is set on a running primary.
+
+FTS never runs while the postmaster is in recovery, so the gate matters in
+one window only: right after such a coordinator leaves recovery
+(promotion), before the operator has fixed the catalog and retired the
+file. Ungated, the first probe cycle would dial the stale addresses and
+could send SYNCREP_OFF or PROMOTE to the source cluster's segments. The
+predicate is the GUC itself, not whpg_dispatch_topology_state (that string
+reads "error" on any node out of recovery). Clearing the GUC and reloading
+wakes FTS on the next cycle -- the catalog fix must be committed before
+that reload, because the first ungated cycle reads whatever is committed
+at that moment; the transitions are logged once each ("FTS: probing
+suspended while whpg_dispatch_topology_file is set" / "FTS: probing
+resumed after whpg_dispatch_topology_file was cleared").

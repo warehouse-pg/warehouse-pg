@@ -27,6 +27,27 @@
  * inventory — never from another cluster's — and retiring it before a
  * replica node's address is reused remain the tool's responsibility.
  *
+ * Background-worker dormancy: while the GUC is set, the catalog's
+ * addresses are not authoritative, so the dispatch-role background
+ * workers on this coordinator do not act on them.  FTS skips its whole
+ * cycle -- no probe, no gp_segment_configuration update, no configuration
+ * dump, no status-version bump -- while its start/done counters keep
+ * moving so waiters never spin; dtx recovery neither recovers nor aborts
+ * prepared transactions (so *shmDtmStarted stays unset, which refuses
+ * dispatch connections with "waiting for distributed transaction
+ * recovery"); the global deadlock detector does not check; the autovacuum
+ * launcher starts no worker (a coordinator worker runs in dispatch role
+ * and would be refused at its first component-table build).  With the DTM
+ * unstarted, every background worker that waits for it (the deadlock
+ * detector, sweepers, extension workers) does not start at all
+ * (bgworker_should_start_mpp), so the deadlock detector's own gate only
+ * matters for a GUC set on a running primary.  None of them runs in
+ * recovery anyway; the gate covers the window right after a promotion,
+ * before the catalog has been fixed and the file retired.  Clearing the
+ * GUC and reloading lifts the gate on the next cycle, and a worker that
+ * cached a component table discards it then (see
+ * dispatch_topology_bgworker_gated).
+ *
  * Copyright (c) 2026-Present EnterpriseDB Corporation.
  *
  * src/include/cdb/cdbdispatchtopology.h
@@ -66,5 +87,9 @@ extern DispatchTopology *dispatch_topology_load(void);
 extern char *dispatch_topology_signature(void);
 extern bool dispatch_topology_signature_matches(const char *stored);
 extern const char *show_whpg_dispatch_topology_state(void);
+extern bool dispatch_topology_bgworker_gated(bool *gated, const char *worker,
+											 const char *activity);
+extern void dispatch_topology_bgworker_wait(long timeout_ms, uint32 wait_event);
+extern void dispatch_topology_bgworker_discard_components(void);
 
 #endif   /* CDBDISPATCHTOPOLOGY_H */
