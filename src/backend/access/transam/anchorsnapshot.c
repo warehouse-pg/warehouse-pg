@@ -56,24 +56,31 @@
 #include <unistd.h>
 
 #include "access/anchorsnapshot.h"
+#include "access/parallel.h"
 #include "access/timeline.h"
 #include "access/transam.h"
 #include "access/xlog.h"
 #include "access/xlog_internal.h"
+#include "cdb/cdbvars.h"
 #include "common/string.h"
+#include "lib/stringinfo.h"
 #include "miscadmin.h"
 #include "port/pg_crc32c.h"
 #include "storage/fd.h"
+#include "storage/lwlock.h"
+#include "storage/proc.h"
 #include "storage/procarray.h"
 #include "storage/shmem.h"
 #include "storage/spin.h"
 #include "utils/faultinjector.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
+#include "utils/snapmgr.h"
 
 /* GUC variables; the entries live in guc_gp.c */
 int			whpg_max_anchor_snapshots = 64;
 char	   *whpg_hot_standby_anchor_name = NULL;
+int			whpg_hot_standby_snapshot_mode = WHPG_SNAPSHOT_MODE_UNANCHORED;
 
 typedef struct AnchorRegistryEntry
 {
@@ -122,7 +129,7 @@ static TransactionId pendingXmin;
 static char *retireNames = NULL;
 
 /* Version of the on-disk grammar; bumped when a field is added. */
-#define ANCHOR_FILE_FORMAT	1
+#define ANCHOR_FILE_FORMAT	2
 
 static bool anchorNameIsValid(const char *name);
 static void anchorFilePath(char *path, size_t len, const char *name, bool tmp);
@@ -130,8 +137,24 @@ static bool writeAnchorFile(const char *name, TimeLineID tli, XLogRecPtr lsn,
 							TransactionId xmin, TransactionId xmax,
 							const TransactionId *xids, int nxids,
 							bool suboverflowed);
+/*
+ * The xid set of a snapshot file, for the installer.  subxip holds subxcnt
+ * xids allocated in the caller's memory context (NULL when the list is
+ * empty).  An overflowed snapshot carries its list like any other; the
+ * flag makes the reader map subtransactions to their parents first.
+ */
+typedef struct AnchorFileSnapshot
+{
+	TransactionId xmin;
+	TransactionId xmax;
+	bool		suboverflowed;
+	int			subxcnt;
+	TransactionId *subxip;
+} AnchorFileSnapshot;
+
 static bool parseAnchorFile(const char *name, TimeLineID *tli,
-							XLogRecPtr *lsn, TransactionId *xmin);
+							XLogRecPtr *lsn, TransactionId *xmin,
+							AnchorFileSnapshot *out, StringInfo why);
 static void sweepAnchorFiles(const char *keep);
 typedef enum RegisterResult
 {
@@ -258,7 +281,7 @@ registerAnchorEvicting(const char *name, TransactionId xmin)
 }
 
 bool
-AnchorSnapshotLookup(const char *rp_name, TransactionId *xmin)
+AnchorSnapshotLookup(const char *rp_name, TransactionId *xmin, uint64 *ordinal)
 {
 	AnchorRegistryEntry *e;
 	bool		found = false;
@@ -271,6 +294,8 @@ AnchorSnapshotLookup(const char *rp_name, TransactionId *xmin)
 	if (e != NULL)
 	{
 		*xmin = e->xmin;
+		if (ordinal != NULL)
+			*ordinal = e->ordinal;
 		found = true;
 	}
 	SpinLockRelease(&anchorRegistry->lock);
@@ -375,7 +400,7 @@ writeAll(int fd, const char *path, const char *buf, size_t len)
  * fields a recovery snapshot carries, framed by the anchor's identity and
  * a checksum:
  *
- *	fmt:1
+ *	fmt:2
  *	rp_name:<name>
  *	tli:<timeline>	the restore-point record's timeline ...
  *	lsn:<X/X>		... and end LSN (what gp_create_restore_point returned)
@@ -383,10 +408,17 @@ writeAll(int fd, const char *path, const char *buf, size_t len)
  *	xmax:<xid>
  *	xcnt:0
  *	sof:<0|1>
- *	sxcnt:<n>		(sof:0 only)
- *	sxp:<xid>		(n lines, sof:0 only)
+ *	sxcnt:<n>
+ *	sxp:<xid>		(n lines)
  *	rec:1
  *	crc:<8 hex digits>	CRC-32C of every byte above
+ *
+ * Unlike an ordinary exported snapshot, the xid list is written whether or
+ * not the snapshot overflowed: a recovery snapshot keeps every known xid,
+ * top-level ones included, in that list (xip is empty), and the overflow
+ * flag only tells the reader to map a subtransaction to its parent through
+ * pg_subtrans before searching it.  Format 1 dropped the list on overflow
+ * and left an importer with an empty in-progress set.
  *
  * Every failure is a WARNING; the .tmp file is removed and false returned.
  * The file is streamed through a stack buffer: the startup process has no
@@ -451,15 +483,10 @@ writeAnchorFile(const char *name, TimeLineID tli, XLogRecPtr lsn,
 	ANCHOR_APPEND("xmin:%u\n", xmin);
 	ANCHOR_APPEND("xmax:%u\n", xmax);
 	ANCHOR_APPEND("xcnt:0\n");
-	if (suboverflowed)
-		ANCHOR_APPEND("sof:1\n");
-	else
-	{
-		ANCHOR_APPEND("sof:0\n");
-		ANCHOR_APPEND("sxcnt:%d\n", nxids);
-		for (i = 0; i < nxids; i++)
-			ANCHOR_APPEND("sxp:%u\n", xids[i]);
-	}
+	ANCHOR_APPEND("sof:%d\n", suboverflowed ? 1 : 0);
+	ANCHOR_APPEND("sxcnt:%d\n", nxids);
+	for (i = 0; i < nxids; i++)
+		ANCHOR_APPEND("sxp:%u\n", xids[i]);
 	ANCHOR_APPEND("rec:1\n");
 #undef ANCHOR_APPEND
 
@@ -582,17 +609,21 @@ anchorFileMaxSize(void)
 
 /*
  * Read and validate the anchor's file whole, returning the restore-point
- * record's identity and the xmin.  The grammar is checked strictly: every
- * field in order, the rp_name line naming this anchor, counts matching,
- * xids normal, the CRC over everything before the crc line matching, and
- * nothing after it.  A file that fails any of this is not one this server
- * wrote whole, and registering an anchor from it could pin readers to a
- * snapshot that is not the restore point's.  Startup only; every failure
- * is a WARNING.
+ * record's identity and the xmin, and, when out is given, the xid set
+ * (its subxip allocated in the current memory context).  The grammar is
+ * checked strictly: every field in order, the rp_name line naming this
+ * anchor, counts matching, xids normal, the CRC over everything before the
+ * crc line matching, and nothing after it.  A file that fails any of this
+ * is not one this server wrote whole, and registering an anchor from it
+ * could pin readers to a snapshot that is not the restore point's.
+ *
+ * Every failure is reported once: as a WARNING when why is NULL (the
+ * startup process, where an ERROR would be FATAL), otherwise appended to
+ * why for the caller to raise.  Allocations never ERROR on OOM either way.
  */
 static bool
 parseAnchorFile(const char *name, TimeLineID *tli, XLogRecPtr *lsn,
-				TransactionId *xmin)
+				TransactionId *xmin, AnchorFileSnapshot *out, StringInfo why)
 {
 	char		path[MAXPGPATH];
 	struct stat st;
@@ -608,46 +639,62 @@ parseAnchorFile(const char *name, TimeLineID *tli, XLogRecPtr *lsn,
 	unsigned long hi;
 	unsigned long lo;
 	unsigned long sof;
-	unsigned long sxcnt;
+	unsigned long sxcnt = 0;
 	unsigned long i;
 	pg_crc32c	crc;
-	const char *why = NULL;
+	TransactionId xmax = InvalidTransactionId;
+	TransactionId *xids = NULL;
+	char		reason[MAXPGPATH + 256];
+	enum { FAIL_PLAIN, FAIL_FILE, FAIL_OOM } failkind = FAIL_PLAIN;
+	int			save_errno = 0;
 
 	anchorFilePath(path, sizeof(path), name, false);
-	fd = OpenTransientFile(path, O_RDONLY | PG_BINARY);
+	/* O_NONBLOCK: a FIFO left in the directory must not hang the opener */
+	fd = OpenTransientFile(path, O_RDONLY | O_NONBLOCK | PG_BINARY);
 	if (fd < 0)
 	{
-		ereport(WARNING,
-				(errcode_for_file_access(),
-				 errmsg("could not open anchor snapshot file \"%s\": %m", path)));
-		return false;
+		failkind = FAIL_FILE;
+		save_errno = errno;
+		snprintf(reason, sizeof(reason),
+				 "could not open anchor snapshot file \"%s\": %s",
+				 path, strerror(save_errno));
+		goto fail;
 	}
 	if (fstat(fd, &st) != 0)
 	{
-		ereport(WARNING,
-				(errcode_for_file_access(),
-				 errmsg("could not stat anchor snapshot file \"%s\": %m", path)));
+		failkind = FAIL_FILE;
+		save_errno = errno;
+		snprintf(reason, sizeof(reason),
+				 "could not stat anchor snapshot file \"%s\": %s",
+				 path, strerror(save_errno));
 		CloseTransientFile(fd);
-		return false;
+		goto fail;
+	}
+	if (!S_ISREG(st.st_mode))
+	{
+		snprintf(reason, sizeof(reason),
+				 "anchor snapshot file \"%s\" refused: not a regular file", path);
+		CloseTransientFile(fd);
+		goto fail;
 	}
 	if (st.st_size <= 0 || (uint64) st.st_size > anchorFileMaxSize())
 	{
-		ereport(WARNING,
-				(errmsg("anchor snapshot file \"%s\" is empty or larger than any file this server writes (%lld bytes, limit %llu)",
-						path, (long long) st.st_size,
-						(unsigned long long) anchorFileMaxSize())));
+		snprintf(reason, sizeof(reason),
+				 "anchor snapshot file \"%s\" is empty or larger than any file this server writes (%lld bytes, limit %llu)",
+				 path, (long long) st.st_size,
+				 (unsigned long long) anchorFileMaxSize());
 		CloseTransientFile(fd);
-		return false;
+		goto fail;
 	}
 	size = (size_t) st.st_size;
 	buf = startupAlloc(size + 1);
 	if (buf == NULL)
 	{
-		ereport(WARNING,
-				(errcode(ERRCODE_OUT_OF_MEMORY),
-				 errmsg("could not read anchor snapshot file \"%s\": out of memory", path)));
+		failkind = FAIL_OOM;
+		snprintf(reason, sizeof(reason),
+				 "could not read anchor snapshot file \"%s\": out of memory", path);
 		CloseTransientFile(fd);
-		return false;
+		goto fail;
 	}
 	while (got < size)
 	{
@@ -657,12 +704,16 @@ parseAnchorFile(const char *name, TimeLineID *tli, XLogRecPtr *lsn,
 			continue;
 		if (rc <= 0)
 		{
-			ereport(WARNING,
-					(errcode_for_file_access(),
-					 errmsg("could not read anchor snapshot file \"%s\": %m", path)));
+			if (rc < 0)
+			{
+				failkind = FAIL_FILE;
+				save_errno = errno;
+			}
+			snprintf(reason, sizeof(reason),
+					 "could not read anchor snapshot file \"%s\": %s",
+					 path, rc == 0 ? "unexpected end of file" : strerror(save_errno));
 			CloseTransientFile(fd);
-			pfree(buf);
-			return false;
+			goto fail;
 		}
 		got += rc;
 	}
@@ -673,17 +724,15 @@ parseAnchorFile(const char *name, TimeLineID *tli, XLogRecPtr *lsn,
 	if (size < 13 || memcmp(buf + size - 13, "crc:", 4) != 0 ||
 		buf[size - 1] != '\n' ||
 		!anchorParseUint(buf + size - 9, 8, 16, 0xFFFFFFFFUL, &v))
-	{
-		why = "missing or malformed crc line";
-		goto refuse;
-	}
+		goto refuse_crc;
 	INIT_CRC32C(crc);
 	COMP_CRC32C(crc, buf, size - 13);
 	FIN_CRC32C(crc);
 	if (crc != (pg_crc32c) v)
 	{
-		why = "checksum mismatch";
-		goto refuse;
+		snprintf(reason, sizeof(reason),
+				 "anchor snapshot file \"%s\" refused: checksum mismatch", path);
+		goto fail;
 	}
 
 	cur = buf;
@@ -691,113 +740,143 @@ parseAnchorFile(const char *name, TimeLineID *tli, XLogRecPtr *lsn,
 
 	if (!anchorNextField(&cur, end, "fmt", &val, &vlen) ||
 		!anchorParseUint(val, vlen, 10, INT_MAX, &v) || v != ANCHOR_FILE_FORMAT)
-	{
-		why = "unknown format";
-		goto refuse;
-	}
+		goto refuse_fmt;
 	if (!anchorNextField(&cur, end, "rp_name", &val, &vlen) ||
 		vlen != strlen(name) || memcmp(val, name, vlen) != 0)
-	{
-		why = "rp_name line does not name this restore point";
-		goto refuse;
-	}
+		goto refuse_name;
 	if (!anchorNextField(&cur, end, "tli", &val, &vlen) ||
 		!anchorParseUint(val, vlen, 10, 0xFFFFFFFFUL, &v) || v == 0)
-	{
-		why = "invalid tli line";
-		goto refuse;
-	}
+		goto refuse_tli;
 	*tli = (TimeLineID) v;
 	if (!anchorNextField(&cur, end, "lsn", &val, &vlen) ||
 		memchr(val, '/', vlen) == NULL)
-	{
-		why = "invalid lsn line";
-		goto refuse;
-	}
+		goto refuse_lsn;
 	{
 		const char *slash = memchr(val, '/', vlen);
 
 		if (!anchorParseUint(val, slash - val, 16, 0xFFFFFFFFUL, &hi) ||
 			!anchorParseUint(slash + 1, vlen - (slash - val) - 1, 16,
 							 0xFFFFFFFFUL, &lo))
-		{
-			why = "invalid lsn line";
-			goto refuse;
-		}
+			goto refuse_lsn;
 	}
 	*lsn = ((XLogRecPtr) hi << 32) | lo;
 	if (XLogRecPtrIsInvalid(*lsn))
-	{
-		why = "invalid lsn line";
-		goto refuse;
-	}
+		goto refuse_lsn;
 	if (!anchorNextField(&cur, end, "xmin", &val, &vlen) ||
 		!anchorParseUint(val, vlen, 10, 0xFFFFFFFFUL, &v) ||
 		!TransactionIdIsNormal((TransactionId) v))
-	{
-		why = "invalid xmin line";
-		goto refuse;
-	}
+		goto refuse_xmin;
 	*xmin = (TransactionId) v;
 	if (!anchorNextField(&cur, end, "xmax", &val, &vlen) ||
 		!anchorParseUint(val, vlen, 10, 0xFFFFFFFFUL, &v) ||
 		!TransactionIdIsNormal((TransactionId) v))
-	{
-		why = "invalid xmax line";
-		goto refuse;
-	}
+		goto refuse_xmax;
+	xmax = (TransactionId) v;
 	if (!anchorNextField(&cur, end, "xcnt", &val, &vlen) ||
 		!anchorParseUint(val, vlen, 10, INT_MAX, &v) || v != 0)
-	{
-		why = "invalid xcnt line";
-		goto refuse;
-	}
+		goto refuse_xcnt;
 	if (!anchorNextField(&cur, end, "sof", &val, &vlen) ||
 		!anchorParseUint(val, vlen, 10, 1, &sof))
+		goto refuse_sof;
+	/* every sxp line is at least "sxp:N\n": bound the count by the bytes left */
+	if (!anchorNextField(&cur, end, "sxcnt", &val, &vlen) ||
+		!anchorParseUint(val, vlen, 10, INT_MAX, &sxcnt) ||
+		sxcnt > (unsigned long) (end - cur) / 6)
+		goto refuse_sxcnt;
+	if (out != NULL && sxcnt > 0)
 	{
-		why = "invalid sof line";
-		goto refuse;
+		xids = (TransactionId *) startupAlloc(sizeof(TransactionId) * sxcnt);
+		if (xids == NULL)
+		{
+			failkind = FAIL_OOM;
+			snprintf(reason, sizeof(reason),
+					 "could not read anchor snapshot file \"%s\": out of memory", path);
+			goto fail;
+		}
 	}
-	if (sof == 0)
+	for (i = 0; i < sxcnt; i++)
 	{
-		/* every sxp line is at least "sxp:N\n": bound the count by the bytes left */
-		if (!anchorNextField(&cur, end, "sxcnt", &val, &vlen) ||
-			!anchorParseUint(val, vlen, 10, INT_MAX, &sxcnt) ||
-			sxcnt > (unsigned long) (end - cur) / 6)
-		{
-			why = "invalid sxcnt line";
-			goto refuse;
-		}
-		for (i = 0; i < sxcnt; i++)
-		{
-			if (!anchorNextField(&cur, end, "sxp", &val, &vlen) ||
-				!anchorParseUint(val, vlen, 10, 0xFFFFFFFFUL, &v) ||
-				!TransactionIdIsNormal((TransactionId) v))
-			{
-				why = "sxp lines do not match sxcnt or carry an invalid xid";
-				goto refuse;
-			}
-		}
+		if (!anchorNextField(&cur, end, "sxp", &val, &vlen) ||
+			!anchorParseUint(val, vlen, 10, 0xFFFFFFFFUL, &v) ||
+			!TransactionIdIsNormal((TransactionId) v))
+			goto refuse_sxp;
+		if (xids != NULL)
+			xids[i] = (TransactionId) v;
 	}
 	if (!anchorNextField(&cur, end, "rec", &val, &vlen) ||
 		!anchorParseUint(val, vlen, 10, 1, &v) || v != 1)
-	{
-		why = "invalid rec line";
-		goto refuse;
-	}
+		goto refuse_rec;
 	if (cur != end)
-	{
-		why = "unexpected data after the rec line";
-		goto refuse;
-	}
+		goto refuse_tail;
 
+	if (out != NULL)
+	{
+		out->xmin = *xmin;
+		out->xmax = xmax;
+		out->suboverflowed = (sof != 0);
+		out->subxcnt = (int) sxcnt;
+		out->subxip = xids;
+	}
 	pfree(buf);
 	return true;
 
-refuse:
-	ereport(WARNING,
-			(errmsg("anchor snapshot file \"%s\" refused: %s", path, why)));
-	pfree(buf);
+	/* grammar refusals share one message shape */
+refuse_crc:
+	snprintf(reason, sizeof(reason), "anchor snapshot file \"%s\" refused: %s", path, "missing or malformed crc line");
+	goto fail;
+refuse_fmt:
+	snprintf(reason, sizeof(reason), "anchor snapshot file \"%s\" refused: %s", path, "unknown format");
+	goto fail;
+refuse_name:
+	snprintf(reason, sizeof(reason), "anchor snapshot file \"%s\" refused: %s", path, "rp_name line does not name this restore point");
+	goto fail;
+refuse_tli:
+	snprintf(reason, sizeof(reason), "anchor snapshot file \"%s\" refused: %s", path, "invalid tli line");
+	goto fail;
+refuse_lsn:
+	snprintf(reason, sizeof(reason), "anchor snapshot file \"%s\" refused: %s", path, "invalid lsn line");
+	goto fail;
+refuse_xmin:
+	snprintf(reason, sizeof(reason), "anchor snapshot file \"%s\" refused: %s", path, "invalid xmin line");
+	goto fail;
+refuse_xmax:
+	snprintf(reason, sizeof(reason), "anchor snapshot file \"%s\" refused: %s", path, "invalid xmax line");
+	goto fail;
+refuse_xcnt:
+	snprintf(reason, sizeof(reason), "anchor snapshot file \"%s\" refused: %s", path, "invalid xcnt line");
+	goto fail;
+refuse_sof:
+	snprintf(reason, sizeof(reason), "anchor snapshot file \"%s\" refused: %s", path, "invalid sof line");
+	goto fail;
+refuse_sxcnt:
+	snprintf(reason, sizeof(reason), "anchor snapshot file \"%s\" refused: %s", path, "invalid sxcnt line");
+	goto fail;
+refuse_sxp:
+	snprintf(reason, sizeof(reason), "anchor snapshot file \"%s\" refused: %s", path, "sxp lines do not match sxcnt or carry an invalid xid");
+	goto fail;
+refuse_rec:
+	snprintf(reason, sizeof(reason), "anchor snapshot file \"%s\" refused: %s", path, "invalid rec line");
+	goto fail;
+refuse_tail:
+	snprintf(reason, sizeof(reason), "anchor snapshot file \"%s\" refused: %s", path, "unexpected data after the rec line");
+	goto fail;
+
+fail:
+	if (buf != NULL)
+		pfree(buf);
+	if (xids != NULL)
+		pfree(xids);
+	if (why != NULL)
+		appendStringInfoString(why, reason);
+	else if (failkind == FAIL_FILE)
+	{
+		errno = save_errno;
+		ereport(WARNING, (errcode_for_file_access(), errmsg("%s", reason)));
+	}
+	else if (failkind == FAIL_OOM)
+		ereport(WARNING, (errcode(ERRCODE_OUT_OF_MEMORY), errmsg("%s", reason)));
+	else
+		ereport(WARNING, (errmsg("%s", reason)));
 	return false;
 }
 
@@ -861,8 +940,26 @@ sweepAnchorFiles(const char *keep)
  * feature switched off must not destroy the published anchor for the
  * start that switches it back on.  A primary keeps nothing.
  */
+/*
+ * May an overflowed anchor be registered again by this start?  Its readers
+ * map subtransactions to their parents through pg_subtrans, and
+ * StartupSUBTRANS zeroes every page from the start checkpoint's oldest
+ * active xid on; the assignment records that filled those pages lie before
+ * the redo start point and are never replayed again.  An anchor whose xid
+ * range ends at or before that xid consults only pages the zeroing spared.
+ */
+static bool
+anchorSurvivesStart(bool suboverflowed, TransactionId xmax,
+					TransactionId oldestActiveXid)
+{
+	if (!suboverflowed || !TransactionIdIsValid(oldestActiveXid))
+		return true;
+	return !TransactionIdFollows(xmax, oldestActiveXid);
+}
+
 void
-AnchorSnapshotStartup(XLogRecPtr redoStart, List *history)
+AnchorSnapshotStartup(XLogRecPtr redoStart, List *history,
+					  TransactionId oldestActiveXid)
 {
 	struct stat st;
 	const char *name = whpg_hot_standby_anchor_name;
@@ -916,12 +1013,13 @@ AnchorSnapshotStartup(XLogRecPtr redoStart, List *history)
 		TimeLineID	tli;
 		XLogRecPtr	lsn;
 		TransactionId xmin;
+		AnchorFileSnapshot fs;
 
 		if (!anchorNameIsValid(name))
 			ereport(WARNING,
 					(errmsg("anchor snapshot for restore point \"%s\" not re-registered: invalid name",
 							printableName(name))));
-		else if (parseAnchorFile(name, &tli, &lsn, &xmin))
+		else if (parseAnchorFile(name, &tli, &lsn, &xmin, &fs, NULL))
 		{
 			/*
 			 * The record ends at lsn; the byte before it lies inside the
@@ -931,7 +1029,15 @@ AnchorSnapshotStartup(XLogRecPtr redoStart, List *history)
 			TimeLineID	histTLI = (history != NIL) ?
 			tliOfPointInHistory(lsn - 1, history) : 0;
 
-			if (histTLI != tli)
+			if (fs.subxip != NULL)
+				pfree(fs.subxip);
+
+			if (!anchorSurvivesStart(fs.suboverflowed, fs.xmax, oldestActiveXid))
+				ereport(WARNING,
+						(errmsg("anchor snapshot for restore point \"%s\" not re-registered: its overflowed transactions reach past the start checkpoint's oldest active transaction %u (xmax %u)",
+								name, oldestActiveXid, fs.xmax),
+						 errdetail("This start zeroed the pg_subtrans pages the anchor's readers would map subtransactions through.")));
+			else if (histTLI != tli)
 				ereport(WARNING,
 						(errmsg("anchor snapshot for restore point \"%s\" not re-registered: exported on timeline %u, but the recovery history has timeline %u at %X/%X",
 								name, tli, histTLI,
@@ -1097,7 +1203,7 @@ AnchorSnapshotExportOnRestorePoint(XLogReaderState *record)
 	{
 		TransactionId dummy;
 
-		if (AnchorSnapshotLookup(name, &dummy))
+		if (AnchorSnapshotLookup(name, &dummy, NULL))
 		{
 			ereport(WARNING,
 					(errmsg("anchor snapshot for restore point \"%s\" not exported: name already registered",
@@ -1253,8 +1359,13 @@ AnchorSnapshotInvalidate(const char *rp_name)
 		SpinLockRelease(&anchorRegistry->lock);
 	}
 
+	/*
+	 * Durable: a crash after a plain unlink could bring the file back and
+	 * let the next start re-register an anchor whose tuples a cleanup
+	 * record the restart never replays again has already removed.
+	 */
 	anchorFilePath(path, sizeof(path), rp_name, false);
-	if (unlink(path) != 0 && errno != ENOENT)
+	if (durable_unlink(path, WARNING) != 0 && errno != ENOENT)
 		ereport(WARNING,
 				(errcode_for_file_access(),
 				 errmsg("could not remove anchor snapshot file \"%s\": %m", path)));
@@ -1392,6 +1503,312 @@ AnchorSnapshotClearAll(void)
 		ereport(LOG,
 				(errmsg("cleared %d anchor snapshot(s) at the end of recovery", cleared)));
 }
+
+
+/* ------------------------------------------------------------------
+ * Backend import
+ *
+ * The installer runs in dispatch-role backends of a hot standby, from the
+ * per-statement snapshot funnel (snapmgr.c).  It never builds a snapshot
+ * itself: GetSnapshotData() has just filled the SnapshotData it is given,
+ * so every field the rest of the system relies on (the distributed
+ * snapshot for the dispatcher, curcid, the old-snapshot bookkeeping, the
+ * xid arrays) is in place; the installer lays the anchor's xid set over
+ * the local half and lowers the session's xmin to the anchor's.
+ * ------------------------------------------------------------------
+ */
+
+/*
+ * The anchor this backend last read from disk, keyed by the registration
+ * (name and ordinal): a name registered again after retirement is a new
+ * anchor even when its xmin happens to be the same.
+ */
+static struct
+{
+	bool		valid;
+	char		name[MAXFNAMELEN];
+	uint64		ordinal;
+	AnchorFileSnapshot snap;	/* subxip lives in TopMemoryContext */
+}			cachedAnchor;
+
+/*
+ * The anchor a REPEATABLE READ transaction's first snapshot installed.
+ * Later statements of the transaction re-check it instead of following
+ * the GUC; cleared at end of transaction.
+ */
+static struct
+{
+	bool		pinned;
+	char		name[MAXFNAMELEN];
+	TransactionId xmin;
+	uint64		ordinal;
+}			pinnedAnchor;
+
+/*
+ * Does an anchored read apply to this session right now?  The order of
+ * the tests keeps the common cases cheap: the GUC and the role first, the
+ * recovery state (a shared-memory read until recovery ends, a cached
+ * false afterwards) last.  Sessions still initializing take the ordinary
+ * snapshot InitPostgres needs, so that a connection can always be made
+ * and switch to unanchored mode.
+ */
+static bool
+anchoredReadApplies(void)
+{
+	if (whpg_hot_standby_snapshot_mode != WHPG_SNAPSHOT_MODE_ANCHORED)
+		return false;
+	if (Gp_role != GP_ROLE_DISPATCH)
+		return false;
+	if (IsBackgroundWorker || IsParallelWorker() || !IsNormalProcessingMode())
+		return false;
+	if (!registryEnabled())
+		return false;
+	return RecoveryInProgress();
+}
+
+bool
+AnchorSnapshotSessionAnchored(void)
+{
+	return anchoredReadApplies();
+}
+
+static void
+anchorNotRegisteredError(const char *name)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+			 errmsg("anchor snapshot \"%s\" is not registered on this node",
+					printableName(name)),
+			 errdetail("The restore point of that name has not been exported here, "
+					   "is pending replay confirmation after a restart, or the "
+					   "anchor has been retired, evicted or invalidated."),
+			 errhint("Wait for the next publication, or SET whpg_hot_standby_snapshot_mode = unanchored for this session.")));
+}
+
+static void
+anchorPinnedGoneError(void)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+			 errmsg("anchor snapshot \"%s\" pinned by this transaction is no longer registered",
+					printableName(pinnedAnchor.name)),
+			 errdetail("A later publication retired the anchor, it was evicted or invalidated, or recovery has ended on this node."),
+			 errhint("Roll back and start a new transaction.")));
+}
+
+/*
+ * Make cachedAnchor hold the file of (name, xmin), reading it unless the
+ * cache already does.  The file is read outside every lock; a file that
+ * is missing, damaged or disagrees with the registry is a refusal.
+ */
+static void
+loadAnchorIntoCache(const char *name, TransactionId xmin, uint64 ordinal)
+{
+	TimeLineID	tli;
+	XLogRecPtr	lsn;
+	TransactionId fxmin;
+	AnchorFileSnapshot fs;
+	StringInfoData why;
+	MemoryContext oldcxt;
+	bool		ok;
+
+	if (cachedAnchor.valid && cachedAnchor.ordinal == ordinal &&
+		strcmp(cachedAnchor.name, name) == 0)
+	{
+		Assert(cachedAnchor.snap.xmin == xmin);
+		return;
+	}
+
+	cachedAnchor.valid = false;
+	if (cachedAnchor.snap.subxip != NULL)
+	{
+		pfree(cachedAnchor.snap.subxip);
+		cachedAnchor.snap.subxip = NULL;
+	}
+
+	initStringInfo(&why);
+	oldcxt = MemoryContextSwitchTo(TopMemoryContext);
+	ok = parseAnchorFile(name, &tli, &lsn, &fxmin, &fs, &why);
+	MemoryContextSwitchTo(oldcxt);
+	if (!ok)
+	{
+		char	   *reason = pstrdup(why.data);
+
+		pfree(why.data);
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("anchor snapshot \"%s\" could not be read: %s",
+						printableName(name), reason)));
+	}
+	pfree(why.data);
+	if (fxmin != xmin)
+	{
+		if (fs.subxip != NULL)
+			pfree(fs.subxip);
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("anchor snapshot \"%s\" could not be read: %s",
+						printableName(name),
+						"the file's xmin does not match the registry")));
+	}
+
+	strlcpy(cachedAnchor.name, name, MAXFNAMELEN);
+	cachedAnchor.ordinal = ordinal;
+	cachedAnchor.snap = fs;
+	cachedAnchor.valid = true;
+}
+
+static inline void
+lowerXmin(TransactionId *target, TransactionId xmin)
+{
+	if (!TransactionIdIsValid(*target) || TransactionIdPrecedes(xmin, *target))
+		*target = xmin;
+}
+
+bool
+AnchorSnapshotInstall(Snapshot snapshot, bool pin)
+{
+	const char *name;
+	TransactionId regXmin;
+	uint64		ordinal;
+	TransactionId recheck;
+	uint64		recheckOrdinal;
+
+	/*
+	 * A transaction that pinned an anchor reads it until it ends, whatever
+	 * the mode GUC says by now; every other snapshot follows the GUC.
+	 */
+	if (pinnedAnchor.pinned)
+	{
+		name = pinnedAnchor.name;
+		if (!AnchorSnapshotLookup(name, &regXmin, &ordinal) ||
+			ordinal != pinnedAnchor.ordinal)
+			anchorPinnedGoneError();
+	}
+	else if (!anchoredReadApplies())
+		return false;
+	else
+	{
+		name = whpg_hot_standby_anchor_name;
+		if (name == NULL || name[0] == '\0')
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("anchored read requires a published anchor snapshot"),
+					 errdetail("whpg_hot_standby_anchor_name is not set on this hot standby."),
+					 errhint("Wait for the next publication, or SET whpg_hot_standby_snapshot_mode = unanchored for this session.")));
+		if (!AnchorSnapshotLookup(name, &regXmin, &ordinal))
+			anchorNotRegisteredError(name);
+	}
+
+	loadAnchorIntoCache(name, regXmin, ordinal);
+
+	if (cachedAnchor.snap.subxcnt > GetMaxSnapshotSubxidCount())
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("anchor snapshot \"%s\" holds more transaction ids than this server can install",
+						printableName(name)),
+				 errdetail("The anchor was exported with %d known transaction ids; this server holds at most %d.",
+						   cachedAnchor.snap.subxcnt, GetMaxSnapshotSubxidCount())));
+
+	/*
+	 * Publish the anchor's xmin before the snapshot is used.  The registry
+	 * is re-checked under ProcArrayLock so that an invalidation ordered
+	 * "delete the entry, then take ProcArrayLock exclusively, then collect
+	 * conflicting readers" either sees this session's xmin or made this
+	 * check fail; there is no order in which the session reads with an
+	 * xmin nobody knows about.
+	 */
+	LWLockAcquire(ProcArrayLock, LW_SHARED);
+	if (!AnchorSnapshotLookup(name, &recheck, &recheckOrdinal) ||
+		recheckOrdinal != ordinal)
+	{
+		LWLockRelease(ProcArrayLock);
+		if (pinnedAnchor.pinned)
+			anchorPinnedGoneError();
+		anchorNotRegisteredError(name);
+	}
+	lowerXmin(&MyPgXact->xmin, regXmin);
+	LWLockRelease(ProcArrayLock);
+
+	lowerXmin(&TransactionXmin, regXmin);
+	lowerXmin(&RecentXmin, regXmin);
+	lowerXmin(&RecentGlobalXmin, regXmin);
+	lowerXmin(&RecentGlobalDataXmin, regXmin);
+
+	/* the local half of the snapshot is the anchor's */
+	snapshot->xmin = cachedAnchor.snap.xmin;
+	snapshot->xmax = cachedAnchor.snap.xmax;
+	snapshot->xcnt = 0;
+	snapshot->subxcnt = cachedAnchor.snap.subxcnt;
+	if (snapshot->subxcnt > 0)
+		memcpy(snapshot->subxip, cachedAnchor.snap.subxip,
+			   sizeof(TransactionId) * snapshot->subxcnt);
+	snapshot->suboverflowed = cachedAnchor.snap.suboverflowed;
+	snapshot->takenDuringRecovery = true;
+
+	if (pin && !pinnedAnchor.pinned)
+	{
+		strlcpy(pinnedAnchor.name, name, MAXFNAMELEN);
+		pinnedAnchor.xmin = regXmin;
+		pinnedAnchor.ordinal = ordinal;
+		pinnedAnchor.pinned = true;
+	}
+	return true;
+}
+
+void
+AnchorSnapshotValidatePinned(void)
+{
+	TransactionId xmin;
+	uint64		ordinal;
+
+	if (!pinnedAnchor.pinned)
+		return;
+	if (!AnchorSnapshotLookup(pinnedAnchor.name, &xmin, &ordinal) ||
+		ordinal != pinnedAnchor.ordinal)
+		anchorPinnedGoneError();
+}
+
+bool
+AnchorSnapshotTransactionPinned(void)
+{
+	return pinnedAnchor.pinned;
+}
+
+void
+AtEOXact_AnchorSnapshot(void)
+{
+	pinnedAnchor.pinned = false;
+}
+
+
+/* ------------------------------------------------------------------
+ * Horizon
+ * ------------------------------------------------------------------
+ */
+
+TransactionId
+AnchorSnapshotOldestXmin(void)
+{
+	TransactionId oldest = InvalidTransactionId;
+	int			i;
+
+	if (!registryEnabled())
+		return InvalidTransactionId;
+
+	SpinLockAcquire(&anchorRegistry->lock);
+	for (i = 0; i < anchorRegistry->capacity; i++)
+	{
+		AnchorRegistryEntry *e = &anchorRegistry->entries[i];
+
+		if (e->valid &&
+			(!TransactionIdIsValid(oldest) || TransactionIdPrecedes(e->xmin, oldest)))
+			oldest = e->xmin;
+	}
+	SpinLockRelease(&anchorRegistry->lock);
+	return oldest;
+}
+
 
 
 /* ------------------------------------------------------------------

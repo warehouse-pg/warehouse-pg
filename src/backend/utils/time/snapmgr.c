@@ -48,6 +48,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "access/anchorsnapshot.h"
 #include "access/subtrans.h"
 #include "access/transam.h"
 #include "access/xact.h"
@@ -367,6 +368,12 @@ GetTransactionSnapshot(void)
 				CurrentSnapshot = GetSerializableTransactionSnapshot(&CurrentSnapshotData);
 			else
 				CurrentSnapshot = GetSnapshotData(&CurrentSnapshotData, DistributedTransactionContext);
+			/*
+			 * A hot-standby dispatcher in anchored mode reads as of the
+			 * published anchor: this snapshot serves the whole transaction,
+			 * so the anchor is pinned to it.
+			 */
+			AnchorSnapshotInstall(CurrentSnapshot, true);
 			/* Make a saved copy */
 			CurrentSnapshot = CopySnapshot(CurrentSnapshot);
 			FirstXactSnapshot = CurrentSnapshot;
@@ -375,7 +382,10 @@ GetTransactionSnapshot(void)
 			pairingheap_add(&RegisteredSnapshots, &FirstXactSnapshot->ph_node);
 		}
 		else
+		{
 			CurrentSnapshot = GetSnapshotData(&CurrentSnapshotData, DistributedTransactionContext);
+			AnchorSnapshotInstall(CurrentSnapshot, false);
+		}
 
 		FirstSnapshotSet = true;
 		return CurrentSnapshot;
@@ -383,6 +393,9 @@ GetTransactionSnapshot(void)
 
 	if (IsolationUsesXactSnapshot())
 	{
+		/* the anchor this transaction pinned must still be registered */
+		AnchorSnapshotValidatePinned();
+
 		elog((Debug_print_snapshot_dtm ? LOG : DEBUG5),
 			 "[Distributed Snapshot #%u] *Serializable* (gxid = "UINT64_FORMAT", '%s')",
 			 CurrentSnapshot->distribSnapshotWithLocalMapping.ds.distribSnapshotId,
@@ -398,6 +411,8 @@ GetTransactionSnapshot(void)
 	InvalidateCatalogSnapshot();
 
 	CurrentSnapshot = GetSnapshotData(&CurrentSnapshotData, DistributedTransactionContext);
+	/* anchored hot-standby dispatcher: every statement reads the anchor */
+	AnchorSnapshotInstall(CurrentSnapshot, false);
 
 	elog((Debug_print_snapshot_dtm ? LOG : DEBUG5),
 		 "[Distributed Snapshot #%u] (gxid = "UINT64_FORMAT", '%s')",
@@ -456,6 +471,13 @@ GetLatestSnapshot(void)
 	 */
 	dtxctx = Gp_role == GP_ROLE_DISPATCH ? DistributedTransactionContext : DTX_CONTEXT_LOCAL_ONLY;
 	SecondarySnapshot = GetSnapshotData(&SecondarySnapshotData, dtxctx);
+	/*
+	 * In an anchored session the latest snapshot is the session's anchor.
+	 * A transaction-snapshot transaction follows its first snapshot: the
+	 * pinned anchor if it had one, no anchor otherwise.
+	 */
+	if (!IsolationUsesXactSnapshot() || AnchorSnapshotTransactionPinned())
+		AnchorSnapshotInstall(SecondarySnapshot, false);
 
 	return SecondarySnapshot;
 }
@@ -1309,6 +1331,7 @@ AtEOXact_Snapshot(bool isCommit, bool resetXmin)
 	SecondarySnapshot = NULL;
 
 	FirstSnapshotSet = false;
+	AtEOXact_AnchorSnapshot();
 
 	/*
 	 * During normal commit processing, we call ProcArrayEndTransaction() to
@@ -1670,6 +1693,17 @@ ImportSnapshot(const char *idstr)
 		ereport(ERROR,
 				(errcode(ERRCODE_ACTIVE_SQL_TRANSACTION),
 				 errmsg("SET TRANSACTION SNAPSHOT must be called before any query")));
+
+	/*
+	 * An anchored hot-standby session reads the published anchor; importing
+	 * another snapshot would silently turn the transaction into an
+	 * unanchored one.
+	 */
+	if (AnchorSnapshotSessionAnchored())
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot import a snapshot in anchored snapshot mode"),
+				 errhint("SET whpg_hot_standby_snapshot_mode = unanchored to import a snapshot.")));
 
 	/*
 	 * If we are in read committed mode then the next query would execute with

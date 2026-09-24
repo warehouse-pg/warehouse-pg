@@ -7220,7 +7220,10 @@ StartupXLOG(void)
 	 */
 	AnchorSnapshotStartup((InRecovery && ArchiveRecoveryRequested) ?
 						  checkPoint.redo : InvalidXLogRecPtr,
-						  expectedTLEs);
+						  expectedTLEs,
+						  (InRecovery && ArchiveRecoveryRequested) ?
+						  (wasShutdown ? PrescanPreparedTransactions(NULL, NULL) :
+						   checkPoint.oldestActiveXid) : InvalidTransactionId);
 
 	/* REDO */
 	if (InRecovery)
@@ -10250,9 +10253,24 @@ CreateRestartPoint(int flags)
 	 * attempt to reference any pg_subtrans entry older than that (see Asserts
 	 * in subtrans.c).  When hot standby is disabled, though, we mustn't do
 	 * this because StartupSUBTRANS hasn't been called yet.
+	 *
+	 * A registered anchor snapshot is an xmin a future transaction may
+	 * install, and between its export and its import no backend holds it,
+	 * so the horizon also stops at the oldest registered anchor.  The
+	 * registry is read first: an anchor gone by the time GetOldestXmin()
+	 * runs was invalidated after every installer that saw it published its
+	 * xmin under ProcArrayLock, which GetOldestXmin() then sees.
 	 */
 	if (EnableHotStandby)
-		TruncateSUBTRANS(GetOldestXmin(NULL, PROCARRAY_FLAGS_DEFAULT));
+	{
+		TransactionId anchorXmin = AnchorSnapshotOldestXmin();
+		TransactionId cutoff = GetOldestXmin(NULL, PROCARRAY_FLAGS_DEFAULT);
+
+		if (TransactionIdIsValid(anchorXmin) &&
+			TransactionIdPrecedes(anchorXmin, cutoff))
+			cutoff = anchorXmin;
+		TruncateSUBTRANS(cutoff);
+	}
 
 	/* Real work is done, but log and update before releasing lock. */
 	LogCheckpointEnd(true);
