@@ -57,6 +57,7 @@
 
 #include "access/anchorsnapshot.h"
 #include "access/parallel.h"
+#include "access/subtrans.h"
 #include "access/timeline.h"
 #include "access/transam.h"
 #include "access/xlog.h"
@@ -946,10 +947,12 @@ sweepAnchorFiles(const char *keep)
 /*
  * May an overflowed anchor be registered again by this start?  Its readers
  * map subtransactions to their parents through pg_subtrans, and
- * StartupSUBTRANS zeroes every page from the start checkpoint's oldest
- * active xid on; the assignment records that filled those pages lie before
- * the redo start point and are never replayed again.  An anchor whose xid
- * range ends at or before that xid consults only pages the zeroing spared.
+ * StartupSUBTRANS zeroes every page from the one holding the start
+ * checkpoint's oldest active xid on; the assignment records that filled
+ * those pages lie before the redo start point and are never replayed again.
+ * An anchor whose xid range ends on an earlier page consults only pages
+ * the zeroing spared (the zeroing is by page, so "ends before the xid" is
+ * not enough: an xid on the same page but below it is zeroed too).
  */
 static bool
 anchorSurvivesStart(bool suboverflowed, TransactionId xmax,
@@ -957,7 +960,7 @@ anchorSurvivesStart(bool suboverflowed, TransactionId xmax,
 {
 	if (!suboverflowed || !TransactionIdIsValid(oldestActiveXid))
 		return true;
-	return !TransactionIdFollows(xmax, oldestActiveXid);
+	return SubTransXidRangeSurvivesStartup(xmax, oldestActiveXid);
 }
 
 void
@@ -1037,7 +1040,7 @@ AnchorSnapshotStartup(XLogRecPtr redoStart, List *history,
 
 			if (!anchorSurvivesStart(fs.suboverflowed, fs.xmax, oldestActiveXid))
 				ereport(WARNING,
-						(errmsg("anchor snapshot for restore point \"%s\" not re-registered: its overflowed transactions reach past the start checkpoint's oldest active transaction %u (xmax %u)",
+						(errmsg("anchor snapshot for restore point \"%s\" not re-registered: its overflowed transactions reach the pg_subtrans page of the start checkpoint's oldest active transaction %u or beyond (xmax %u)",
 								name, oldestActiveXid, fs.xmax),
 						 errdetail("This start zeroed the pg_subtrans pages the anchor's readers would map subtransactions through.")));
 			else if (histTLI != tli)
@@ -1672,14 +1675,26 @@ lowerXmin(TransactionId *target, TransactionId xmin)
 }
 
 /*
- * The part of an installation common to the dispatcher and the executors:
+ * What AnchorSnapshotPrepare decided for the snapshot about to be taken;
+ * consumed by the AnchorSnapshotInstall call that follows GetSnapshotData().
+ */
+static struct
+{
+	bool		pending;
+	bool		pin;
+	char		name[MAXFNAMELEN];
+	TransactionId xmin;
+	uint64		ordinal;
+}			preparedAnchor;
+
+/*
+ * The part of a preparation common to the dispatcher and the executors:
  * the registered anchor (name, xmin, ordinal) is read into the cache, its
- * xmin published under ProcArrayLock after re-checking the registration,
- * and its xid set laid over the snapshot's local half.
+ * size checked, and its xmin published under ProcArrayLock after
+ * re-checking the registration.
  */
 static void
-installRegisteredAnchor(Snapshot snapshot, const char *name,
-						TransactionId regXmin, uint64 ordinal)
+prepareRegisteredAnchor(const char *name, TransactionId regXmin, uint64 ordinal)
 {
 	TransactionId recheck;
 	uint64		recheckOrdinal;
@@ -1695,12 +1710,14 @@ installRegisteredAnchor(Snapshot snapshot, const char *name,
 						   cachedAnchor.snap.subxcnt, GetMaxSnapshotSubxidCount())));
 
 	/*
-	 * Publish the anchor's xmin before the snapshot is used.  The registry
-	 * is re-checked under ProcArrayLock so that an invalidation ordered
-	 * "delete the entry, then take ProcArrayLock exclusively, then collect
-	 * conflicting readers" either sees this session's xmin or made this
-	 * check fail; there is no order in which the session reads with an
-	 * xmin nobody knows about.
+	 * Publish the anchor's xmin before the snapshot is taken: GetSnapshotData()
+	 * leaves a valid MyPgXact->xmin alone, so the session never announces the
+	 * replay-position xmin it is about to read below, and a cleanup record
+	 * replayed from now on conflicts with this session.  The registry is
+	 * re-checked under ProcArrayLock so that an invalidation ordered "delete
+	 * the entry, then take ProcArrayLock exclusively, then collect conflicting
+	 * readers" either sees this session's xmin or made this check fail; there
+	 * is no order in which the session reads with an xmin nobody knows about.
 	 */
 	LWLockAcquire(ProcArrayLock, LW_SHARED);
 	if (!AnchorSnapshotLookup(name, &recheck, &recheckOrdinal) ||
@@ -1719,19 +1736,10 @@ installRegisteredAnchor(Snapshot snapshot, const char *name,
 	lowerXmin(&RecentGlobalXmin, regXmin);
 	lowerXmin(&RecentGlobalDataXmin, regXmin);
 
-	/* the local half of the snapshot is the anchor's */
-	snapshot->xmin = cachedAnchor.snap.xmin;
-	snapshot->xmax = cachedAnchor.snap.xmax;
-	snapshot->xcnt = 0;
-	snapshot->subxcnt = cachedAnchor.snap.subxcnt;
-	if (snapshot->subxcnt > 0)
-		memcpy(snapshot->subxip, cachedAnchor.snap.subxip,
-			   sizeof(TransactionId) * snapshot->subxcnt);
-	snapshot->suboverflowed = cachedAnchor.snap.suboverflowed;
-	snapshot->takenDuringRecovery = true;
-
-	/* the snapshot remembers which registration it carries (dispatch) */
-	snapshot->anchorOrdinal = ordinal;
+	strlcpy(preparedAnchor.name, name, MAXFNAMELEN);
+	preparedAnchor.xmin = regXmin;
+	preparedAnchor.ordinal = ordinal;
+	preparedAnchor.pending = true;
 }
 
 /*
@@ -1764,83 +1772,54 @@ AnchorSnapshotSetDeferredPublication(bool deferred)
 }
 
 /*
- * Executor side: every executor backend that serves an anchored dispatch
+ * Before the snapshot funnel calls GetSnapshotData(): decide whether the
+ * snapshot about to be taken gets an anchor, and if so which, and publish
+ * the anchor's xmin.  pin says that the snapshot will serve the whole
+ * transaction (REPEATABLE READ's first snapshot); it is ignored on
+ * executors, which have no pin of their own.
+ *
+ * Dispatcher: a transaction that pinned an anchor reads it until it ends,
+ * whatever the mode GUC says by now; every other snapshot follows the GUC
+ * and the published name.
+ *
+ * Executor: every executor backend that serves an anchored dispatch
  * (writer, reader, cursor reader, the single segment of a direct dispatch,
  * the entry-db singleton) installs ITS OWN node's anchor of the dispatched
  * name, whatever DistributedTransactionContext it is in and whatever its
  * own mode GUC says: a SET does not reach a busy cursor gang, and the
  * dispatch is the only word on which cut the statement reads.  A reader
- * has just copied the writer's (already anchored) set from the shared
- * slot; installing again from the file gives the same set, and publishes
- * the reader's xmin, which readers never do otherwise, so that conflict
+ * copies the writer's (already anchored) set from the shared slot and
+ * installs again from the file, which gives the same set and publishes the
+ * reader's xmin, which readers never do otherwise, so that conflict
  * handling finds every process reading the anchor.
  */
-static bool
-installDispatchedAnchor(Snapshot snapshot)
-{
-	const char *name = QEDtxContextInfo.anchorName;
-	TransactionId regXmin;
-	uint64		ordinal;
-
-	if (!isMppTxOptions_Anchored(QEDtxContextInfo.distributedTxnOptions))
-		return false;
-
-	if (!RecoveryInProgress() || !registryEnabled())
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("anchored dispatch reached a segment that cannot install anchor snapshots"),
-				 errdetail("The coordinator dispatched anchor snapshot \"%s\", but this segment is not in recovery or its anchor registry is disabled (whpg_max_anchor_snapshots = 0).",
-						   printableName(name)),
-				 errhint("Every node of an anchored standby cluster must be a hot standby with the anchor registry enabled.")));
-
-	if (!AnchorSnapshotLookup(name, &regXmin, &ordinal))
-		anchorNotRegisteredError(name);
-
-	installRegisteredAnchor(snapshot, name, regXmin, ordinal);
-
-	/*
-	 * Single-layer visibility: under the anchor the executor never consults
-	 * the distributed snapshot or the distributed log.  The distributed
-	 * snapshot the dispatcher shipped has already done its two jobs, in
-	 * GetSnapshotData(): selecting this executor's transaction context and
-	 * advancing the distributed-log horizon.  Resetting the mapping also
-	 * keeps CopySnapshot() and SerializeSnapshot() from carrying stale
-	 * distributed arrays.
-	 */
-	SnapshotResetDslm(snapshot);
-
-	/*
-	 * A writer publishes the snapshot for its reader gang only now, with the
-	 * anchor laid over it: GetSnapshotData() handed the publication over
-	 * when it skipped it for this snapshot (a snapshot it would not have
-	 * published, such as the latest or the catalog snapshot, is not
-	 * published here either).
-	 */
-	if (deferredPublication)
-	{
-		deferredPublication = false;
-		Assert(SharedLocalSnapshotSlot != NULL);
-		updateSharedLocalSnapshot(&QEDtxContextInfo, DistributedTransactionContext,
-								  snapshot, "AnchorSnapshotInstall");
-	}
-	return true;
-}
-
-bool
-AnchorSnapshotInstall(Snapshot snapshot, bool pin)
+void
+AnchorSnapshotPrepare(bool pin)
 {
 	const char *name;
 	TransactionId regXmin;
 	uint64		ordinal;
 
-	if (Gp_role == GP_ROLE_EXECUTE)
-		return installDispatchedAnchor(snapshot);
+	preparedAnchor.pending = false;
 
-	/*
-	 * A transaction that pinned an anchor reads it until it ends, whatever
-	 * the mode GUC says by now; every other snapshot follows the GUC.
-	 */
-	if (pinnedAnchor.pinned)
+	if (Gp_role == GP_ROLE_EXECUTE)
+	{
+		if (!isMppTxOptions_Anchored(QEDtxContextInfo.distributedTxnOptions))
+			return;
+
+		name = QEDtxContextInfo.anchorName;
+		if (!RecoveryInProgress() || !registryEnabled())
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("anchored dispatch reached a segment that cannot install anchor snapshots"),
+					 errdetail("The coordinator dispatched anchor snapshot \"%s\", but this segment is not in recovery or its anchor registry is disabled (whpg_max_anchor_snapshots = 0).",
+							   printableName(name)),
+					 errhint("Every node of an anchored standby cluster must be a hot standby with the anchor registry enabled.")));
+		if (!AnchorSnapshotLookup(name, &regXmin, &ordinal))
+			anchorNotRegisteredError(name);
+		pin = false;
+	}
+	else if (pinnedAnchor.pinned)
 	{
 		name = pinnedAnchor.name;
 		if (!AnchorSnapshotLookup(name, &regXmin, &ordinal) ||
@@ -1848,7 +1827,7 @@ AnchorSnapshotInstall(Snapshot snapshot, bool pin)
 			anchorPinnedGoneError();
 	}
 	else if (!anchoredReadApplies())
-		return false;
+		return;
 	else
 	{
 		name = whpg_hot_standby_anchor_name;
@@ -1862,13 +1841,80 @@ AnchorSnapshotInstall(Snapshot snapshot, bool pin)
 			anchorNotRegisteredError(name);
 	}
 
-	installRegisteredAnchor(snapshot, name, regXmin, ordinal);
+	prepareRegisteredAnchor(name, regXmin, ordinal);
+	preparedAnchor.pin = pin;
+}
 
-	if (pin && !pinnedAnchor.pinned)
+/*
+ * After GetSnapshotData(): lay the prepared anchor's xid set over the
+ * snapshot's local half.  Returns false, leaving the snapshot alone, when
+ * AnchorSnapshotPrepare found no anchor for it.
+ */
+bool
+AnchorSnapshotInstall(Snapshot snapshot)
+{
+	if (!preparedAnchor.pending)
+		return false;
+	preparedAnchor.pending = false;
+
+	Assert(cachedAnchor.valid && cachedAnchor.ordinal == preparedAnchor.ordinal);
+
+	/*
+	 * GetSnapshotData() left MyPgXact->xmin and TransactionXmin alone (both
+	 * valid) but recomputed the recent-xmin globals from its own xmin.
+	 */
+	lowerXmin(&TransactionXmin, preparedAnchor.xmin);
+	lowerXmin(&RecentXmin, preparedAnchor.xmin);
+	lowerXmin(&RecentGlobalXmin, preparedAnchor.xmin);
+	lowerXmin(&RecentGlobalDataXmin, preparedAnchor.xmin);
+
+	/* the local half of the snapshot is the anchor's */
+	snapshot->xmin = cachedAnchor.snap.xmin;
+	snapshot->xmax = cachedAnchor.snap.xmax;
+	snapshot->xcnt = 0;
+	snapshot->subxcnt = cachedAnchor.snap.subxcnt;
+	if (snapshot->subxcnt > 0)
+		memcpy(snapshot->subxip, cachedAnchor.snap.subxip,
+			   sizeof(TransactionId) * snapshot->subxcnt);
+	snapshot->suboverflowed = cachedAnchor.snap.suboverflowed;
+	snapshot->takenDuringRecovery = true;
+
+	/* the snapshot remembers which registration it carries (dispatch) */
+	snapshot->anchorOrdinal = preparedAnchor.ordinal;
+
+	if (Gp_role == GP_ROLE_EXECUTE)
 	{
-		strlcpy(pinnedAnchor.name, name, MAXFNAMELEN);
-		pinnedAnchor.xmin = regXmin;
-		pinnedAnchor.ordinal = ordinal;
+		/*
+		 * Single-layer visibility: under the anchor the executor never
+		 * consults the distributed snapshot or the distributed log.  The
+		 * distributed snapshot the dispatcher shipped has already done its
+		 * two jobs, in GetSnapshotData(): selecting this executor's
+		 * transaction context and advancing the distributed-log horizon.
+		 * Resetting the mapping also keeps CopySnapshot() and
+		 * SerializeSnapshot() from carrying stale distributed arrays.
+		 */
+		SnapshotResetDslm(snapshot);
+
+		/*
+		 * A writer publishes the snapshot for its reader gang only now, with
+		 * the anchor laid over it: GetSnapshotData() handed the publication
+		 * over when it skipped it for this snapshot (a snapshot it would not
+		 * have published, such as the latest or the catalog snapshot, is not
+		 * published here either).
+		 */
+		if (deferredPublication)
+		{
+			deferredPublication = false;
+			Assert(SharedLocalSnapshotSlot != NULL);
+			updateSharedLocalSnapshot(&QEDtxContextInfo, DistributedTransactionContext,
+									  snapshot, "AnchorSnapshotInstall");
+		}
+	}
+	else if (preparedAnchor.pin && !pinnedAnchor.pinned)
+	{
+		strlcpy(pinnedAnchor.name, preparedAnchor.name, MAXFNAMELEN);
+		pinnedAnchor.xmin = preparedAnchor.xmin;
+		pinnedAnchor.ordinal = preparedAnchor.ordinal;
 		pinnedAnchor.pinned = true;
 	}
 	return true;
@@ -1944,6 +1990,7 @@ void
 AtEOXact_AnchorSnapshot(void)
 {
 	pinnedAnchor.pinned = false;
+	preparedAnchor.pending = false;
 }
 
 

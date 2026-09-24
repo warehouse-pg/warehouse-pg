@@ -718,7 +718,7 @@ t
 -------
  0     
 (1 row)
-!\retcode sdir="$COORDINATOR_DATA_DIRECTORY/../../standby"; test ! -e "$sdir/pg_anchor_snapshots/hs_imp_sof2" && grep -q 'anchor snapshot for restore point ..hs_imp_sof2.. not re-registered: its overflowed transactions reach past the start checkpoint' "$sdir"/log/*.csv;
+!\retcode sdir="$COORDINATOR_DATA_DIRECTORY/../../standby"; test ! -e "$sdir/pg_anchor_snapshots/hs_imp_sof2" && grep -q 'anchor snapshot for restore point ..hs_imp_sof2.. not re-registered: its overflowed transactions reach the pg_subtrans page of the start checkpoint' "$sdir"/log/*.csv;
 -- start_ignore
 
 -- end_ignore

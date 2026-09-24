@@ -265,7 +265,7 @@
 -- the anchor was refused at start and its file swept; anchored statements
 -- fail closed until the next publication
 -1M: select count(*) from gp_toolkit.whpg_anchor_snapshots();
-!\retcode sdir="$COORDINATOR_DATA_DIRECTORY/../../standby"; test ! -e "$sdir/pg_anchor_snapshots/hs_imp_sof2" && grep -q 'anchor snapshot for restore point ..hs_imp_sof2.. not re-registered: its overflowed transactions reach past the start checkpoint' "$sdir"/log/*.csv;
+!\retcode sdir="$COORDINATOR_DATA_DIRECTORY/../../standby"; test ! -e "$sdir/pg_anchor_snapshots/hs_imp_sof2" && grep -q 'anchor snapshot for restore point ..hs_imp_sof2.. not re-registered: its overflowed transactions reach the pg_subtrans page of the start checkpoint' "$sdir"/log/*.csv;
 -1S: set whpg_hot_standby_snapshot_mode = anchored;
 -1S: select count(*) from hs_imp_t;
 -1S: set whpg_hot_standby_snapshot_mode = unanchored;

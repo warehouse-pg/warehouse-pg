@@ -598,11 +598,24 @@ test__oldest_xmin_and_restart_rule(void **state)
 	 * ends at or before the start checkpoint's oldest active xid; a
 	 * non-overflowed anchor and an unknown oldest active xid always do.
 	 */
-	assert_true(anchorSurvivesStart(false, 500, 100));
-	assert_true(anchorSurvivesStart(true, 500, InvalidTransactionId));
-	assert_true(anchorSurvivesStart(true, 100, 100));
-	assert_true(anchorSurvivesStart(true, 99, 100));
-	assert_false(anchorSurvivesStart(true, 101, 100));
+	{
+		/* StartupSUBTRANS zeroes whole pages from oldestActiveXid's page on */
+		TransactionId perPage = BLCKSZ / sizeof(SubTransData);
+		TransactionId oldest = 10 * perPage + 100;	/* on page 10 */
+
+		assert_true(anchorSurvivesStart(false, oldest + 400, oldest));
+		assert_true(anchorSurvivesStart(true, oldest + 400, InvalidTransactionId));
+		/* past the oldest active xid: refused */
+		assert_false(anchorSurvivesStart(true, oldest + 1, oldest));
+		/* at or below it but on the same page: refused all the same */
+		assert_false(anchorSurvivesStart(true, oldest, oldest));
+		assert_false(anchorSurvivesStart(true, oldest - 1, oldest));
+		assert_false(anchorSurvivesStart(true, 10 * perPage + 1, oldest));
+		/* the range ends on the page before: its pages were spared */
+		assert_true(anchorSurvivesStart(true, 10 * perPage, oldest));
+		assert_true(anchorSurvivesStart(true, 9 * perPage + 5, oldest));
+		assert_true(anchorSurvivesStart(true, perPage, oldest));
+	}
 }
 
 int

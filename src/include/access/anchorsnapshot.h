@@ -41,12 +41,15 @@
  *   (MyPgXact->xmin, TransactionXmin and the recent-xmin globals) is
  *   lowered to the anchor's, which is what makes replayed cleanup conflict
  *   with the reader instead of removing what it reads; readers, which
- *   publish no xmin of their own otherwise, publish it too.  The lowering
- *   happens under ProcArrayLock (shared) after re-checking that the
- *   anchor is still registered; code that invalidates an anchor must
- *   therefore delete the entry first and take ProcArrayLock exclusively
- *   once before collecting conflicting readers, so that every installer
- *   that saw the entry has published its xmin by then.
+ *   publish no xmin of their own otherwise, publish it too.  The xmin is
+ *   published BEFORE GetSnapshotData() runs (which leaves a valid xmin
+ *   alone), so the session never announces the replay-position xmin
+ *   between taking the snapshot and anchoring it.  The lowering happens
+ *   under ProcArrayLock (shared) after re-checking that the anchor is
+ *   still registered; code that invalidates an anchor must therefore
+ *   delete the entry first and take ProcArrayLock exclusively once before
+ *   collecting conflicting readers, so that every installer that saw the
+ *   entry has published its xmin by then.
  * - An executor writer publishes its snapshot to the reader gang only
  *   after the anchor is laid over it (GetSnapshotData() skips its usual
  *   publication under an anchored dispatch), so a reader never copies the
@@ -77,10 +80,11 @@
  *   same xmin.  The installer therefore keys its cache and a transaction's
  *   pin on the registry's registration ordinal.
  * - After a restart an overflowed anchor (sof:1) whose xid range reaches
- *   past the start checkpoint's oldest active xid is not re-registered:
- *   StartupSUBTRANS zeroed the pg_subtrans pages its readers would map
- *   subtransactions through, and the assignment records that filled them
- *   lie before the redo start point.
+ *   the pg_subtrans page of the start checkpoint's oldest active xid, or
+ *   beyond, is not re-registered: StartupSUBTRANS zeroed those pages (whole
+ *   pages, from the one holding that xid on), its readers would map
+ *   subtransactions through them, and the assignment records that filled
+ *   them lie before the redo start point.
  *
  * Copyright (c) 2026-Present EnterpriseDB Corporation.
  *
@@ -154,17 +158,20 @@ extern void AnchorSnapshotSetDeferredPublication(bool deferred);
 extern bool AnchorSnapshotNameIsValid(const char *name);
 
 /*
- * Backend import (snapmgr.c).  AnchorSnapshotInstall lays the session's
- * anchor over a snapshot GetSnapshotData() just took and lowers the
- * session's xmin to it; with pin set, a snapshot that is to serve the
- * whole transaction pins the anchor.  It returns false, leaving the
- * snapshot alone, when anchored reads do not apply to this session.  In an
- * executor it installs the dispatched anchor instead (pin is ignored).
- * AnchorSnapshotValidatePinned re-checks a pinned anchor for the next
- * statement of the transaction; AnchorSnapshotSessionAnchored says
+ * Backend import (snapmgr.c), in two halves around GetSnapshotData():
+ * AnchorSnapshotPrepare decides whether the snapshot about to be taken gets
+ * an anchor and publishes the anchor's xmin (so GetSnapshotData() never
+ * announces the replay-position xmin); with pin set, the snapshot is to
+ * serve the whole transaction and pins the anchor.  AnchorSnapshotInstall
+ * then lays the prepared anchor's xid set over the snapshot; it returns
+ * false, leaving the snapshot alone, when no anchor applies.  In an
+ * executor the pair installs the dispatched anchor instead (pin is
+ * ignored).  AnchorSnapshotValidatePinned re-checks a pinned anchor for the
+ * next statement of the transaction; AnchorSnapshotSessionAnchored says
  * whether anchored reads apply to this session right now.
  */
-extern bool AnchorSnapshotInstall(Snapshot snapshot, bool pin);
+extern void AnchorSnapshotPrepare(bool pin);
+extern bool AnchorSnapshotInstall(Snapshot snapshot);
 extern void AnchorSnapshotValidatePinned(void);
 extern bool AnchorSnapshotTransactionPinned(void);
 extern bool AnchorSnapshotSessionAnchored(void);

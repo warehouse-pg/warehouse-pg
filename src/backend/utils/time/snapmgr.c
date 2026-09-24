@@ -363,17 +363,19 @@ GetTransactionSnapshot(void)
 		 */
 		if (IsolationUsesXactSnapshot())
 		{
+			/*
+			 * A hot-standby dispatcher in anchored mode reads as of the
+			 * published anchor: this snapshot serves the whole transaction,
+			 * so the anchor is pinned to it.  The anchor's xmin is published
+			 * before the snapshot is taken.
+			 */
+			AnchorSnapshotPrepare(true);
 			/* First, create the snapshot in CurrentSnapshotData */
 			if (IsolationIsSerializable())
 				CurrentSnapshot = GetSerializableTransactionSnapshot(&CurrentSnapshotData);
 			else
 				CurrentSnapshot = GetSnapshotData(&CurrentSnapshotData, DistributedTransactionContext);
-			/*
-			 * A hot-standby dispatcher in anchored mode reads as of the
-			 * published anchor: this snapshot serves the whole transaction,
-			 * so the anchor is pinned to it.
-			 */
-			AnchorSnapshotInstall(CurrentSnapshot, true);
+			AnchorSnapshotInstall(CurrentSnapshot);
 			/* Make a saved copy */
 			CurrentSnapshot = CopySnapshot(CurrentSnapshot);
 			FirstXactSnapshot = CurrentSnapshot;
@@ -383,8 +385,9 @@ GetTransactionSnapshot(void)
 		}
 		else
 		{
+			AnchorSnapshotPrepare(false);
 			CurrentSnapshot = GetSnapshotData(&CurrentSnapshotData, DistributedTransactionContext);
-			AnchorSnapshotInstall(CurrentSnapshot, false);
+			AnchorSnapshotInstall(CurrentSnapshot);
 		}
 
 		FirstSnapshotSet = true;
@@ -410,9 +413,10 @@ GetTransactionSnapshot(void)
 	/* Don't allow catalog snapshot to be older than xact snapshot. */
 	InvalidateCatalogSnapshot();
 
-	CurrentSnapshot = GetSnapshotData(&CurrentSnapshotData, DistributedTransactionContext);
 	/* anchored hot-standby dispatcher: every statement reads the anchor */
-	AnchorSnapshotInstall(CurrentSnapshot, false);
+	AnchorSnapshotPrepare(false);
+	CurrentSnapshot = GetSnapshotData(&CurrentSnapshotData, DistributedTransactionContext);
+	AnchorSnapshotInstall(CurrentSnapshot);
 
 	elog((Debug_print_snapshot_dtm ? LOG : DEBUG5),
 		 "[Distributed Snapshot #%u] (gxid = "UINT64_FORMAT", '%s')",
@@ -432,6 +436,7 @@ Snapshot
 GetLatestSnapshot(void)
 {
 	DtxContext               dtxctx;
+	bool		anchored;
 	/*
 	 * We might be able to relax this, but nothing that could otherwise work
 	 * needs it.
@@ -470,16 +475,19 @@ GetLatestSnapshot(void)
 	 * See github issue: https://github.com/greenplum-db/gpdb/issues/10216
 	 */
 	dtxctx = Gp_role == GP_ROLE_DISPATCH ? DistributedTransactionContext : DTX_CONTEXT_LOCAL_ONLY;
-	SecondarySnapshot = GetSnapshotData(&SecondarySnapshotData, dtxctx);
 	/*
 	 * In an anchored session the latest snapshot is the session's anchor.
 	 * A transaction-snapshot transaction follows its first snapshot: the
 	 * pinned anchor if it had one, no anchor otherwise.  An executor follows
 	 * the dispatch it is serving, whatever the isolation level.
 	 */
-	if (!IsolationUsesXactSnapshot() || AnchorSnapshotTransactionPinned() ||
-		Gp_role == GP_ROLE_EXECUTE)
-		AnchorSnapshotInstall(SecondarySnapshot, false);
+	anchored = !IsolationUsesXactSnapshot() || AnchorSnapshotTransactionPinned() ||
+		Gp_role == GP_ROLE_EXECUTE;
+	if (anchored)
+		AnchorSnapshotPrepare(false);
+	SecondarySnapshot = GetSnapshotData(&SecondarySnapshotData, dtxctx);
+	if (anchored)
+		AnchorSnapshotInstall(SecondarySnapshot);
 
 	return SecondarySnapshot;
 }
