@@ -686,7 +686,22 @@ SetTransactionSnapshot(Snapshot sourcesnap, VirtualTransactionId *sourcevxid,
 	if (sourcesnap->haveDistribSnapshot)
 		CurrentSnapshot = GetSnapshotData(&CurrentSnapshotData, DTX_CONTEXT_LOCAL_ONLY);
 	else
+	{
 		CurrentSnapshot = GetSnapshotData(&CurrentSnapshotData, DistributedTransactionContext);
+
+		/*
+		 * WHPG: a parallel worker restoring its leader's snapshot must mirror
+		 * it field by field.  Under an anchor snapshot the leader's snapshot
+		 * carries no distributed snapshot (access/anchorsnapshot.h: an
+		 * executor reads the anchor's xid set alone), but GetSnapshotData()
+		 * in an executor context has just re-attached the replayed one from
+		 * QEDtxContextInfo, and XidInMVCCSnapshot() would consult it ahead
+		 * of the anchor.  Drop it again.  Elsewhere this is a no-op: a leader
+		 * in an executor context always carries the distributed snapshot its
+		 * worker would copy here.
+		 */
+		SnapshotResetDslm(CurrentSnapshot);
+	}
 	/*
 	 * Now copy appropriate fields from the source snapshot.
 	 */

@@ -136,6 +136,59 @@
 -1S: select count(*) from hs_disp_t where a between 311 and 330;
 
 ----------------------------------------------------------------
+-- Append-optimized tables read the same cut.  Their visibility goes
+-- through catalog-like metadata read with the scan snapshot: the pg_aoseg
+-- rows give each segment file's end, the visimap the deleted rows, and on
+-- a column-oriented table one file per column.  Under the anchor a segment
+-- reads the pg_aoseg rows as of the restore point, so rows appended after
+-- it, a two-phase transaction in flight at it, and a delete after it are
+-- all invisible on every segment, through a plan with a reader gang and
+-- through a direct dispatch alike
+----------------------------------------------------------------
+1: create table hs_disp_ao(a int) with (appendonly = true) distributed by (a);
+1: create table hs_disp_co(a int) with (appendonly = true, orientation = column) distributed by (a);
+1: insert into hs_disp_ao select generate_series(1, 40);
+1: insert into hs_disp_co select generate_series(1, 40);
+1: select gp_inject_fault('dtm_broadcast_prepare', 'suspend', 1);
+2: begin;
+2: insert into hs_disp_ao select generate_series(101, 130);
+2: insert into hs_disp_co select generate_series(101, 130);
+2&: commit;
+1: select gp_wait_until_triggered_fault('dtm_broadcast_prepare', 1, 1);
+1: select count(*) from gp_create_restore_point('hs_disp_ao');
+1: select gp_inject_fault('dtm_broadcast_prepare', 'reset', 1);
+2<:
+1: insert into hs_disp_ao select generate_series(41, 60);
+1: insert into hs_disp_co select generate_series(41, 60);
+1: delete from hs_disp_ao where a <= 10;
+1: delete from hs_disp_co where a <= 10;
+!\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_disp_ao --skipvalidation;
+!\retcode gpstop -u;
+1: insert into hs_disp_ao select generate_series(61, 70);
+1: insert into hs_disp_co select generate_series(61, 70);
+1: select gp_segment_id, count(*) from hs_disp_ao where a <= 40 group by 1 order by 1;
+-- the cut of the restore point on every segment: 1..40, deleted rows
+-- included, nothing of 41..70 or of the two-phase transaction
+-1S: select gp_segment_id, count(*) from hs_disp_ao group by 1 order by 1;
+-1S: select gp_segment_id, count(*) from hs_disp_co group by 1 order by 1;
+-1S: select count(*) from hs_disp_ao where a <= 10;
+-1S: select count(*) from hs_disp_co where a <= 10;
+-1S: select count(*) from hs_disp_ao where a between 101 and 130;
+-1S: select count(*) from hs_disp_co where a between 101 and 130;
+-- a reader gang: the join key is not the distribution key of one side
+-1S: select count(*) from hs_disp_ao x join hs_disp_co y on x.a = y.a + 1;
+-1S: select count(*) from gp_backend_info() where type = 'r';
+-- a direct dispatch to the segment of one row appended after the anchor
+-1S: select count(*) from hs_disp_ao where a = 45;
+-1S: select count(*) from hs_disp_co where a = 45;
+-- the replay position: 11..70 and the two-phase transaction
+-1S: set whpg_hot_standby_snapshot_mode = unanchored;
+-1S: select count(*) from hs_disp_ao;
+-1S: select count(*) from hs_disp_co;
+-1S: select count(*) from hs_disp_ao where a <= 10;
+-1S: set whpg_hot_standby_snapshot_mode = anchored;
+
+----------------------------------------------------------------
 -- REPEATABLE READ with a reader gang pins the anchor: a publication that
 -- retires it fails the next statement; the cursor of another transaction
 -- declared before the publication keeps its cut
@@ -260,6 +313,8 @@
 -- Cleanup: no published anchor
 ----------------------------------------------------------------
 1: drop table hs_disp_t;
+1: drop table hs_disp_ao;
+1: drop table hs_disp_co;
 1q:
 2q:
 -1Sq:

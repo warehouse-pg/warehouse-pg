@@ -18,6 +18,7 @@
 #include "cdb/cdbdtxcontextinfo.h"
 #include "miscadmin.h"
 #include "access/transam.h"
+#include "access/xlog_internal.h"
 #include "cdb/cdbvars.h"
 #include "access/anchorsnapshot.h"
 #include "cdb/cdbtm.h"
@@ -288,6 +289,8 @@ DtxContextInfo_Reset(DtxContextInfo *dtxContextInfo)
 
 	dtxContextInfo->distributedTxnOptions = 0;
 	/* the whole buffer travels when the bit is set: no stale tail bytes */
+	StaticAssertStmt(DTX_ANCHOR_NAME_LEN == MAXFNAMELEN,
+					 "anchorName must hold a restore point name");
 	memset(dtxContextInfo->anchorName, 0, MAXFNAMELEN);
 }
 
