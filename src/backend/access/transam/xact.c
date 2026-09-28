@@ -29,6 +29,7 @@
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
+#include "access/anchorsnapshot.h"
 #include "access/xact_storage_tablespace.h"
 #include "access/xlogutils.h"
 #include "catalog/index.h"
@@ -7236,6 +7237,24 @@ xact_redo_commit(xl_xact_parsed_commit *parsed,
 	/* Make sure files supposed to be dropped are dropped */
 	if (parsed->nrels > 0)
 	{
+		int			nperm = 0;
+		int			i;
+
+		/*
+		 * Anchor snapshots first (anchorsnapshot.h): the relation files this
+		 * commit drops are what an anchored read at the replay-position
+		 * catalog would no longer find.  Temporary relations are logged here
+		 * in Greenplum (prepared transactions may touch them) and are
+		 * excluded: no anchored read follows a session-private file.
+		 */
+		for (i = 0; i < parsed->nrels; i++)
+		{
+			if (!parsed->xnodes[i].isTempRelation)
+				nperm++;
+		}
+		if (nperm > 0)
+			AnchorSnapshotOnRelfilenodeDrop(xid, lsn, nperm);
+
 		/*
 		 * First update minimum recovery point to cover this WAL record. Once
 		 * a relation is deleted, there's no going back. The buffer manager

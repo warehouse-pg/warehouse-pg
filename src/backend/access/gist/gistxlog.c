@@ -20,6 +20,7 @@
 #include "access/transam.h"
 #include "access/xloginsert.h"
 #include "access/xlogutils.h"
+#include "access/anchorsnapshot.h"
 #include "miscadmin.h"
 #include "storage/procarray.h"
 #include "utils/memutils.h"
@@ -189,13 +190,15 @@ gistRedoDeleteRecord(XLogReaderState *record)
 	 * just once when that arrives.  After that we know that no conflicts
 	 * exist from individual gist vacuum records on that index.
 	 */
-	if (InHotStandby)
 	{
 		RelFileNode rnode;
 
 		XLogRecGetBlockTag(record, 0, &rnode, NULL, NULL);
 
-		ResolveRecoveryConflictWithSnapshot(xldata->latestRemovedXid, rnode);
+		AnchorSnapshotOnCleanupRecord(xldata->latestRemovedXid, rnode,
+									  record->EndRecPtr);
+		if (InHotStandby)
+			ResolveRecoveryConflictWithSnapshot(xldata->latestRemovedXid, rnode);
 	}
 
 	if (XLogReadBufferForRedo(record, 0, &buffer) == BLK_NEEDS_REDO)
@@ -393,7 +396,6 @@ gistRedoPageReuse(XLogReaderState *record)
 	 * Consequently, one XID value achieves the same exclusion effect on
 	 * primary and standby.
 	 */
-	if (InHotStandby)
 	{
 		FullTransactionId latestRemovedFullXid = xlrec->latestRemovedFullXid;
 		FullTransactionId nextFullXid = ReadNextFullTransactionId();
@@ -413,8 +415,11 @@ gistRedoPageReuse(XLogReaderState *record)
 			TransactionId latestRemovedXid;
 
 			latestRemovedXid = XidFromFullTransactionId(latestRemovedFullXid);
-			ResolveRecoveryConflictWithSnapshot(latestRemovedXid,
-												xlrec->node);
+			AnchorSnapshotOnCleanupRecord(latestRemovedXid, xlrec->node,
+										  record->EndRecPtr);
+			if (InHotStandby)
+				ResolveRecoveryConflictWithSnapshot(latestRemovedXid,
+													xlrec->node);
 		}
 	}
 }

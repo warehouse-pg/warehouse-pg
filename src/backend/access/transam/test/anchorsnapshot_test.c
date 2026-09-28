@@ -679,6 +679,136 @@ test__oldest_xmin_and_restart_rule(void **state)
 	}
 }
 
+/*
+ * Conflict linkage: a replayed cleanup record invalidates exactly the
+ * anchors whose xmin is at or below its horizon, the published one
+ * included, runs the barrier once for the lot, and runs nothing when no
+ * anchor qualifies, when the horizon is invalid, or when the registry is
+ * off and no kept anchor exists.
+ */
+static void
+test__cleanup_record_invalidates_at_or_below(void **state)
+{
+	AnchorRegistryData *reg = makeRegistry(4);
+	TransactionId xmin;
+	RelFileNode node = {1663, 12345, 16384};
+
+	assert_int_equal(registerAnchor("a", 400), REGISTER_OK);
+	assert_int_equal(registerAnchor("b", 300), REGISTER_OK);
+	assert_int_equal(registerAnchor("c", 450), REGISTER_OK);
+	whpg_hot_standby_anchor_name = "a";
+
+	/* below every xmin: nothing happens, no barrier */
+	AnchorSnapshotOnCleanupRecord(299, node, (XLogRecPtr) 5000);
+	assert_true(AnchorSnapshotLookup("b", &xmin, NULL));
+
+	/* an invalid horizon is not a conflict */
+	AnchorSnapshotOnCleanupRecord(InvalidTransactionId, node, (XLogRecPtr) 5000);
+	assert_true(AnchorSnapshotLookup("b", &xmin, NULL));
+
+	/* at the published anchor's xmin: a (equal) and b (below) go, c stays */
+	expectBarrier(1);
+	AnchorSnapshotOnCleanupRecord(400, node, (XLogRecPtr) 5000);
+	assert_false(AnchorSnapshotLookup("a", &xmin, NULL));
+	assert_false(AnchorSnapshotLookup("b", &xmin, NULL));
+	assert_true(AnchorSnapshotLookup("c", &xmin, NULL));
+	assert_int_equal(AnchorSnapshotOldestXmin(), 450);
+
+	/* the freed slots are reusable */
+	assert_int_equal(registerAnchor("d", 500), REGISTER_OK);
+
+	/* a disabled registry with no kept anchor returns at once */
+	reg->capacity = 0;
+	keptSet = false;
+	AnchorSnapshotOnCleanupRecord(1000, node, (XLogRecPtr) 5000);
+
+	anchorRegistry = NULL;
+	free(reg);
+	whpg_hot_standby_anchor_name = NULL;
+}
+
+/*
+ * A commit that drops relation files invalidates every registered anchor:
+ * every commit replayed after a registration belongs to a transaction the
+ * anchor holds as in progress or not yet started, so its xid is at or
+ * above every registered xmin.
+ */
+static void
+test__relfilenode_drop_invalidates_all(void **state)
+{
+	AnchorRegistryData *reg = makeRegistry(4);
+	TransactionId xmin;
+
+	assert_int_equal(registerAnchor("a", 400), REGISTER_OK);
+	assert_int_equal(registerAnchor("c", 450), REGISTER_OK);
+
+	expectBarrier(1);
+	AnchorSnapshotOnRelfilenodeDrop(450, (XLogRecPtr) 7000, 2);
+	assert_false(AnchorSnapshotLookup("a", &xmin, NULL));
+	assert_false(AnchorSnapshotLookup("c", &xmin, NULL));
+
+	/* an empty registry: no barrier */
+	AnchorSnapshotOnRelfilenodeDrop(600, (XLogRecPtr) 7100, 1);
+	AnchorSnapshotOnRelfilenodeDrop(InvalidTransactionId, (XLogRecPtr) 7200, 1);
+
+	anchorRegistry = NULL;
+	free(reg);
+}
+
+/*
+ * The kept anchor (a file a start could not register) is removed by both
+ * hooks once the record lies past its restore point and the horizon
+ * reaches its xmin; it has no entry, so no barrier runs for it.  The clear
+ * at the end of recovery forgets it too.
+ */
+static void
+test__kept_anchor_gate(void **state)
+{
+	AnchorRegistryData *reg = makeRegistry(0);
+	RelFileNode node = {1663, 12345, 16384};
+
+	keptSet = true;
+	strlcpy(keptName, "k", MAXFNAMELEN);
+	keptXmin = 400;
+	keptLSN = (XLogRecPtr) 1000;
+
+	/* the record precedes the restore point: never a conflict */
+	AnchorSnapshotOnCleanupRecord(500, node, (XLogRecPtr) 900);
+	assert_true(keptSet);
+	AnchorSnapshotOnCleanupRecord(500, node, (XLogRecPtr) 1000);
+	assert_true(keptSet);
+	/* past it, below the xmin: kept */
+	AnchorSnapshotOnCleanupRecord(399, node, (XLogRecPtr) 2000);
+	assert_true(keptSet);
+	/* past it, at the xmin: removed */
+	AnchorSnapshotOnCleanupRecord(400, node, (XLogRecPtr) 2000);
+	assert_false(keptSet);
+
+	keptSet = true;
+	AnchorSnapshotOnRelfilenodeDrop(500, (XLogRecPtr) 1000, 1);
+	assert_true(keptSet);
+	AnchorSnapshotOnRelfilenodeDrop(500, (XLogRecPtr) 1001, 1);
+	assert_false(keptSet);
+
+	/* the clear at the end of recovery forgets a kept anchor */
+	keptSet = true;
+	AnchorSnapshotClearAll();
+	assert_false(keptSet);
+
+	anchorRegistry = NULL;
+	free(reg);
+
+	/* the clear runs the barrier only when it invalidates an entry */
+	reg = makeRegistry(2);
+	AnchorSnapshotClearAll();
+	assert_int_equal(registerAnchor("a", 400), REGISTER_OK);
+	expectBarrier(1);
+	AnchorSnapshotClearAll();
+	assert_int_equal(AnchorSnapshotOldestXmin(), InvalidTransactionId);
+	anchorRegistry = NULL;
+	free(reg);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -695,6 +825,9 @@ main(int argc, char *argv[])
 		unit_test(test__file_roundtrip_and_validation),
 		unit_test(test__parse_returns_xid_set),
 		unit_test(test__oldest_xmin_and_restart_rule),
+		unit_test(test__cleanup_record_invalidates_at_or_below),
+		unit_test(test__relfilenode_drop_invalidates_all),
+		unit_test(test__kept_anchor_gate),
 	};
 
 	MemoryContextInit();
