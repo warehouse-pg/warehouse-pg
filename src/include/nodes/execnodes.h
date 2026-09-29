@@ -1493,6 +1493,20 @@ typedef struct SeqScanState
 {
 	ScanState	ss;				/* its first field is NodeTag */
 	Size		pscan_len;		/* size of parallel heap scan descriptor */
+	/*
+	 * WHPG: Staged Scan counts already mirrored into the node's
+	 * instrumentation, so that each sync adds only the increment. A scan
+	 * that runs one partition of a Dynamic Seq Scan has no instrumentation of
+	 * its own and reports into the dynamic node's through staged_instr.
+	 */
+	double		staged_removed_reported;
+	double		staged_scanned_reported;
+	double		staged_survivors_reported;
+	double		staged_fallbacks_reported;
+	double		staged_blocks_decompressed_reported;
+	double		staged_blocks_skipped_reported;
+	double		staged_blocks_seeked_reported;
+	Instrumentation *staged_instr;
 } SeqScanState;
 
 /* ----------------

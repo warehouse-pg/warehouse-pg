@@ -123,6 +123,12 @@ typedef struct Instrumentation
 	const char *sortSpaceType;	/* CDB: Sort space type (Memory / Disk) */
 	long		sortSpaceUsed;	/* CDB: Memory / Disk used by sort(KBytes) */
 	struct CdbExplain_NodeSummary *cdbNodeSummary;	/* stats from all qExecs */
+	double		stagedRowsScanned;	/* GPDB: Staged Scan Phase A rows scanned */
+	double		stagedSurvivors;		/* GPDB: Staged Scan Phase A survivors */
+	double		stagedFallbacks;		/* WHPG: segment files Staged Scan fell back on */
+	double		stagedBlocksDecompressed;	/* WHPG: Staged Scan Phase B blocks decompressed */
+	double		stagedBlocksSkipped;	/* WHPG: Staged Scan Phase B blocks skipped */
+	double		stagedBlocksSeeked;	/* WHPG: Staged Scan Phase B block-directory seeks */
 } Instrumentation;
 
 typedef struct WorkerInstrumentation
