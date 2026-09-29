@@ -2811,6 +2811,7 @@ set_ao_storage_info(Relation relation, RelOptInfo *rel)
 			strncpy(ao_storage_info->col_storage_infos[i].compresstype,
 					opts[i]->compresstype,
 					NAMEDATALEN);
+			ao_storage_info->col_storage_infos[i].blocksize = opts[i]->blocksize;
 			pfree(opts[i]);
 		}
 		pfree(opts);
