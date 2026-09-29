@@ -7,8 +7,10 @@
 #
 
 # import Python standard library modules
+import codecs
 import csv
 import gzip
+import io
 import locale
 import os
 import os.path
@@ -22,7 +24,7 @@ try:
     from gppylib.gpparseopts import *
     from gppylib.datetimeutils import str_to_datetime, str_to_duration, DatetimeValueError
     from gppylib.logfilter import *
-    from gppylib.commands.gp import get_coordinatordatadir
+    from gppylib.commands.gp import get_coordinatordatadir, GpError
 except ImportError as e:
     sys.exit('ERROR: Cannot import modules.  Please check that you have sourced greenplum_path.sh.  Detail: ' + str(e))
 
@@ -224,6 +226,45 @@ def parseargs():
 
 # -------------------------------------------------------------------------
 
+# Log data is passed through as text.  It is decoded and encoded with the
+# locale's encoding, but a server log can mix encodings, so bytes that are
+# not valid in that encoding are carried through unchanged (surrogateescape)
+# rather than making the utility fail.  A character that the output
+# encoding cannot represent, which happens when the output encoding differs
+# from the input encoding, is written as a backslash escape rather than
+# failing either.  newline='' leaves the original line ends alone.
+def lenientTextErrors(exc):
+    try:
+        return codecs.lookup_error('surrogateescape')(exc)
+    except UnicodeError:
+        return codecs.lookup_error('backslashreplace')(exc)
+
+codecs.register_error('gplogfilter', lenientTextErrors)
+TEXT_ERRORS = 'gplogfilter'
+
+
+def textStream(binary, **kwargs):
+    """Wrap a binary stream for reading or writing log text."""
+    return io.TextIOWrapper(binary, errors=TEXT_ERRORS, newline='', **kwargs)
+
+
+def lenientStdio():
+    """
+    Give stdin and stdout the same text handling as log files opened by
+    name, keeping their encoding and buffering.
+    """
+    for name in ('stdin', 'stdout'):
+        stream = getattr(sys, name)
+        try:
+            encoding = stream.encoding
+            line_buffering = stream.line_buffering
+            binary = stream.detach()
+        except (AttributeError, ValueError, io.UnsupportedOperation):
+            continue
+        setattr(sys, name, textStream(binary, encoding=encoding,
+                                      line_buffering=line_buffering))
+
+
 def openInputFile(ifn, options):
     filesToClose = []
     unzip = options.unzip
@@ -231,7 +272,8 @@ def openInputFile(ifn, options):
     # Open input file, unless reading from stdin
     if ifn == '-':
         ifn = zname = 'stdin'
-        fileIn = sys.stdin
+        # gzip works on bytes, so hand it the underlying binary stream
+        fileIn = sys.stdin.buffer if unzip else sys.stdin
     else:
         ifn = os.path.abspath(ifn)
         # In case a coordinator or segment instance's data directory name
@@ -245,12 +287,18 @@ def openInputFile(ifn, options):
             zname = zname[0:-3]
             if os.path.splitext(zname)[1] == '':
                 zname += '.log'
-        fileIn = open(ifn, (unzip and 'rb') or 'r')
+        if unzip:
+            fileIn = open(ifn, 'rb')
+        else:
+            fileIn = open(ifn, 'r', errors=TEXT_ERRORS, newline='')
         filesToClose.append(fileIn)
 
-    # Set up input decompression
+    # Set up input decompression.  Decode the decompressed bytes so that the
+    # filter pipeline always sees text, exactly as for a plain input file.
     if unzip:
         fileIn = gzip.GzipFile(zname, 'rb', fileobj=fileIn)
+        filesToClose.insert(0, fileIn)
+        fileIn = textStream(fileIn)
         filesToClose.insert(0, fileIn)
 
     if zname.endswith('.csv'):
@@ -269,19 +317,12 @@ def openOutputFile(ifn, zname, options):
     else:
         omode = 'w'
 
-    # Compressed output file should be opened in binary mode
     zipout = options.zip and options.zip > '0'
-    if zipout:
-        omode += 'b'
-
-    # Open output file in binary mode so as not to disturb the
-    # original line ending control characters.
-    else:
-        omode += 'b'
 
     # Open output file, unless writing to stdout
     if options.out is None:
-        fileOut = sys.stdout
+        # gzip works on bytes, so hand it the underlying binary stream
+        fileOut = sys.stdout.buffer if zipout else sys.stdout
     else:
         # let error messages show full path in case something goes wrong
         ofn = os.path.abspath(options.out)
@@ -304,8 +345,13 @@ def openOutputFile(ifn, zname, options):
         if not os.access(odn, os.W_OK):
             raise IOError('output directory not found or not writable: %s' % odn)
 
-        # open the file
-        fileOut = open(ofn, omode)
+        # open the file.  A compressed output file is written in binary
+        # mode through gzip; a plain one is written as text with newline=''
+        # so as not to disturb the original line ending control characters.
+        if zipout:
+            fileOut = open(ofn, omode + 'b')
+        else:
+            fileOut = open(ofn, omode, errors=TEXT_ERRORS, newline='')
         filesToClose.append(fileOut)
 
         if options.verbose:
@@ -314,11 +360,14 @@ def openOutputFile(ifn, zname, options):
             else:
                 print(' output to', ofn, file=sys.stderr)
 
-    # Set up output compression
+    # Set up output compression.  The filtered lines are text, so put a
+    # text layer on top of the gzip stream.
     if zipout:
-        fileOut = gzip.GzipFile(zname, omode,
+        fileOut = gzip.GzipFile(zname, omode + 'b',
                                 compresslevel=int(options.zip),
                                 fileobj=fileOut)
+        filesToClose.insert(0, fileOut)
+        fileOut = textStream(fileOut)
         filesToClose.insert(0, fileOut)
 
     return fileOut, filesToClose
@@ -331,6 +380,12 @@ try:
     locale.setlocale(locale.LC_ALL, '')
 except Exception:
     pass
+
+lenientStdio()
+
+# A single logged statement can be far longer than the csv module's default
+# 128 KiB field limit.  The limit has to fit a C long on every platform.
+csv.field_size_limit(2**31 - 1)
 
 # Parse the command line arguments
 options, args = parseargs()
@@ -364,7 +419,10 @@ if (options.zip is None and
 try:
     # If no inputfile arg, try COORDINATOR_DATA_DIRECTORY environment variable
     if len(args) == 0:
-        s = get_coordinatordatadir()
+        try:
+            s = get_coordinatordatadir()
+        except GpError:
+            s = None
         if s:
             # we only support log rotation in log dir.
             if os.path.exists(s + "/log"):
@@ -463,8 +521,15 @@ try:
 
             # Write filtered lines to output file.  Don't append \n to
             # each line, because the original line ends are still there.
+            lastLine = ''
             for line in filteredInput:
-                print(line, file=fileOut)
+                fileOut.write(line)
+                lastLine = line
+
+            # Unless the last line had no line end: the next input file's
+            # first entry must still start on a line of its own.
+            if lastLine and not lastLine.endswith('\n'):
+                fileOut.write('\n')
 
             # Close input and output files
             for file in inputFilesToClose:
