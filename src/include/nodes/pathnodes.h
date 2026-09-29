@@ -830,6 +830,7 @@ typedef struct AOStorageInfo
 	char					compresstype[NAMEDATALEN];
 	/* per column storage info (NULL for row-oriented tables) */
 	struct AOStorageInfo	*col_storage_infos;
+	int32					blocksize;		/* WHPG: varblock size in bytes; per column for AOCO */
 } AOStorageInfo;
 
 typedef struct RelOptInfo
