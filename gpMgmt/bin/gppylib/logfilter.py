@@ -45,6 +45,7 @@ Module contents:
 import io
 import csv
 from datetime import date, datetime
+import itertools
 import re
 import sys
 import time
@@ -259,7 +260,32 @@ def FilterLogEntries(iterable,
 
 
 
-#------------------------------- Spying --------------------------------
+#------------------------------ Flattening ------------------------------
+
+class CsvLineWriter(object):
+    """
+    Formats a list of fields as one line of the pipe-delimited format the
+    filters operate on, quoting fields as needed.
+    """
+
+    def __init__(self):
+        self.buffer = io.StringIO()
+        # Terminate each line with '\n' like the original pipe-delimited
+        # format; csv.writer would default to '\r\n'.
+        self.writer = csv.writer(self.buffer, delimiter=csvDelimeter, quotechar='"',
+                                 quoting=csv.QUOTE_MINIMAL, lineterminator='\n')
+
+    def line(self, fields):
+        # Rewind before truncating.  io.StringIO.truncate() leaves the stream
+        # position where it was, so a bare truncate(0) followed by a write
+        # would pad the buffer with NUL characters up to the old position and
+        # the line would no longer start with its first field.
+        self.buffer.seek(0)
+        self.buffer.truncate(0)
+        self.writer.writerow(fields)
+        return self.buffer.getvalue()
+
+
 class CsvFlatten(object):
     """
     Used to flatten a CSV parsed log line into something that looks like the 
@@ -268,8 +294,7 @@ class CsvFlatten(object):
 
     def __init__(self,iterable):
         self.source = iter(iterable)
-        self.buffer = io.StringIO()
-        self.writer = csv.writer(self.buffer, delimiter=csvDelimeter, quotechar='"', quoting=csv.QUOTE_MINIMAL)
+        self.formatter = CsvLineWriter()
 
     def __iter__(self):
         return self
@@ -278,12 +303,10 @@ class CsvFlatten(object):
         item = next(self.source)
         #we need to make a minor format change to the log level field so that
         # our single regex will match both.
-        item[16] = item[16] + ": "
+        if len(item) > 16:
+            item[16] = item[16] + ": "
 
-        self.buffer.truncate(0)
-        self.writer.writerow(item)
-
-        return self.buffer.getvalue()
+        return self.formatter.line(item)
 
 #------------------------------- Spying --------------------------------
 
@@ -541,9 +564,14 @@ def TimestampInBounds(iterable, begin, end):
     if begin >= end:
         return
 
-    # Fetch first item from input stream.
+    # Peek at the first item to learn whether the input consists of lines or
+    # of groups, then put it back: it must be filtered like every other item.
     source = iter(iterable)
-    item = next(source)
+    try:
+        item = next(source)
+    except StopIteration:
+        return
+    source = itertools.chain([item], source)
 
     # If first item is a string, assume input consists of individual lines.
     # Yield lines which start with a timestamp within the given bounds, plus
@@ -558,6 +586,7 @@ def TimestampInBounds(iterable, begin, end):
                 withinbounds = False
             elif withinbounds:
                 yield item
+        return
 
     # Else assume input consists of groups (i.e. sequences) of lines.
     # Yield groups in which the first line starts with a timestamp within
@@ -693,27 +722,33 @@ def NoMatchInFirstLine(iterable, regex):
             yield group
 
 def MatchColumns(iterable, cols):
+    """
+    Generator to filter a stream of groups, keeping only the requested
+    columns (counted from 1) of each pipe-delimited line.
+
+    MatchColumns(iterable, cols) -> iterator
+        iterable -- a sequence, iterator, or some object which supports
+            iteration.  Each item returned by its next() method must be
+            a group.  Here the term 'group' means a sequence of strings.
+        cols -- a comma-delimited string of column numbers, or a sequence
+            of integers
+    """
     if isinstance(cols, str):
         cols = cols.split(',')
-        cols = [int(x) for x in cols]
+    cols = frozenset(int(x) for x in cols)
 
-    # Yield items in which a match is found for the 'include' pattern.
+    formatter = CsvLineWriter()
+
     for item in iterable:
-        if 1:
-            #print "item\n%s\nitem" % item
-            ret = []
-            for s in item:
-                n = 1
-                out = []
-
-                for c in csv.reader(s, delimiter=csvDelimeter, quotechar='"'):
-                    if n in cols:
-                        out.append(c)
-                    n += 1
-                if len(out):
-                    #print out
-                    ret.append(csvDelimeter.join(out) + "\n")
-            yield ret
+        ret = []
+        for s in item:
+            # csv.reader() consumes an iterable of lines; each string in the
+            # group is one (possibly multi-line, quoted) log line.
+            for row in csv.reader([s], delimiter=csvDelimeter, quotechar='"'):
+                out = [c for n, c in enumerate(row, 1) if n in cols]
+                if out:
+                    ret.append(formatter.line(out))
+        yield ret
 
 #-------------------------------- Slicing --------------------------------
 
@@ -765,10 +800,11 @@ def FirstNItems(iterable, n):
             print s,
     """
     def FNI(iterable, n):
-        source = iter(iterable)
-        while n > 0:
-            yield next(source)
+        for item in iterable:
+            yield item
             n -= 1
+            if n <= 0:
+                break
 
     if n is None:
         pass
@@ -844,12 +880,11 @@ def SkipNItems(iterable, n):
             print line.rstrip()
     """
     def SNI(iterable, n):
-        source = iter(iterable)
-        while n > 0:
-            next(source)
-            n -= 1
-        while True:
-            yield next(source)
+        for item in iterable:
+            if n > 0:
+                n -= 1
+                continue
+            yield item
 
     if n and n > 0:
         iterable = SNI(iterable, n)
