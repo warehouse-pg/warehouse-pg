@@ -201,6 +201,12 @@ InstrAggNode(Instrumentation *dst, Instrumentation *add)
 	dst->nloops += add->nloops;
 	dst->nfiltered1 += add->nfiltered1;
 	dst->nfiltered2 += add->nfiltered2;
+	dst->stagedRowsScanned += add->stagedRowsScanned;
+	dst->stagedSurvivors += add->stagedSurvivors;
+	dst->stagedFallbacks += add->stagedFallbacks;
+	dst->stagedBlocksDecompressed += add->stagedBlocksDecompressed;
+	dst->stagedBlocksSkipped += add->stagedBlocksSkipped;
+	dst->stagedBlocksSeeked += add->stagedBlocksSeeked;
 
 	/* Add delta of buffer usage since entry to node's totals */
 	if (dst->need_bufusage)

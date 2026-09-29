@@ -189,8 +189,14 @@ initNextTableToScan(DynamicSeqScanState *node)
 		pfree(attMap);
 	}
 
+	/*
+	 * WHPG: the partition's scan is initialized outside ExecInitNode() and
+	 * gets no instrumentation of its own; a staged scan reports its
+	 * counts into this node's (SeqScanSyncStagedInstrumentation()).
+	 */
 	node->seqScanState = ExecInitSeqScanForPartition(&plan->seqscan, estate,
 													 currentRelation);
+	node->seqScanState->staged_instr = scanState->ps.instrument;
 	return true;
 }
 
