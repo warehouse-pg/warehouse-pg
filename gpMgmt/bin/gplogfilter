@@ -17,6 +17,7 @@ import os.path
 import re
 import sys
 
+from datetime import datetime, timedelta
 from optparse import Option, OptionGroup, OptionParser, OptionValueError, SUPPRESS_USAGE
 
 # import GPDB modules
@@ -135,7 +136,8 @@ def parseargs():
     optgrp.add_option('-d', '--duration', type='duration', metavar='[h][:m[:s]]',
                       help='duration from beginning to end')
     optgrp.add_option('--prunefiles', action='store_true', default=False,
-                      help="Discard files based on filename of the form gpdb-%Y-%m-%d_%H%M%S.csv")
+                      help='skip input files named gpdb-YYYY-MM-DD[_HHMMSS].csv[.gz] '
+                           'whose name shows they cannot hold entries in the timestamp range')
     parser.add_option_group(optgrp)
 
     optgrp = OptionGroup(parser, 'Pattern and string matching',
@@ -373,6 +375,73 @@ def openOutputFile(ifn, zname, options):
     return fileOut, filesToClose
 
 
+# A rotation is not instantaneous: a log file named for its rotation time
+# can still receive a few entries stamped shortly after that time, and the
+# file that follows it can hold entries stamped shortly before.  Leave that
+# much slack when deciding from file names alone that a file can be skipped.
+ROTATION_SLACK = timedelta(minutes=1)
+
+
+def logFileDate(name):
+    """
+    Return the datetime encoded in a rotated log file name of the form
+    gpdb-YYYY-MM-DD_HHMMSS.csv or gpdb-YYYY-MM-DD.csv (optionally with a
+    .gz suffix), or None if the name is not of that form.
+    """
+    if name.endswith('.gz'):
+        name = name[:-3]
+    if not (name.startswith('gpdb-') and name.endswith('.csv')):
+        return None
+    for fmt in ('%Y-%m-%d_%H%M%S', '%Y-%m-%d'):
+        try:
+            return datetime.strptime(name[5:-4], fmt)
+        except ValueError:
+            pass
+    return None
+
+
+def logFileOutOfRange(filedate, nextdate, begin, end):
+    """
+    Decide from file names alone whether a rotated log file can be skipped.
+
+    A log file named for the time it was created holds the entries written
+    from then until the next log file was created in the same directory, so
+    it cannot hold entries in the requested range if it was created after
+    the end of the range, or superseded before the start of the range, by
+    more than ROTATION_SLACK.
+    """
+    if end and filedate - ROTATION_SLACK >= end:
+        return True
+    if begin and nextdate and nextdate + ROTATION_SLACK <= begin:
+        return True
+    return False
+
+
+def logFileDates(args):
+    """
+    Map each input file whose name carries a timestamp to a pair of that
+    timestamp and the timestamp of the next such file in the same directory,
+    i.e. the time at which the file stopped receiving log entries, or None
+    for the last file of a directory.
+    """
+    byDir = {}
+    for a in args:
+        if a == '-':
+            continue
+        path = os.path.abspath(a)
+        filedate = logFileDate(os.path.basename(path))
+        if filedate:
+            byDir.setdefault(os.path.dirname(path), []).append((filedate, path))
+
+    dates = {}
+    for files in byDir.values():
+        files.sort()
+        following = files[1:] + [(None, None)]
+        for (filedate, path), (nextdate, _) in zip(files, following):
+            dates[path] = (filedate, nextdate)
+    return dates
+
+
 # ------------------------------- Mainline --------------------------------
 
 # Use default locale specified by LANG environment variable
@@ -426,7 +495,7 @@ try:
         if s:
             # we only support log rotation in log dir.
             if os.path.exists(s + "/log"):
-                for logfile in os.listdir(s + "/log"):
+                for logfile in sorted(os.listdir(s + "/log")):
                     args.append(s + "/log/" + logfile)
             else:
                 raise IOError('Specify input file or "-" for standard input')
@@ -459,44 +528,29 @@ try:
                    % (begin or 'beginning of data', end or 'end of data'))
             print(msg, file=sys.stderr)
 
+        # With --prunefiles and a timestamp range, note when each rotated log
+        # file was created and superseded so that whole files can be skipped
+        # unread.
+        fileDates = {}
+        if options.prunefiles and (begin or end):
+            fileDates = logFileDates(args)
+
         # Loop over input files
         for ifn in args:
-            """ 
-            Open each file in the logs directory. Check to see if the file name
-            looks anything like a log file name with a time stamp that we 
-            recognize. If true, and the user specified a time range, skip the
-            file if it is outside the range. That is, close the file and any
-            associated temporary files.
+            # Skip a file whose name shows that it cannot contain entries
+            # within the requested timestamp range.  Every other file is
+            # read, and when a timestamp range was requested only the
+            # entries within it are kept.
+            path = None if ifn == '-' else os.path.abspath(ifn)
+            if path in fileDates:
+                filedate, nextdate = fileDates[path]
+                if logFileOutOfRange(filedate, nextdate, begin, end):
+                    if options.verbose:
+                        print("SKIP file: %s" % path, file=sys.stderr)
+                    continue
 
-            All other files with names that do not look like time stamps are
-            processed. That is, their log information is extracted, and if 
-            the user specified a time range, only those entries that are
-            within that range are kept.
-            """
             # Open next input file
             fileIn, inputFilesToClose, ifn, zname = openInputFile(ifn, options)
-
-            # if we can skip the whole file, let's do so
-            if zname.startswith('gpdb') and zname.endswith('.csv'):
-                goodFormat = True
-                try:
-                    # try format YYYY-MM-DD_HHMMSS
-                    filedate = datetime.strptime(zname[5:-4], '%Y-%m-%d_%H%M%S')
-                except:
-                    try:
-                        # try format YYYY-MM-DD
-                        filedate = datetime.strptime(zname[5:-4], '%Y-%m-%d')
-                    except:
-                        # the format isn't anything I understand
-                        goodFormat = False
-
-                if goodFormat and begin and filedate < begin:
-                    if end and filedate > end:
-                        print("SKIP file: %s" % zname, file=sys.stderr)
-                        for f in inputFilesToClose:
-                            f.close()
-                        inputFilesToClose = []
-                        continue
 
             # Announce each input file *before* its output file if --out is dir
             if options.verbose and outputFilePerInputFile:
