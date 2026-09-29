@@ -38,6 +38,13 @@ test: dsm_vmem
 
 test: disable_autovacuum
 
+# staged scan tests run with autovacuum off: several assertions are planner
+# decisions on cost estimates that a concurrent auto-ANALYZE of a freshly
+# loaded table would move (a coordinator auto-ANALYZE landed 6 s after the
+# test's own ANALYZE and flipped two of them once).
+# staged scan: datumstream header/content split (uses fault injection)
+test: staged_scan_datumstream_split
+
 test: motion_deadlock
 
 # test gp_fastsequence allocation (early in schedule as log grepping is expensive)

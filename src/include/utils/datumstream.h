@@ -308,6 +308,8 @@ datumstreamwrite_lob(DatumStreamWrite *acc,
 extern int	datumstreamread_block(DatumStreamRead * ds,
 								  AppendOnlyBlockDirectory *blockDirectory,
 								  int colGroupNo);
+extern void datumstreamread_position_fixedwidth(DatumStreamRead * datumStream,
+												int32 rowNumInBlock);
 extern void datumstreamread_find(DatumStreamRead * datumStream,
 					 int32 rowNumInBlock);
 extern void datumstreamread_rewind_block(DatumStreamRead * datumStream);
@@ -317,11 +319,34 @@ extern bool datumstreamread_find_block(DatumStreamRead * datumStream,
 extern void *datumstreamread_get_upgrade_space(DatumStreamRead *datumStream,
 											   size_t len);
 
-extern bool datumstreamread_block_info(DatumStreamRead * acc);
 /*
- * MPP-17061: make sure datumstreamread_block_info was called first for the CO block
- * before calling datumstreamread_block_content.
+ * Split form of datumstreamread_block(): read a varblock header, then either
+ * materialize its content or step over it.  This lets a scan decide, from the
+ * firstRowNum/rowCount in the header alone, whether a block is worth
+ * decompressing.
+ *
+ * Usage:
+ *		while (datumstreamread_block_header_only(ds) > 0)
+ *		{
+ *			if (block_is_interesting(ds->blockFirstRowNum, ds->blockRowCount))
+ *				datumstreamread_block_content(ds);	  -- then _find/_advance/_get
+ *			else
+ *				datumstreamread_block_skip_content(ds);
+ *		}
+ *
+ * datumstreamread_block_info() is the same header read without the pre-4.0
+ * firstRowNum bookkeeping; it is what the fetch (index scan) path uses, since
+ * there the row number comes from the block directory.
+ *
+ * MPP-17061: make sure datumstreamread_block_header_only() or
+ * datumstreamread_block_info() was called first for the CO block before
+ * calling datumstreamread_block_content().
  */
+extern int	datumstreamread_block_header_only(DatumStreamRead * acc);
+extern bool datumstreamread_block_info(DatumStreamRead * acc);
 extern void datumstreamread_block_content(DatumStreamRead * acc);
+extern int	datumstreamread_block_skip_content(DatumStreamRead * acc);
+extern int	datumstreamread_block_seek(DatumStreamRead * acc, int64 fileOffset,
+									   int64 afterFileOffset);
 
 #endif   /* DATUMSTREAM_H */
