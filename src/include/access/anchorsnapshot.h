@@ -143,7 +143,7 @@ extern void AnchorSnapshotInvalidate(const char *rp_name);
  * identity of this registration of the name.
  */
 extern bool AnchorSnapshotLookup(const char *rp_name, TransactionId *xmin,
-								 uint64 *ordinal);
+								 uint32 *ordinal);
 
 /*
  * Dispatch wire (cdbdtxcontextinfo.c).  AnchorSnapshotNameForDispatch
@@ -155,7 +155,7 @@ extern bool AnchorSnapshotLookup(const char *rp_name, TransactionId *xmin,
  * clears the hand-off at its next call; AnchorSnapshotNameIsValid
  * validates a name received from a dispatch.
  */
-extern void AnchorSnapshotNameForDispatch(uint64 ordinal, char *name);
+extern void AnchorSnapshotNameForDispatch(uint32 ordinal, char *name);
 extern bool AnchorSnapshotDispatched(void);
 extern void AnchorSnapshotSetDeferredPublication(bool deferred);
 extern bool AnchorSnapshotNameIsValid(const char *name);

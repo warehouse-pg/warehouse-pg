@@ -564,8 +564,8 @@ test__oldest_xmin_and_restart_rule(void **state)
 {
 	AnchorRegistryData *reg = makeRegistry(4);
 	TransactionId xmin;
-	uint64		ord_a;
-	uint64		ord_a2;
+	uint32		ord_a;
+	uint32		ord_a2;
 
 	assert_int_equal(AnchorSnapshotOldestXmin(), InvalidTransactionId);
 

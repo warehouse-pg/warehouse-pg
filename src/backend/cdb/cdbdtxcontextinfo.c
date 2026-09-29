@@ -406,9 +406,12 @@ DtxContextInfo_Deserialize(const char *serializedDtxContextInfo,
 				ereport(ERROR,
 						(errcode(ERRCODE_PROTOCOL_VIOLATION),
 						 errmsg("dispatched transaction context announces an anchor snapshot name but is too short to hold one")));
+			if (memchr(p, '\0', MAXFNAMELEN) == NULL)
+				ereport(ERROR,
+						(errcode(ERRCODE_PROTOCOL_VIOLATION),
+						 errmsg("dispatched anchor snapshot name is not terminated")));
 			memcpy(dtxContextInfo->anchorName, p, MAXFNAMELEN);
 			p += MAXFNAMELEN;
-			dtxContextInfo->anchorName[MAXFNAMELEN - 1] = '\0';
 			if (!AnchorSnapshotNameIsValid(dtxContextInfo->anchorName))
 				ereport(ERROR,
 						(errcode(ERRCODE_PROTOCOL_VIOLATION),

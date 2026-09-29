@@ -90,7 +90,7 @@ typedef struct AnchorRegistryEntry
 {
 	char		rp_name[MAXFNAMELEN];	/* key: the restore point name */
 	TransactionId xmin;			/* the anchor's xmin */
-	uint64		ordinal;		/* registration order, never exposed */
+	uint32		ordinal;		/* registration order, never exposed; never 0 */
 	bool		valid;
 } AnchorRegistryEntry;
 
@@ -98,7 +98,7 @@ typedef struct AnchorRegistryData
 {
 	slock_t		lock;
 	int			capacity;		/* whpg_max_anchor_snapshots at postmaster start */
-	uint64		next_ordinal;
+	uint32		next_ordinal;
 	AnchorRegistryEntry entries[FLEXIBLE_ARRAY_MEMBER];
 } AnchorRegistryData;
 
@@ -264,6 +264,8 @@ registerAnchor(const char *name, TransactionId xmin)
 	strlcpy(slot->rp_name, name, MAXFNAMELEN);
 	slot->xmin = xmin;
 	slot->ordinal = anchorRegistry->next_ordinal++;
+	if (anchorRegistry->next_ordinal == 0)	/* 0 means "no anchor" */
+		anchorRegistry->next_ordinal = 1;
 	slot->valid = true;
 	SpinLockRelease(&anchorRegistry->lock);
 	return REGISTER_OK;
@@ -285,7 +287,7 @@ registerAnchorEvicting(const char *name, TransactionId xmin)
 }
 
 bool
-AnchorSnapshotLookup(const char *rp_name, TransactionId *xmin, uint64 *ordinal)
+AnchorSnapshotLookup(const char *rp_name, TransactionId *xmin, uint32 *ordinal)
 {
 	AnchorRegistryEntry *e;
 	bool		found = false;
@@ -1403,7 +1405,7 @@ static bool
 applyPublication(const char *name)
 {
 	AnchorRegistryEntry *e;
-	uint64		ordinal;
+	uint32		ordinal;
 	int			nretire = 0;
 	int			i;
 
@@ -1548,7 +1550,7 @@ static struct
 {
 	bool		valid;
 	char		name[MAXFNAMELEN];
-	uint64		ordinal;
+	uint32		ordinal;
 	AnchorFileSnapshot snap;	/* subxip lives in TopMemoryContext */
 }			cachedAnchor;
 
@@ -1562,7 +1564,7 @@ static struct
 	bool		pinned;
 	char		name[MAXFNAMELEN];
 	TransactionId xmin;
-	uint64		ordinal;
+	uint32		ordinal;
 }			pinnedAnchor;
 
 /*
@@ -1623,7 +1625,7 @@ anchorPinnedGoneError(void)
  * is missing, damaged or disagrees with the registry is a refusal.
  */
 static void
-loadAnchorIntoCache(const char *name, TransactionId xmin, uint64 ordinal)
+loadAnchorIntoCache(const char *name, TransactionId xmin, uint32 ordinal)
 {
 	TimeLineID	tli;
 	XLogRecPtr	lsn;
@@ -1696,7 +1698,7 @@ static struct
 	bool		pin;
 	char		name[MAXFNAMELEN];
 	TransactionId xmin;
-	uint64		ordinal;
+	uint32		ordinal;
 }			preparedAnchor;
 
 /*
@@ -1706,10 +1708,10 @@ static struct
  * re-checking the registration.
  */
 static void
-prepareRegisteredAnchor(const char *name, TransactionId regXmin, uint64 ordinal)
+prepareRegisteredAnchor(const char *name, TransactionId regXmin, uint32 ordinal)
 {
 	TransactionId recheck;
-	uint64		recheckOrdinal;
+	uint32		recheckOrdinal;
 
 	loadAnchorIntoCache(name, regXmin, ordinal);
 
@@ -1810,7 +1812,7 @@ AnchorSnapshotPrepare(bool pin)
 {
 	const char *name;
 	TransactionId regXmin;
-	uint64		ordinal;
+	uint32		ordinal;
 
 	preparedAnchor.pending = false;
 
@@ -1941,7 +1943,7 @@ AnchorSnapshotInstall(Snapshot snapshot)
  * anchor anyway.
  */
 void
-AnchorSnapshotNameForDispatch(uint64 ordinal, char *name)
+AnchorSnapshotNameForDispatch(uint32 ordinal, char *name)
 {
 	bool		found = false;
 	int			i;
@@ -1983,7 +1985,7 @@ void
 AnchorSnapshotValidatePinned(void)
 {
 	TransactionId xmin;
-	uint64		ordinal;
+	uint32		ordinal;
 
 	if (!pinnedAnchor.pinned)
 		return;
