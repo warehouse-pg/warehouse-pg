@@ -2287,11 +2287,20 @@ appendonly_scan_sample_next_block(TableScanDesc scan, SampleScanState *scanstate
 	TsmRoutine 			*tsm = scanstate->tsmroutine;
 	AppendOnlyScanDesc 	aoscan = (AppendOnlyScanDesc) scan;
 	int64 				totalrows = AppendOnlyScanDesc_TotalTupCount(aoscan);
-	int32				tuplesPerBlock = aoscan->sampleTuplesPerBlock;
+	int32				tuplesPerBlock;
 
 	/* return false immediately if relation is empty */
 	if (aoscan->targrow >= totalrows)
 		return false;
+
+	/*
+	 * Compute the logical block size here rather than in beginscan, so that
+	 * scans that never sample don't pay for the statistics lookups.
+	 */
+	if (aoscan->sampleTuplesPerBlock == 0)
+		aoscan->sampleTuplesPerBlock =
+			ao_compute_sample_tuples_per_block(scan->rs_rd);
+	tuplesPerBlock = aoscan->sampleTuplesPerBlock;
 
 	if (tsm->NextSampleBlock)
 	{
