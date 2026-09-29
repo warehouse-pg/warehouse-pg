@@ -311,5 +311,54 @@ class GplogfilterScriptTestCase(GpTestCase):
                                   unset=('COORDINATOR_DATA_DIRECTORY', 'MASTER_DATA_DIRECTORY'))
         self.assertIn('specify input file or "-" for standard input', err.decode())
 
+    def test_files_outside_time_range_are_skipped(self):
+        earlier = [(ts.replace('09-24', '09-23'), sev, msg) for ts, sev, msg in ENTRIES]
+        old_log = self.write_log('gpdb-2026-09-23_000000.csv', csv_log_text(earlier))
+        old_expected = flatten(csv_log_text(earlier))
+
+        # the old file was superseded a minute before the range begins
+        out, err = self.gplogfilter('--prunefiles', '-b', '2026-09-24 10:01',
+                                    old_log, self.log, quiet=False)
+        self.assertOutputIs(out, self.expected[1:])
+        self.assertIn('SKIP file: ' + old_log, err.decode())
+        self.assertNotIn('SKIP file: ' + self.log, err.decode())
+
+        # nothing is skipped without --prunefiles
+        out, err = self.gplogfilter('-b', '2026-09-24 10:01', old_log, self.log, quiet=False)
+        self.assertOutputIs(out, self.expected[1:])
+        self.assertNotIn('SKIP file', err.decode())
+
+        # a file superseded right when the range begins may still hold
+        # entries stamped after the rotation, as may one superseded earlier
+        for begin, expected in (('2026-09-24 10:00', self.expected),
+                                ('2026-09-24 10:00:59', self.expected[1:]),
+                                ('2026-09-24', self.expected)):
+            out, err = self.gplogfilter('--prunefiles', '-b', begin, old_log, self.log,
+                                        quiet=False)
+            self.assertOutputIs(out, expected)
+            self.assertNotIn('SKIP file', err.decode(), begin)
+
+        # the new file was created after the range ends
+        out, err = self.gplogfilter('--prunefiles', '-e', '2026-09-24', old_log, self.log,
+                                    quiet=False)
+        self.assertOutputIs(out, old_expected)
+        self.assertIn('SKIP file: ' + self.log, err.decode())
+        self.assertNotIn('SKIP file: ' + old_log, err.decode())
+
+        # a file created right when the range ends may hold entries stamped
+        # just before the rotation
+        out, err = self.gplogfilter('--prunefiles', '-e', '2026-09-24 10:00', old_log, self.log,
+                                    quiet=False)
+        self.assertOutputIs(out, old_expected)
+        self.assertNotIn('SKIP file', err.decode())
+
+        # a range inside the old file still reads the old file
+        out, err = self.gplogfilter('--prunefiles', '-b', '2026-09-23 10:05',
+                                    '-e', '2026-09-23 10:11', old_log, self.log, quiet=False)
+        self.assertOutputIs(out, old_expected[1:3])
+        self.assertNotIn('SKIP file: ' + old_log, err.decode())
+        self.assertIn('SKIP file: ' + self.log, err.decode())
+
+
 if __name__ == '__main__':
     run_tests()
