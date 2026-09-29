@@ -305,6 +305,7 @@ typedef struct AOCSScanDescData
 	 * proportionally smaller, making sampling more efficient.
 	 *
 	 * This value must fit in an OffsetNumber to comply with the TSM API.
+	 * Zero until the first TABLESAMPLE block is requested.
 	 */
 	int32		sampleTuplesPerBlock;
 

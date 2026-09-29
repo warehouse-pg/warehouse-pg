@@ -750,7 +750,7 @@ aocs_beginscan_internal(Relation relation,
 	}
 
 	scan->sampleTargetBlk = -1;
-	scan->sampleTuplesPerBlock = ao_compute_sample_tuples_per_block(relation);
+	scan->sampleTuplesPerBlock = 0;
 
 	return scan;
 }
