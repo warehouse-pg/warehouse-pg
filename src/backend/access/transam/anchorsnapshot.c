@@ -90,7 +90,8 @@ typedef struct AnchorRegistryEntry
 {
 	char		rp_name[MAXFNAMELEN];	/* key: the restore point name */
 	TransactionId xmin;			/* the anchor's xmin */
-	uint32		ordinal;		/* registration order, never exposed; never 0 */
+	uint32		ordinal;		/* registration order, never exposed; never 0,
+								 * never reused (see registerAnchor) */
 	bool		valid;
 } AnchorRegistryEntry;
 
@@ -164,7 +165,8 @@ typedef enum RegisterResult
 {
 	REGISTER_OK,
 	REGISTER_DUPLICATE,			/* the name is already registered */
-	REGISTER_FULL				/* no free slot */
+	REGISTER_FULL,				/* no free slot */
+	REGISTER_EXHAUSTED			/* no ordinal left before a restart */
 } RegisterResult;
 
 static RegisterResult registerAnchor(const char *name, TransactionId xmin);
@@ -232,9 +234,16 @@ findEntryLocked(const char *name)
 
 /*
  * Register {name, xmin}.  Reports (without WARNING) whether the name is
- * already registered or the registry has no free slot; the caller decides
- * what to say and, on REGISTER_FULL, whether to evict and retry.  Startup
- * process only.
+ * already registered, the registry has no free slot, or its ordinals are
+ * used up; the caller decides what to say and, on REGISTER_FULL, whether
+ * to evict and retry.  Startup process only.
+ *
+ * Ordinals identify registrations (installer cache, pins, dispatch) and
+ * order them (retirement, eviction), so one is never handed out twice:
+ * after PG_UINT32_MAX - 1 registrations -- one per exported restore point,
+ * which no standby reaches between restarts -- registration stops until a
+ * restart gives the registry a fresh counter.  Files kept meanwhile
+ * register at that start.
  */
 static RegisterResult
 registerAnchor(const char *name, TransactionId xmin)
@@ -261,11 +270,14 @@ registerAnchor(const char *name, TransactionId xmin)
 		SpinLockRelease(&anchorRegistry->lock);
 		return REGISTER_FULL;
 	}
+	if (anchorRegistry->next_ordinal == PG_UINT32_MAX)
+	{
+		SpinLockRelease(&anchorRegistry->lock);
+		return REGISTER_EXHAUSTED;
+	}
 	strlcpy(slot->rp_name, name, MAXFNAMELEN);
 	slot->xmin = xmin;
 	slot->ordinal = anchorRegistry->next_ordinal++;
-	if (anchorRegistry->next_ordinal == 0)	/* 0 means "no anchor" */
-		anchorRegistry->next_ordinal = 1;
 	slot->valid = true;
 	SpinLockRelease(&anchorRegistry->lock);
 	return REGISTER_OK;
@@ -1118,6 +1130,7 @@ AnchorSnapshotStartup(XLogRecPtr redoStart, List *history,
 void
 AnchorSnapshotExportOnRestorePoint(XLogReaderState *record)
 {
+	RegisterResult res;
 	xl_restore_point *rp;
 	char		name[MAXFNAMELEN];
 	TransactionId xmin;
@@ -1162,8 +1175,6 @@ AnchorSnapshotExportOnRestorePoint(XLogReaderState *record)
 
 		if (match)
 		{
-			RegisterResult res;
-
 			pendingSet = false;
 			res = registerAnchorEvicting(pendingName, pendingXmin);
 			if (res == REGISTER_DUPLICATE)
@@ -1174,6 +1185,11 @@ AnchorSnapshotExportOnRestorePoint(XLogReaderState *record)
 				ereport(WARNING,
 						(errmsg("pending anchor snapshot for restore point \"%s\" not registered: registry full (whpg_max_anchor_snapshots = %d) and only the published anchor is registered",
 								pendingName, anchorRegistry->capacity)));
+			else if (res == REGISTER_EXHAUSTED)
+				ereport(WARNING,
+						(errmsg("pending anchor snapshot for restore point \"%s\" not registered: the anchor registry has handed out all %u registration ordinals",
+								pendingName, PG_UINT32_MAX - 1),
+						 errhint("Restart the standby; its file registers then.")));
 			else
 			{
 				ereport(LOG,
@@ -1285,11 +1301,21 @@ AnchorSnapshotExportOnRestorePoint(XLogReaderState *record)
 	 * The file is durable; now take a slot.  A full registry evicts the
 	 * oldest unpublished anchor (entry and file) only at this point, so a
 	 * write that failed above has cost nothing.  A duplicate was ruled out
-	 * above (single writer), so the only failure left is a registry holding
-	 * nothing but the published anchor: undo the file, keep the registry as
-	 * it was.
+	 * above (single writer), so the failures left are a registry holding
+	 * nothing but the published anchor -- undo the file, keep the registry
+	 * as it was -- and a registry out of ordinals, where the file stays for
+	 * the restart that registers it.
 	 */
-	if (registerAnchorEvicting(name, xmin) != REGISTER_OK)
+	res = registerAnchorEvicting(name, xmin);
+	if (res == REGISTER_EXHAUSTED)
+	{
+		ereport(WARNING,
+				(errmsg("anchor snapshot for restore point \"%s\" written but not registered: the anchor registry has handed out all %u registration ordinals",
+						name, PG_UINT32_MAX - 1),
+				 errhint("Restart the standby; the file registers then.")));
+		return;
+	}
+	if (res != REGISTER_OK)
 	{
 		char		path[MAXPGPATH];
 

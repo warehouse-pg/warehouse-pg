@@ -103,6 +103,32 @@ test__registry_register_lookup_full_duplicate(void **state)
 	anchorRegistry = NULL;
 }
 
+/*
+ * Ordinals are never reused: the registration that would take the last
+ * one is refused, and everything registered before it stays.
+ */
+static void
+test__registry_ordinal_exhaustion(void **state)
+{
+	AnchorRegistryData *reg = makeRegistry(4);
+	TransactionId xmin;
+	uint32		ordinal;
+
+	reg->next_ordinal = PG_UINT32_MAX - 1;
+	assert_int_equal(registerAnchor("last", 100), REGISTER_OK);
+	assert_true(AnchorSnapshotLookup("last", &xmin, &ordinal));
+	assert_int_equal(ordinal, PG_UINT32_MAX - 1);
+
+	assert_int_equal(registerAnchor("one_too_many", 110), REGISTER_EXHAUSTED);
+	assert_int_equal(registerAnchorEvicting("one_too_many", 110), REGISTER_EXHAUSTED);
+	assert_false(AnchorSnapshotLookup("one_too_many", &xmin, &ordinal));
+	assert_true(AnchorSnapshotLookup("last", &xmin, &ordinal));
+	assert_int_equal(reg->next_ordinal, PG_UINT32_MAX);
+
+	free(reg);
+	anchorRegistry = NULL;
+}
+
 static void
 test__registry_disabled(void **state)
 {
@@ -626,6 +652,7 @@ main(int argc, char *argv[])
 	const UnitTest tests[] = {
 		unit_test(test__anchorNameIsValid),
 		unit_test(test__registry_register_lookup_full_duplicate),
+		unit_test(test__registry_ordinal_exhaustion),
 		unit_test(test__registry_disabled),
 		unit_test(test__list_in_registration_order),
 		unit_test(test__retire_on_publish),
