@@ -26,6 +26,7 @@
 #include "cdb/cdbvars.h"
 #include "nodes/makefuncs.h"
 #include "optimizer/clauses.h"
+#include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/orca.h"
 #include "optimizer/paths.h"
@@ -224,6 +225,16 @@ optimize_query(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	result->planTree = replace_shareinput_targetlists(root, result->planTree);
 
 	result->planTree = remove_redundant_results(root, result->planTree);
+
+	/*
+	 * Staged Scan for AOCO scans: the decision the Postgres planner makes in
+	 * create_seqscan_plan(), made here over ORCA's finished plan with the
+	 * same cost model (stagedscan_decide_orca_plan() in stagedscancost.c).
+	 * The pass walks the plan and the subplans (result->subplans and
+	 * glob->subplans are the same List) and sets the scan nodes' Staged
+	 * Scan fields in place; it builds nothing.
+	 */
+	stagedscan_decide_orca_plan(glob, result, parse->hasRowSecurity);
 
 	/*
 	 * To save on memory, and on the network bandwidth when the plan is

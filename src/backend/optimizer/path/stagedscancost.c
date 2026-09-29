@@ -1535,3 +1535,285 @@ cost_aocs_stagedscan(PlannerInfo *root, RelOptInfo *rel, List *clauses,
 
 	return true;
 }
+
+
+/*-------------------------------------------------------------------------
+ * GPORCA plans
+ *
+ * ORCA builds its plans without a PlannerInfo, so the decision above cannot
+ * run inside it. It runs instead as a post-processing pass over the finished
+ * plan tree (optimize_query() in orca.c): every SeqScan and DynamicSeqScan
+ * over an AOCO relation gets a scratch RelOptInfo built from the final range
+ * table -- the same catalog statistics the Postgres planner would see -- with
+ * the scan's quals as its restrictions, its target list as its projection
+ * and ORCA's own row estimate as its output rows, and cost_aocs_stagedscan()
+ * decides exactly as it does for a Postgres-planner scan. Staged Scan is a
+ * refinement of how a chosen table scan executes, not an alternative in the
+ * search space, so ORCA's choice between a table scan and an index scan is
+ * left alone.
+ *
+ * A DynamicSeqScan is decided once, on the partitioned parent: inherited
+ * statistics and the sum of the leaf partitions' row counts stand in for the
+ * children, and the executor applies the one stage order to every partition
+ * it opens, remapping the attribute numbers per partition as it does for the
+ * quals (nodeDynamicSeqScan.c). The parent must itself be declared AOCO for
+ * the scan to qualify; a heap partition under it simply ignores the request
+ * (only the AOCO access method implements scan_begin_extractcolumns).
+ *-------------------------------------------------------------------------
+ */
+
+typedef struct StagedOrcaContext
+{
+	plan_tree_base_prefix base;	/* plan_tree_walker() expects this first */
+	PlannerInfo *root;			/* scratch root over the final range table */
+} StagedOrcaContext;
+
+/* Rows in the leaf partitions of 'parentOid', from pg_class.reltuples. */
+static double
+staged_partition_tuples(Oid parentOid)
+{
+	List	   *children = find_all_inheritors(parentOid, NoLock, NULL);
+	ListCell   *lc;
+	double		tuples = 0.0;
+
+	foreach(lc, children)
+	{
+		Oid			childOid = lfirst_oid(lc);
+		HeapTuple	tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(childOid));
+		Form_pg_class form;
+
+		if (!HeapTupleIsValid(tuple))
+			continue;
+		form = (Form_pg_class) GETSTRUCT(tuple);
+		if (form->relkind == RELKIND_RELATION && form->reltuples > 0)
+			tuples += form->reltuples;
+		ReleaseSysCache(tuple);
+	}
+	list_free(children);
+	return tuples;
+}
+
+/*
+ * Decide Staged Scan for one ORCA scan. 'dynamic' marks the SeqScan embedded
+ * in a DynamicSeqScan, whose range table entry is the partitioned parent.
+ */
+static void
+stagedscan_decide_orca_scan(PlannerInfo *root, SeqScan *scan, bool dynamic)
+{
+	Index		varno = scan->scan.scanrelid;
+	RangeTblEntry *rte;
+	RelOptInfo *rel;
+	List	   *attnos = NIL;
+	int			width = 0;
+	double		phaseASel = 0.0;
+	List	   *vars;
+	ListCell   *lc;
+	bool		savedInh;
+
+	scan->staged.enabled = false;
+	scan->staged.phaseAWidth = 0;
+	scan->staged.filterAttnos = NIL;
+	scan->staged.phaseASel = 0.0;
+
+	if (!whpg_enable_staged_scan || scan->scan.plan.qual == NIL)
+		return;
+	if (varno <= 0 || varno >= root->simple_rel_array_size)
+		return;
+	rte = root->simple_rte_array[varno];
+	if (rte == NULL || rte->rtekind != RTE_RELATION)
+		return;
+	/* ORCA's range table leaves relkind unset; ask the catalog */
+	if (get_rel_relkind(rte->relid) !=
+		(dynamic ? RELKIND_PARTITIONED_TABLE : RELKIND_RELATION))
+		return;
+
+	/*
+	 * cost_aocs_stagedscan() declines anything but AOCO; do it before
+	 * build_simple_rel(), which runs get_relation_info_hook, so that an
+	 * extension's hook never sees this pass's scratch PlannerInfo for a
+	 * relation the pass has nothing to decide on.
+	 */
+	if (!IsAccessMethodAOColumn(get_rel_am(rte->relid)))
+		return;
+
+	/*
+	 * The planner machinery below errors out on what it never meets in a
+	 * Postgres planner scan: examine_variable() on a Var of another
+	 * relation. Such a scan is left as ORCA built it rather than the query
+	 * failed.
+	 */
+	vars = pull_var_clause((Node *) scan->scan.plan.qual,
+						   PVC_RECURSE_AGGREGATES | PVC_RECURSE_WINDOWFUNCS |
+						   PVC_RECURSE_PLACEHOLDERS);
+	foreach(lc, vars)
+	{
+		Var		   *var = (Var *) lfirst(lc);
+
+		if (!IsA(var, Var) || var->varno != varno || var->varlevelsup != 0)
+		{
+			list_free(vars);
+			return;
+		}
+	}
+	list_free(vars);
+
+	/*
+	 * A partitioned parent is costed on its inherited statistics, which is
+	 * what rte->inh selects in examine_variable(); ORCA's range table does not
+	 * promise the flag either way, so set it for the duration.
+	 */
+	savedInh = rte->inh;
+	rte->inh = dynamic;
+
+	rel = root->simple_rel_array[varno];
+	if (rel == NULL)
+		rel = build_simple_rel(root, varno, NULL);
+	if (dynamic)
+		rel->tuples = staged_partition_tuples(rte->relid);
+
+	/*
+	 * The scan's quals are the relation's restrictions. ORCA hands the filter
+	 * over as one conjunction; the model wants the ANDs as separate clauses,
+	 * as the Postgres planner's baserestrictinfo has them, so that each can
+	 * be staged on its own -- flattened exactly as the executor will flatten
+	 * them, in the same order, so that both check the stage order against
+	 * the same clauses.
+	 */
+	rel->baserestrictinfo = NIL;
+	foreach(lc, stagedscan_flatten_qual(scan->scan.plan.qual))
+		rel->baserestrictinfo = lappend(rel->baserestrictinfo,
+										make_simple_restrictinfo((Expr *) lfirst(lc)));
+
+	/* ... its target list the projection ... */
+	rel->reltarget->exprs = NIL;
+	vars = pull_var_clause((Node *) scan->scan.plan.targetlist,
+						   PVC_RECURSE_AGGREGATES | PVC_RECURSE_WINDOWFUNCS |
+						   PVC_RECURSE_PLACEHOLDERS);
+	foreach(lc, vars)
+	{
+		Var		   *var = (Var *) lfirst(lc);
+
+		if (IsA(var, Var) && var->varno == varno && var->varlevelsup == 0)
+			rel->reltarget->exprs = lappend(rel->reltarget->exprs, var);
+	}
+	list_free(vars);
+
+	/*
+	 * ... and the surviving rows are estimated from the same statistics the
+	 * model orders the stages with. (ORCA's own estimate on the plan node is
+	 * per segment and comes from its own statistics; mixing the two would
+	 * make the gate and the stage costs disagree.)
+	 */
+	rel->rows = clamp_row_est(rel->tuples *
+							  clauselist_selectivity(root, rel->baserestrictinfo,
+													 varno, JOIN_INNER, NULL));
+
+	/* ORCA's qual order is the order just listed */
+	if (cost_aocs_stagedscan(root, rel, rel->baserestrictinfo,
+							 &attnos, &width, &phaseASel))
+	{
+		scan->staged.enabled = true;
+		scan->staged.phaseAWidth = width;
+		scan->staged.filterAttnos = attnos;
+		scan->staged.phaseASel = phaseASel;
+	}
+
+	rte->inh = savedInh;
+}
+
+/*
+ * Walk the plan tree, deciding each AOCO scan in place.
+ *
+ * Nothing but the Staged Scan fields of a SeqScan is written, so this is a
+ * walker rather than a mutator: a mutator would flat-copy every plan node and
+ * copy every expression of the tree, which for the great majority of plans --
+ * those with no AOCO scan at all -- is an entire plan copy for no change.
+ */
+static bool
+stagedscan_orca_walker(Node *node, void *context)
+{
+	StagedOrcaContext *cx = (StagedOrcaContext *) context;
+
+	if (node == NULL)
+		return false;
+	if (IsA(node, SeqScan))
+		stagedscan_decide_orca_scan(cx->root, (SeqScan *) node, false);
+	else if (IsA(node, DynamicSeqScan))
+		stagedscan_decide_orca_scan(cx->root, &((DynamicSeqScan *) node)->seqscan, true);
+
+	/*
+	 * The subplans are walked from stagedscan_decide_orca_plan() instead, so
+	 * that a subplan referenced by several SubPlan nodes is decided once;
+	 * hence 'false' here, as the mutator this replaces also passed.
+	 */
+	return plan_tree_walker(node, stagedscan_orca_walker, context, false);
+}
+
+/*
+ * Decide Staged Scan for every AOCO scan of a GPORCA plan, main tree and
+ * subplans. 'glob' is the ORCA path's dummy PlannerGlobal; the scratch
+ * PlannerInfo built here lives only for this pass.
+ */
+void
+stagedscan_decide_orca_plan(PlannerGlobal *glob, PlannedStmt *stmt,
+							bool hasRowSecurity)
+{
+	StagedOrcaContext cx;
+	PlannerInfo *root;
+	ListCell   *lc;
+	bool		ownPartdir;
+
+	if (!whpg_enable_staged_scan)
+		return;
+
+	/*
+	 * ORCA's scan quals no longer say which clauses a row-level-security
+	 * policy contributed, so the security-level check the planner path makes
+	 * in cost_aocs_stagedscan() cannot be repeated here: under RLS keep
+	 * ORCA's own qual order.
+	 */
+	if (hasRowSecurity)
+		return;
+
+	root = makeNode(PlannerInfo);
+	root->parse = makeNode(Query);
+	root->parse->commandType = CMD_SELECT;
+	root->parse->rtable = stmt->rtable;
+
+	/*
+	 * This pass runs inside planner(), where get_relation_info_hook has only
+	 * ever been handed the root of a Query being planned, and so may read it
+	 * as such: every such Query has a jointree. Give it the one of a query
+	 * without FROM or WHERE. The scan quals are deliberately not put there;
+	 * they are ORCA's, not the user's, and the RelOptInfo built here is only
+	 * costed, never planned.
+	 */
+	root->parse->jointree = makeFromExpr(NIL, NULL);
+	root->glob = glob;
+	root->query_level = 1;
+	root->planner_cxt = CurrentMemoryContext;
+	root->wt_param_id = -1;
+	setup_simple_rel_arrays(root);
+
+	cx.base.node = (Node *) root;
+	cx.root = root;
+
+	/*
+	 * Sizing a partitioned parent makes plancat open a partition directory
+	 * on the dummy glob, which standard_planner() would destroy at the end
+	 * of planning and the ORCA path never does; destroy it here if this pass
+	 * is what created it, or the pinned relations leak to the end of the
+	 * transaction.
+	 */
+	ownPartdir = (glob->partition_directory == NULL);
+
+	(void) stagedscan_orca_walker((Node *) stmt->planTree, &cx);
+	foreach(lc, stmt->subplans)
+		(void) stagedscan_orca_walker((Node *) lfirst(lc), &cx);
+
+	if (ownPartdir && glob->partition_directory != NULL)
+	{
+		DestroyPartitionDirectory(glob->partition_directory);
+		glob->partition_directory = NULL;
+	}
+}
