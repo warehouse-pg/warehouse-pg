@@ -10269,18 +10269,25 @@ CreateRestartPoint(int flags)
 	 * A registered anchor snapshot is an xmin a future transaction may
 	 * install, and between its export and its import no backend holds it,
 	 * so the horizon also stops at the oldest registered anchor.  The
-	 * registry is read first: an anchor gone by the time GetOldestXmin()
-	 * runs was invalidated after every installer that saw it published its
-	 * xmin under ProcArrayLock, which GetOldestXmin() then sees.
+	 * registry is read before GetOldestXmin(): an anchor gone by then was
+	 * invalidated after every installer that saw it published its xmin
+	 * under ProcArrayLock, which GetOldestXmin() then sees.  It is read
+	 * again after: an anchor exported between the first read and the scan,
+	 * whose transactions may all have finished by the scan, is held by
+	 * nobody yet and would otherwise be truncated under.
 	 */
 	if (EnableHotStandby)
 	{
 		TransactionId anchorXmin = AnchorSnapshotOldestXmin();
 		TransactionId cutoff = GetOldestXmin(NULL, PROCARRAY_FLAGS_DEFAULT);
+		TransactionId anchorXminAfter = AnchorSnapshotOldestXmin();
 
 		if (TransactionIdIsValid(anchorXmin) &&
 			TransactionIdPrecedes(anchorXmin, cutoff))
 			cutoff = anchorXmin;
+		if (TransactionIdIsValid(anchorXminAfter) &&
+			TransactionIdPrecedes(anchorXminAfter, cutoff))
+			cutoff = anchorXminAfter;
 		TruncateSUBTRANS(cutoff);
 	}
 

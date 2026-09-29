@@ -171,6 +171,7 @@ typedef enum RegisterResult
 
 static RegisterResult registerAnchor(const char *name, TransactionId xmin);
 static bool evictOldestUnpublished(const char *newname);
+static void anchorRemovalBarrier(void);
 static bool applyPublication(const char *name);
 static AnchorRegistryEntry *findEntryLocked(const char *name);
 
@@ -1347,6 +1348,28 @@ AnchorSnapshotExportOnRestorePoint(XLogReaderState *record)
 }
 
 /*
+ * Order "the entry is gone" before anything that then collects xmins from
+ * the ProcArray (the conflict resolution of a replayed cleanup record, the
+ * restartpoint's GetOldestXmin()).  The installer re-checks the entry and
+ * lowers MyPgXact->xmin while holding ProcArrayLock shared; taking the lock
+ * exclusively once after the entry is marked invalid therefore waits for
+ * every installer that saw the entry, and every installer that arrives
+ * later finds it gone.  Every path that removes an entry calls this after
+ * marking it and before unlinking the file: "an unpublished entry has no
+ * reader" does not hold, since a REPEATABLE READ transaction keeps reading
+ * the anchor it pinned after the name moved on and an executor installs
+ * the name it was dispatched.  Never called with the registry spinlock
+ * held, so the lock order is the installer's (ProcArrayLock, then the
+ * spinlock) with no cycle.  Startup process only.
+ */
+static void
+anchorRemovalBarrier(void)
+{
+	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+	LWLockRelease(ProcArrayLock);
+}
+
+/*
  * Make room in a full registry for newname: invalidate the anchor with the
  * smallest ordinal that is not the published one.  Only the anchor the GUC
  * names is ever imported, so an unpublished entry has no reader and giving
@@ -1382,6 +1405,7 @@ evictOldestUnpublished(const char *newname)
 	if (victim == NULL)
 		return false;
 
+	anchorRemovalBarrier();
 	anchorFilePath(path, sizeof(path), victimName, false);
 	anchorRemoveFile(path);
 	ereport(LOG,
@@ -1411,6 +1435,8 @@ AnchorSnapshotInvalidate(const char *rp_name)
 		if (e != NULL)
 			e->valid = false;
 		SpinLockRelease(&anchorRegistry->lock);
+		if (e != NULL)
+			anchorRemovalBarrier();
 	}
 
 	anchorFilePath(path, sizeof(path), rp_name, false);
@@ -1475,6 +1501,8 @@ applyPublication(const char *name)
 	if (e == NULL)
 		return false;
 
+	if (nretire > 0)
+		anchorRemovalBarrier();
 	for (i = 0; i < nretire; i++)
 	{
 		char		path[MAXPGPATH];
@@ -1541,6 +1569,8 @@ AnchorSnapshotClearAll(void)
 			}
 		}
 		SpinLockRelease(&anchorRegistry->lock);
+		if (cleared > 0)
+			anchorRemovalBarrier();
 	}
 
 	sweepAnchorFiles(NULL);
@@ -1737,6 +1767,7 @@ static void
 prepareRegisteredAnchor(const char *name, TransactionId regXmin, uint32 ordinal)
 {
 	TransactionId recheck;
+	TransactionId savedXmin;
 	uint32		recheckOrdinal;
 
 	loadAnchorIntoCache(name, regXmin, ordinal);
@@ -1758,17 +1789,28 @@ prepareRegisteredAnchor(const char *name, TransactionId regXmin, uint32 ordinal)
 	 * the entry, then take ProcArrayLock exclusively, then collect conflicting
 	 * readers" either sees this session's xmin or made this check fail; there
 	 * is no order in which the session reads with an xmin nobody knows about.
+	 *
+	 * The xmin is written BEFORE the re-check, and restored when the check
+	 * fails.  A scan of the ProcArray under the shared lock (the
+	 * restartpoint's GetOldestXmin(), which reads the registry first) runs
+	 * concurrently with this block; had the check come first, a scan between
+	 * the check and the write would see neither the entry (gone) nor the
+	 * xmin (not yet written) and truncate pg_subtrans past the anchor.  With
+	 * the write first, a scan that misses the xmin ran before the write and
+	 * so before the check, and the check then finds the entry gone.
 	 */
 	LWLockAcquire(ProcArrayLock, LW_SHARED);
+	savedXmin = MyPgXact->xmin;
+	lowerXmin(&MyPgXact->xmin, regXmin);
 	if (!AnchorSnapshotLookup(name, &recheck, &recheckOrdinal) ||
 		recheckOrdinal != ordinal)
 	{
+		MyPgXact->xmin = savedXmin;
 		LWLockRelease(ProcArrayLock);
 		if (pinnedAnchor.pinned)
 			anchorPinnedGoneError();
 		anchorNotRegisteredError(name);
 	}
-	lowerXmin(&MyPgXact->xmin, regXmin);
 	LWLockRelease(ProcArrayLock);
 
 	lowerXmin(&TransactionXmin, regXmin);

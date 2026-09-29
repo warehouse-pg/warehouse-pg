@@ -39,7 +39,32 @@ makeRegistry(int capacity)
 	reg->capacity = capacity;
 	reg->next_ordinal = 1;
 	anchorRegistry = reg;
+	/* the name buffer is sized by the first registry that needs it */
+	if (retireNames != NULL)
+	{
+		free(retireNames);
+		retireNames = NULL;
+	}
 	return reg;
+}
+
+/*
+ * Every path that removes a registered entry runs the removal barrier
+ * (ProcArrayLock taken exclusively once and released); the LWLock mock
+ * fails the test on a barrier that is not expected here, so a removal that
+ * finds nothing must not run one.
+ */
+static void
+expectBarrier(int times)
+{
+	while (times-- > 0)
+	{
+		expect_value(LWLockAcquire, lock, ProcArrayLock);
+		expect_value(LWLockAcquire, mode, LW_EXCLUSIVE);
+		will_return(LWLockAcquire, true);
+		expect_value(LWLockRelease, lock, ProcArrayLock);
+		will_be_called(LWLockRelease);
+	}
 }
 
 static void
@@ -93,6 +118,7 @@ test__registry_register_lookup_full_duplicate(void **state)
 	assert_false(AnchorSnapshotLookup("rp3", &xmin, NULL));
 
 	/* invalidation frees the slot on the spot */
+	expectBarrier(1);
 	AnchorSnapshotInvalidate("rp1");
 	assert_false(AnchorSnapshotLookup("rp1", &xmin, NULL));
 	assert_int_equal(registerAnchor("rp3", 120), REGISTER_OK);
@@ -154,6 +180,7 @@ test__list_in_registration_order(void **state)
 	assert_int_equal(registerAnchor("a", 10), REGISTER_OK);
 	assert_int_equal(registerAnchor("b", 20), REGISTER_OK);
 	/* free the first slot and reuse it: the ordinal, not the slot, orders */
+	expectBarrier(1);
 	AnchorSnapshotInvalidate("c");
 	assert_int_equal(registerAnchor("d", 40), REGISTER_OK);
 
@@ -200,6 +227,7 @@ test__retire_on_publish(void **state)
 
 	/* publish rp3: rp1 and rp2 go, rp3 and the newer rp4 stay */
 	whpg_hot_standby_anchor_name = "rp3";
+	expectBarrier(1);
 	AnchorSnapshotOnConfigReload();
 	assert_false(AnchorSnapshotLookup("rp1", &xmin, NULL));
 	assert_false(AnchorSnapshotLookup("rp2", &xmin, NULL));
@@ -231,6 +259,7 @@ test__retire_on_publish(void **state)
 	AnchorSnapshotOnConfigReload();
 	assert_true(AnchorSnapshotLookup("rp3", &xmin, NULL));
 	assert_int_equal(registerAnchor("rp5", 50), REGISTER_OK);
+	expectBarrier(1);
 	assert_true(applyPublication("rp5"));
 	assert_false(AnchorSnapshotLookup("rp3", &xmin, NULL));
 	assert_false(AnchorSnapshotLookup("rp4", &xmin, NULL));
@@ -260,6 +289,7 @@ test__evict_oldest_unpublished(void **state)
 
 	/* b is published: a (oldest) goes first, then c, never b */
 	whpg_hot_standby_anchor_name = "b";
+	expectBarrier(1);
 	assert_true(evictOldestUnpublished("d"));
 	assert_false(AnchorSnapshotLookup("a", &xmin, NULL));
 	assert_true(AnchorSnapshotLookup("b", &xmin, NULL));
@@ -267,12 +297,14 @@ test__evict_oldest_unpublished(void **state)
 	assert_int_equal(registerAnchor("d", 40), REGISTER_OK);
 	assert_int_equal(registerAnchor("full", 99), REGISTER_FULL);
 
+	expectBarrier(1);
 	assert_true(evictOldestUnpublished("e"));
 	assert_false(AnchorSnapshotLookup("c", &xmin, NULL));
 	assert_true(AnchorSnapshotLookup("b", &xmin, NULL));
 	assert_int_equal(registerAnchor("e", 50), REGISTER_OK);
 
-	/* only the published anchor left: nothing to evict */
+	/* only the published anchor left: nothing to evict (and no barrier) */
+	expectBarrier(2);
 	assert_true(evictOldestUnpublished("f"));
 	assert_false(AnchorSnapshotLookup("d", &xmin, NULL));
 	assert_true(evictOldestUnpublished("f"));
@@ -282,6 +314,7 @@ test__evict_oldest_unpublished(void **state)
 
 	/* no published anchor at all: plain oldest-first */
 	whpg_hot_standby_anchor_name = "";
+	expectBarrier(1);
 	assert_true(evictOldestUnpublished("f"));
 	assert_false(AnchorSnapshotLookup("b", &xmin, NULL));
 
@@ -601,11 +634,13 @@ test__oldest_xmin_and_restart_rule(void **state)
 	assert_int_equal(AnchorSnapshotOldestXmin(), 300);
 
 	/* an invalidated entry no longer holds the horizon */
+	expectBarrier(1);
 	AnchorSnapshotInvalidate("b");
 	assert_int_equal(AnchorSnapshotOldestXmin(), 400);
 
 	/* a name registered again is a new registration: the ordinal moves */
 	assert_true(AnchorSnapshotLookup("a", &xmin, &ord_a));
+	expectBarrier(1);
 	AnchorSnapshotInvalidate("a");
 	assert_int_equal(registerAnchor("a", 400), REGISTER_OK);
 	assert_true(AnchorSnapshotLookup("a", &xmin, &ord_a2));

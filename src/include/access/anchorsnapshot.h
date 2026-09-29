@@ -46,10 +46,14 @@
  *   alone), so the session never announces the replay-position xmin
  *   between taking the snapshot and anchoring it.  The lowering happens
  *   under ProcArrayLock (shared) after re-checking that the anchor is
- *   still registered; code that invalidates an anchor must therefore
- *   delete the entry first and take ProcArrayLock exclusively once before
- *   collecting conflicting readers, so that every installer that saw the
- *   entry has published its xmin by then.
+ *   still registered; every path that removes an entry (invalidation,
+ *   publication retirement, eviction, the clear at the end of recovery)
+ *   marks it invalid first and then takes ProcArrayLock exclusively once
+ *   before anything collects xmins (a conflict resolution, the
+ *   restartpoint's GetOldestXmin()), so that every installer that saw the
+ *   entry has published its xmin by then and every later one finds the
+ *   entry gone.  The installer writes its xmin before the re-check, and
+ *   the restartpoint reads the registry on both sides of GetOldestXmin().
  * - An executor writer publishes its snapshot to the reader gang only
  *   after the anchor is laid over it (GetSnapshotData() skips its usual
  *   publication under an anchored dispatch), so a reader never copies the
@@ -134,7 +138,12 @@ extern void AnchorSnapshotExportOnRestorePoint(XLogReaderState *record);
 extern void AnchorSnapshotOnConfigReload(void);
 extern void AnchorSnapshotClearAll(void);
 
-/* Primitive shared with the conflict-linkage code */
+/*
+ * Removal of one anchor by name (entry and file), with the removal
+ * barrier; startup process only.  No production caller today (the
+ * conflict linkage of a later change sweeps by xmin); the unit tests'
+ * primitive.
+ */
 extern void AnchorSnapshotInvalidate(const char *rp_name);
 
 /*

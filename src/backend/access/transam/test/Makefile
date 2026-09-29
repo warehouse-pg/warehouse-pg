@@ -38,5 +38,6 @@ varsup.t: \
 	$(MOCK_DIR)/backend/utils/fmgr/fmgr_mock.o
 
 anchorsnapshot.t: \
+	$(MOCK_DIR)/backend/storage/lmgr/lwlock_mock.o \
 	$(MOCK_DIR)/backend/access/hash/hash_mock.o \
 	$(MOCK_DIR)/backend/utils/fmgr/fmgr_mock.o
