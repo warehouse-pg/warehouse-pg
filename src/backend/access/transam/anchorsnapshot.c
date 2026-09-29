@@ -361,6 +361,26 @@ anchorFilePath(char *path, size_t len, const char *name, bool tmp)
 }
 
 /*
+ * Remove an anchor snapshot file durably.  A missing file is not an error:
+ * every remover may find the file already gone (a crash between the
+ * rename and the registration, an operator's rm, a sweep that ran first).
+ * durable_unlink() reports that case at the caller's level and leaves
+ * errno undefined, so it is only called once the file is known to exist.
+ * Durable: a crash after a plain unlink could bring the file back and let
+ * the next start re-register an anchor whose tuples a cleanup record the
+ * restart never replays again has already removed.
+ */
+static void
+anchorRemoveFile(const char *path)
+{
+	struct stat st;
+
+	if (stat(path, &st) != 0 && errno == ENOENT)
+		return;
+	(void) durable_unlink(path, WARNING);
+}
+
+/*
  * write() everything in buf, WARNING on failure.  Returns false on failure.
  */
 static bool
@@ -911,7 +931,7 @@ sweepAnchorFiles(const char *keep)
 		if (keep != NULL && strcmp(de->d_name, keep) == 0)
 			continue;
 		snprintf(path, sizeof(path), ANCHOR_SNAPSHOT_DIR "/%s", de->d_name);
-		(void) durable_unlink(path, WARNING);
+		anchorRemoveFile(path);
 	}
 	FreeDir(dir);
 }
@@ -1172,7 +1192,7 @@ AnchorSnapshotExportOnRestorePoint(XLogReaderState *record)
 
 			pendingSet = false;
 			anchorFilePath(path, sizeof(path), pendingName, false);
-			(void) durable_unlink(path, WARNING);
+			anchorRemoveFile(path);
 			ereport(WARNING,
 					(errmsg("pending anchor snapshot for restore point \"%s\" dropped: replay passed %X/%X without meeting its restore-point record",
 							pendingName,
@@ -1272,7 +1292,7 @@ AnchorSnapshotExportOnRestorePoint(XLogReaderState *record)
 		char		path[MAXPGPATH];
 
 		anchorFilePath(path, sizeof(path), name, false);
-		(void) durable_unlink(path, WARNING);
+		anchorRemoveFile(path);
 		ereport(WARNING,
 				(errmsg("anchor snapshot for restore point \"%s\" not exported: registry full (whpg_max_anchor_snapshots = %d) and only the published anchor is registered",
 						name, anchorRegistry->capacity),
@@ -1335,7 +1355,7 @@ evictOldestUnpublished(const char *newname)
 		return false;
 
 	anchorFilePath(path, sizeof(path), victimName, false);
-	(void) durable_unlink(path, WARNING);
+	anchorRemoveFile(path);
 	ereport(LOG,
 			(errmsg("evicted anchor snapshot for restore point \"%s\" to make room for \"%s\": registry full (whpg_max_anchor_snapshots = %d)",
 					victimName, newname, anchorRegistry->capacity)));
@@ -1365,17 +1385,9 @@ AnchorSnapshotInvalidate(const char *rp_name)
 		SpinLockRelease(&anchorRegistry->lock);
 	}
 
-	/*
-	 * Durable: a crash after a plain unlink could bring the file back and
-	 * let the next start re-register an anchor whose tuples a cleanup
-	 * record the restart never replays again has already removed.
-	 */
 	anchorFilePath(path, sizeof(path), rp_name, false);
-	if (durable_unlink(path, WARNING) != 0 && errno != ENOENT)
-		ereport(WARNING,
-				(errcode_for_file_access(),
-				 errmsg("could not remove anchor snapshot file \"%s\": %m", path)));
-	else if (e != NULL)
+	anchorRemoveFile(path);
+	if (e != NULL)
 		ereport(LOG,
 				(errmsg("invalidated anchor snapshot for restore point \"%s\"", rp_name)));
 }
@@ -1440,7 +1452,7 @@ applyPublication(const char *name)
 		char		path[MAXPGPATH];
 
 		anchorFilePath(path, sizeof(path), retireNames + i * MAXFNAMELEN, false);
-		(void) durable_unlink(path, WARNING);
+		anchorRemoveFile(path);
 		ereport(LOG,
 				(errmsg("retired anchor snapshot for restore point \"%s\": superseded by \"%s\"",
 						retireNames + i * MAXFNAMELEN, name)));

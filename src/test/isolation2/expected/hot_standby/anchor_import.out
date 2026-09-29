@@ -12,8 +12,8 @@
 -- pg_stat_activity.backend_xmin the published xmin, and a scan of pg_class
 -- (executed on the coordinator with the transaction snapshot) shows which
 -- catalog rows the anchor sees while the catalog snapshot, unanchored, still
--- resolves every name.  Carrying the anchor to the segments is a later
--- change; nothing here depends on segment data.
+-- resolves every name.  This test observes the coordinator alone; the
+-- anchor carried to the segments by a dispatch is anchor_dispatch's subject.
 --
 -- The other cases of the suite read at the replay position, the server
 -- default; anchored sessions here SET the mode.  A backend applies a

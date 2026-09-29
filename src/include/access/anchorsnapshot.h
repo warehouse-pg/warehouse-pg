@@ -68,12 +68,15 @@
  *   transaction there, at the next statement in READ COMMITTED.
  * - Catalog snapshots are not anchored: a query reads table data as of
  *   the anchor and the catalog as of the replay position.
- * - Every refusal is an ERROR with SQLSTATE 55000 (object not in
- *   prerequisite state) and a message naming the anchor.  A session to
- *   which anchored reads apply never falls back to an unanchored snapshot
- *   silently; sessions to which they do not apply (utility mode, a server
- *   out of recovery, the registry disabled) take ordinary snapshots, as
- *   the GUC's description says.
+ * - Every refusal of an anchored read is an ERROR with SQLSTATE 55000
+ *   (object not in prerequisite state) and a message naming the anchor;
+ *   a later publication can make the same statement succeed.  SET
+ *   TRANSACTION SNAPSHOT in anchored mode is refused with 0A000 instead:
+ *   no publication makes it succeed, the session has to leave anchored
+ *   mode.  A session to which anchored reads apply never falls back to an
+ *   unanchored snapshot silently; sessions to which they do not apply
+ *   (utility mode, a server out of recovery, the registry disabled) take
+ *   ordinary snapshots, as the GUC's description says.
  * - An anchor's identity is its registration, not its name: names are
  *   not unique on the primary and retirement frees them, so a later
  *   restore point of the same name can register again, possibly with the

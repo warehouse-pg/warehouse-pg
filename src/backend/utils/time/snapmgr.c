@@ -696,11 +696,15 @@ SetTransactionSnapshot(Snapshot sourcesnap, VirtualTransactionId *sourcevxid,
 		 * executor reads the anchor's xid set alone), but GetSnapshotData()
 		 * in an executor context has just re-attached the replayed one from
 		 * QEDtxContextInfo, and XidInMVCCSnapshot() would consult it ahead
-		 * of the anchor.  Drop it again.  Elsewhere this is a no-op: a leader
-		 * in an executor context always carries the distributed snapshot its
-		 * worker would copy here.
+		 * of the anchor.  Drop it again.  For any other leader this is a
+		 * no-op: a leader in an executor context carries the distributed
+		 * snapshot its worker would copy here.  SET TRANSACTION SNAPSHOT
+		 * (sourceproc NULL) keeps the distributed snapshot just taken: a
+		 * file exported in utility mode carries none, and the importer's
+		 * segments still need one.
 		 */
-		SnapshotResetDslm(CurrentSnapshot);
+		if (sourceproc != NULL)
+			SnapshotResetDslm(CurrentSnapshot);
 	}
 	/*
 	 * Now copy appropriate fields from the source snapshot.
