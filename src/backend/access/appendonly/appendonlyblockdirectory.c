@@ -686,6 +686,87 @@ set_directoryentry_range(
 }
 
 /*
+ * AppendOnlyBlockDirectory_CountEntriesBetween
+ *
+ * How many directory entries of one column of one segment file start
+ * strictly between two row numbers: the entries with lowRowNum < firstRowNum
+ * < highRowNum. A staged scan that jumps from the block holding
+ * lowRowNum straight to the one holding highRowNum uses this to count the
+ * blocks it never read, so that EXPLAIN ANALYZE can bill them as skipped the
+ * way a header walk would. An entry is one varblock unless the directory was
+ * built with gp_blockdirectory_entry_min_range > 0, in which case an entry
+ * may span several blocks and this count is a lower bound on them.
+ *
+ * One index probe at the minipage that starts at or before highRowNum, then
+ * backwards through the minipages until one starts at or before lowRowNum:
+ * everything earlier lies below the range. The cost is a heap tuple per
+ * minipage crossed (161 blocks each), paid only when the scan is
+ * instrumented. Nothing in the directory's cached state is touched.
+ */
+int64
+AppendOnlyBlockDirectory_CountEntriesBetween(AppendOnlyBlockDirectory *blockDirectory,
+											 int segmentFileNum,
+											 int columnGroupNo,
+											 int64 lowRowNum,
+											 int64 highRowNum)
+{
+	Relation	blkdirRel = blockDirectory->blkdirRel;
+	Relation	blkdirIdx = blockDirectory->blkdirIdx;
+	ScanKey		scanKeys = blockDirectory->scanKeys;
+	TupleDesc	tupleDesc;
+	SysScanDesc idxScanDesc;
+	HeapTuple	tuple;
+	Datum		values[Natts_pg_aoblkdir];
+	bool		nulls[Natts_pg_aoblkdir];
+	int64		count = 0;
+
+	if (blkdirRel == NULL || blkdirIdx == NULL || highRowNum <= lowRowNum + 1)
+		return 0;
+
+	Assert(blockDirectory->numScanKeys == 3);
+	tupleDesc = RelationGetDescr(blkdirRel);
+
+	/* (=segmentFileNum, =columnGroupNo, <= highRowNum - 1), see init_internal() */
+	scanKeys[0].sk_argument = Int32GetDatum(segmentFileNum);
+	scanKeys[1].sk_argument = Int32GetDatum(columnGroupNo);
+	scanKeys[2].sk_argument = Int64GetDatum(highRowNum - 1);
+
+	idxScanDesc = systable_beginscan_ordered(blkdirRel, blkdirIdx,
+											 blockDirectory->appendOnlyMetaDataSnapshot,
+											 blockDirectory->numScanKeys, scanKeys);
+	while ((tuple = systable_getnext_ordered(idxScanDesc, BackwardScanDirection)) != NULL)
+	{
+		Minipage   *minipage;
+		Datum		d;
+		bool		lowest;
+
+		heap_deform_tuple(tuple, tupleDesc, values, nulls);
+		if (nulls[Anum_pg_aoblkdir_minipage - 1])
+			continue;
+		d = values[Anum_pg_aoblkdir_minipage - 1];
+		minipage = (Minipage *) PG_DETOAST_DATUM(d);
+
+		for (uint32 i = 0; i < minipage->nEntry; i++)
+		{
+			int64		first = minipage->entry[i].firstRowNum;
+
+			if (first > lowRowNum && first < highRowNum)
+				count++;
+		}
+		/* this minipage starts at or before lowRowNum: no earlier one reaches above it */
+		lowest = (minipage->nEntry == 0 || minipage->entry[0].firstRowNum <= lowRowNum);
+
+		if ((Pointer) minipage != DatumGetPointer(d))
+			pfree(minipage);
+		if (lowest)
+			break;
+	}
+	systable_endscan_ordered(idxScanDesc);
+
+	return count;
+}
+
+/*
  * AppendOnlyBlockDirectory_GetEntry
  *
  * Find a directory entry for the given AOTupleId in the block directory.

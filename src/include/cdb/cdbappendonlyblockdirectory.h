@@ -210,6 +210,12 @@ extern bool AppendOnlyBlockDirectory_GetEntry(
 	int                             columnGroupNo,
 	AppendOnlyBlockDirectoryEntry	*directoryEntry,
 	int64 				*attnum_to_rownum);
+extern int64 AppendOnlyBlockDirectory_CountEntriesBetween(
+	AppendOnlyBlockDirectory		*blockDirectory,
+	int								segmentFileNum,
+	int								columnGroupNo,
+	int64							lowRowNum,
+	int64							highRowNum);
 extern bool AppendOnlyBlockDirectory_GetEntryForPartialScan(
 	AppendOnlyBlockDirectory		*blockDirectory,
 	BlockNumber 					blkno,

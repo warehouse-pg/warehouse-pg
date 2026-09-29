@@ -1137,6 +1137,18 @@ datumstreamread_block_info(DatumStreamRead * acc)
 			 acc->blockFileOffset,
 			 acc->blockRowCount);
 
+#ifdef FAULT_INJECTOR
+	/*
+	 * Fires once per varblock header read, without the content ever being
+	 * looked at.  Its sibling 'AppendOnlyStorageRead_DecompressBlockContent'
+	 * fires once per content materialization, so a test can tell the two
+	 * halves of a block read apart.
+	 */
+	FaultInjector_InjectFaultIfSet("AppendOnlyStorageRead_ReadBlockHeader",
+								   DDLNotSpecified, "",
+								   acc->ao_read.relationName);
+#endif
+
 	return true;
 }
 
@@ -1180,6 +1192,13 @@ void
 datumstreamread_block_content(DatumStreamRead * acc)
 {
 	Assert(acc);
+
+#ifdef FAULT_INJECTOR
+	/* See the sibling injector in datumstreamread_block_info(). */
+	FaultInjector_InjectFaultIfSet("AppendOnlyStorageRead_DecompressBlockContent",
+								   DDLNotSpecified, "",
+								   acc->ao_read.relationName);
+#endif
 
 	/*
 	 * Clear out state from previous block.
@@ -1300,26 +1319,95 @@ datumstreamread_block_content(DatumStreamRead * acc)
 }
 
 
+/*
+ * Advance past the content of the block whose header was just read, without
+ * reading or decompressing that content.
+ *
+ * Assumes datumstreamread_block_header_only() (or datumstreamread_block_info())
+ * just succeeded.  On return the stream is positioned at the next block header.
+ *
+ * The datum pointers of the current block are invalidated, so the caller must
+ * not call datumstreamread_advance()/_get()/_find() until a subsequent
+ * datumstreamread_block_content() succeeds.
+ *
+ * Returns 0.  Errors are reported with ereport(ERROR).
+ */
 int
-datumstreamread_block(DatumStreamRead * acc,
-					  AppendOnlyBlockDirectory *blockDirectory,
-					  int colGroupNo)
+datumstreamread_block_skip_content(DatumStreamRead * acc)
 {
-	bool		readOK = false;
+	Assert(acc);
+
+	/*
+	 * Drop the datum pointers left over from the previous block so that a
+	 * caller which wrongly reads datums after a skip trips an assertion
+	 * instead of silently returning the previous block's values.
+	 */
+	DatumStreamBlockRead_Reset(&acc->blockRead);
+	acc->largeObjectState = DatumStreamLargeObjectState_None;
+
+	AppendOnlyStorageRead_SkipCurrentBlock(&acc->ao_read);
+
+	return 0;
+}
+
+
+/*
+ * Reposition the stream so that the next header read starts at fileOffset,
+ * which must be the start of a varblock (typically taken from a block
+ * directory entry), without reading the bytes in between.  afterFileOffset
+ * only sizes the first read; unlike the fetch path's temporary range, the
+ * stream keeps flowing sequentially past it.
+ *
+ * Invalidates the current block's datums, like
+ * datumstreamread_block_skip_content().
+ */
+int
+datumstreamread_block_seek(DatumStreamRead * acc, int64 fileOffset,
+						   int64 afterFileOffset)
+{
+	Assert(acc);
+
+	DatumStreamBlockRead_Reset(&acc->blockRead);
+	acc->largeObjectState = DatumStreamLargeObjectState_None;
+
+	AppendOnlyStorageRead_SetTemporaryStart(&acc->ao_read, fileOffset,
+											afterFileOffset);
+
+	return 0;
+}
+
+
+/*
+ * Read only the header of the next varblock in the stream.
+ *
+ * The content is neither decompressed nor looked at; on return
+ * acc->blockFirstRowNum, acc->blockRowCount and acc->blockFileOffset describe
+ * the block, and the caller must follow up with either
+ * datumstreamread_block_content() to materialize it or
+ * datumstreamread_block_skip_content() to move on to the next header.
+ *
+ * Returns 1 if a header was read, 0 at end of the segment file.  A negative
+ * return is reserved for errors; today every error path here ereport(ERROR)s
+ * instead.
+ */
+int
+datumstreamread_block_header_only(DatumStreamRead * acc)
+{
+	int64		runningFirstRowNum;
 
 	Assert(acc);
 
-	acc->blockFirstRowNum += acc->blockRowCount;
+	/*
+	 * Pre-4.0 blocks do not store firstRowNum, so the value returned in the
+	 * header is -1.  In that case the row number just keeps advancing by the
+	 * previous block's row count.  This has to be computed up front, before
+	 * the header read overwrites blockRowCount.
+	 */
+	runningFirstRowNum = acc->blockFirstRowNum + acc->blockRowCount;
+	acc->blockFirstRowNum = runningFirstRowNum;
 
-	readOK = AppendOnlyStorageRead_GetBlockInfo(&acc->ao_read,
-												&acc->getBlockInfo.contentLen,
-											&acc->getBlockInfo.execBlockKind,
-												&acc->getBlockInfo.firstRow,
-												&acc->getBlockInfo.rowCnt,
-												&acc->getBlockInfo.isLarge,
-											&acc->getBlockInfo.isCompressed);
-	if (!readOK)
-		return -1;
+	if (!datumstreamread_block_info(acc))
+		return 0;
 
 	if (Debug_appendonly_print_datumstream)
 		elog(LOG,
@@ -1331,40 +1419,43 @@ datumstreamread_block(DatumStreamRead * acc,
 			 acc->getBlockInfo.firstRow,
 			 acc->getBlockInfo.rowCnt,
 			 acc->getBlockInfo.contentLen);
-	/*
-	 * Pre-4.0 blocks do not store firstRowNum, so the returned value
-	 * for firstRow is -1. In this case, acc->blockFirstRowNum keeps
-	 * its last value, i.e. is incremented by the blockRowCount of the
-	 * previous block.
-	 */
-	if (acc->getBlockInfo.firstRow >= 0)
-	{
-		acc->blockFirstRowNum = acc->getBlockInfo.firstRow;
-	}
-	acc->blockFileOffset = acc->ao_read.current.headerOffsetInFile;
-	acc->blockRowCount = acc->getBlockInfo.rowCnt;
 
-	if (Debug_appendonly_print_scan)
-		elog(LOG,
-			 "Datum stream read get block typeInfo for table '%s' "
-		 "(contentLen %d, execBlockKind = %d, firstRowNum " INT64_FORMAT ", "
-			 "rowCount %d, isLargeContent %s, isCompressed %s, "
-			 "blockFirstRowNum " INT64_FORMAT ", blockFileOffset " INT64_FORMAT ", blockRowCount %d)",
-			 AppendOnlyStorageRead_RelationName(&acc->ao_read),
-			 acc->getBlockInfo.contentLen,
-			 acc->getBlockInfo.execBlockKind,
-			 acc->getBlockInfo.firstRow,
-			 acc->getBlockInfo.rowCnt,
-			 (acc->getBlockInfo.isLarge ? "true" : "false"),
-			 (acc->getBlockInfo.isCompressed ? "true" : "false"),
-			 acc->blockFirstRowNum,
-			 acc->blockFileOffset,
-			 acc->blockRowCount);
+	/*
+	 * datumstreamread_block_info() takes blockFirstRowNum straight from the
+	 * header; restore the running value for pre-4.0 blocks.
+	 */
+	if (acc->getBlockInfo.firstRow < 0)
+		acc->blockFirstRowNum = runningFirstRowNum;
+
+	return 1;
+}
+
+
+/*
+ * Read the next varblock: header plus content.
+ *
+ * A thin combination of datumstreamread_block_header_only() and
+ * datumstreamread_block_content(), kept for callers that always want both.
+ *
+ * Returns 0 on success, -1 at end of the segment file.
+ */
+int
+datumstreamread_block(DatumStreamRead * acc,
+					  AppendOnlyBlockDirectory *blockDirectory,
+					  int colGroupNo)
+{
+	Assert(acc);
+
+	if (datumstreamread_block_header_only(acc) <= 0)
+		return -1;
 
 	datumstreamread_block_content(acc);
 
 	if (blockDirectory)
 	{
+		/*
+		 * Insert after the content read: it may have adjusted blockRowCount.
+		 */
 		AppendOnlyBlockDirectory_InsertEntry(blockDirectory,
 											 colGroupNo,
 											 acc->blockFirstRowNum,
@@ -1373,6 +1464,30 @@ datumstreamread_block(DatumStreamRead * acc,
 	}
 
 	return 0;
+}
+
+void
+datumstreamread_position_fixedwidth(DatumStreamRead * datumStream,
+									 int32 rowNumInBlock)
+{
+	DatumStreamBlockRead *dsr = &datumStream->blockRead;
+
+	/*
+	 * Only for a block whose datums lie contiguous: Original format, fixed
+	 * width, no NULLs. The caller (Staged Scan Phase A) has already tested
+	 * the rows on the raw array and now leaves the stream positioned on
+	 * 'rowNumInBlock', exactly as that many datumstreamread_advance() calls
+	 * would have. datumstreamread_find() would replay those advances one by
+	 * one, which is the cost being saved.
+	 */
+	Assert(dsr->datumStreamVersion == DatumStreamVersion_Original);
+	Assert(!dsr->has_null);
+	Assert(dsr->typeInfo.datumlen > 0);
+	Assert(rowNumInBlock >= 0 && rowNumInBlock < dsr->logical_row_count);
+
+	dsr->nth = rowNumInBlock;
+	dsr->physical_datum_index = rowNumInBlock;
+	dsr->datump = dsr->datum_beginp + (int64) rowNumInBlock * dsr->typeInfo.datumlen;
 }
 
 void
@@ -1596,7 +1711,7 @@ datumstreamread_find_block(DatumStreamRead * datumStream,
 			datumStreamFetchDesc->scanAfterFileOffset)
 			return false;
 
-		AppendOnlyStorageRead_SkipCurrentBlock(&datumStream->ao_read);
+		datumstreamread_block_skip_content(datumStream);
 	}
 
 	return true;
