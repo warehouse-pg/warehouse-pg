@@ -9947,8 +9947,9 @@ explain select * from orca.bm_dyn_test where i=2 and t='2';
 ------------------------------------------------------------------------------------
  Gather Motion 1:1  (slice1; segments: 1)  (cost=0.00..13.52 rows=13 width=10)
    ->  Append  (cost=0.00..13.52 rows=5 width=10)
-         ->  Seq Scan on bm_dyn_test_1_prt_part0  (cost=0.00..2.30 rows=1 width=10)
+         ->  Staged Seq Scan on bm_dyn_test_1_prt_part0  (cost=0.00..2.30 rows=1 width=10)
                Filter: i = 2 AND t = '2'::text
+               Stages: i, t
          ->  Seq Scan on bm_dyn_test_1_prt_part1  (cost=0.00..2.30 rows=1 width=10)
                Filter: i = 2 AND t = '2'::text
          ->  Seq Scan on bm_dyn_test_1_prt_part2  (cost=0.00..3.30 rows=3 width=10)
@@ -10001,8 +10002,9 @@ explain select * from orca.bm_dyn_test_onepart where i=2 and t='2';
 --------------------------------------------------------------------------------------------
  Gather Motion 1:1  (slice1; segments: 1)  (cost=0.00..13.52 rows=13 width=10)
    ->  Append  (cost=0.00..13.52 rows=5 width=10)
-         ->  Seq Scan on bm_dyn_test_onepart_1_prt_part0  (cost=0.00..2.30 rows=1 width=10)
+         ->  Staged Seq Scan on bm_dyn_test_onepart_1_prt_part0  (cost=0.00..2.30 rows=1 width=10)
                Filter: i = 2 AND t = '2'::text
+               Stages: i, t
          ->  Seq Scan on bm_dyn_test_onepart_1_prt_part1  (cost=0.00..2.30 rows=1 width=10)
                Filter: i = 2 AND t = '2'::text
          ->  Seq Scan on bm_dyn_test_onepart_1_prt_part2  (cost=0.00..3.30 rows=3 width=10)
