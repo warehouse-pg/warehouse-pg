@@ -178,5 +178,7 @@
 		"vmem_process_interrupt",
 		"wal_debug",
 		"wal_sender_timeout",
+		"whpg_enable_staged_scan",
+		"whpg_staged_scan_min_selectivity",
 		"work_mem",
 		"zero_damaged_pages",

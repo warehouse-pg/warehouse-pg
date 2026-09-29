@@ -314,6 +314,46 @@ typedef struct AOCSScanDescData
 	 * CO table, starting at a certain logical heap block and ending in another.
 	 */
 	bool 		partialScan;
+
+	/*
+	 * Staged Scan state (see cdbaocsam_stagedscan.h).
+	 *
+	 * 'stagedQual' is stashed at beginscan time, when the plan's qual is still
+	 * reachable; it is compiled into 'stagedScan->phaseAQual' lazily on the
+	 * first getnext, because the scan's tuple descriptor is not known until
+	 * then. 'stagedFellBack' latches once Staged Scan gives up, so the rest of
+	 * the scan goes through the ordinary aocs_getnext() path.
+	 */
+	struct StagedScanState *stagedScan;
+	List	   *stagedQual;
+	bool	   *stagedTargetCols;	/* zero-based; columns anything but the qual reads */
+	List	   *stagedFilterAttnos;	/* one-based, stage order; from the plan */
+	int			stagedPhaseAWidth;	/* leading entries read in full by Phase A */
+	double		stagedPhaseASel;		/* planner's estimate of what Phase A keeps, 0 = unknown */
+	bool		stagedEnabled;
+	bool		stagedFellBack;
+
+	/*
+	 * Where the scan keeps its counts for EXPLAIN ANALYZE; nodeSeqscan.c
+	 * mirrors them into the node's instrumentation. Allocated when the scan
+	 * is opened for a Staged Scan plan, NULL otherwise.
+	 */
+	struct TableScanInstrumentation *stagedInstrument;
+
+	/*
+	 * The scan was opened for a Staged Scan plan, so the scan node runs no
+	 * qual of its own and this scan owns the predicate: every row it returns
+	 * satisfies 'stagedQual', whether the two-phase scan produced it or
+	 * (Staged Scan declined at open, or a segment file fell back) the
+	 * ordinary scan did and the qual was applied here, through
+	 * 'stagedFallbackQual' in 'stagedFallbackEcontext', both built on first
+	 * use.
+	 */
+	bool		stagedQualOwned;
+	struct ExprState *stagedFallbackQual;
+	struct ExprContext *stagedFallbackEcontext;
+	int			stagedFallbackSeg;	/* last segment file counted as scanned
+									 * without Staged Scan, or -1 */
 } AOCSScanDescData;
 
 typedef AOCSScanDescData *AOCSScanDesc;
@@ -439,7 +479,11 @@ aocs_beginrangescan(Relation relation,
 extern void aocs_rescan(AOCSScanDesc scan);
 extern void aocs_endscan(AOCSScanDesc scan);
 
+extern void open_datumstreamread_segfile(char *basepath, Relation rel,
+										 AOCSFileSegInfo *segInfo,
+										 DatumStreamRead *ds, int colNo);
 extern bool aocs_getnext(AOCSScanDesc scan, ScanDirection direction, TupleTableSlot *slot);
+extern bool aocs_stagedscan_getnext(AOCSScanDesc scan, ScanDirection direction, TupleTableSlot *slot);
 extern AOCSInsertDesc aocs_insert_init(Relation rel, int segno, int64 num_rows);
 extern void aocs_insert_values(AOCSInsertDesc idesc, Datum *d, bool *null, AOTupleId *aoTupleId);
 static inline void aocs_insert(AOCSInsertDesc idesc, TupleTableSlot *slot)

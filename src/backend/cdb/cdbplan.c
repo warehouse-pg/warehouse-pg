@@ -347,7 +347,7 @@ plan_tree_mutator(Node *node,
 
 				FLATCOPY(newseqscan, seqscan, SeqScan);
 				SCANMUTATE(newseqscan, seqscan);
-				/* A SeqScan is really just a Scan, so we're done. */
+				/* SeqScan's own (Staged Scan) fields need no mutation. */
 				return (Node *) newseqscan;
 			}
 			break;

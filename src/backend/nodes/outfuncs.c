@@ -513,6 +513,20 @@ _outScanInfo(StringInfo str, const Scan *node)
 }
 
 /*
+ * print the basic stuff of all nodes that inherit from SeqScan
+ */
+static void
+_outSeqScanInfo(StringInfo str, const SeqScan *node)
+{
+	_outScanInfo(str, (const Scan *) node);
+
+	WRITE_BOOL_FIELD(staged.enabled);
+	WRITE_INT_FIELD(staged.phaseAWidth);
+	WRITE_NODE_FIELD(staged.filterAttnos);
+	WRITE_FLOAT_FIELD(staged.phaseASel, "%g");
+}
+
+/*
  * print the basic stuff of all nodes that inherit from Join
  */
 static void
@@ -707,7 +721,7 @@ _outSeqScan(StringInfo str, const SeqScan *node)
 {
 	WRITE_NODE_TYPE("SEQSCAN");
 
-	_outScanInfo(str, (const Scan *) node);
+	_outSeqScanInfo(str, node);
 }
 
 static void
@@ -715,7 +729,7 @@ _outDynamicSeqScan(StringInfo str, const DynamicSeqScan *node)
 {
 	WRITE_NODE_TYPE("DYNAMICSEQSCAN");
 
-	_outScanInfo(str, (Scan *)node);
+	_outSeqScanInfo(str, &node->seqscan);
 	WRITE_NODE_FIELD(partOids);
 	WRITE_NODE_FIELD(part_prune_info);
 	WRITE_NODE_FIELD(join_prune_paramids);

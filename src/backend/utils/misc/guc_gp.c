@@ -25,6 +25,7 @@
 #include "access/url.h"
 #include "access/xlog_internal.h"
 #include "cdb/cdbappendonlyam.h"
+#include "cdb/cdbaocsam_stagedscan.h"
 #include "cdb/cdbendpoint.h"
 #include "cdb/cdbdisp.h"
 #include "cdb/cdbdisp_query.h"
@@ -259,6 +260,10 @@ bool		dml_ignore_target_partition_check = false;
 
 /* Planner gucs */
 bool		gp_enable_hashjoin_size_heuristic = false;
+
+/* Staged Scan (AOCO two-phase scan) -- see cdbaocsam_stagedscan.h */
+bool		whpg_enable_staged_scan = true;
+double		whpg_staged_scan_min_selectivity = 0.10;
 bool		gp_enable_predicate_propagation = false;
 bool		gp_enable_minmax_optimization = true;
 bool		gp_enable_multiphase_agg = true;
@@ -687,6 +692,17 @@ struct config_bool ConfigureNamesBool_gp[] =
 		 GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
 		},
 		&gp_enable_blkdir_sampling,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"whpg_enable_staged_scan", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Enables the Staged Scan two-phase scan for AOCO tables."),
+			gettext_noop("Scans the filter column first and materializes the other "
+						 "columns only for the rows that survive the predicate."),
+			GUC_NOT_IN_SAMPLE | GUC_EXPLAIN
+		},
+		&whpg_enable_staged_scan,
 		true,
 		NULL, NULL, NULL
 	},
@@ -4048,6 +4064,7 @@ struct config_int ConfigureNamesInt_gp[] =
 		30000, 10, INT_MAX,
 		NULL, NULL, NULL
 	},
+
 	{
 		{"gp_blockdirectory_entry_min_range", PGC_USERSET, GP_ARRAY_TUNING,
 			gettext_noop("Minimal range in bytes one block directory entry covers."),
@@ -4491,6 +4508,17 @@ struct config_int ConfigureNamesInt_gp[] =
 
 struct config_real ConfigureNamesReal_gp[] =
 {
+	{
+		{"whpg_staged_scan_min_selectivity", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Selectivity at or below which the planner will consider Staged Scan."),
+			gettext_noop("Staged Scan only pays off when the predicate discards most rows."),
+			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE | GUC_EXPLAIN
+		},
+		&whpg_staged_scan_min_selectivity,
+		0.10, 0.0, 1.0,
+		NULL, NULL, NULL
+	},
+
 	{
 		{"disable_cost", PGC_USERSET, DEVELOPER_OPTIONS,
 			gettext_noop("Sets the planner's cost of a disabled path."),
