@@ -245,6 +245,7 @@ test: uao/fast_analyze_column
 test: ao_blkdir
 test: ao_partial_scan
 test: append_eager_free
+test: staged_scan_rescan
 
 # this case contains fault injection, must be put in a separate test group
 test: terminate_in_gang_creation

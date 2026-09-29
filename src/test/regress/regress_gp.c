@@ -44,6 +44,8 @@
 #include "executor/executor.h"
 #include "executor/spi.h"
 #include "port/atomics.h"
+#include "optimizer/plancat.h"
+#include "optimizer/planner.h"
 #include "parser/parse_expr.h"
 #include "storage/bufmgr.h"
 #include "storage/buf_internals.h"
@@ -1585,4 +1587,71 @@ gp_keepalives_check(PG_FUNCTION_ARGS)
 	}
 
 	SRF_RETURN_DONE(funcctx);
+}
+
+/*
+ * WHPG: a get_relation_info_hook that reads the Query the way an extension's
+ * hook does while the extension plans a query (one re-checks partial-index
+ * predicates against root->parse->jointree->quals from under its
+ * planner_hook), and errors out where such a hook would have dereferenced a
+ * NULL instead. Only roots met inside planner() are checked:
+ * plan_create_index_workers() and plan_cluster_use_sort() build theirs
+ * without a jointree, outside of it. Once installed it stays for the session.
+ */
+static planner_hook_type prev_planner_hook = NULL;
+static get_relation_info_hook_type prev_get_relation_info_hook = NULL;
+static bool relation_info_root_check_installed = false;
+static int	relation_info_root_check_depth = 0;
+
+static PlannedStmt *
+relation_info_root_check_planner(Query *parse, int cursorOptions,
+								 ParamListInfo boundParams)
+{
+	PlannedStmt *result;
+
+	relation_info_root_check_depth++;
+	PG_TRY();
+	{
+		if (prev_planner_hook)
+			result = prev_planner_hook(parse, cursorOptions, boundParams);
+		else
+			result = standard_planner(parse, cursorOptions, boundParams);
+	}
+	PG_CATCH();
+	{
+		relation_info_root_check_depth--;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	relation_info_root_check_depth--;
+
+	return result;
+}
+
+static void
+relation_info_root_check(PlannerInfo *root, Oid relationObjectId,
+						 bool inhparent, RelOptInfo *rel)
+{
+	if (prev_get_relation_info_hook)
+		prev_get_relation_info_hook(root, relationObjectId, inhparent, rel);
+
+	if (relation_info_root_check_depth > 0 &&
+		(root->parse == NULL || root->parse->jointree == NULL))
+		elog(ERROR, "get_relation_info_hook called for relation \"%s\" with a Query without a jointree",
+			 get_rel_name(relationObjectId));
+}
+
+PG_FUNCTION_INFO_V1(whpg_install_relation_info_root_check);
+Datum
+whpg_install_relation_info_root_check(PG_FUNCTION_ARGS)
+{
+	if (!relation_info_root_check_installed)
+	{
+		prev_planner_hook = planner_hook;
+		planner_hook = relation_info_root_check_planner;
+		prev_get_relation_info_hook = get_relation_info_hook;
+		get_relation_info_hook = relation_info_root_check;
+		relation_info_root_check_installed = true;
+	}
+	PG_RETURN_VOID();
 }

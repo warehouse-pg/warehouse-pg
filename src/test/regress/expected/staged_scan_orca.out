@@ -1,0 +1,410 @@
+-- Staged Scan under GPORCA.
+--
+-- ORCA builds its plans without a PlannerInfo, so the decision that
+-- create_seqscan_plan() makes for the Postgres planner is made for ORCA's
+-- finished plan by stagedscan_decide_orca_plan() (stagedscancost.c): every
+-- SeqScan and DynamicSeqScan over an AOCO relation is costed with the same
+-- cost_aocs_stagedscan() from the same catalog statistics, and the plan node
+-- carries the same fields. This test pins that ORCA plans show the scan, make
+-- the same decisions as the Postgres planner on the same data, stage
+-- multi-column predicates, run the executor to the same answers, and that a
+-- partitioned table's dynamic scan gets it too -- including a partition whose
+-- columns are in a different order.
+--
+-- Companions: staged_scan_planner.sql (the Postgres-planner decisions this
+-- mirrors), staged_scan_aoco.sql (the executor).
+SET optimizer = on;
+CREATE TABLE go_main(a int, b bigint, c text, clus int, scat int, flag bool, amt numeric, d date)
+  USING ao_column WITH (compresstype = zstd, compresslevel = 1) DISTRIBUTED BY (a);
+INSERT INTO go_main
+  SELECT i, i * 2, 'payload ' || i,
+         CASE WHEN i BETWEEN 20000 AND 20200 THEN 7 ELSE 1 END,
+         i % 100,
+         (i % 3 = 0),
+         (i % 977)::numeric / 7,
+         date '2020-01-01' + (i % 900)
+    FROM generate_series(1, 100000) i;
+ANALYZE go_main;
+CREATE TABLE go_heap(a int, c text, clus int) DISTRIBUTED BY (a);
+INSERT INTO go_heap SELECT i, 'payload ' || i, CASE WHEN i BETWEEN 20000 AND 20200 THEN 7 ELSE 1 END
+  FROM generate_series(1, 100000) i;
+ANALYZE go_heap;
+-- Who planned it, and did the scan get Staged Scan: 'orca:staged',
+-- 'orca:seq', 'pg:staged' or 'pg:seq'. Naming the optimizer pins that the
+-- plan under test really is ORCA's (a silent fallback would show as 'pg:').
+CREATE FUNCTION go_planned(q text) RETURNS text AS $BODY$
+DECLARE line text; who text := 'pg'; staged bool := false;
+BEGIN
+    FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+        IF line LIKE '%Staged Seq Scan%' THEN staged := true; END IF;
+        IF line LIKE '%Optimizer: GPORCA%' THEN who := 'orca'; END IF;
+    END LOOP;
+    RETURN who || ':' || CASE WHEN staged THEN 'staged' ELSE 'seq' END;
+END $BODY$ LANGUAGE plpgsql;
+CREATE FUNCTION go_stages(q text) RETURNS text AS $BODY$
+DECLARE line text;
+BEGIN
+    FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+        IF line LIKE '%Stages:%' THEN
+            RETURN trim(substring(line from 'Stages: (.*)$'));
+        END IF;
+    END LOOP;
+    RETURN '-';
+END $BODY$ LANGUAGE plpgsql;
+CREATE FUNCTION go_same(q text) RETURNS bool AS $BODY$
+DECLARE r_on text; r_off text;
+BEGIN
+    PERFORM set_config('whpg_enable_staged_scan', 'on', false);
+    EXECUTE q INTO r_on;
+    PERFORM set_config('whpg_enable_staged_scan', 'off', false);
+    EXECUTE q INTO r_off;
+    PERFORM set_config('whpg_enable_staged_scan', 'on', false);
+    RETURN r_on IS NOT DISTINCT FROM r_off;
+END $BODY$ LANGUAGE plpgsql;
+--
+-- ================= 1. The plan =================
+--
+-- The scan ORCA chose runs as a Staged Seq Scan; the optimizer line says
+-- who built the plan.
+EXPLAIN (COSTS OFF) SELECT c, b FROM go_main WHERE clus = 7;
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Staged Seq Scan on go_main
+         Filter: (clus = 7)
+         Stages: clus
+ Optimizer: GPORCA
+(5 rows)
+
+-- The feature's switch turns it off for ORCA plans too.
+SET whpg_enable_staged_scan = off;
+EXPLAIN (COSTS OFF) SELECT c, b FROM go_main WHERE clus = 7;
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Seq Scan on go_main
+         Filter: (clus = 7)
+ Optimizer: GPORCA
+(4 rows)
+
+SET whpg_enable_staged_scan = on;
+-- ORCA hands the filter over as one conjunction; the stages are still the
+-- individual clauses, ordered by cost, with the selective one as Phase A.
+EXPLAIN (COSTS OFF, VERBOSE) SELECT c FROM go_main WHERE scat < 50 AND clus = 7 AND flag;
+                                  QUERY PLAN                                   
+-------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   Output: c
+   ->  Staged Seq Scan on public.go_main
+         Output: c
+         Filter: ((go_main.scat < 50) AND (go_main.clus = 7) AND go_main.flag)
+         Stages: clus, flag, scat
+ Optimizer: GPORCA
+(7 rows)
+
+-- A scan under a join keeps it; ORCA's join order is untouched.
+EXPLAIN (COSTS OFF) SELECT m.c, h.c FROM go_main m JOIN go_heap h ON m.a = h.a WHERE m.clus = 7;
+                   QUERY PLAN                   
+------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Hash Join
+         Hash Cond: (h.a = m.a)
+         ->  Seq Scan on go_heap h
+         ->  Hash
+               ->  Staged Seq Scan on go_main m
+                     Filter: (clus = 7)
+                     Stages: clus
+ Optimizer: GPORCA
+(9 rows)
+
+--
+-- ================= 2. Decisions, same as the Postgres planner's =================
+--
+SELECT go_planned('SELECT c FROM go_main WHERE clus = 7')                      AS clustered,
+       go_planned('SELECT c FROM go_main WHERE clus = 7 OR a = 12345')         AS or_qual,
+       go_planned('SELECT c FROM go_main WHERE scat < 50 AND clus = 7 AND flag') AS three_col,
+       go_planned('SELECT c FROM go_main WHERE scat < 50')                     AS unselective_declined,
+       go_planned('SELECT clus FROM go_main WHERE clus = 7')                   AS nothing_to_fetch,
+       go_planned('SELECT c FROM go_heap WHERE clus = 7')                      AS heap_declined;
+  clustered  |   or_qual   |  three_col  | unselective_declined | nothing_to_fetch | heap_declined 
+-------------+-------------+-------------+----------------------+------------------+---------------
+ orca:staged | orca:staged | orca:staged | orca:seq             | orca:staged      | orca:seq
+(1 row)
+
+-- Stage strings under ORCA for the same predicates the planner test pins.
+SELECT go_stages('SELECT c FROM go_main WHERE scat < 50 AND clus = 7 AND flag') AS three_col,
+       go_stages('SELECT c FROM go_main WHERE clus = 7 OR a = 12345')            AS or_leads;
+    three_col     | or_leads  
+------------------+-----------
+ clus, flag, scat | (a, clus)
+(1 row)
+
+-- The Postgres planner agrees on every one of them.
+SET optimizer = off;
+SELECT go_planned('SELECT c FROM go_main WHERE clus = 7')                      AS clustered,
+       go_planned('SELECT c FROM go_main WHERE clus = 7 OR a = 12345')         AS or_qual,
+       go_planned('SELECT c FROM go_main WHERE scat < 50 AND clus = 7 AND flag') AS three_col,
+       go_planned('SELECT c FROM go_main WHERE scat < 50')                     AS unselective_declined,
+       go_planned('SELECT clus FROM go_main WHERE clus = 7')                   AS nothing_to_fetch,
+       go_planned('SELECT c FROM go_heap WHERE clus = 7')                      AS heap_declined;
+ clustered |  or_qual  | three_col | unselective_declined | nothing_to_fetch | heap_declined 
+-----------+-----------+-----------+----------------------+------------------+---------------
+ pg:staged | pg:staged | pg:staged | pg:seq               | pg:staged        | pg:seq
+(1 row)
+
+SET optimizer = on;
+--
+-- ================= 3. Answers =================
+--
+-- The row set is summarised order-independently (a sum of per-row hashes):
+-- ORCA computes string_agg(... ORDER BY ...) in two phases across the
+-- segments, so that form is not repeatable on its own.
+SELECT go_same('SELECT count(*) || '':'' || sum(b) || '':'' || sum(hashtext(c || ''|'' || a)::bigint) FROM go_main WHERE clus = 7')                              AS same_clustered,
+       go_same('SELECT count(*) || '':'' || sum(b) || '':'' || sum(hashtext(c || ''|'' || a)::bigint) FROM go_main WHERE scat < 50 AND clus = 7 AND flag')      AS same_three_col,
+       go_same('SELECT count(*) || '':'' || sum(b) || '':'' || sum(hashtext(c || ''|'' || a)::bigint) FROM go_main WHERE clus = 7 OR a = 12345')                AS same_or,
+       go_same('SELECT count(*) || '':'' || sum(hashtext(m.c || h.c || ''|'' || m.a)::bigint) FROM go_main m JOIN go_heap h ON m.a = h.a WHERE m.clus = 7') AS same_join;
+ same_clustered | same_three_col | same_or | same_join 
+----------------+----------------+---------+-----------
+ t              | t              | t       | t
+(1 row)
+
+-- EXPLAIN ANALYZE reports Phase A's counts for an ORCA plan as well.
+CREATE FUNCTION go_survivors(q text) RETURNS text AS $BODY$
+DECLARE line text; survivors text := '-'; fallback text := '';
+BEGIN
+    FOR line IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+        IF line LIKE '%Stage Survivors:%' THEN
+            survivors := trim(substring(line from 'Stage Survivors: (.*)$'));
+        END IF;
+        IF line LIKE '%Stage Fallback:%' THEN
+            fallback := ', fallback: ' || trim(substring(line from 'Stage Fallback: (.*)$'));
+        END IF;
+    END LOOP;
+    RETURN survivors || fallback;
+END $BODY$ LANGUAGE plpgsql;
+SELECT go_survivors('SELECT count(c) FROM go_main WHERE clus = 7') AS survivors;
+     survivors      
+--------------------
+ 201 of 100000 rows
+(1 row)
+
+-- ORCA hands over one AND, which the scan splits into its conjuncts: a
+-- multi-stage predicate runs staged too, with no segment file falling back
+-- to the ordinary scan. A scan that emits no row still reports what Phase A
+-- read.
+SELECT go_survivors('SELECT count(c) FROM go_main WHERE scat < 50 AND clus = 7 AND flag') AS three_col_survivors,
+       go_survivors('SELECT count(c) FROM go_main WHERE scat < 50 AND clus = 9 AND flag') AS no_row_survivors;
+ three_col_survivors | no_row_survivors 
+---------------------+------------------
+ 201 of 100000 rows  | 0 of 100000 rows
+(1 row)
+
+--
+-- ================= 4. Partitioned tables: the dynamic scan =================
+--
+-- ORCA scans a partitioned table with one DynamicSeqScan over all its
+-- partitions. It is decided once on the parent, from inherited statistics
+-- and the partitions' row counts, and the executor applies the stage order
+-- to every partition it opens. The second partition below has its columns
+-- in a different order, so the stage attribute numbers must be remapped per
+-- partition just as the quals are.
+CREATE TABLE go_part(a int, b int, c text, d int)
+  USING ao_column WITH (compresstype = zstd, compresslevel = 1)
+  DISTRIBUTED BY (a) PARTITION BY RANGE (b);
+CREATE TABLE go_part_p0 PARTITION OF go_part FOR VALUES FROM (0) TO (100000);
+NOTICE:  table has parent, setting distribution columns to match parent table
+CREATE TABLE go_part_p1 (d int, c text, b int, a int)
+  USING ao_column WITH (compresstype = zstd, compresslevel = 1) DISTRIBUTED BY (a);
+ALTER TABLE go_part ATTACH PARTITION go_part_p1 FOR VALUES FROM (100000) TO (200000);
+INSERT INTO go_part SELECT i, i % 200000, 'payload ' || i, i % 1000 FROM generate_series(1, 1000000) i;
+ANALYZE go_part;
+EXPLAIN (COSTS OFF, VERBOSE) SELECT count(c), sum(b) FROM go_part WHERE a BETWEEN 150000 AND 150500 AND d < 999;
+                                             QUERY PLAN                                              
+-----------------------------------------------------------------------------------------------------
+ Finalize Aggregate
+   Output: count(c), sum(b)
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         Output: (PARTIAL count(c)), (PARTIAL sum(b))
+         ->  Partial Aggregate
+               Output: PARTIAL count(c), PARTIAL sum(b)
+               ->  Dynamic Staged Seq Scan on public.go_part
+                     Output: a, b, c, d
+                     Number of partitions to scan: 2 (out of 2)
+                     Filter: ((go_part.a >= 150000) AND (go_part.a <= 150500) AND (go_part.d < 999))
+                     Stages: a, d
+ Optimizer: GPORCA
+(12 rows)
+
+SELECT count(c), sum(b), sum(hashtext(c || '|' || a)::bigint) FROM go_part WHERE a BETWEEN 150000 AND 150500 AND d < 999;
+ count |   sum    |     sum     
+-------+----------+-------------
+   501 | 75275250 | 33933520139
+(1 row)
+
+SET whpg_enable_staged_scan = off;
+SELECT count(c), sum(b), sum(hashtext(c || '|' || a)::bigint) FROM go_part WHERE a BETWEEN 150000 AND 150500 AND d < 999;
+ count |   sum    |     sum     
+-------+----------+-------------
+   501 | 75275250 | 33933520139
+(1 row)
+
+SET whpg_enable_staged_scan = on;
+-- The switch, and the selectivity gate, apply to the dynamic scan too.
+SELECT go_planned('SELECT c FROM go_part WHERE a BETWEEN 150000 AND 150500') AS dynamic_clustered,
+       go_planned('SELECT c FROM go_part WHERE d < 500')                     AS dynamic_unselective_declined;
+ dynamic_clustered | dynamic_unselective_declined 
+-------------------+------------------------------
+ orca:staged       | orca:seq
+(1 row)
+
+-- The partitions' Phase A counts add up on the dynamic scan node (the
+-- partition scans have no instrumentation of their own).
+SELECT go_survivors('SELECT count(c) FROM go_part WHERE a BETWEEN 150000 AND 150500') AS dynamic_survivors;
+  dynamic_survivors  
+---------------------
+ 501 of 1000000 rows
+(1 row)
+
+-- A heap partition of an AOCO parent runs inside the same dynamic scan, with
+-- the plan's Staged Scan fields set: it is scanned the ordinary way and keeps
+-- its qual, and only the AOCO partition's rows count as Phase A's.
+CREATE TABLE go_mixed(a int, b int, c text)
+  USING ao_column DISTRIBUTED BY (a) PARTITION BY RANGE (b);
+CREATE TABLE go_mixed_ao PARTITION OF go_mixed FOR VALUES FROM (0) TO (100000);
+NOTICE:  table has parent, setting distribution columns to match parent table
+CREATE TABLE go_mixed_heap PARTITION OF go_mixed FOR VALUES FROM (100000) TO (200000)
+  USING heap;
+NOTICE:  table has parent, setting distribution columns to match parent table
+INSERT INTO go_mixed SELECT i, (i % 2) * 100000 + i % 100000, 'payload ' || i
+  FROM generate_series(1, 200000) i;
+ANALYZE go_mixed;
+SELECT go_planned('SELECT c FROM go_mixed WHERE a BETWEEN 50000 AND 50500') AS mixed_dynamic,
+       go_survivors('SELECT count(c) FROM go_mixed WHERE a BETWEEN 50000 AND 50500') AS mixed_survivors,
+       go_same('SELECT count(*) || '':'' || sum(hashtext(c || ''|'' || a)::bigint) FROM go_mixed WHERE a BETWEEN 50000 AND 50500') AS mixed_same;
+ mixed_dynamic |  mixed_survivors   | mixed_same 
+---------------+--------------------+------------
+ orca:staged   | 251 of 100000 rows | t
+(1 row)
+
+-- A clause partition pruning settles keeps every row of each partition it
+-- does not exclude, however selective the parent's statistics make it look,
+-- so it never leads: an equality on a list partition's key. An equality on a
+-- range partition's key does filter inside its partition, and may lead.
+CREATE TABLE go_plist(a int, k int, x int, c text)
+  USING ao_column DISTRIBUTED BY (a) PARTITION BY LIST (k);
+CREATE TABLE go_plist_0 PARTITION OF go_plist FOR VALUES IN (0);
+NOTICE:  table has parent, setting distribution columns to match parent table
+CREATE TABLE go_plist_1 PARTITION OF go_plist FOR VALUES IN (1);
+NOTICE:  table has parent, setting distribution columns to match parent table
+CREATE TABLE go_plist_2 PARTITION OF go_plist FOR VALUES IN (2);
+NOTICE:  table has parent, setting distribution columns to match parent table
+CREATE TABLE go_plist_3 PARTITION OF go_plist FOR VALUES IN (3);
+NOTICE:  table has parent, setting distribution columns to match parent table
+CREATE TABLE go_plist_rest PARTITION OF go_plist DEFAULT;
+NOTICE:  table has parent, setting distribution columns to match parent table
+INSERT INTO go_plist SELECT i, i % 40, i % 20, 'payload ' || i FROM generate_series(1, 200000) i;
+ANALYZE go_plist;
+CREATE TABLE go_prange(a int, k int, x int, c text)
+  USING ao_column DISTRIBUTED BY (a) PARTITION BY RANGE (k);
+CREATE TABLE go_prange_0 PARTITION OF go_prange FOR VALUES FROM (0) TO (2000);
+NOTICE:  table has parent, setting distribution columns to match parent table
+CREATE TABLE go_prange_1 PARTITION OF go_prange FOR VALUES FROM (2000) TO (4000);
+NOTICE:  table has parent, setting distribution columns to match parent table
+INSERT INTO go_prange SELECT i, i % 4000, i % 20, 'payload ' || i FROM generate_series(1, 200000) i;
+ANALYZE go_prange;
+SELECT go_stages('SELECT c FROM go_plist WHERE k = 3 AND x = 3')     AS list_key_settled,
+       go_stages('SELECT c FROM go_prange WHERE k = 1234 AND x = 14') AS range_key_leads;
+ list_key_settled | range_key_leads 
+------------------+-----------------
+ x, k             | k, x
+(1 row)
+
+SELECT go_same('SELECT count(*) || '':'' || sum(hashtext(c)::bigint) FROM go_plist WHERE k = 3 AND x = 3')     AS same_list,
+       go_same('SELECT count(*) || '':'' || sum(hashtext(c)::bigint) FROM go_prange WHERE k = 1234 AND x = 14') AS same_range;
+ same_list | same_range 
+-----------+------------
+ t         | t
+(1 row)
+
+DROP TABLE go_plist;
+DROP TABLE go_prange;
+-- A partitioned table without an AOCO access method of its own is left
+-- alone, even when every partition is AOCO: the parent is what is decided.
+CREATE TABLE go_part_heapparent(a int, b int, c text) DISTRIBUTED BY (a) PARTITION BY RANGE (b);
+CREATE TABLE go_part_heapparent_p0 PARTITION OF go_part_heapparent FOR VALUES FROM (0) TO (100000)
+  USING ao_column;
+NOTICE:  table has parent, setting distribution columns to match parent table
+INSERT INTO go_part_heapparent SELECT i, i % 100000, 'payload ' || i FROM generate_series(1, 100000) i;
+ANALYZE go_part_heapparent;
+SELECT go_planned('SELECT c FROM go_part_heapparent WHERE a BETWEEN 50000 AND 50500') AS heap_parent_declined;
+ heap_parent_declined 
+----------------------
+ orca:seq
+(1 row)
+
+-- Under ORCA too a clause that can fail sees only the rows the ordinary scan
+-- shows it: never a deleted row in Phase A, and never one a clause ahead of
+-- it in ORCA's filter would have rejected (the executor checks the stage
+-- order against the filter it is given).
+CREATE TABLE go_fail(a int, f int, kind text, v text, w text, c text)
+  USING ao_column DISTRIBUTED BY (a);
+INSERT INTO go_fail
+  SELECT i, CASE WHEN i BETWEEN 100000 AND 100300 THEN 7 ELSE 1 END,
+         CASE WHEN i % 2 = 0 THEN 'n' ELSE 's' END,
+         CASE WHEN i % 997 = 0 THEN 'junk' ELSE (i % 1000)::text END,
+         CASE WHEN i % 2 = 0 THEN (i % 100)::text ELSE 'word' || i END,
+         'payload ' || i
+    FROM generate_series(1, 200000) i;
+DELETE FROM go_fail WHERE v = 'junk';
+ANALYZE go_fail;
+SELECT go_planned('SELECT c FROM go_fail WHERE v::int = 5') AS go_cast_phase_a;
+ go_cast_phase_a 
+-----------------
+ orca:staged
+(1 row)
+
+SELECT go_same('SELECT count(*) || '':'' || sum(a) FROM go_fail WHERE v::int = 5') AS go_same_cast_phase_a;
+ go_same_cast_phase_a 
+----------------------
+ t
+(1 row)
+
+SELECT go_same('SELECT count(*) || '':'' || sum(a) FROM go_fail WHERE kind = ''n'' AND w::int = 5 AND f = 7') AS go_same_cast_after_guard;
+ go_same_cast_after_guard 
+--------------------------
+ t
+(1 row)
+
+DROP TABLE go_fail;
+-- WHPG: the RelOptInfos this pass costs come from build_simple_rel(), which
+-- runs get_relation_info_hook on the pass's own PlannerInfo. A hook may read
+-- its Query as the planner hands it over (one re-checks partial-index
+-- predicates against jointree->quals); the hook installed here errors out
+-- where such a hook would have crashed the coordinator. The heap table is a
+-- scan the pass has nothing to decide.
+CREATE FUNCTION whpg_install_relation_info_root_check() RETURNS void
+  AS '$libdir/regress.so' LANGUAGE C STRICT;
+SELECT whpg_install_relation_info_root_check();
+ whpg_install_relation_info_root_check 
+---------------------------------------
+ 
+(1 row)
+
+SELECT go_planned('SELECT c FROM go_main WHERE clus = 7') AS hook_sees_jointree_aoco,
+       go_planned('SELECT c FROM go_heap WHERE clus = 7') AS hook_sees_jointree_heap;
+ hook_sees_jointree_aoco | hook_sees_jointree_heap 
+-------------------------+-------------------------
+ orca:staged             | orca:seq
+(1 row)
+
+DROP FUNCTION whpg_install_relation_info_root_check();
+RESET optimizer;
+DROP TABLE go_mixed;
+DROP TABLE go_part_heapparent;
+DROP TABLE go_part;
+DROP TABLE go_heap;
+DROP TABLE go_main;
+DROP FUNCTION go_survivors(text);
+DROP FUNCTION go_same(text);
+DROP FUNCTION go_stages(text);
+DROP FUNCTION go_planned(text);

@@ -1,0 +1,441 @@
+-- Staged Scan: predicates that need several columns before a row can be
+-- dropped -- d = X OR e = Y, or a + b > 10 -- and therefore a Phase A that
+-- reads more than one column.
+--
+-- Phase A normally reads one column in full. When the only clauses that can
+-- lead reference several columns, the planner widens Phase A to exactly those
+-- columns (EXPLAIN parenthesizes them) and the executor advances their streams
+-- in lockstep. Everything after Phase A is the staging covered by
+-- staged_scan_planner / staged_scan_aoco.
+--
+-- Same conventions as the other staged_scan tests: no CREATE SCHEMA /
+-- search_path (hides gp_inject_fault()), no SQL wrapper functions over the
+-- table (cannot be dispatched to a QE slice).
+SET optimizer = off;
+CREATE FUNCTION gio_planned(q text) RETURNS bool AS $BODY$
+DECLARE line text;
+BEGIN
+    FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+        IF line LIKE '%Staged Seq Scan%' THEN
+            RETURN true;
+        END IF;
+    END LOOP;
+    RETURN false;
+END $BODY$ LANGUAGE plpgsql;
+CREATE FUNCTION gio_stages(q text) RETURNS text AS $BODY$
+DECLARE line text;
+BEGIN
+    FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+        IF line LIKE '%Stages:%' THEN
+            RETURN trim(substring(line from 'Stages: (.*)$'));
+        END IF;
+    END LOOP;
+    RETURN '-';
+END $BODY$ LANGUAGE plpgsql;
+CREATE FUNCTION gio_same(q text) RETURNS bool AS $BODY$
+DECLARE r_on text; r_off text;
+BEGIN
+    PERFORM set_config('whpg_enable_staged_scan', 'on', false);
+    EXECUTE q INTO r_on;
+    PERFORM set_config('whpg_enable_staged_scan', 'off', false);
+    EXECUTE q INTO r_off;
+    PERFORM set_config('whpg_enable_staged_scan', 'on', false);
+    RETURN r_on IS NOT DISTINCT FROM r_off;
+END $BODY$ LANGUAGE plpgsql;
+CREATE FUNCTION gio_arm(faultname text, tab text) RETURNS bool AS $$
+    SELECT bool_and(gp_inject_fault(faultname, 'skip', '', '', tab,
+                                    1, -1, 0, dbid) = 'Success:')
+      FROM gp_segment_configuration WHERE content > -1 AND role = 'p';
+$$ LANGUAGE sql;
+CREATE FUNCTION gio_hits(faultname text) RETURNS bigint AS $$
+    SELECT sum(substring(gp_inject_fault(faultname, 'status', dbid)
+                         from 'num times hit:''(\d+)''')::bigint)::bigint
+      FROM gp_segment_configuration WHERE content > -1 AND role = 'p';
+$$ LANGUAGE sql;
+CREATE FUNCTION gio_reset(faultname text) RETURNS bool AS $$
+    SELECT bool_and(gp_inject_fault(faultname, 'reset', dbid) = 'Success:')
+      FROM gp_segment_configuration WHERE content > -1 AND role = 'p';
+$$ LANGUAGE sql;
+-- 'd' and 'e' are scattered over coprime moduli, so a value of one says
+-- nothing about the other and a two-column OR has about twice the hits of
+-- either side. 'f' is a narrow clustered band, 'g' a low-cardinality text.
+CREATE TABLE gp_or(a int, b bigint, c text, d int, e int, f int, g text, pad text)
+  USING ao_column WITH (compresstype = zstd, compresslevel = 1) DISTRIBUTED BY (a);
+-- d = 5 OR e = 5 sits on the cost model's margin (section 2), and the default
+-- 30000-row sample puts its estimate on either side of it from one ANALYZE to
+-- the next. Have ANALYZE read the whole table so the decision is the same on
+-- every run.
+ALTER TABLE gp_or ALTER COLUMN d SET STATISTICS 1000, ALTER COLUMN e SET STATISTICS 1000;
+INSERT INTO gp_or
+  SELECT i, i * 2, 'payload ' || i,
+         i % 1000, i % 997,
+         CASE WHEN i BETWEEN 100000 AND 100300 THEN 7 ELSE 1 END,
+         'g' || (i % 50000),
+         md5(i::text)
+    FROM generate_series(1, 200000) i;
+ANALYZE gp_or;
+--
+-- ================= 1. What a wide Phase A looks like =================
+--
+-- A clause over two columns can only be decided once both are read, so both
+-- go into Phase A. EXPLAIN parenthesizes the Phase A group. The disjuncts
+-- here are sparse (f = 7 is a 301-row band, a = X and b = X single rows):
+-- d = 5 OR e = 5 would keep 400 rows scattered over this 200k-row table,
+-- several per varblock, which the cost model rightly finds marginal
+-- (section 2).
+EXPLAIN (COSTS OFF) SELECT c FROM gp_or WHERE f = 7 OR a = 12345;
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Staged Seq Scan on gp_or
+         Filter: ((f = 7) OR (a = 12345))
+         Stages: (a, f)
+ Optimizer: Postgres-based planner
+(5 rows)
+
+-- Three columns.
+EXPLAIN (COSTS OFF) SELECT c FROM gp_or WHERE f = 7 OR a = 12345 OR b = 24690;
+                       QUERY PLAN                        
+---------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Staged Seq Scan on gp_or
+         Filter: ((f = 7) OR (a = 12345) OR (b = 24690))
+         Stages: (a, b, f)
+ Optimizer: Postgres-based planner
+(5 rows)
+
+-- Arithmetic across two columns is the same shape as an OR.
+EXPLAIN (COSTS OFF) SELECT c FROM gp_or WHERE d + e = 1000;
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Staged Seq Scan on gp_or
+         Filter: ((d + e) = 1000)
+         Stages: (d, e)
+ Optimizer: Postgres-based planner
+(5 rows)
+
+-- An OR on one column was never a problem: one clause, one column.
+EXPLAIN (COSTS OFF) SELECT c FROM gp_or WHERE a = 5 OR a = 6;
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 1:1  (slice1; segments: 1)
+   ->  Staged Seq Scan on gp_or
+         Filter: ((a = 5) OR (a = 6))
+         Stages: a
+ Optimizer: Postgres-based planner
+(5 rows)
+
+-- A selective single-column clause leads instead, and the OR is decided in a
+-- later stage once its two columns have been fetched for the survivors: a
+-- one-column Phase A is cheaper than reading two columns in full. (The order
+-- of d and e after f is a near-tie in the cost model, so only the leader is
+-- pinned.)
+SELECT gio_stages('SELECT c FROM gp_or WHERE f = 7 AND (d = 5 OR e = 5)') LIKE 'f, %' AS f_leads_or_stage;
+ f_leads_or_stage 
+------------------
+ t
+(1 row)
+
+--
+-- ================= 2. Decisions =================
+--
+-- Accepted when the disjuncts are sparse: f = 7 is a 301-row band, a = X and
+-- b = X single rows. (d = 5 OR e = 5 keeps 400 scattered rows, several per
+-- varblock on this small table, which the model rightly finds marginal.)
+SELECT gio_planned('SELECT c FROM gp_or WHERE f = 7 OR a = 12345')              AS two_col_or,
+       gio_planned('SELECT c FROM gp_or WHERE f = 7 OR a = 12345 OR b = 24690') AS three_col_or,
+       gio_planned('SELECT c FROM gp_or WHERE d + e = 1000')                    AS two_col_arith,
+       gio_planned('SELECT c FROM gp_or WHERE a = 5 OR a = 6')                  AS same_col_or,
+       gio_planned('SELECT c FROM gp_or WHERE (d = 5 OR e = 5) AND f = 7')      AS or_under_and;
+ two_col_or | three_col_or | two_col_arith | same_col_or | or_under_and 
+------------+--------------+---------------+-------------+--------------
+ t          | t            | t             | t           | t
+(1 row)
+
+-- Stage strings: the Phase A group is parenthesized only when it is wider
+-- than one column.
+SELECT gio_stages('SELECT c FROM gp_or WHERE f = 7 OR a = 12345')                    AS pure_or,
+       gio_stages('SELECT c FROM gp_or WHERE f = 7 AND (d = 5 OR e = 5)') LIKE 'f, %' AS f_leads,
+       gio_stages('SELECT c FROM gp_or WHERE a = 5 OR a = 6')                        AS same_col;
+ pure_or | f_leads | same_col 
+---------+---------+----------
+ (a, f)  | t       | a
+(1 row)
+
+-- Declined: unselective (about 36% of the rows).
+SELECT gio_planned('SELECT c FROM gp_or WHERE d < 200 OR e < 200') AS unselective_or;
+ unselective_or 
+----------------
+ f
+(1 row)
+
+-- Nothing left to fetch after Phase A. count(*) is chosen: Phase A reads a
+-- and f in full, decides the OR there, and the tie with the ordinary scan
+-- goes to the Staged Scan, which forms no tuple for a rejected row. SELECT
+-- a, f is still declined: a Phase A wider than one column does not carry its
+-- values with the survivors, so Phase B would walk a and f a second time.
+SELECT gio_planned('SELECT a, f FROM gp_or WHERE f = 7 OR a = 12345')     AS only_phase_a_cols,
+       gio_planned('SELECT a, f, c FROM gp_or WHERE f = 7 OR a = 12345')  AS plus_one_more,
+       gio_planned('SELECT count(*) FROM gp_or WHERE f = 7 OR a = 12345') AS count_star;
+ only_phase_a_cols | plus_one_more | count_star 
+-------------------+---------------+------------
+ f                 | t             | t
+(1 row)
+
+--
+-- ================= 3. Answers must not change =================
+--
+SELECT gio_same('SELECT count(*) || '':'' || sum(b) || '':'' || md5(string_agg(c, '','' ORDER BY a)) FROM gp_or WHERE d = 5 OR e = 5')          AS two_col_or,
+       gio_same('SELECT count(*) || '':'' || sum(b) || '':'' || md5(string_agg(c, '','' ORDER BY a)) FROM gp_or WHERE d = 5 OR e = 5 OR f = 7') AS three_col_or,
+       gio_same('SELECT count(*) || '':'' || sum(b) || '':'' || md5(string_agg(c, '','' ORDER BY a)) FROM gp_or WHERE d + e = 1000')            AS two_col_arith,
+       gio_same('SELECT count(*) || '':'' || sum(b) || '':'' || md5(string_agg(c, '','' ORDER BY a)) FROM gp_or WHERE f = 7 AND (d = 5 OR e = 5)') AS f_leads,
+       gio_same('SELECT count(*) || '':'' || sum(b) || '':'' || md5(string_agg(c, '','' ORDER BY a)) FROM gp_or WHERE (d = 5 OR e = 5) AND g = ''g5''') AS or_and_text,
+       gio_same('SELECT count(*) || '':'' || sum(d) || '':'' || sum(e) || '':'' || md5(string_agg(c, '','' ORDER BY a)) FROM gp_or WHERE d = 5 OR e = 5') AS phase_a_cols_projected;
+ two_col_or | three_col_or | two_col_arith | f_leads | or_and_text | phase_a_cols_projected 
+------------+--------------+---------------+---------+-------------+------------------------
+ t          | t            | t             | t       | t           | t
+(1 row)
+
+-- The two disjuncts overlap on some rows (i % 1000 = 5 and i % 997 = 5 both
+-- hold for i = 5 + 997000k, none below 200000, so make one): a row matching
+-- both sides is returned once, like any OR.
+INSERT INTO gp_or VALUES (300001, 1, 'both', 5, 5, 1, 'g1', 'x');
+SELECT gio_same('SELECT count(*) || '':'' || string_agg(c, '','' ORDER BY a) FROM gp_or WHERE (d = 5 OR e = 5) AND c IN (''both'', ''payload 5'')') AS overlap_once;
+ overlap_once 
+--------------
+ t
+(1 row)
+
+SELECT count(*), count(*) FILTER (WHERE c = 'both') FROM gp_or WHERE d = 5 OR e = 5;
+ count | count 
+-------+-------
+   401 |     1
+(1 row)
+
+-- NULLs: NULL OR true is true (kept), NULL OR false is NULL (dropped), and IS
+-- NULL as a disjunct.
+INSERT INTO gp_or VALUES (300002, 2, 'null-d', NULL, 5, 1, 'g2', 'x'),
+                         (300003, 3, 'null-e', 5, NULL, 1, 'g3', 'x'),
+                         (300004, 4, 'null-both', NULL, NULL, 1, 'g4', 'x');
+SELECT gio_same('SELECT count(*) || '':'' || string_agg(c, '','' ORDER BY a) FROM gp_or WHERE (d = 5 OR e = 5) AND a > 300000')        AS null_or,
+       gio_same('SELECT count(*) || '':'' || string_agg(c, '','' ORDER BY a) FROM gp_or WHERE (d IS NULL OR e = 5) AND a > 300000')    AS is_null_disjunct,
+       gio_same('SELECT count(*) || '':'' || string_agg(c, '','' ORDER BY a) FROM gp_or WHERE (d + e = 10) AND a > 300000')            AS null_arith;
+ null_or | is_null_disjunct | null_arith 
+---------+------------------+------------
+ t       | t                | t
+(1 row)
+
+SELECT c FROM gp_or WHERE (d = 5 OR e = 5) AND a > 300000 ORDER BY a;
+   c    
+--------
+ both
+ null-d
+ null-e
+(3 rows)
+
+SELECT c FROM gp_or WHERE (d IS NULL OR e = 5) AND a > 300000 ORDER BY a;
+     c     
+-----------
+ both
+ null-d
+ null-both
+(3 rows)
+
+-- Deleted rows stay deleted: Phase A checks the visimap after the OR matches.
+DELETE FROM gp_or WHERE c = 'null-d';
+SELECT gio_same('SELECT count(*) || '':'' || string_agg(c, '','' ORDER BY a) FROM gp_or WHERE (d = 5 OR e = 5) AND a > 300000') AS after_delete;
+ after_delete 
+--------------
+ t
+(1 row)
+
+SELECT c FROM gp_or WHERE (d = 5 OR e = 5) AND a > 300000 ORDER BY a;
+   c    
+--------
+ both
+ null-e
+(2 rows)
+
+--
+-- ================= 4. The executor, observed =================
+--
+-- Phase A produces every row either side matches; with no later stage nothing
+-- is rejected afterwards, and Phase B only decompresses the blocks that hold
+-- survivors.
+SELECT gio_arm('StagedScan_PhaseA_Survivor', 'gp_or'),
+       gio_arm('StagedScan_PhaseA_Complete', 'gp_or'),
+       gio_arm('StagedScan_Stage_Rejected', 'gp_or'),
+       gio_arm('StagedScan_PhaseB_BlockDecompressed', 'gp_or');
+ gio_arm | gio_arm | gio_arm | gio_arm 
+---------+---------+---------+---------
+ t       | t       | t       | t
+(1 row)
+
+SELECT count(c) FROM gp_or WHERE d = 5 OR e = 5;
+ count 
+-------
+   402
+(1 row)
+
+SELECT gio_hits('StagedScan_PhaseA_Survivor') AS survivors,
+       gio_hits('StagedScan_PhaseA_Complete') > 0 AS phase_a_ran,
+       gio_hits('StagedScan_Stage_Rejected') AS rejected_later,
+       gio_hits('StagedScan_PhaseB_BlockDecompressed') > 0 AS phase_b_decompressed;
+ survivors | phase_a_ran | rejected_later | phase_b_decompressed 
+-----------+-------------+----------------+----------------------
+       402 | t           |              0 | t
+(1 row)
+
+SELECT gio_reset('StagedScan_PhaseA_Survivor'),
+       gio_reset('StagedScan_PhaseA_Complete'),
+       gio_reset('StagedScan_Stage_Rejected'),
+       gio_reset('StagedScan_PhaseB_BlockDecompressed');
+ gio_reset | gio_reset | gio_reset | gio_reset 
+-----------+-----------+-----------+-----------
+ t         | t         | t         | t
+(1 row)
+
+-- With f leading, the OR is a later stage: its two columns are fetched for
+-- f's survivors only and the rows failing the OR are rejected there.
+SELECT gio_arm('StagedScan_PhaseA_Survivor', 'gp_or'),
+       gio_arm('StagedScan_Stage_Rejected', 'gp_or');
+ gio_arm | gio_arm 
+---------+---------
+ t       | t
+(1 row)
+
+SELECT count(c) FROM gp_or WHERE f = 7 AND (d = 5 OR e = 5);
+ count 
+-------
+     1
+(1 row)
+
+-- (f = 7 holds for 301 rows; exactly one of them, i = 100005, has d = 5.
+-- Do not query gp_or again while the faults are armed: the counters would
+-- double.)
+SELECT gio_hits('StagedScan_PhaseA_Survivor') AS phase_a_survivors,
+       gio_hits('StagedScan_Stage_Rejected') AS rejected_by_or_stage,
+       gio_hits('StagedScan_PhaseA_Survivor') - gio_hits('StagedScan_Stage_Rejected') = 1
+         AS survivors_minus_rejected_is_answer;
+ phase_a_survivors | rejected_by_or_stage | survivors_minus_rejected_is_answer 
+-------------------+----------------------+------------------------------------
+               301 |                  300 | t
+(1 row)
+
+SELECT gio_reset('StagedScan_PhaseA_Survivor'),
+       gio_reset('StagedScan_Stage_Rejected');
+ gio_reset | gio_reset 
+-----------+-----------
+ t         | t
+(1 row)
+
+--
+-- ================= 5. Fallbacks and refusals =================
+--
+-- A Phase A column added by ALTER TABLE ADD COLUMN has no bytes in the
+-- segfiles for the older rows. The planner cannot see that, so it may still
+-- choose Staged Scan; the executor declines for that segment before Phase A
+-- starts, and the answer is the ordinary scan's.
+ALTER TABLE gp_or ADD COLUMN h int DEFAULT 3;
+SELECT gio_planned('SELECT c FROM gp_or WHERE h = 4 OR d = 5') AS planned_despite_missing;
+ planned_despite_missing 
+-------------------------
+ t
+(1 row)
+
+SELECT gio_arm('StagedScan_PhaseA_Complete', 'gp_or');
+ gio_arm 
+---------
+ t
+(1 row)
+
+SELECT count(c) FROM gp_or WHERE h = 4 OR d = 5;
+ count 
+-------
+   202
+(1 row)
+
+SELECT gio_hits('StagedScan_PhaseA_Complete') AS phase_a_completed_segments;
+ phase_a_completed_segments 
+----------------------------
+                          0
+(1 row)
+
+SELECT gio_reset('StagedScan_PhaseA_Complete');
+ gio_reset 
+-----------
+ t
+(1 row)
+
+SELECT gio_same('SELECT count(*) || '':'' || sum(b) FROM gp_or WHERE h = 4 OR d = 5') AS missing_col_or;
+ missing_col_or 
+----------------
+ t
+(1 row)
+
+-- A Param in the OR: the generic plan of a prepared statement is declined by
+-- planner and executor alike (the stage quals run without a parameter list),
+-- and the answer does not change when the switch to the generic plan happens.
+PREPARE gio_p(int, int) AS SELECT count(*), sum(b) FROM gp_or WHERE d = $1 OR e = $2;
+EXECUTE gio_p(5, 5);
+ count |   sum    
+-------+----------
+   402 | 79883404
+(1 row)
+
+EXECUTE gio_p(5, 5);
+ count |   sum    
+-------+----------
+   402 | 79883404
+(1 row)
+
+EXECUTE gio_p(5, 5);
+ count |   sum    
+-------+----------
+   402 | 79883404
+(1 row)
+
+EXECUTE gio_p(5, 5);
+ count |   sum    
+-------+----------
+   402 | 79883404
+(1 row)
+
+EXECUTE gio_p(5, 5);
+ count |   sum    
+-------+----------
+   402 | 79883404
+(1 row)
+
+EXECUTE gio_p(5, 5);
+ count |   sum    
+-------+----------
+   402 | 79883404
+(1 row)
+
+EXECUTE gio_p(5, 5);
+ count |   sum    
+-------+----------
+   402 | 79883404
+(1 row)
+
+SET whpg_enable_staged_scan = off;
+SELECT count(*), sum(b) FROM gp_or WHERE d = 5 OR e = 5;
+ count |   sum    
+-------+----------
+   402 | 79883404
+(1 row)
+
+RESET whpg_enable_staged_scan;
+DEALLOCATE gio_p;
+-- Volatile functions never stage.
+SELECT gio_planned('SELECT c FROM gp_or WHERE d = 5 OR e = (random() * 0)::int') AS volatile_or;
+ volatile_or 
+-------------
+ f
+(1 row)
+
+DROP TABLE gp_or;
+DROP FUNCTION gio_planned(text), gio_stages(text), gio_same(text),
+              gio_arm(text, text), gio_hits(text), gio_reset(text);
