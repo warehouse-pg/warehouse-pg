@@ -75,9 +75,11 @@
  * - Every refusal of an anchored read is an ERROR with SQLSTATE 55000
  *   (object not in prerequisite state) and a message naming the anchor;
  *   a later publication can make the same statement succeed.  SET
- *   TRANSACTION SNAPSHOT in anchored mode is refused with 0A000 instead:
- *   no publication makes it succeed, the session has to leave anchored
- *   mode.  A session to which anchored reads apply never falls back to an
+ *   TRANSACTION SNAPSHOT in anchored mode, and pg_export_snapshot() of an
+ *   anchored snapshot, are refused with 0A000 instead: no publication
+ *   makes them succeed, the session has to leave anchored mode.  (An
+ *   exported file carries no anchor identity, so an importer would read
+ *   the anchor's cut here and the replay position on the segments.)  A session to which anchored reads apply never falls back to an
  *   unanchored snapshot silently; sessions to which they do not apply
  *   (utility mode, a server out of recovery, the registry disabled) take
  *   ordinary snapshots, as the GUC's description says.

@@ -1426,6 +1426,21 @@ ExportSnapshot(Snapshot snapshot)
 				 errmsg("cannot export a snapshot from a subtransaction")));
 
 	/*
+	 * An anchored snapshot (access/anchorsnapshot.h) is the anchor's xid set
+	 * without the anchor: the file carries no anchor identity, and a session
+	 * importing it would read the anchor's cut on this node while every
+	 * statement it dispatches ships no anchor name, so the segments read at
+	 * their replay position.  Refused, like SET TRANSACTION SNAPSHOT in
+	 * anchored mode; a parallel pg_dump of an anchored standby is therefore
+	 * not supported.
+	 */
+	if (snapshot->anchorOrdinal != 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot export an anchored snapshot"),
+				 errhint("SET whpg_hot_standby_snapshot_mode = unanchored to export a snapshot.")));
+
+	/*
 	 * We do however allow previous committed subtransactions to exist.
 	 * Importers of the snapshot must see them as still running, so get their
 	 * XIDs to add them to the snapshot.

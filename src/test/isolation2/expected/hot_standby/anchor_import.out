@@ -93,18 +93,18 @@ CREATE TABLE
 INSERT 0 10
 !\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_imp_a --skipvalidation;
 -- start_ignore
-20260924:15:43:39:1154196 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_a --skipvalidation'
+20260929:17:13:41:3692942 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_a --skipvalidation'
 
 -- end_ignore
 (exited with code 0)
 !\retcode gpstop -u;
 -- start_ignore
-20260924:15:43:39:1154243 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
-20260924:15:43:39:1154243 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
-20260924:15:43:39:1154243 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
-20260924:15:43:39:1154243 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
-20260924:15:43:39:1154243 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
-20260924:15:43:39:1154243 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+20260929:17:13:41:3692989 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20260929:17:13:41:3692989 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260929:17:13:41:3692989 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260929:17:13:41:3692989 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260929:17:13:41:3692989 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260929:17:13:41:3692989 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
 
 -- end_ignore
 (exited with code 0)
@@ -181,18 +181,18 @@ CREATE TABLE
 INSERT 0 10
 !\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_imp_b --skipvalidation;
 -- start_ignore
-20260924:15:43:40:1154279 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_b --skipvalidation'
+20260929:17:13:42:3693025 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_b --skipvalidation'
 
 -- end_ignore
 (exited with code 0)
 !\retcode gpstop -u;
 -- start_ignore
-20260924:15:43:40:1154326 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
-20260924:15:43:40:1154326 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
-20260924:15:43:40:1154326 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
-20260924:15:43:40:1154326 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
-20260924:15:43:40:1154326 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
-20260924:15:43:40:1154326 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+20260929:17:13:42:3693072 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20260929:17:13:42:3693072 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260929:17:13:42:3693072 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260929:17:13:42:3693072 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260929:17:13:42:3693072 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260929:17:13:42:3693072 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
 
 -- end_ignore
 (exited with code 0)
@@ -238,18 +238,18 @@ CREATE TABLE
 INSERT 0 10
 !\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_imp_c --skipvalidation;
 -- start_ignore
-20260924:15:43:40:1154349 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_c --skipvalidation'
+20260929:17:13:42:3693095 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_c --skipvalidation'
 
 -- end_ignore
 (exited with code 0)
 !\retcode gpstop -u;
 -- start_ignore
-20260924:15:43:40:1154396 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
-20260924:15:43:40:1154396 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
-20260924:15:43:40:1154396 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
-20260924:15:43:40:1154396 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
-20260924:15:43:40:1154396 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
-20260924:15:43:40:1154396 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+20260929:17:13:42:3693142 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20260929:17:13:42:3693142 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260929:17:13:42:3693142 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260929:17:13:42:3693142 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260929:17:13:42:3693142 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260929:17:13:42:3693142 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
 
 -- end_ignore
 (exited with code 0)
@@ -294,18 +294,18 @@ CREATE TABLE
 INSERT 0 10
 !\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_imp_d --skipvalidation;
 -- start_ignore
-20260924:15:43:40:1154419 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_d --skipvalidation'
+20260929:17:13:42:3693167 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_d --skipvalidation'
 
 -- end_ignore
 (exited with code 0)
 !\retcode gpstop -u;
 -- start_ignore
-20260924:15:43:40:1154466 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
-20260924:15:43:40:1154466 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
-20260924:15:43:40:1154466 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
-20260924:15:43:40:1154466 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
-20260924:15:43:40:1154466 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
-20260924:15:43:40:1154466 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+20260929:17:13:42:3693215 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20260929:17:13:42:3693215 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260929:17:13:42:3693215 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260929:17:13:42:3693215 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260929:17:13:42:3693215 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260929:17:13:42:3693215 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
 
 -- end_ignore
 (exited with code 0)
@@ -320,18 +320,18 @@ BEGIN
 (1 row)
 !\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_imp_unknown --skipvalidation;
 -- start_ignore
-20260924:15:43:40:1154489 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_unknown --skipvalidation'
+20260929:17:13:42:3693238 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_unknown --skipvalidation'
 
 -- end_ignore
 (exited with code 0)
 !\retcode gpstop -u;
 -- start_ignore
-20260924:15:43:40:1154536 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
-20260924:15:43:40:1154536 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
-20260924:15:43:40:1154536 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
-20260924:15:43:40:1154536 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
-20260924:15:43:40:1154536 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
-20260924:15:43:40:1154536 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+20260929:17:13:42:3693285 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20260929:17:13:42:3693285 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260929:17:13:42:3693285 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260929:17:13:42:3693285 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260929:17:13:42:3693285 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260929:17:13:42:3693285 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
 
 -- end_ignore
 (exited with code 0)
@@ -363,18 +363,18 @@ HINT:  Wait for the next publication, or SET whpg_hot_standby_snapshot_mode = un
 (1 row)
 !\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_imp_d --skipvalidation;
 -- start_ignore
-20260924:15:43:40:1154559 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_d --skipvalidation'
+20260929:17:13:42:3693310 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_d --skipvalidation'
 
 -- end_ignore
 (exited with code 0)
 !\retcode gpstop -u;
 -- start_ignore
-20260924:15:43:40:1154606 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
-20260924:15:43:40:1154606 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
-20260924:15:43:40:1154606 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
-20260924:15:43:40:1154606 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
-20260924:15:43:40:1154606 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
-20260924:15:43:40:1154606 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+20260929:17:13:42:3693359 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20260929:17:13:42:3693359 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260929:17:13:42:3693359 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260929:17:13:42:3693359 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260929:17:13:42:3693359 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260929:17:13:42:3693359 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
 
 -- end_ignore
 (exited with code 0)
@@ -406,18 +406,18 @@ CREATE TABLE
 INSERT 0 10
 !\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_imp_e --skipvalidation;
 -- start_ignore
-20260924:15:43:40:1154629 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_e --skipvalidation'
+20260929:17:13:42:3693382 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_e --skipvalidation'
 
 -- end_ignore
 (exited with code 0)
 !\retcode gpstop -u;
 -- start_ignore
-20260924:15:43:40:1154676 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
-20260924:15:43:40:1154676 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
-20260924:15:43:40:1154676 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
-20260924:15:43:40:1154676 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
-20260924:15:43:40:1154676 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
-20260924:15:43:40:1154676 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+20260929:17:13:42:3693429 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20260929:17:13:42:3693429 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260929:17:13:42:3693429 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260929:17:13:42:3693429 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260929:17:13:42:3693429 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260929:17:13:42:3693429 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
 
 -- end_ignore
 (exited with code 0)
@@ -479,6 +479,34 @@ HINT:  SET whpg_hot_standby_snapshot_mode = unanchored to import a snapshot.
 -1S: rollback;
 ROLLBACK
 
+-- nor export its own: the file would carry the anchor's xid set without
+-- the anchor, and an importer would read this node's cut with segments at
+-- their replay position
+-1S: begin isolation level repeatable read;
+BEGIN
+-1S: select pg_export_snapshot();
+ERROR:  cannot export an anchored snapshot
+HINT:  SET whpg_hot_standby_snapshot_mode = unanchored to export a snapshot.
+-1S: rollback;
+ROLLBACK
+-1S: select pg_export_snapshot();
+ERROR:  cannot export an anchored snapshot
+HINT:  SET whpg_hot_standby_snapshot_mode = unanchored to export a snapshot.
+-- unanchored, the export works as before
+-1S: set whpg_hot_standby_snapshot_mode = unanchored;
+SET
+-1S: begin isolation level repeatable read;
+BEGIN
+-1S: select pg_export_snapshot() is not null as exported;
+ exported 
+----------
+ t        
+(1 row)
+-1S: rollback;
+ROLLBACK
+-1S: reset whpg_hot_standby_snapshot_mode;
+RESET
+
 ----------------------------------------------------------------
 -- A registered anchor whose file is gone is refused, not read around
 ----------------------------------------------------------------
@@ -511,18 +539,18 @@ INSERT 0 10
 CREATE TABLE
 !\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_imp_f --skipvalidation;
 -- start_ignore
-20260924:15:43:40:1154713 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_f --skipvalidation'
+20260929:17:13:43:3693466 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_f --skipvalidation'
 
 -- end_ignore
 (exited with code 0)
 !\retcode gpstop -u;
 -- start_ignore
-20260924:15:43:40:1154760 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
-20260924:15:43:40:1154760 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
-20260924:15:43:40:1154760 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
-20260924:15:43:40:1154760 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
-20260924:15:43:40:1154760 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
-20260924:15:43:40:1154760 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+20260929:17:13:43:3693513 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20260929:17:13:43:3693513 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260929:17:13:43:3693513 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260929:17:13:43:3693513 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260929:17:13:43:3693513 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260929:17:13:43:3693513 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
 
 -- end_ignore
 (exited with code 0)
@@ -574,18 +602,18 @@ INSERT 0 10
 INSERT 0 10
 !\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_imp_sof --skipvalidation;
 -- start_ignore
-20260924:15:43:41:1154792 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_sof --skipvalidation'
+20260929:17:13:43:3693545 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_sof --skipvalidation'
 
 -- end_ignore
 (exited with code 0)
 !\retcode gpstop -u;
 -- start_ignore
-20260924:15:43:41:1154839 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
-20260924:15:43:41:1154839 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
-20260924:15:43:41:1154839 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
-20260924:15:43:41:1154839 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
-20260924:15:43:41:1154839 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
-20260924:15:43:41:1154839 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+20260929:17:13:43:3693592 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20260929:17:13:43:3693592 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260929:17:13:43:3693592 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260929:17:13:43:3693592 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260929:17:13:43:3693592 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260929:17:13:43:3693592 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
 
 -- end_ignore
 (exited with code 0)
@@ -667,18 +695,18 @@ COMMIT
 INSERT 0 10
 !\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_imp_sof2 --skipvalidation;
 -- start_ignore
-20260924:15:43:41:1154884 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_sof2 --skipvalidation'
+20260929:17:13:43:3693637 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_sof2 --skipvalidation'
 
 -- end_ignore
 (exited with code 0)
 !\retcode gpstop -u;
 -- start_ignore
-20260924:15:43:41:1154931 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
-20260924:15:43:41:1154931 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
-20260924:15:43:41:1154931 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
-20260924:15:43:41:1154931 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
-20260924:15:43:41:1154931 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
-20260924:15:43:41:1154931 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+20260929:17:13:43:3693684 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20260929:17:13:43:3693684 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260929:17:13:43:3693684 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260929:17:13:43:3693684 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260929:17:13:43:3693684 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260929:17:13:43:3693684 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
 
 -- end_ignore
 (exited with code 0)
@@ -702,11 +730,11 @@ INSERT 0 10
 waiting for server to shut down.... done
 server stopped
 server starting
-2026-09-24 15:43:41.579743 CST,,,p1154956,th-1986614304,,,,0,,,seg-1,,,,,"LOG","00000","starting PostgreSQL 12.12 (Greenplum Database 7.0.0-beta.0 build dev) on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14), 64-bit",,,,,,,,"PostmasterMain","postmaster.c",1242,
-2026-09-24 15:43:41.579987 CST,,,p1154956,th-1986614304,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv4 address ""0.0.0.0"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
-2026-09-24 15:43:41.580051 CST,,,p1154956,th-1986614304,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv6 address ""::"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
-2026-09-24 15:43:41.580171 CST,,,p1154956,th-1986614304,,,,0,,,seg-1,,,,,"LOG","00000","listening on Unix socket ""/tmp/.s.PGSQL.7001""",,,,,,,,"StreamServerPort","pqcomm.c",634,
-2026-09-24 15:43:41.590578 CST,,,p1154956,th-1986614304,,,,0,,,seg-1,,,,,"LOG","00000","redirecting log output to logging collector process",,"Future log output will appear in directory ""log"".",,,,,,"SysLogger_Start","syslogger.c",920,
+2026-09-29 17:13:43.802543 CST,,,p3693709,th-1481217056,,,,0,,,seg-1,,,,,"LOG","00000","starting PostgreSQL 12.12 (Greenplum Database 7.0.0-beta.0 build dev) on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14), 64-bit",,,,,,,,"PostmasterMain","postmaster.c",1242,
+2026-09-29 17:13:43.802740 CST,,,p3693709,th-1481217056,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv4 address ""0.0.0.0"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
+2026-09-29 17:13:43.802810 CST,,,p3693709,th-1481217056,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv6 address ""::"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
+2026-09-29 17:13:43.802929 CST,,,p3693709,th-1481217056,,,,0,,,seg-1,,,,,"LOG","00000","listening on Unix socket ""/tmp/.s.PGSQL.7001""",,,,,,,,"StreamServerPort","pqcomm.c",634,
+2026-09-29 17:13:43.813356 CST,,,p3693709,th-1481217056,,,,0,,,seg-1,,,,,"LOG","00000","redirecting log output to logging collector process",,"Future log output will appear in directory ""log"".",,,,,,"SysLogger_Start","syslogger.c",920,
 t
 
 -- end_ignore
@@ -763,11 +791,11 @@ SET
 -- start_ignore
 waiting for server to shut down.... done
 server stopped
-waiting for server to start....2026-09-24 15:43:42.769093 CST,,,p1154999,th-1359524896,,,,0,,,seg-1,,,,,"LOG","00000","starting PostgreSQL 12.12 (Greenplum Database 7.0.0-beta.0 build dev) on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14), 64-bit",,,,,,,,"PostmasterMain","postmaster.c",1242,
-2026-09-24 15:43:42.769388 CST,,,p1154999,th-1359524896,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv4 address ""0.0.0.0"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
-2026-09-24 15:43:42.769449 CST,,,p1154999,th-1359524896,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv6 address ""::"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
-2026-09-24 15:43:42.769597 CST,,,p1154999,th-1359524896,,,,0,,,seg-1,,,,,"LOG","00000","listening on Unix socket ""/tmp/.s.PGSQL.7001""",,,,,,,,"StreamServerPort","pqcomm.c",634,
-2026-09-24 15:43:42.779519 CST,,,p1154999,th-1359524896,,,,0,,,seg-1,,,,,"LOG","00000","redirecting log output to logging collector process",,"Future log output will appear in directory ""log"".",,,,,,"SysLogger_Start","syslogger.c",920,
+waiting for server to start....2026-09-29 17:13:44.996481 CST,,,p3693744,th-1666995232,,,,0,,,seg-1,,,,,"LOG","00000","starting PostgreSQL 12.12 (Greenplum Database 7.0.0-beta.0 build dev) on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14), 64-bit",,,,,,,,"PostmasterMain","postmaster.c",1242,
+2026-09-29 17:13:44.996829 CST,,,p3693744,th-1666995232,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv4 address ""0.0.0.0"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
+2026-09-29 17:13:44.996923 CST,,,p3693744,th-1666995232,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv6 address ""::"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
+2026-09-29 17:13:44.997108 CST,,,p3693744,th-1666995232,,,,0,,,seg-1,,,,,"LOG","00000","listening on Unix socket ""/tmp/.s.PGSQL.7001""",,,,,,,,"StreamServerPort","pqcomm.c",634,
+2026-09-29 17:13:45.013915 CST,,,p3693744,th-1666995232,,,,0,,,seg-1,,,,,"LOG","00000","redirecting log output to logging collector process",,"Future log output will appear in directory ""log"".",,,,,,"SysLogger_Start","syslogger.c",920,
  done
 server started
 
@@ -802,18 +830,18 @@ INSERT 0 10
 INSERT 0 10
 !\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_imp_g --skipvalidation;
 -- start_ignore
-20260924:15:43:42:1155011 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_g --skipvalidation'
+20260929:17:13:45:3693755 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_imp_g --skipvalidation'
 
 -- end_ignore
 (exited with code 0)
 !\retcode gpstop -u;
 -- start_ignore
-20260924:15:43:42:1155058 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
-20260924:15:43:42:1155058 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
-20260924:15:43:42:1155058 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
-20260924:15:43:42:1155058 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
-20260924:15:43:43:1155058 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
-20260924:15:43:43:1155058 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+20260929:17:13:45:3693802 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20260929:17:13:45:3693802 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260929:17:13:45:3693802 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260929:17:13:45:3693802 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260929:17:13:45:3693802 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260929:17:13:45:3693802 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
 
 -- end_ignore
 (exited with code 0)
@@ -850,11 +878,11 @@ SET
 waiting for server to shut down.... done
 server stopped
 server starting
-2026-09-24 15:43:43.157108 CST,,,p1155094,th-1172952096,,,,0,,,seg-1,,,,,"LOG","00000","starting PostgreSQL 12.12 (Greenplum Database 7.0.0-beta.0 build dev) on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14), 64-bit",,,,,,,,"PostmasterMain","postmaster.c",1242,
-2026-09-24 15:43:43.157298 CST,,,p1155094,th-1172952096,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv4 address ""0.0.0.0"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
-2026-09-24 15:43:43.157351 CST,,,p1155094,th-1172952096,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv6 address ""::"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
-2026-09-24 15:43:43.157458 CST,,,p1155094,th-1172952096,,,,0,,,seg-1,,,,,"LOG","00000","listening on Unix socket ""/tmp/.s.PGSQL.7001""",,,,,,,,"StreamServerPort","pqcomm.c",634,
-2026-09-24 15:43:43.169131 CST,,,p1155094,th-1172952096,,,,0,,,seg-1,,,,,"LOG","00000","redirecting log output to logging collector process",,"Future log output will appear in directory ""log"".",,,,,,"SysLogger_Start","syslogger.c",920,
+2026-09-29 17:13:45.409717 CST,,,p3693838,th-1597867040,,,,0,,,seg-1,,,,,"LOG","00000","starting PostgreSQL 12.12 (Greenplum Database 7.0.0-beta.0 build dev) on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14), 64-bit",,,,,,,,"PostmasterMain","postmaster.c",1242,
+2026-09-29 17:13:45.409913 CST,,,p3693838,th-1597867040,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv4 address ""0.0.0.0"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
+2026-09-29 17:13:45.409973 CST,,,p3693838,th-1597867040,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv6 address ""::"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
+2026-09-29 17:13:45.410106 CST,,,p3693838,th-1597867040,,,,0,,,seg-1,,,,,"LOG","00000","listening on Unix socket ""/tmp/.s.PGSQL.7001""",,,,,,,,"StreamServerPort","pqcomm.c",634,
+2026-09-29 17:13:45.421801 CST,,,p3693838,th-1597867040,,,,0,,,seg-1,,,,,"LOG","00000","redirecting log output to logging collector process",,"Future log output will appear in directory ""log"".",,,,,,"SysLogger_Start","syslogger.c",920,
 t
 
 -- end_ignore
@@ -963,39 +991,39 @@ RESET
 -1Mq: ... <quitting>
 !\retcode gpconfig -c whpg_max_anchor_snapshots -v 0 --skipvalidation;
 -- start_ignore
-20260924:15:43:44:1155137 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_max_anchor_snapshots -v 0 --skipvalidation'
+20260929:17:13:46:3693887 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_max_anchor_snapshots -v 0 --skipvalidation'
 
 -- end_ignore
 (exited with code 0)
 !\retcode gpstop -ar;
 -- start_ignore
-20260924:15:43:44:1155184 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -ar
-20260924:15:43:44:1155184 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
-20260924:15:43:44:1155184 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
-20260924:15:43:44:1155184 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
-20260924:15:43:44:1155184 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
-20260924:15:43:44:1155184 gpstop:localhost:yjf-[INFO]:-Commencing Coordinator instance shutdown with mode='smart'
-20260924:15:43:44:1155184 gpstop:localhost:yjf-[INFO]:-Coordinator segment instance directory=/home/yjf/wpg-1790-wt/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
-20260924:15:43:44:1155184 gpstop:localhost:yjf-[INFO]:-Stopping coordinator segment and waiting for user connections to finish ...
+20260929:17:13:46:3693934 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -ar
+20260929:17:13:46:3693934 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260929:17:13:46:3693934 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260929:17:13:46:3693934 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260929:17:13:46:3693934 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260929:17:13:46:3693934 gpstop:localhost:yjf-[INFO]:-Commencing Coordinator instance shutdown with mode='smart'
+20260929:17:13:46:3693934 gpstop:localhost:yjf-[INFO]:-Coordinator segment instance directory=/home/yjf/wpg-1790-wt/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
+20260929:17:13:46:3693934 gpstop:localhost:yjf-[INFO]:-Stopping coordinator segment and waiting for user connections to finish ...
 server shutting down
-20260924:15:43:45:1155184 gpstop:localhost:yjf-[INFO]:-Attempting forceful termination of any leftover coordinator process
-20260924:15:43:45:1155184 gpstop:localhost:yjf-[INFO]:-Terminating processes for segment /home/yjf/wpg-1790-wt/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
-20260924:15:43:45:1155184 gpstop:localhost:yjf-[INFO]:-Stopping coordinator standby host localhost.localdomain mode=smart
-20260924:15:43:45:1155184 gpstop:localhost:yjf-[INFO]:-Successfully shutdown standby process on localhost.localdomain
-20260924:15:43:45:1155184 gpstop:localhost:yjf-[INFO]:-Targeting dbid [2, 5, 3, 6, 4, 7] for shutdown
-20260924:15:43:45:1155184 gpstop:localhost:yjf-[INFO]:-Commencing parallel primary segment instance shutdown, please wait...
-20260924:15:43:45:1155184 gpstop:localhost:yjf-[INFO]:-0.00% of jobs completed
-20260924:15:43:48:1155184 gpstop:localhost:yjf-[INFO]:-100.00% of jobs completed
-20260924:15:43:48:1155184 gpstop:localhost:yjf-[INFO]:-Commencing parallel mirror segment instance shutdown, please wait...
-20260924:15:43:48:1155184 gpstop:localhost:yjf-[INFO]:-0.00% of jobs completed
-20260924:15:43:50:1155184 gpstop:localhost:yjf-[INFO]:-100.00% of jobs completed
-20260924:15:43:50:1155184 gpstop:localhost:yjf-[INFO]:-----------------------------------------------------
-20260924:15:43:50:1155184 gpstop:localhost:yjf-[INFO]:-   Segments stopped successfully      = 6
-20260924:15:43:50:1155184 gpstop:localhost:yjf-[INFO]:-   Segments with errors during stop   = 0
-20260924:15:43:50:1155184 gpstop:localhost:yjf-[INFO]:-----------------------------------------------------
-20260924:15:43:50:1155184 gpstop:localhost:yjf-[INFO]:-Successfully shutdown 6 of 6 segment instances 
-20260924:15:43:50:1155184 gpstop:localhost:yjf-[INFO]:-Database successfully shutdown with no errors reported
-20260924:15:43:50:1155184 gpstop:localhost:yjf-[INFO]:-Restarting System...
+20260929:17:13:47:3693934 gpstop:localhost:yjf-[INFO]:-Attempting forceful termination of any leftover coordinator process
+20260929:17:13:47:3693934 gpstop:localhost:yjf-[INFO]:-Terminating processes for segment /home/yjf/wpg-1790-wt/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
+20260929:17:13:47:3693934 gpstop:localhost:yjf-[INFO]:-Stopping coordinator standby host localhost.localdomain mode=smart
+20260929:17:13:47:3693934 gpstop:localhost:yjf-[INFO]:-Successfully shutdown standby process on localhost.localdomain
+20260929:17:13:47:3693934 gpstop:localhost:yjf-[INFO]:-Targeting dbid [2, 5, 3, 6, 4, 7] for shutdown
+20260929:17:13:47:3693934 gpstop:localhost:yjf-[INFO]:-Commencing parallel primary segment instance shutdown, please wait...
+20260929:17:13:47:3693934 gpstop:localhost:yjf-[INFO]:-0.00% of jobs completed
+20260929:17:13:50:3693934 gpstop:localhost:yjf-[INFO]:-100.00% of jobs completed
+20260929:17:13:50:3693934 gpstop:localhost:yjf-[INFO]:-Commencing parallel mirror segment instance shutdown, please wait...
+20260929:17:13:50:3693934 gpstop:localhost:yjf-[INFO]:-0.00% of jobs completed
+20260929:17:13:52:3693934 gpstop:localhost:yjf-[INFO]:-100.00% of jobs completed
+20260929:17:13:52:3693934 gpstop:localhost:yjf-[INFO]:-----------------------------------------------------
+20260929:17:13:52:3693934 gpstop:localhost:yjf-[INFO]:-   Segments stopped successfully      = 6
+20260929:17:13:52:3693934 gpstop:localhost:yjf-[INFO]:-   Segments with errors during stop   = 0
+20260929:17:13:52:3693934 gpstop:localhost:yjf-[INFO]:-----------------------------------------------------
+20260929:17:13:52:3693934 gpstop:localhost:yjf-[INFO]:-Successfully shutdown 6 of 6 segment instances 
+20260929:17:13:52:3693934 gpstop:localhost:yjf-[INFO]:-Database successfully shutdown with no errors reported
+20260929:17:13:52:3693934 gpstop:localhost:yjf-[INFO]:-Restarting System...
 
 -- end_ignore
 (exited with code 0)
@@ -1028,45 +1056,45 @@ DO
 -1Sq: ... <quitting>
 !\retcode gpconfig -r whpg_max_anchor_snapshots --skipvalidation;
 -- start_ignore
-20260924:15:43:51:1157835 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-r whpg_max_anchor_snapshots --skipvalidation'
+20260929:17:13:53:3696585 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-r whpg_max_anchor_snapshots --skipvalidation'
 
 -- end_ignore
 (exited with code 0)
 !\retcode gpconfig -r whpg_hot_standby_anchor_name --skipvalidation;
 -- start_ignore
-20260924:15:43:51:1157882 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-r whpg_hot_standby_anchor_name --skipvalidation'
+20260929:17:13:53:3696632 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-r whpg_hot_standby_anchor_name --skipvalidation'
 
 -- end_ignore
 (exited with code 0)
 !\retcode gpstop -ar;
 -- start_ignore
-20260924:15:43:51:1157929 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -ar
-20260924:15:43:51:1157929 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
-20260924:15:43:51:1157929 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
-20260924:15:43:51:1157929 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
-20260924:15:43:51:1157929 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
-20260924:15:43:51:1157929 gpstop:localhost:yjf-[INFO]:-Commencing Coordinator instance shutdown with mode='smart'
-20260924:15:43:51:1157929 gpstop:localhost:yjf-[INFO]:-Coordinator segment instance directory=/home/yjf/wpg-1790-wt/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
-20260924:15:43:51:1157929 gpstop:localhost:yjf-[INFO]:-Stopping coordinator segment and waiting for user connections to finish ...
+20260929:17:13:53:3696679 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -ar
+20260929:17:13:53:3696679 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20260929:17:13:53:3696679 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20260929:17:13:53:3696679 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20260929:17:13:53:3696679 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20260929:17:13:53:3696679 gpstop:localhost:yjf-[INFO]:-Commencing Coordinator instance shutdown with mode='smart'
+20260929:17:13:53:3696679 gpstop:localhost:yjf-[INFO]:-Coordinator segment instance directory=/home/yjf/wpg-1790-wt/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
+20260929:17:13:53:3696679 gpstop:localhost:yjf-[INFO]:-Stopping coordinator segment and waiting for user connections to finish ...
 server shutting down
-20260924:15:43:52:1157929 gpstop:localhost:yjf-[INFO]:-Attempting forceful termination of any leftover coordinator process
-20260924:15:43:52:1157929 gpstop:localhost:yjf-[INFO]:-Terminating processes for segment /home/yjf/wpg-1790-wt/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
-20260924:15:43:52:1157929 gpstop:localhost:yjf-[INFO]:-Stopping coordinator standby host localhost.localdomain mode=smart
-20260924:15:43:52:1157929 gpstop:localhost:yjf-[INFO]:-Successfully shutdown standby process on localhost.localdomain
-20260924:15:43:52:1157929 gpstop:localhost:yjf-[INFO]:-Targeting dbid [2, 5, 3, 6, 4, 7] for shutdown
-20260924:15:43:52:1157929 gpstop:localhost:yjf-[INFO]:-Commencing parallel primary segment instance shutdown, please wait...
-20260924:15:43:52:1157929 gpstop:localhost:yjf-[INFO]:-0.00% of jobs completed
-20260924:15:43:55:1157929 gpstop:localhost:yjf-[INFO]:-100.00% of jobs completed
-20260924:15:43:55:1157929 gpstop:localhost:yjf-[INFO]:-Commencing parallel mirror segment instance shutdown, please wait...
-20260924:15:43:55:1157929 gpstop:localhost:yjf-[INFO]:-0.00% of jobs completed
-20260924:15:43:57:1157929 gpstop:localhost:yjf-[INFO]:-100.00% of jobs completed
-20260924:15:43:57:1157929 gpstop:localhost:yjf-[INFO]:-----------------------------------------------------
-20260924:15:43:57:1157929 gpstop:localhost:yjf-[INFO]:-   Segments stopped successfully      = 6
-20260924:15:43:57:1157929 gpstop:localhost:yjf-[INFO]:-   Segments with errors during stop   = 0
-20260924:15:43:57:1157929 gpstop:localhost:yjf-[INFO]:-----------------------------------------------------
-20260924:15:43:57:1157929 gpstop:localhost:yjf-[INFO]:-Successfully shutdown 6 of 6 segment instances 
-20260924:15:43:57:1157929 gpstop:localhost:yjf-[INFO]:-Database successfully shutdown with no errors reported
-20260924:15:43:57:1157929 gpstop:localhost:yjf-[INFO]:-Restarting System...
+20260929:17:13:54:3696679 gpstop:localhost:yjf-[INFO]:-Attempting forceful termination of any leftover coordinator process
+20260929:17:13:54:3696679 gpstop:localhost:yjf-[INFO]:-Terminating processes for segment /home/yjf/wpg-1790-wt/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
+20260929:17:13:54:3696679 gpstop:localhost:yjf-[INFO]:-Stopping coordinator standby host localhost.localdomain mode=smart
+20260929:17:13:55:3696679 gpstop:localhost:yjf-[INFO]:-Successfully shutdown standby process on localhost.localdomain
+20260929:17:13:55:3696679 gpstop:localhost:yjf-[INFO]:-Targeting dbid [2, 5, 3, 6, 4, 7] for shutdown
+20260929:17:13:55:3696679 gpstop:localhost:yjf-[INFO]:-Commencing parallel primary segment instance shutdown, please wait...
+20260929:17:13:55:3696679 gpstop:localhost:yjf-[INFO]:-0.00% of jobs completed
+20260929:17:13:57:3696679 gpstop:localhost:yjf-[INFO]:-100.00% of jobs completed
+20260929:17:13:57:3696679 gpstop:localhost:yjf-[INFO]:-Commencing parallel mirror segment instance shutdown, please wait...
+20260929:17:13:57:3696679 gpstop:localhost:yjf-[INFO]:-0.00% of jobs completed
+20260929:17:13:59:3696679 gpstop:localhost:yjf-[INFO]:-100.00% of jobs completed
+20260929:17:13:59:3696679 gpstop:localhost:yjf-[INFO]:-----------------------------------------------------
+20260929:17:13:59:3696679 gpstop:localhost:yjf-[INFO]:-   Segments stopped successfully      = 6
+20260929:17:13:59:3696679 gpstop:localhost:yjf-[INFO]:-   Segments with errors during stop   = 0
+20260929:17:13:59:3696679 gpstop:localhost:yjf-[INFO]:-----------------------------------------------------
+20260929:17:13:59:3696679 gpstop:localhost:yjf-[INFO]:-Successfully shutdown 6 of 6 segment instances 
+20260929:17:13:59:3696679 gpstop:localhost:yjf-[INFO]:-Database successfully shutdown with no errors reported
+20260929:17:13:59:3696679 gpstop:localhost:yjf-[INFO]:-Restarting System...
 
 -- end_ignore
 (exited with code 0)

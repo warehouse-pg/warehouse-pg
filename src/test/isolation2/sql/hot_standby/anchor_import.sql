@@ -174,6 +174,20 @@
 -1S: set transaction snapshot '00000003-0000000A-1';
 -1S: rollback;
 
+-- nor export its own: the file would carry the anchor's xid set without
+-- the anchor, and an importer would read this node's cut with segments at
+-- their replay position
+-1S: begin isolation level repeatable read;
+-1S: select pg_export_snapshot();
+-1S: rollback;
+-1S: select pg_export_snapshot();
+-- unanchored, the export works as before
+-1S: set whpg_hot_standby_snapshot_mode = unanchored;
+-1S: begin isolation level repeatable read;
+-1S: select pg_export_snapshot() is not null as exported;
+-1S: rollback;
+-1S: reset whpg_hot_standby_snapshot_mode;
+
 ----------------------------------------------------------------
 -- A registered anchor whose file is gone is refused, not read around
 ----------------------------------------------------------------
