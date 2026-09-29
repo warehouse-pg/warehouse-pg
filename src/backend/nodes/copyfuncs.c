@@ -574,6 +574,23 @@ _copyScan(const Scan *from)
 }
 
 /*
+ * CopySeqScanFields
+ *
+ *		This function copies the fields of the SeqScan node.  It is used by
+ *		all the copy functions for classes which inherit from SeqScan.
+ */
+static void
+CopySeqScanFields(const SeqScan *from, SeqScan *newnode)
+{
+	CopyScanFields((const Scan *) from, (Scan *) newnode);
+
+	COPY_SCALAR_FIELD(staged.enabled);
+	COPY_SCALAR_FIELD(staged.phaseAWidth);
+	COPY_NODE_FIELD(staged.filterAttnos);
+	COPY_SCALAR_FIELD(staged.phaseASel);
+}
+
+/*
  * _copySeqScan
  */
 static SeqScan *
@@ -584,7 +601,7 @@ _copySeqScan(const SeqScan *from)
 	/*
 	 * copy node superclass fields
 	 */
-	CopyScanFields((const Scan *) from, (Scan *) newnode);
+	CopySeqScanFields(from, newnode);
 
 	return newnode;
 }
@@ -594,7 +611,7 @@ _copyDynamicSeqScan(const DynamicSeqScan *from)
 {
 	DynamicSeqScan *newnode = makeNode(DynamicSeqScan);
 
-	CopyScanFields((Scan *) from, (Scan *) newnode);
+	CopySeqScanFields(&from->seqscan, &newnode->seqscan);
 	COPY_NODE_FIELD(partOids);
 	COPY_NODE_FIELD(part_prune_info);
 	COPY_NODE_FIELD(join_prune_paramids);

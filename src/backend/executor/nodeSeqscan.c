@@ -74,12 +74,16 @@ SeqNext(SeqScanState *node)
 		 * scan state with the column info needed for AOCO relations. Check the
 		 * comment in table_beginscan_es() for more info.
 		 */
-		scandesc = table_beginscan_es(node->ss.ss_currentRelation,
-									  estate->es_snapshot,
-									  node->ss.ps.plan->targetlist,
-									  node->ss.ps.plan->qual,
-									  NULL,
-									  NULL);
+		scandesc = table_beginscan_es_staged(node->ss.ss_currentRelation,
+											 estate->es_snapshot,
+											 node->ss.ps.plan->targetlist,
+											 node->ss.ps.plan->qual,
+											 NULL,
+											 NULL,
+											 ((SeqScan *) node->ss.ps.plan)->staged.enabled ?
+											 ((SeqScan *) node->ss.ps.plan)->staged.phaseAWidth : 0,
+											 ((SeqScan *) node->ss.ps.plan)->staged.filterAttnos,
+											 ((SeqScan *) node->ss.ps.plan)->staged.phaseASel);
 		node->ss.ss_currentScanDesc = scandesc;
 	}
 
@@ -188,8 +192,24 @@ ExecInitSeqScanForPartition(SeqScan *node, EState *estate,
 	/*
 	 * initialize child expressions
 	 */
-	scanstate->ss.ps.qual =
-		ExecInitQual(node->scan.plan.qual, (PlanState *) scanstate);
+	/*
+	 * GPDB: on a Staged Scan plan over an AOCO relation the access method
+	 * applies the qual itself and returns only rows that satisfy it -- on the
+	 * two-phase path, on the ordinary scan a segment file may fall back to,
+	 * and when it declines the two-phase scan at open (aocs_stagedscan_getnext()).
+	 * Running the qual here again would only cost the evaluation and would
+	 * need columns the scan no longer fetches for the emitted row, so this
+	 * node runs no qual. A partition of another access method under a
+	 * dynamic scan keeps it. EvalPlanQual is not reached on AO tables; keep
+	 * the qual there anyway, the access method's filter makes it harmless.
+	 */
+	if (node->staged.enabled && node->staged.phaseAWidth > 0 &&
+		RelationIsAoCols(currentRelation) &&
+		estate->es_epq_active == NULL)
+		scanstate->ss.ps.qual = NULL;
+	else
+		scanstate->ss.ps.qual =
+			ExecInitQual(node->scan.plan.qual, (PlanState *) scanstate);
 
 	return scanstate;
 }

@@ -545,6 +545,40 @@ typedef struct Scan
 	Index		scanrelid;		/* relid is index into the range table */
 } Scan;
 
+/*
+ * WHPG: the planner's Staged Scan decision for one SeqScan (AOCO two-phase
+ * scan, see cdbaocsam_stagedscan.h); all zero unless it chose one.
+ *
+ * Set by the planner on a SeqScan over an AOCO table when the cost model
+ * in stagedscancost.c says the two-phase scan beats an ordinary scan.
+ * 'filterAttnos' is an integer list of one-based attribute numbers, in
+ * stage order. The first 'phaseAWidth' of them are read in full by Phase A
+ * -- normally one column; more when a clause needs several columns before
+ * it can drop a row (d = X OR e = Y). Each later one is fetched for the
+ * survivors of the stages before it and its clauses evaluated before any
+ * further column is touched.
+ *
+ * The executor treats this as permission, not instruction: it still
+ * applies its own structural checks (AOCO, no missing values in the
+ * Phase A columns, ...) and silently declines if any of them fail. The
+ * one check only the planner makes is row-level security: a stage order
+ * that would run a leaky clause ahead of a policy's is never planned.
+ */
+typedef struct StagedScanInfo
+{
+	bool		enabled;
+	int			phaseAWidth;
+	List	   *filterAttnos;
+
+	/*
+	 * The planner's estimate of the fraction of rows Phase A keeps, from the
+	 * same statistics that chose the stage order; 0 when unknown. The
+	 * executor compares it with what the first batch of survivors shows and
+	 * falls back to the ordinary scan when the statistics were far off.
+	 */
+	double		phaseASel;
+} StagedScanInfo;
+
 /* ----------------
  *		sequential scan node
  * ----------------
@@ -552,6 +586,7 @@ typedef struct Scan
 typedef struct SeqScan
 {
 	Scan		scan;
+	StagedScanInfo staged;		/* WHPG: Staged Scan, see above */
 } SeqScan;
 
 /* ----------------

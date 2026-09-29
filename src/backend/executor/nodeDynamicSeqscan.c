@@ -114,6 +114,7 @@ initNextTableToScan(DynamicSeqScanState *node)
 	TupleDesc	partTupDesc;
 	TupleDesc	lastTupDesc;
 	AttrNumber *attMap;
+	int			attMapLen;
 	Oid		   *pid;
 	Relation	currentRelation;
 
@@ -145,6 +146,7 @@ initNextTableToScan(DynamicSeqScanState *node)
 	 * higher level abstraction that fits the bill
 	 */
 	attMap = convert_tuples_by_name_map_if_req(partTupDesc, lastTupDesc, "unused msg");
+	attMapLen = lastTupDesc->natts;
 	table_close(lastScannedRel, AccessShareLock);
 
 	/* If attribute remapping is not necessary, then do not change the varattno */
@@ -152,6 +154,32 @@ initNextTableToScan(DynamicSeqScanState *node)
 	{
 		change_varattnos_of_a_varno((Node*)scanState->ps.plan->qual, attMap, node->scanrelid);
 		change_varattnos_of_a_varno((Node*)scanState->ps.plan->targetlist, attMap, node->scanrelid);
+
+		/*
+		 * Staged Scan names its stage columns by attribute number too; they
+		 * move with the quals. A stage column the partition does not have
+		 * would be a partition missing a column the qual references, which
+		 * the qual mapping above has already refused.
+		 */
+		if (plan->seqscan.staged.enabled && plan->seqscan.staged.filterAttnos != NIL)
+		{
+			MemoryContext oldcxt =
+				MemoryContextSwitchTo(GetMemoryChunkContext(plan->seqscan.staged.filterAttnos));
+			List	   *mapped = NIL;
+			ListCell   *lc;
+
+			foreach(lc, plan->seqscan.staged.filterAttnos)
+			{
+				int			attno = lfirst_int(lc);
+
+				if (attno <= 0 || attno > attMapLen || attMap[attno - 1] == 0)
+					elog(ERROR, "staged scan: stage column %d has no counterpart in partition \"%s\"",
+						 attno, RelationGetRelationName(currentRelation));
+				mapped = lappend_int(mapped, attMap[attno - 1]);
+			}
+			plan->seqscan.staged.filterAttnos = mapped;
+			MemoryContextSwitchTo(oldcxt);
+		}
 
 		/*
 		 * Now that the varattno mapping has been changed, change the relation that
