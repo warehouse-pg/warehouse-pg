@@ -1,0 +1,59 @@
+-- A Staged Seq Scan under a planner Append is ended once the Append has
+-- moved past it (ExecEagerFreeSeqScan()) and reopened on a fresh scan
+-- descriptor when the Append is rescanned.  The staged counts live on the
+-- descriptor, so the node's high-water marks have to start over with it;
+-- otherwise EXPLAIN ANALYZE credits a reopened leaf with its first pass only,
+-- while the last leaf, which is never released, counts every pass.
+--
+-- Rescans of a bare Append, with no Motion in between, are only reachable in
+-- utility mode (see append_eager_free), hence this isolation2 test.
+
+CREATE TABLE ss_rescan (a int, b int, c int, d int, e text) USING ao_column DISTRIBUTED BY (b) PARTITION BY RANGE (a) (START (0) END (3) EVERY (1));
+CREATE TABLE
+INSERT INTO ss_rescan SELECT i % 3, i, i, i % 1000, repeat('x', 200) FROM generate_series(1, 300000) i;
+INSERT 0 300000
+ANALYZE ss_rescan;
+ANALYZE
+
+-- The staged counts of every Staged Seq Scan in a query's EXPLAIN ANALYZE,
+-- one row per leaf.  "Rows Removed by Filter" is a per-loop figure in
+-- EXPLAIN; the "Stage" lines are totals over all loops.
+CREATE FUNCTION ss_stage_counts(query text) RETURNS TABLE (leaf text, loops int, removed bigint, survivors bigint, scanned bigint, blocks bigint) AS $$ DECLARE /* in func */ l text; /* in func */ BEGIN /* in func */ leaf := NULL; /* in func */ FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || query LOOP /* in func */ IF l ~ 'Staged Seq Scan on ' THEN /* in func */ IF leaf IS NOT NULL THEN RETURN NEXT; END IF; /* in func */ leaf := substring(l FROM 'Staged Seq Scan on (\S+)'); /* in func */ loops := substring(l FROM 'loops=(\d+)'); /* in func */ removed := 0; survivors := 0; scanned := 0; blocks := 0; /* in func */ ELSIF l ~ 'Rows Removed by Filter:' THEN /* in func */ removed := substring(l FROM 'Rows Removed by Filter: (\d+)'); /* in func */ ELSIF l ~ 'Stage Survivors:' THEN /* in func */ survivors := substring(l FROM 'Stage Survivors: (\d+) of'); /* in func */ scanned := substring(l FROM ' of (\d+) rows'); /* in func */ ELSIF l ~ 'Stage Blocks:' THEN /* in func */ blocks := substring(l FROM 'Stage Blocks: (\d+) decompressed'); /* in func */ END IF; /* in func */ END LOOP; /* in func */ IF leaf IS NOT NULL THEN RETURN NEXT; END IF; /* in func */ END; /* in func */ $$ LANGUAGE plpgsql;
+CREATE FUNCTION
+
+0U: SET optimizer = off;
+SET
+0U: SET whpg_enable_staged_scan = on;
+SET
+
+-- The lateral aggregate cannot be pulled up, so the Append under it is
+-- rescanned once per outer row: one pass with one outer row, two passes with
+-- two.  The first pass releases every leaf but the last; the second pass
+-- reopens them.  Each leaf's totals must double with the second pass, and
+-- its per-loop "Rows Removed by Filter" must stay the same.
+0U: SELECT one.leaf, two.loops, two.survivors = 2 * one.survivors AS survivors_doubled, two.scanned = 2 * one.scanned AS scanned_doubled, two.blocks = 2 * one.blocks AS blocks_doubled, two.removed = one.removed AS removed_per_loop FROM ss_stage_counts($q$SELECT sum(s.cnt) FROM generate_series(1, 1) o(k), LATERAL (SELECT count(*) cnt FROM ss_rescan p WHERE p.d = 5 AND p.b > o.k) s$q$) one JOIN ss_stage_counts($q$SELECT sum(s.cnt) FROM generate_series(1, 2) o(k), LATERAL (SELECT count(*) cnt FROM ss_rescan p WHERE p.d = 5 AND p.b > o.k) s$q$) two USING (leaf) ORDER BY one.leaf;
+ leaf              | loops | survivors_doubled | scanned_doubled | blocks_doubled | removed_per_loop 
+-------------------+-------+-------------------+-----------------+----------------+------------------
+ ss_rescan_1_prt_1 | 2     | t                 | t               | t              | t                
+ ss_rescan_1_prt_2 | 2     | t                 | t               | t              | t                
+ ss_rescan_1_prt_3 | 2     | t                 | t               | t              | t                
+(3 rows)
+
+-- And the answers themselves are the same as from a single pass.
+0U: SELECT o.k, s.cnt FROM generate_series(1, 2) o(k), LATERAL (SELECT count(*) cnt FROM ss_rescan p WHERE p.d = 5 AND p.b > o.k) s ORDER BY o.k;
+ k | cnt 
+---+-----
+ 1 | 100 
+ 2 | 100 
+(2 rows)
+0U: SELECT o.k, count(*) FROM generate_series(1, 2) o(k) JOIN ss_rescan p ON p.d = 5 AND p.b > o.k GROUP BY o.k ORDER BY o.k;
+ k | count 
+---+-------
+ 1 | 100   
+ 2 | 100   
+(2 rows)
+
+DROP TABLE ss_rescan;
+DROP TABLE
+DROP FUNCTION ss_stage_counts(text);
+DROP FUNCTION

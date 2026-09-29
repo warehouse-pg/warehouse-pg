@@ -1,0 +1,831 @@
+-- Staged Scan: how the Phase B stages are ordered and evaluated.
+--
+--   1. The planner derives its candidates from the predicate's structure:
+--      every order of the AND-ed clauses is expanded into a column order
+--      (an OR clause disjunct by disjunct) and costed; the first clause's
+--      columns are Phase A.
+--   2. The executor evaluates an OR clause one disjunct at a time and settles
+--      the row as soon as one is true (the bypass), fetching the later
+--      disjuncts' columns only for the rows that still need them.
+--   3. After every window of survivors (4096, doubling) and at the end of
+--      each segfile, the executor compares what each stage rejected against
+--      what it cost and swaps adjacent stages the planner got in the wrong
+--      order (adaptive ordering).
+--
+-- Same conventions as the other staged_scan tests: no CREATE SCHEMA /
+-- search_path (hides gp_inject_fault()), no SQL wrapper functions over the
+-- table (cannot be dispatched to a QE slice).
+SET optimizer = off;
+CREATE FUNCTION gio_planned(q text) RETURNS bool AS $BODY$
+DECLARE line text;
+BEGIN
+    FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+        IF line LIKE '%Staged Seq Scan%' THEN
+            RETURN true;
+        END IF;
+    END LOOP;
+    RETURN false;
+END $BODY$ LANGUAGE plpgsql;
+CREATE FUNCTION gio_stages(q text) RETURNS text AS $BODY$
+DECLARE line text;
+BEGIN
+    FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+        IF line LIKE '%Stages:%' THEN
+            RETURN trim(substring(line from 'Stages: (.*)$'));
+        END IF;
+    END LOOP;
+    RETURN '-';
+END $BODY$ LANGUAGE plpgsql;
+CREATE FUNCTION gio_same(q text) RETURNS bool AS $BODY$
+DECLARE r_on text; r_off text;
+BEGIN
+    PERFORM set_config('whpg_enable_staged_scan', 'on', false);
+    EXECUTE q INTO r_on;
+    PERFORM set_config('whpg_enable_staged_scan', 'off', false);
+    EXECUTE q INTO r_off;
+    PERFORM set_config('whpg_enable_staged_scan', 'on', false);
+    RETURN r_on IS NOT DISTINCT FROM r_off;
+END $BODY$ LANGUAGE plpgsql;
+CREATE FUNCTION gio_arm(faultname text, tab text) RETURNS bool AS $$
+    SELECT bool_and(gp_inject_fault(faultname, 'skip', '', '', tab,
+                                    1, -1, 0, dbid) = 'Success:')
+      FROM gp_segment_configuration WHERE content > -1 AND role = 'p';
+$$ LANGUAGE sql;
+CREATE FUNCTION gio_hits(faultname text) RETURNS bigint AS $$
+    SELECT sum(substring(gp_inject_fault(faultname, 'status', dbid)
+                         from 'num times hit:''(\d+)''')::bigint)::bigint
+      FROM gp_segment_configuration WHERE content > -1 AND role = 'p';
+$$ LANGUAGE sql;
+CREATE FUNCTION gio_reset(faultname text) RETURNS bool AS $$
+    SELECT bool_and(gp_inject_fault(faultname, 'reset', dbid) = 'Success:')
+      FROM gp_segment_configuration WHERE content > -1 AND role = 'p';
+$$ LANGUAGE sql;
+-- Plant statistics on an int column holding only 0 and 1: MCV {0,1} with the
+-- given frequencies, and the given correlation. The planner reads the
+-- coordinator's pg_statistic, so the coordinator's row is all it needs.
+CREATE FUNCTION gio_plant(rel regclass, att name, freqs real[], corr real) RETURNS bool AS $$
+    UPDATE pg_statistic
+       SET stanullfrac = 0, stawidth = 4, stadistinct = 2,
+           stakind1 = 1, staop1 = '=(int4,int4)'::regoperator, stacoll1 = 0,
+           stanumbers1 = freqs, stavalues1 = '{0,1}'::int4[],
+           stakind2 = 3, staop2 = '<(int4,int4)'::regoperator, stacoll2 = 0,
+           stanumbers2 = ARRAY[corr], stavalues2 = NULL,
+           stakind3 = 0, staop3 = 0, stacoll3 = 0, stanumbers3 = NULL, stavalues3 = NULL,
+           stakind4 = 0, staop4 = 0, stacoll4 = 0, stanumbers4 = NULL, stavalues4 = NULL,
+           stakind5 = 0, staop5 = 0, stacoll5 = 0, stanumbers5 = NULL, stavalues5 = NULL
+     WHERE starelid = rel AND NOT stainherit
+       AND staattnum = (SELECT attnum FROM pg_attribute
+                         WHERE attrelid = rel AND attname = att)
+    RETURNING true;
+$$ LANGUAGE sql SET allow_system_table_mods = on;
+-- f: a narrow clustered band of 301 rows (100000..100300).
+-- s: 1 on nine rows in ten, 0 when i is a multiple of 10 -- a disjunct that
+--    is usually true.
+-- d, e: scattered over coprime moduli.
+-- g: low-cardinality text, 'g5' on four rows.
+CREATE TABLE gp_ord(a int, b bigint, c text, d int, e int, f int, s smallint, g text, pad text)
+  USING ao_column WITH (compresstype = zstd, compresslevel = 1) DISTRIBUTED BY (a);
+INSERT INTO gp_ord
+  SELECT i, i * 2, 'payload ' || i,
+         i % 1000, i % 997,
+         CASE WHEN i BETWEEN 100000 AND 100300 THEN 7 ELSE 1 END,
+         CASE WHEN i % 10 = 0 THEN 0 ELSE 1 END,
+         'g' || (i % 50000),
+         md5(i::text)
+    FROM generate_series(1, 200000) i;
+ANALYZE gp_ord;
+--
+-- ================= 1. Candidates from the predicate's structure =================
+--
+-- Within an OR clause decided in Phase B the disjunct most likely to settle a
+-- row per unit of column cost goes first: s = 1 holds for 90% of the rows and
+-- s is the narrowest column, so s is fetched before d.
+EXPLAIN (COSTS OFF) SELECT c FROM gp_ord WHERE f = 7 AND (d = 5 OR s = 1);
+                     QUERY PLAN                     
+----------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Staged Seq Scan on gp_ord
+         Filter: ((f = 7) AND ((d = 5) OR (s = 1)))
+         Stages: f, s, d
+ Optimizer: Postgres-based planner
+(5 rows)
+
+EXPLAIN (COSTS OFF) SELECT c FROM gp_ord WHERE f = 7 AND (s = 1 OR d = 5);
+                     QUERY PLAN                     
+----------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Staged Seq Scan on gp_ord
+         Filter: ((f = 7) AND ((s = 1) OR (d = 5)))
+         Stages: f, s, d
+ Optimizer: Postgres-based planner
+(5 rows)
+
+-- Three clauses, five columns: f leads, and the four-row g = 'g5' is decided
+-- before the OR, which is left with almost nothing to fetch. (d and e have
+-- the same selectivity and width, so their order inside the OR is a tie and
+-- is not pinned.)
+SELECT gio_stages('SELECT c FROM gp_ord WHERE (d = 5 OR e = 5) AND f = 7 AND g = ''g5''') LIKE 'f, g, %' AS three_clauses_f_g_first;
+ three_clauses_f_g_first 
+-------------------------
+ t
+(1 row)
+
+-- A column shared by two clauses is placed once, where the first clause that
+-- needs it puts it: d < 100 is a plain clause on d, so d comes right after f
+-- and e last; with two ORs sharing both columns only the leader is pinned.
+SELECT gio_stages('SELECT c FROM gp_ord WHERE f = 7 AND (d = 5 OR e = 5) AND d < 100')       AS shared_col,
+       gio_stages('SELECT c FROM gp_ord WHERE f = 7 AND (d = 5 OR e = 5) AND (e = 5 OR d = 6)') LIKE 'f, %' AS two_ors_f_leads;
+ shared_col | two_ors_f_leads 
+------------+-----------------
+ f, d, e    | t
+(1 row)
+
+-- More clauses than the exhaustive enumeration takes (seven): the clauses
+-- are tried in increasing selectivity order, and the plan is still made.
+SELECT gio_planned('SELECT c FROM gp_ord WHERE f = 7 AND d = 5 AND e = 5 AND s = 1 AND g = ''g5'' AND a > 0 AND b > 0') AS seven_clauses,
+       gio_stages('SELECT c FROM gp_ord WHERE f = 7 AND d = 5 AND e = 5 AND s = 1 AND g = ''g5'' AND a > 0 AND b > 0') LIKE 'f, %' AS seven_f_leads;
+ seven_clauses | seven_f_leads 
+---------------+---------------
+ t             | f
+(1 row)
+
+--
+-- ================= 2. The bypass, observed =================
+--
+-- f = 7 keeps 301 rows. Of those, 270 have s = 1 and are settled by the first
+-- disjunct without fetching d (bypassed); the 31 with s = 0 fetch d, and none
+-- of them has d = 5 (i = 100005 has s = 1), so all 31 are rejected.
+SELECT gio_arm('StagedScan_PhaseA_Survivor', 'gp_ord'),
+       gio_arm('StagedScan_Stage_Bypassed', 'gp_ord'),
+       gio_arm('StagedScan_Stage_Rejected', 'gp_ord');
+ gio_arm | gio_arm | gio_arm 
+---------+---------+---------
+ t       | t       | t
+(1 row)
+
+SELECT count(c) FROM gp_ord WHERE f = 7 AND (s = 1 OR d = 5);
+ count 
+-------
+   270
+(1 row)
+
+SELECT gio_hits('StagedScan_PhaseA_Survivor') AS phase_a_survivors,
+       gio_hits('StagedScan_Stage_Bypassed') AS bypassed,
+       gio_hits('StagedScan_Stage_Rejected') AS rejected;
+ phase_a_survivors | bypassed | rejected 
+-------------------+----------+----------
+               301 |      270 |       31
+(1 row)
+
+SELECT gio_reset('StagedScan_PhaseA_Survivor'),
+       gio_reset('StagedScan_Stage_Bypassed'),
+       gio_reset('StagedScan_Stage_Rejected');
+ gio_reset | gio_reset | gio_reset 
+-----------+-----------+-----------
+ t         | t         | t
+(1 row)
+
+-- The fetch that the bypass saves. d = 5 holds on every thousandth row and
+-- every one of them has s = 1, so the wide 'pad' column is never needed and
+-- never fetched: the stages decompress blocks of d only, none of pad, and
+-- the answer is the ordinary scan's (pad = 'x' is never true).
+SELECT gio_arm('StagedScan_Stage_BlockDecompressed', 'gp_ord'),
+       gio_arm('StagedScan_Stage_Bypassed', 'gp_ord');
+ gio_arm | gio_arm 
+---------+---------
+ t       | t
+(1 row)
+
+SELECT count(c) FROM gp_ord WHERE d = 5 AND (s = 1 OR pad = 'x');
+ count 
+-------
+   200
+(1 row)
+
+SELECT gio_hits('StagedScan_Stage_BlockDecompressed') AS blocks_decompressed,
+       gio_hits('StagedScan_Stage_Bypassed') AS bypassed;
+ blocks_decompressed | bypassed 
+---------------------+----------
+                  11 |      200
+(1 row)
+
+SELECT gio_reset('StagedScan_Stage_BlockDecompressed'),
+       gio_reset('StagedScan_Stage_Bypassed');
+ gio_reset | gio_reset 
+-----------+-----------
+ t         | t
+(1 row)
+
+SELECT gio_same('SELECT count(*) || '':'' || sum(b) FROM gp_ord WHERE d = 5 AND (s = 1 OR pad = ''x'')') AS unfetched_col_same;
+ unfetched_col_same 
+--------------------
+ t
+(1 row)
+
+-- A disjunct whose column is projected is fetched for every row anyway: the
+-- bypass only saves the evaluation, and the projected value is always there.
+SELECT gio_same('SELECT count(*) || '':'' || sum(d) || '':'' || sum(s) FROM gp_ord WHERE f = 7 AND (s = 1 OR d = 5)') AS projected_disjunct_cols;
+ projected_disjunct_cols 
+-------------------------
+ t
+(1 row)
+
+-- A column two clauses need -- one of them not an OR -- is never skipped.
+SELECT gio_same('SELECT count(*) || '':'' || sum(b) FROM gp_ord WHERE f = 7 AND (s = 1 OR d = 5) AND d < 100') AS shared_with_and,
+       gio_same('SELECT count(*) || '':'' || sum(b) FROM gp_ord WHERE f = 7 AND (s = 1 OR d = 5) AND (d = 5 OR e = 5)') AS shared_by_two_ors;
+ shared_with_and | shared_by_two_ors 
+-----------------+-------------------
+ t               | t
+(1 row)
+
+-- Three disjuncts across three stages; the middle one settles some rows.
+SELECT gio_same('SELECT count(*) || '':'' || sum(b) FROM gp_ord WHERE f = 7 AND (d = 5 OR s = 0 OR e = 5)') AS three_disjuncts,
+       gio_same('SELECT count(*) || '':'' || sum(b) FROM gp_ord WHERE f = 7 AND (d = 100000 OR s = 0 OR e = 5)') AS three_disjuncts_first_dead;
+ three_disjuncts | three_disjuncts_first_dead 
+-----------------+----------------------------
+ t               | t
+(1 row)
+
+--
+-- ================= 3. Answers must not change =================
+--
+-- NULLs: a NULL disjunct never settles the clause; NULL OR true is kept,
+-- NULL OR false is dropped.
+INSERT INTO gp_ord VALUES (300001, 1, 'null-s',    5,    5, 7, NULL, 'g1', 'x'),
+                          (300002, 2, 'null-d',    NULL, 5, 7, 0,    'g2', 'x'),
+                          (300003, 3, 'null-both', NULL, 5, 7, NULL, 'g3', 'x'),
+                          (300004, 4, 'keep-s',    NULL, 5, 7, 1,    'g4', 'x');
+SELECT gio_same('SELECT count(*) || '':'' || string_agg(c, '','' ORDER BY a) FROM gp_ord WHERE f = 7 AND (s = 1 OR d = 5) AND a > 300000')        AS null_disjuncts,
+       gio_same('SELECT count(*) || '':'' || string_agg(c, '','' ORDER BY a) FROM gp_ord WHERE f = 7 AND (s IS NULL OR d = 5) AND a > 300000')    AS is_null_disjunct,
+       gio_same('SELECT count(*) || '':'' || string_agg(c, '','' ORDER BY a) FROM gp_ord WHERE f = 7 AND (s = 1 OR d IS NULL) AND a > 300000')    AS is_null_last;
+ null_disjuncts | is_null_disjunct | is_null_last 
+----------------+------------------+--------------
+ t              | t                | t
+(1 row)
+
+SELECT c FROM gp_ord WHERE f = 7 AND (s = 1 OR d = 5) AND a > 300000 ORDER BY a;
+   c    
+--------
+ null-s
+ keep-s
+(2 rows)
+
+SELECT c FROM gp_ord WHERE f = 7 AND (s IS NULL OR d = 5) AND a > 300000 ORDER BY a;
+     c     
+-----------
+ null-s
+ null-both
+(2 rows)
+
+-- A Phase A column that several later clauses read is fetched at the first
+-- stage that needs it, whatever order the clauses are written in. Here the
+-- clause decided at the last stage (on e) comes first in the qual; the one
+-- decided at the stage before it (on d) must still see f, which used to be
+-- fetched only where the first clause in the qual wanted it -- too late.
+SELECT gio_stages('SELECT c FROM gp_ord WHERE f = 7 AND e > f AND d < f') AS phase_a_col_two_stages;
+ phase_a_col_two_stages 
+------------------------
+ f, d, e
+(1 row)
+
+SELECT gio_same('SELECT count(*) || '':'' || string_agg(c, '','' ORDER BY a) FROM gp_ord WHERE f = 7 AND e > f AND d < f') AS same_phase_a_col_two_stages;
+ same_phase_a_col_two_stages 
+-----------------------------
+ t
+(1 row)
+
+SELECT c FROM gp_ord WHERE f = 7 AND e > f AND d < f ORDER BY a;
+       c        
+----------------
+ payload 100000
+ payload 100001
+ payload 100002
+ payload 100003
+ payload 100004
+ payload 100005
+ payload 100006
+(7 rows)
+
+-- The same shape with clauses that can fail (integer addition overflows)
+-- keeps their order: f + d = 12 is the more selective, but the ordinary
+-- scan shows it only rows f + e >= 8 passed, and so does the Staged Scan.
+SELECT gio_stages('SELECT c FROM gp_ord WHERE f = 7 AND f + e >= 8 AND f + d = 12') AS can_fail_keeps_order;
+ can_fail_keeps_order 
+----------------------
+ f, e, d
+(1 row)
+
+SELECT gio_same('SELECT count(*) || '':'' || string_agg(c, '','' ORDER BY a) FROM gp_ord WHERE f = 7 AND f + e >= 8 AND f + d = 12') AS same_can_fail_keeps_order;
+ same_can_fail_keeps_order 
+---------------------------
+ t
+(1 row)
+
+-- Deleted rows: a bypassed row is still a Phase A survivor, so the visimap
+-- has already ruled on it.
+DELETE FROM gp_ord WHERE c = 'keep-s';
+SELECT gio_same('SELECT count(*) || '':'' || string_agg(c, '','' ORDER BY a) FROM gp_ord WHERE f = 7 AND (s = 1 OR d = 5) AND a > 300000') AS after_delete;
+ after_delete 
+--------------
+ t
+(1 row)
+
+SELECT c FROM gp_ord WHERE f = 7 AND (s = 1 OR d = 5) AND a > 300000 ORDER BY a;
+   c    
+--------
+ null-s
+(1 row)
+
+--
+-- ================= 4. Adaptive ordering =================
+--
+-- Two segfiles per segment, so that an order learnt on the first is applied
+-- to the second: the first batch, a DELETE of a fifth of it (above the
+-- compaction threshold), a VACUUM that compacts the rest into a fresh segfile
+-- and another that drops the old one, then a second batch into the emptied
+-- segfile.
+--
+--   p: 1 on one row in thirty (Phase A)
+--   q: 1 on every row -- a stage that rejects nothing
+--   r: 1 on one row in seven
+CREATE TABLE gp_adapt(a int, p int, q int, r int, c text)
+  USING ao_column WITH (compresstype = zstd, compresslevel = 1) DISTRIBUTED BY (a);
+INSERT INTO gp_adapt
+  SELECT i, CASE WHEN i % 30 = 0 THEN 1 ELSE 0 END, 1,
+         CASE WHEN i % 7 = 0 THEN 1 ELSE 0 END, 'payload ' || i
+    FROM generate_series(1, 300000) i;
+DELETE FROM gp_adapt WHERE a % 5 = 1;
+VACUUM gp_adapt;
+VACUUM gp_adapt;
+INSERT INTO gp_adapt
+  SELECT i, CASE WHEN i % 30 = 0 THEN 1 ELSE 0 END, 1,
+         CASE WHEN i % 7 = 0 THEN 1 ELSE 0 END, 'payload ' || i
+    FROM generate_series(300001, 600000) i;
+ANALYZE gp_adapt;
+SELECT segment_id, count(DISTINCT segno) AS segfiles
+  FROM gp_toolkit.__gp_aocsseg('gp_adapt') WHERE tupcount > 0 AND state = 1
+ GROUP BY 1 ORDER BY 1;
+ segment_id | segfiles 
+------------+----------
+          0 |        2
+          1 |        2
+          2 |        2
+(3 rows)
+
+-- Mislead the planner into the order p, q, r with planted statistics, the
+-- stale-statistics situation the reordering exists for: p = 1 keeps 0.1%
+-- (really one row in thirty) so it leads, q = 1 keeps 2% (really every
+-- row) and is clustered, so it is staged ahead of r, where it rejects
+-- nothing.
+SELECT gio_plant('gp_adapt', 'p', '{0.999,0.001}', 0.9);
+ gio_plant 
+-----------
+ t
+(1 row)
+
+SELECT gio_plant('gp_adapt', 'q', '{0.98,0.02}', 0.9);
+ gio_plant 
+-----------
+ t
+(1 row)
+
+SELECT gio_stages('SELECT c FROM gp_adapt WHERE p = 1 AND q = 1 AND r = 1') AS misled_order;
+ misled_order 
+--------------
+ p, q, r
+(1 row)
+
+-- Each segment swaps q and r after its first segfile (one reorder per
+-- segment) and keeps that order for the second; the answer is unchanged.
+SELECT gio_arm('StagedScan_Stage_Reordered', 'gp_adapt');
+ gio_arm 
+---------
+ t
+(1 row)
+
+SELECT count(c) FROM gp_adapt WHERE p = 1 AND q = 1 AND r = 1;
+ count 
+-------
+  2857
+(1 row)
+
+SELECT gio_hits('StagedScan_Stage_Reordered') AS reorders;
+ reorders 
+----------
+        3
+(1 row)
+
+SELECT gio_reset('StagedScan_Stage_Reordered');
+ gio_reset 
+-----------
+ t
+(1 row)
+
+SELECT gio_same('SELECT count(*) || '':'' || sum(a) || '':'' || md5(string_agg(c, '','' ORDER BY a)) FROM gp_adapt WHERE p = 1 AND q = 1 AND r = 1') AS same_after_reorder;
+ same_after_reorder 
+--------------------
+ t
+(1 row)
+
+-- The same misled order on clauses that can fail (integer addition) is
+-- left alone: swapping q + 0 = 1 and r + 0 = 1 would show r + 0 = 1 rows
+-- the ordinary scan never shows it.
+SELECT gio_stages('SELECT c FROM gp_adapt WHERE p = 1 AND q + 0 = 1 AND r + 0 = 1') AS can_fail_misled_order;
+ can_fail_misled_order 
+-----------------------
+ p, q, r
+(1 row)
+
+SELECT gio_arm('StagedScan_Stage_Reordered', 'gp_adapt');
+ gio_arm 
+---------
+ t
+(1 row)
+
+SELECT count(c) FROM gp_adapt WHERE p = 1 AND q + 0 = 1 AND r + 0 = 1;
+ count 
+-------
+  2857
+(1 row)
+
+SELECT gio_hits('StagedScan_Stage_Reordered') AS can_fail_reorders;
+ can_fail_reorders 
+-------------------
+                 0
+(1 row)
+
+SELECT gio_reset('StagedScan_Stage_Reordered');
+ gio_reset 
+-----------
+ t
+(1 row)
+
+SELECT gio_same('SELECT count(*) || '':'' || sum(a) FROM gp_adapt WHERE p = 1 AND q + 0 = 1 AND r + 0 = 1') AS same_can_fail_misled;
+ same_can_fail_misled 
+----------------------
+ t
+(1 row)
+
+-- The planner's estimate of what Phase A keeps travels with the plan, and
+-- a multi-stage predicate whose Phase A keeps several times that falls back
+-- before emitting a row. d % 2 = 0 has no statistics and is estimated at
+-- 0.5% whatever it keeps, so it leads Phase A; it really keeps half the
+-- rows, and every segment falls back. (It can fail -- integer modulo -- so
+-- it may lead only from the front of the qual: s + 0 = 1 rather than s = 1
+-- keeps it there, being as costly, and is the same 90%.) The misled orders
+-- above keep 3% against a planted 0.1% and stay under twice the gate, so
+-- they do not.
+SELECT gio_stages('SELECT c FROM gp_ord WHERE d % 2 = 0 AND s + 0 = 1') AS expression_leads;
+ expression_leads 
+------------------
+ d, s
+(1 row)
+
+SELECT gio_arm('StagedScan_PhaseA_EstimateFallback', 'gp_ord');
+ gio_arm 
+---------
+ t
+(1 row)
+
+SELECT count(c) FROM gp_ord WHERE d % 2 = 0 AND s + 0 = 1;
+ count 
+-------
+ 80000
+(1 row)
+
+SELECT gio_hits('StagedScan_PhaseA_EstimateFallback') AS estimate_fallbacks_expression;
+ estimate_fallbacks_expression 
+-------------------------------
+                             3
+(1 row)
+
+SELECT gio_reset('StagedScan_PhaseA_EstimateFallback');
+ gio_reset 
+-----------
+ t
+(1 row)
+
+SELECT gio_arm('StagedScan_PhaseA_EstimateFallback', 'gp_adapt');
+ gio_arm 
+---------
+ t
+(1 row)
+
+SELECT count(c) FROM gp_adapt WHERE p = 1 AND q = 1 AND r = 1;
+ count 
+-------
+  2857
+(1 row)
+
+SELECT gio_hits('StagedScan_PhaseA_EstimateFallback') AS estimate_fallbacks_misled;
+ estimate_fallbacks_misled 
+---------------------------
+                         0
+(1 row)
+
+SELECT gio_reset('StagedScan_PhaseA_EstimateFallback');
+ gio_reset 
+-----------
+ t
+(1 row)
+
+SELECT gio_same('SELECT count(*) || '':'' || sum(b) FROM gp_ord WHERE d % 2 = 0 AND s + 0 = 1') AS same_after_estimate_fallback;
+ same_after_estimate_fallback 
+------------------------------
+ t
+(1 row)
+
+-- A fallback hands the rest of the scan to the ordinary scan, and EXPLAIN
+-- ANALYZE counts every segment file it read. p = 1 is planted at 0.1% and
+-- really keeps one row in thirty; with the selectivity gate at 2% the
+-- planner accepts, the executor's first batch finds 3% and falls back, the
+-- first segment file of each segment is handed over and the second is
+-- scanned without Staged Scan too, six in all. The rows the qual removed
+-- are counted as before.
+CREATE FUNCTION gio_fallback(q text) RETURNS text AS $BODY$
+DECLARE line text; fb text := '-'; rm text := '-';
+BEGIN
+    FOR line IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+        IF line LIKE '%Stage Fallback:%' THEN fb := trim(substring(line from 'Stage Fallback: (.*)$')); END IF;
+        IF line LIKE '%Rows Removed by Filter:%' THEN rm := trim(substring(line from 'Rows Removed by Filter: (.*)$')); END IF;
+    END LOOP;
+    RETURN fb || ' / removed ' || rm;
+END $BODY$ LANGUAGE plpgsql;
+SET whpg_staged_scan_min_selectivity = 0.02;
+SELECT gio_fallback('SELECT c FROM gp_adapt WHERE p = 1') AS all_segfiles_fell_back;
+               all_segfiles_fell_back                
+-----------------------------------------------------
+ 6 segment files scanned without it / removed 173389
+(1 row)
+
+SELECT gio_same('SELECT count(*) || '':'' || sum(a) FROM gp_adapt WHERE p = 1') AS same_after_fallback;
+ same_after_fallback 
+---------------------
+ t
+(1 row)
+
+RESET whpg_staged_scan_min_selectivity;
+DROP FUNCTION gio_fallback(text);
+-- With true statistics the order is already right and is not touched.
+ANALYZE gp_adapt;
+SELECT gio_stages('SELECT c FROM gp_adapt WHERE p = 1 AND q = 1 AND r = 1') AS planned_order;
+ planned_order 
+---------------
+ p, r, q
+(1 row)
+
+SELECT gio_arm('StagedScan_Stage_Reordered', 'gp_adapt');
+ gio_arm 
+---------
+ t
+(1 row)
+
+SELECT count(c) FROM gp_adapt WHERE p = 1 AND q = 1 AND r = 1;
+ count 
+-------
+  2857
+(1 row)
+
+SELECT gio_hits('StagedScan_Stage_Reordered') AS reorders_good_order;
+ reorders_good_order 
+---------------------
+                   0
+(1 row)
+
+SELECT gio_reset('StagedScan_Stage_Reordered');
+ gio_reset 
+-----------
+ t
+(1 row)
+
+-- The realistic case: the statistics are wrong. Tell the planner q = 1 holds
+-- for 5% of the rows, fairly clustered (correlation 0.8: a constant column
+-- reports 1, which would make q look like the cheapest Phase A of all), and
+-- it puts q right after Phase A, ahead of r and of an OR clause spanning r
+-- and a; the data says otherwise and the executor moves q back after the
+-- first segfile. In the OR query q ends up behind a as
+-- well, since a rejects every row that reaches it; the two disjunct stages r
+-- and a themselves are never swapped with each other. The OR clause is
+-- re-split against the new order, and the answer is unchanged.
+SELECT gio_plant('gp_adapt', 'q', '{0.95,0.05}', 0.8);
+ gio_plant 
+-----------
+ t
+(1 row)
+
+SELECT gio_stages('SELECT c FROM gp_adapt WHERE p = 1 AND q = 1 AND r = 1')              AS misled_order,
+       gio_stages('SELECT c FROM gp_adapt WHERE p = 1 AND q = 1 AND (r = 1 OR a < 0)')   AS misled_or_order;
+ misled_order | misled_or_order 
+--------------+-----------------
+ p, q, r      | p, q, r, a
+(1 row)
+
+SELECT gio_arm('StagedScan_Stage_Reordered', 'gp_adapt');
+ gio_arm 
+---------
+ t
+(1 row)
+
+SELECT count(c) FROM gp_adapt WHERE p = 1 AND q = 1 AND r = 1;
+ count 
+-------
+  2857
+(1 row)
+
+SELECT gio_hits('StagedScan_Stage_Reordered') AS reorders_misled;
+ reorders_misled 
+-----------------
+               3
+(1 row)
+
+SELECT gio_reset('StagedScan_Stage_Reordered');
+ gio_reset 
+-----------
+ t
+(1 row)
+
+SELECT gio_arm('StagedScan_Stage_Reordered', 'gp_adapt');
+ gio_arm 
+---------
+ t
+(1 row)
+
+SELECT count(c) FROM gp_adapt WHERE p = 1 AND q = 1 AND (r = 1 OR a < 0);
+ count 
+-------
+  2857
+(1 row)
+
+SELECT gio_hits('StagedScan_Stage_Reordered') AS reorders_misled_or;
+ reorders_misled_or 
+--------------------
+                  3
+(1 row)
+
+SELECT gio_reset('StagedScan_Stage_Reordered');
+ gio_reset 
+-----------
+ t
+(1 row)
+
+SELECT gio_same('SELECT count(*) || '':'' || sum(a) || '':'' || md5(string_agg(c, '','' ORDER BY a)) FROM gp_adapt WHERE p = 1 AND q = 1 AND r = 1')            AS same_misled,
+       gio_same('SELECT count(*) || '':'' || sum(a) || '':'' || md5(string_agg(c, '','' ORDER BY a)) FROM gp_adapt WHERE p = 1 AND q = 1 AND (r = 1 OR a < 0)') AS same_misled_or;
+ same_misled | same_misled_or 
+-------------+----------------
+ t           | t
+(1 row)
+
+--
+-- ================= 5. Adaptive ordering inside one segfile =================
+--
+-- Most tables have a single segfile per segment, so learning at segfile
+-- boundaries alone would rarely be applied. Windows of survivors fix that,
+-- and let the order follow the data when it changes along the file.
+--
+-- One INSERT, hence one segfile per segment (~160k rows, ~16k survivors).
+--   p: 1 on one row in ten (Phase A)
+--   q: 1 on the first 70% of the rows (useless there), 0 on the last 30%
+--      (rejects everything there)
+--   r: 1 on one row in twenty -- rejects half of p's survivors, all along
+--      the file (every multiple of 10 is a multiple of 20 or not, alternately)
+CREATE TABLE gp_win(a int, p int, q int, r int, c text)
+  USING ao_column WITH (compresstype = zstd, compresslevel = 1) DISTRIBUTED BY (a);
+INSERT INTO gp_win
+  SELECT i, CASE WHEN i % 10 = 0 THEN 1 ELSE 0 END,
+         CASE WHEN i <= 336000 THEN 1 ELSE 0 END,
+         CASE WHEN i % 20 = 0 THEN 1 ELSE 0 END, 'payload ' || i
+    FROM generate_series(1, 480000) i;
+ANALYZE gp_win;
+SELECT segment_id, count(DISTINCT segno) AS segfiles
+  FROM gp_toolkit.__gp_aocsseg('gp_win') WHERE tupcount > 0
+ GROUP BY 1 ORDER BY 1;
+ segment_id | segfiles 
+------------+----------
+          0 |        1
+          1 |        1
+          2 |        1
+(3 rows)
+
+-- Mislead the planner into p, q, r (planted: p = 1 at 0.1%, q = 1 at 2%,
+-- both clustered; really 10% and 70%). The stages are re-scored after the
+-- first 4096 survivors and then after the next 8192, which closes the second
+-- window at survivor 12288, inside the first 70% of the ~16k survivors of a
+-- segment; what is left is one partial window, in the final 30%.
+-- Window 1: q rejects nothing, r half -> q and r swap to p, r, q.
+-- Window 2 is still mostly in the first 70%: no change.
+-- The last, partial window is entirely in the final 30%: q now rejects every
+-- row that reaches it while r still rejects half -> they swap back to
+-- p, q, r. Two reorders per segment, six in all; the answer is unchanged.
+SELECT gio_plant('gp_win', 'p', '{0.999,0.001}', 0.9);
+ gio_plant 
+-----------
+ t
+(1 row)
+
+SELECT gio_plant('gp_win', 'q', '{0.98,0.02}', 0.9);
+ gio_plant 
+-----------
+ t
+(1 row)
+
+SELECT gio_stages('SELECT c FROM gp_win WHERE p = 1 AND q = 1 AND r = 1') AS misled_order;
+ misled_order 
+--------------
+ p, q, r
+(1 row)
+
+SELECT gio_arm('StagedScan_Stage_Reordered', 'gp_win');
+ gio_arm 
+---------
+ t
+(1 row)
+
+SELECT count(c) FROM gp_win WHERE p = 1 AND q = 1 AND r = 1;
+ count 
+-------
+ 16800
+(1 row)
+
+SELECT gio_hits('StagedScan_Stage_Reordered') AS reorders_windowed;
+ reorders_windowed 
+-------------------
+                 6
+(1 row)
+
+SELECT gio_reset('StagedScan_Stage_Reordered');
+ gio_reset 
+-----------
+ t
+(1 row)
+
+SELECT gio_same('SELECT count(*) || '':'' || sum(a) || '':'' || md5(string_agg(c, '','' ORDER BY a)) FROM gp_win WHERE p = 1 AND q = 1 AND r = 1') AS same_windowed;
+ same_windowed 
+---------------
+ t
+(1 row)
+
+-- A clause that can fail is shown only the rows the ordinary scan shows it.
+--   v: a number as text, except on the rows deleted below ('junk')
+--   w: a number as text when kind = 'n', a word otherwise
+--   f: 7 on a clustered band of 301 rows, 1 elsewhere
+--   x: 0 exactly where y = 0
+CREATE TABLE gp_fail(a int, f int, kind text, v text, w text, x int, y int, c text)
+  USING ao_column WITH (compresstype = zstd, compresslevel = 1) DISTRIBUTED BY (a);
+INSERT INTO gp_fail
+  SELECT i, CASE WHEN i BETWEEN 100000 AND 100300 THEN 7 ELSE 1 END,
+         CASE WHEN i % 2 = 0 THEN 'n' ELSE 's' END,
+         CASE WHEN i % 997 = 0 THEN 'junk' ELSE (i % 1000)::text END,
+         CASE WHEN i % 2 = 0 THEN (i % 100)::text ELSE 'word' || i END,
+         CASE WHEN i % 3 = 0 THEN 0 ELSE 1 + i % 5 END, i % 3,
+         'payload ' || i
+    FROM generate_series(1, 200000) i;
+DELETE FROM gp_fail WHERE v = 'junk';
+ANALYZE gp_fail;
+-- Phase A consults the visimap before a clause that can fail: the deleted
+-- rows are the ones the cast fails on.
+SELECT gio_stages('SELECT c FROM gp_fail WHERE v::int = 5') AS cast_phase_a;
+ cast_phase_a 
+--------------
+ v
+(1 row)
+
+SELECT gio_same('SELECT count(*) || '':'' || sum(a) FROM gp_fail WHERE v::int = 5') AS same_cast_phase_a;
+ same_cast_phase_a 
+-------------------
+ t
+(1 row)
+
+-- f = 7 leads, but the cast stays behind kind = 'n', which the ordinary
+-- scan evaluates first: the words in w never reach it.
+SELECT gio_stages('SELECT c FROM gp_fail WHERE kind = ''n'' AND w::int = 5 AND f = 7') AS cast_after_guard;
+ cast_after_guard 
+------------------
+ f, kind, w
+(1 row)
+
+SELECT gio_same('SELECT count(*) || '':'' || sum(a) FROM gp_fail WHERE kind = ''n'' AND w::int = 5 AND f = 7') AS same_cast_after_guard;
+ same_cast_after_guard 
+-----------------------
+ t
+(1 row)
+
+-- An OR clause that can fail is not split across stages: its disjuncts are
+-- evaluated left to right as the ordinary scan does, so 100 / x is never
+-- reached on a row where y = 0 settles it (x = 0 there). x < 3 stages x
+-- ahead of y; split, the division would be evaluated first.
+SELECT gio_stages('SELECT c FROM gp_fail WHERE f = 7 AND x < 3 AND (y = 0 OR 100 / x > 30)') AS can_fail_or;
+ can_fail_or 
+-------------
+ f, x, y
+(1 row)
+
+SELECT gio_same('SELECT count(*) || '':'' || sum(a) FROM gp_fail WHERE f = 7 AND x < 3 AND (y = 0 OR 100 / x > 30)') AS same_can_fail_or;
+ same_can_fail_or 
+------------------
+ t
+(1 row)
+
+DROP TABLE gp_ord, gp_adapt, gp_win, gp_fail;
+DROP FUNCTION gio_planned(text), gio_stages(text), gio_same(text),
+              gio_arm(text, text), gio_hits(text), gio_reset(text),
+              gio_plant(regclass, name, real[], real);

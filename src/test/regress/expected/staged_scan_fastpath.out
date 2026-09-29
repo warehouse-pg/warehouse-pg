@@ -1,0 +1,278 @@
+-- Staged Scan: the Phase A fast path.
+--
+-- When Phase A is a single int2/int4/int8/date/timestamp/timestamptz column
+-- and every clause on it compares the column with a constant through a btree
+-- operator of the column's family, the clauses are compiled once and each
+-- Original-format, NULL-free varblock is tested straight off its datum
+-- array instead of one datumstreamread_advance() + ExecQual() per row.
+-- Anything else -- other types, other operators, NULL-bearing blocks, a wide
+-- Phase A -- goes row by row. The fault point StagedScan_PhaseA_FastBlock
+-- fires once per block the fast path tested.
+--
+-- What this test pins: which predicates take the fast path and which do not,
+-- that a NULL-bearing column mixes fast and slow blocks in one scan, that a
+-- survivor batch filling inside a fast block resumes correctly, and that the
+-- answer is the ordinary scan's for every one of them, including the values
+-- at the ends of each type's range.
+--
+-- Same conventions as the other staged_scan tests: no CREATE SCHEMA /
+-- search_path (hides gp_inject_fault()), no SQL wrapper functions over the
+-- table (cannot be dispatched to a QE slice).
+SET optimizer = off;
+CREATE FUNCTION gif_arm(faultname text, tab text) RETURNS bool AS $$
+    SELECT bool_and(gp_inject_fault(faultname, 'skip', '', '', tab,
+                                    1, -1, 0, dbid) = 'Success:')
+      FROM gp_segment_configuration WHERE content > -1 AND role = 'p';
+$$ LANGUAGE sql;
+CREATE FUNCTION gif_hits(faultname text) RETURNS bigint AS $$
+    SELECT sum(substring(gp_inject_fault(faultname, 'status', dbid)
+                         from 'num times hit:''(\d+)''')::bigint)::bigint
+      FROM gp_segment_configuration WHERE content > -1 AND role = 'p';
+$$ LANGUAGE sql;
+CREATE FUNCTION gif_reset(faultname text) RETURNS bool AS $$
+    SELECT bool_and(gp_inject_fault(faultname, 'reset', dbid) = 'Success:')
+      FROM gp_segment_configuration WHERE content > -1 AND role = 'p';
+$$ LANGUAGE sql;
+-- A replicated table is scanned on one segment, which makes the block counts
+-- exact. i4n is i4 with a NULL every 50000 rows; the three extra rows hold
+-- NULLs and each type's extreme values.
+CREATE TABLE gp_fast(id int, i2 smallint, i4 int, i8 bigint, dt date,
+                     ts timestamp, tz timestamptz, nm numeric, i4n int, c text)
+  USING ao_column WITH (compresstype = zstd, compresslevel = 1)
+  DISTRIBUTED REPLICATED;
+INSERT INTO gp_fast
+  SELECT i, (i % 30000)::smallint, i, i::bigint * 100000,
+         date '2020-01-01' + (i % 3000),
+         timestamp '2020-01-01' + (i % 3000) * interval '1 hour',
+         timestamptz '2020-01-01 00:00+00' + (i % 3000) * interval '1 hour',
+         i, CASE WHEN i % 50000 = 0 THEN NULL ELSE i END, 'p' || i
+    FROM generate_series(1, 300000) i;
+INSERT INTO gp_fast VALUES
+  (300001, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'nulls'),
+  (300002, 32767, 2147483647, 9223372036854775807, 'infinity', 'infinity', 'infinity', 1, 1, 'max'),
+  (300003, -32768, -2147483648, -9223372036854775808, '-infinity', '-infinity', '-infinity', 2, 2, 'min');
+ANALYZE gp_fast;
+-- Run q with the feature on, noting whether the fast path tested any block
+-- and whether Phase A completed the segfile or handed it back to the
+-- ordinary scan (the dense-survivor check, which the fast path leaves in
+-- force: a range over a column whose values cycle every 3000 rows puts a
+-- survivor in nearly every block), then off; report whether the answers
+-- agree.
+CREATE FUNCTION gif_probe(q text) RETURNS text AS $BODY$
+DECLARE r_on text; r_off text; fast bigint; segs bigint; dense bigint;
+BEGIN
+    PERFORM set_config('whpg_enable_staged_scan', 'on', false);
+    PERFORM gif_arm('StagedScan_PhaseA_FastBlock', 'gp_fast');
+    PERFORM gif_arm('StagedScan_PhaseA_Complete', 'gp_fast');
+    PERFORM gif_arm('StagedScan_PhaseA_DenseFallback', 'gp_fast');
+    EXECUTE q INTO r_on;
+    SELECT gif_hits('StagedScan_PhaseA_FastBlock') INTO fast;
+    SELECT gif_hits('StagedScan_PhaseA_Complete') INTO segs;
+    SELECT gif_hits('StagedScan_PhaseA_DenseFallback') INTO dense;
+    PERFORM gif_reset('StagedScan_PhaseA_FastBlock');
+    PERFORM gif_reset('StagedScan_PhaseA_Complete');
+    PERFORM gif_reset('StagedScan_PhaseA_DenseFallback');
+    PERFORM set_config('whpg_enable_staged_scan', 'off', false);
+    EXECUTE q INTO r_off;
+    PERFORM set_config('whpg_enable_staged_scan', 'on', false);
+    RETURN format('fast=%s %s %s', fast > 0,
+                  CASE WHEN segs > 0 THEN 'completed' WHEN dense > 0 THEN 'dense-fallback' ELSE 'no-phase-a' END,
+                  CASE WHEN r_on IS NOT DISTINCT FROM r_off THEN 'same' ELSE 'DIFFERENT' END);
+END $BODY$ LANGUAGE plpgsql;
+--
+-- 1. The types and operators the fast path admits: each type, each btree
+--    strategy, the constant on either side, a constant of another integer
+--    width, and the ends of the range (a constant outside int4's range,
+--    infinity for the datetime types).
+--
+SELECT q, gif_probe(q) FROM unnest(ARRAY[
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE i2 = 5',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE 5 = i2',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE i2 BETWEEN 100 AND 102',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE i2 > 29990',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE i2 = 32767',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE i2 <= -32768',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE i2 = 100000',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE i4 = 5',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE i4 < 4',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE i4 >= 299999',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE i4 = 12345::bigint',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE 12345::smallint = i4',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE i4 = 2147483648',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE i4 >= 2147483647',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE i4 < -2147483647',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE i8 = 1234500000',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE i8 = 12345::int',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE i8 = 9223372036854775807',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE i8 < -9223372036854775807',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE dt = date ''2020-01-05''',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE dt > date ''2028-03-01''',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE dt = ''infinity''',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE dt <= ''-infinity''',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE ts = timestamp ''2020-01-01 05:00''',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE ts < timestamp ''2020-01-01 03:00''',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE ts >= ''infinity''',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE tz = timestamptz ''2020-01-01 05:00+00''',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE tz > timestamptz ''2020-05-04 00:00+00''',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE tz = ''-infinity'''
+]) AS q;
+                                                    q                                                     |         gif_probe          
+----------------------------------------------------------------------------------------------------------+----------------------------
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE i2 = 5                                 | fast=t completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE 5 = i2                                 | fast=t completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE i2 BETWEEN 100 AND 102                 | fast=t completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE i2 > 29990                             | fast=t completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE i2 = 32767                             | fast=t completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE i2 <= -32768                           | fast=t completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE i2 = 100000                            | fast=t completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE i4 = 5                                 | fast=t completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE i4 < 4                                 | fast=t completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE i4 >= 299999                           | fast=t completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE i4 = 12345::bigint                     | fast=t completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE 12345::smallint = i4                   | fast=t completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE i4 = 2147483648                        | fast=t completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE i4 >= 2147483647                       | fast=t completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE i4 < -2147483647                       | fast=t completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE i8 = 1234500000                        | fast=t completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE i8 = 12345::int                        | fast=t completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE i8 = 9223372036854775807               | fast=t completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE i8 < -9223372036854775807              | fast=t completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE dt = date '2020-01-05'                 | fast=t completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE dt > date '2028-03-01'                 | fast=t completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE dt = 'infinity'                        | fast=t completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE dt <= '-infinity'                      | fast=t completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE ts = timestamp '2020-01-01 05:00'      | fast=t completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE ts < timestamp '2020-01-01 03:00'      | fast=t dense-fallback same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE ts >= 'infinity'                       | fast=t completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE tz = timestamptz '2020-01-01 05:00+00' | fast=t completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE tz > timestamptz '2020-05-04 00:00+00' | fast=t dense-fallback same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE tz = '-infinity'                       | fast=t completed same
+(29 rows)
+
+--
+-- 2. What goes row by row: another type, a non-btree operator, an array or
+--    OR clause, a cross-type constant, a wide Phase A. Same answers.
+--
+SELECT q, gif_probe(q) FROM unnest(ARRAY[
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE nm = 5',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE i4 <> 5 AND i4 < 10',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE i4 IN (5, 6, 7)',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE i4 = 5 OR i4 = 7',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE dt = timestamp ''2020-01-05 00:00''',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE ts = date ''2020-01-01''',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE i4 = 5 OR i2 = 5',
+  'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE i4 IS NULL'
+]) AS q;
+                                                  q                                                  |       gif_probe       
+-----------------------------------------------------------------------------------------------------+-----------------------
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE nm = 5                            | fast=f completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE i4 <> 5 AND i4 < 10               | fast=f completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE i4 IN (5, 6, 7)                   | fast=f completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE i4 = 5 OR i4 = 7                  | fast=f completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE dt = timestamp '2020-01-05 00:00' | fast=f completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE ts = date '2020-01-01'            | fast=f completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE i4 = 5 OR i2 = 5                  | fast=f completed same
+ SELECT count(*) || ':' || coalesce(sum(id), 0) FROM gp_fast WHERE i4 IS NULL                        | fast=f completed same
+(8 rows)
+
+--
+-- 3. A column with a NULL here and there: the blocks holding one go row by
+--    row, the others take the fast path, in the same scan. i4 and i4n have
+--    the same layout, so i4n takes the fast path on fewer blocks than i4
+--    (six blocks hold a NULL), and the NULL rows are neither matched nor lost.
+--
+--    (count(c) rather than count(*), so that Phase B has a column to fetch
+--    and the whole two-phase path is exercised.)
+SELECT gif_arm('StagedScan_PhaseA_FastBlock', 'gp_fast');
+ gif_arm 
+---------
+ t
+(1 row)
+
+SELECT count(c) FROM gp_fast WHERE i4 = 5;
+ count 
+-------
+     1
+(1 row)
+
+SELECT gif_hits('StagedScan_PhaseA_FastBlock') AS fast_blocks_i4 \gset
+SELECT gif_reset('StagedScan_PhaseA_FastBlock');
+ gif_reset 
+-----------
+ t
+(1 row)
+
+SELECT gif_arm('StagedScan_PhaseA_FastBlock', 'gp_fast');
+ gif_arm 
+---------
+ t
+(1 row)
+
+SELECT count(c) FROM gp_fast WHERE i4n = 5;
+ count 
+-------
+     1
+(1 row)
+
+SELECT gif_hits('StagedScan_PhaseA_FastBlock') AS fast_blocks_i4n \gset
+SELECT gif_reset('StagedScan_PhaseA_FastBlock');
+ gif_reset 
+-----------
+ t
+(1 row)
+
+SELECT :fast_blocks_i4 > :fast_blocks_i4n AS null_blocks_went_row_by_row,
+       :fast_blocks_i4n > 0 AS other_blocks_stayed_fast;
+ null_blocks_went_row_by_row | other_blocks_stayed_fast 
+-----------------------------+--------------------------
+ t                           | t
+(1 row)
+
+SELECT gif_probe('SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE i4n = 5') AS i4n_eq,
+       gif_probe('SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE i4n < 3') AS i4n_lt,
+       gif_probe('SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE i4n IS NULL') AS i4n_is_null;
+        i4n_eq         |        i4n_lt         |      i4n_is_null      
+-----------------------+-----------------------+-----------------------
+ fast=t completed same | fast=t completed same | fast=f completed same
+(1 row)
+
+--
+-- 4. A survivor batch that fills inside a fast block: Phase A stops on the
+--    row that completed it, positions the stream there, and resumes with the
+--    next row. The StagedScan_PhaseA_BatchComplete fault closes the batch on
+--    every survivor, so every row of a fast block crosses a batch boundary;
+--    the answer is the ordinary scan's.
+--
+SELECT gif_arm('StagedScan_PhaseA_BatchComplete', 'gp_fast');
+ gif_arm 
+---------
+ t
+(1 row)
+
+SELECT gif_probe('SELECT count(*) || '':'' || sum(id) || '':'' || md5(string_agg(c, '','' ORDER BY id)) FROM gp_fast WHERE i4 BETWEEN 100 AND 110') AS batch_per_survivor,
+       gif_probe('SELECT count(*) || '':'' || sum(id) || '':'' || md5(string_agg(c, '','' ORDER BY id)) FROM gp_fast WHERE i2 = 5') AS batch_per_survivor_scattered;
+  batch_per_survivor   | batch_per_survivor_scattered 
+-----------------------+------------------------------
+ fast=t completed same | fast=t completed same
+(1 row)
+
+SELECT gif_reset('StagedScan_PhaseA_BatchComplete');
+ gif_reset 
+-----------
+ t
+(1 row)
+
+--
+-- 5. The fast path only decides which rows survive; deleted rows are still
+--    settled by the visimap, and a later stage still runs on the survivors.
+--
+DELETE FROM gp_fast WHERE i4 BETWEEN 100 AND 105;
+SELECT gif_probe('SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE i4 BETWEEN 100 AND 110') AS after_delete,
+       gif_probe('SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM gp_fast WHERE i4 BETWEEN 100 AND 110 AND c LIKE ''p10%''') AS with_stage_2;
+     after_delete      |     with_stage_2      
+-----------------------+-----------------------
+ fast=t completed same | fast=t completed same
+(1 row)
+
+DROP TABLE gp_fast;
+DROP FUNCTION gif_probe(text), gif_arm(text, text), gif_hits(text), gif_reset(text);

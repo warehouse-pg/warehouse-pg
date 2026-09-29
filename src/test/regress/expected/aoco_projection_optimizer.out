@@ -1789,10 +1789,11 @@ EXPLAIN (COSTS OFF) SELECT count(i) FROM aoco_idx_recheck WHERE p && polygon '((
  Finalize Aggregate
    ->  Gather Motion 3:1  (slice1; segments: 3)
          ->  Partial Aggregate
-               ->  Seq Scan on aoco_idx_recheck
+               ->  Staged Seq Scan on aoco_idx_recheck
                      Filter: (p && '((3.2,3.2),(3.8,3.8))'::polygon)
+                     Stages: p
  Optimizer: GPORCA
-(6 rows)
+(7 rows)
 
 SELECT count(i) FROM aoco_idx_recheck WHERE p && polygon '((3.2,3.2),(3.8,3.8))';
  count 

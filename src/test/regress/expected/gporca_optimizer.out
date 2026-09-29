@@ -10015,8 +10015,9 @@ DETAIL:  Falling back to Postgres-based planner because no plan has been compute
 --------------------------------------------------------------------------------------------
  Gather Motion 1:1  (slice1; segments: 1)  (cost=0.00..6.85 rows=22 width=10)
    ->  Append  (cost=0.00..6.55 rows=7 width=10)
-         ->  Seq Scan on bm_dyn_test_onepart_1_prt_part0  (cost=0.00..1.10 rows=1 width=10)
+         ->  Staged Seq Scan on bm_dyn_test_onepart_1_prt_part0  (cost=0.00..1.10 rows=1 width=10)
                Filter: ((i = 2) AND (t = '2'::text))
+               Stages: i, t
          ->  Seq Scan on bm_dyn_test_onepart_1_prt_part1  (cost=0.00..1.10 rows=1 width=10)
                Filter: ((i = 2) AND (t = '2'::text))
          ->  Seq Scan on bm_dyn_test_onepart_1_prt_part2  (cost=0.00..1.10 rows=2 width=10)
