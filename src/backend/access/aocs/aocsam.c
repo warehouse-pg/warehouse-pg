@@ -47,6 +47,7 @@
 #include "storage/procarray.h"
 #include "storage/smgr.h"
 #include "utils/builtins.h"
+#include "cdb/cdbaocsam_stagedscan.h"
 #include "utils/datumstream.h"
 #include "utils/faultinjector.h"
 #include "utils/guc.h"
@@ -67,8 +68,11 @@ static AOCSScanDesc aocs_beginscan_internal(Relation relation,
 /*
  * Open the segment file for a specified column associated with the datum
  * stream.
+ *
+ * Also used by Staged Scan, whose Phase A opens a stream of its own on a
+ * filter column (aocs_stagedscan.c).
  */
-static void
+void
 open_datumstreamread_segfile(
 							 char *basepath, Relation rel,
 							 AOCSFileSegInfo *segInfo,
@@ -852,6 +856,22 @@ aocs_endscan(AOCSScanDesc scan)
 {
 	close_cur_scan_seg(scan);
 
+	/*
+	 * Release Staged Scan state before the tuple descriptor below, since the
+	 * Phase A slot holds a pin on it.
+	 */
+	if (scan->stagedScan)
+	{
+		stagedscan_end(scan->stagedScan);
+		scan->stagedScan = NULL;
+	}
+	if (scan->stagedFallbackEcontext)
+	{
+		FreeExprContext(scan->stagedFallbackEcontext, true);
+		scan->stagedFallbackEcontext = NULL;
+		scan->stagedFallbackQual = NULL;
+	}
+
 	if (scan->columnScanInfo.ds)
 	{
 		Assert(scan->columnScanInfo.proj_atts);
@@ -1590,6 +1610,724 @@ ReadNext:
 
 	Assert(!"Never here");
 	return false;
+}
+
+
+/*
+ * Record the block a column's stream is positioned on, right after its header
+ * was read.
+ */
+static inline void
+stagedscan_note_block(StagedScanColumnCursor *cc, DatumStreamRead *ds)
+{
+	cc->headerValid = true;
+	cc->contentLoaded = false;
+	cc->blockFirstRowNum = ds->blockFirstRowNum;
+	cc->blockLastRowNum = ds->blockFirstRowNum + ds->blockRowCount - 1;
+	cc->blockBytes = AppendOnlyStorageRead_OverallBlockLen(&ds->ao_read);
+	cc->blockAfterOffset = ds->blockFileOffset + cc->blockBytes;
+}
+
+/*
+ * Is the jump from the current block to the block holding 'rowNum' long
+ * enough for a directory seek to pay off?
+ *
+ * A seek costs a directory lookup and a fresh read that throws away the
+ * read-ahead already buffered; a header walk over the next block or two costs
+ * a few bytes out of that same buffer. So seek only when the walk it replaces
+ * would stream at least two read-ahead windows of skipped content. The
+ * distance is estimated from the rows to cross and the shape of the current
+ * block, which is all we know without asking the directory. Row numbers can
+ * have holes, which only makes the estimate err towards seeking.
+ */
+static inline bool
+stagedscan_jump_is_long(StagedScanColumnCursor *cc, DatumStreamRead *ds,
+						int64 rowNum)
+{
+	int64		rowsPerBlock = cc->blockLastRowNum - cc->blockFirstRowNum + 1;
+	int64		rowsToCross = rowNum - cc->blockLastRowNum - 1;
+	int64		estBlocks;
+
+	if (rowsPerBlock <= 0 || cc->blockBytes <= 0)
+		return true;			/* nothing to estimate with: let the directory decide */
+	estBlocks = rowsToCross / rowsPerBlock;
+	return estBlocks * cc->blockBytes >= 2 * (int64) ds->ao_read.largeReadLen;
+}
+
+/*
+ * Staged Scan Phase B: jump one column's stream straight to the varblock
+ * holding 'rowNum' through the block directory, instead of walking the
+ * headers of every block in between.
+ *
+ * The caller only asks when stagedscan_jump_is_long() judges the jump worth a
+ * seek: a header walk over the next block or two reads bytes already
+ * buffered, a seek is a fresh read. Returns false, leaving the stream untouched, when the directory has no
+ * entry for the row (its tail is flushed a minipage at a time) or disagrees
+ * with the stream; the caller then walks headers as usual.
+ */
+static bool
+stagedscan_seek_column(AOCSScanDesc scan, AttrNumber attno, int64 rowNum,
+					   bool isStage)
+{
+	StagedScanState *gi = scan->stagedScan;
+	StagedScanColumnCursor *cc = &gi->colCursor[attno];
+	DatumStreamRead *ds = scan->columnScanInfo.ds[attno];
+	AppendOnlyBlockDirectoryEntry entry;
+	AOTupleId	aoTupleId;
+
+	if (gi->blkdir == NULL)
+		return false;
+
+	AOTupleIdInit(&aoTupleId, scan->seginfo[scan->cur_seg]->segno, rowNum);
+	if (!AppendOnlyBlockDirectory_GetEntry(gi->blkdir, &aoTupleId, attno, &entry,
+										   scan->columnScanInfo.attnum_to_rownum))
+	{
+		/* the directory ends before this row, so before every later one */
+		cc->dirExhausted = true;
+		return false;
+	}
+
+	if (entry.range.fileOffset <= cc->blockAfterOffset ||
+		entry.range.fileOffset >= ds->ao_read.logicalEof)
+	{
+		/* the walk gets there; do not ask again at every header on the way */
+		cc->noSeekRow = rowNum;
+		return false;
+	}
+
+	/*
+	 * Bill the jump the way a header walk would have billed it: the current
+	 * block, if its content was never loaded, plus every block between it
+	 * and the target, none of which is read. The directory knows how many
+	 * that is (as entries; one per block unless the directory was built with
+	 * gp_blockdirectory_entry_min_range > 0, where the figure is a lower
+	 * bound); ask only when someone is counting (EXPLAIN ANALYZE).
+	 */
+	if (scan->stagedInstrument != NULL &&
+		scan->stagedInstrument->staged_analyze)
+		gi->blocksJumped += (cc->contentLoaded ? 0 : 1) +
+			AppendOnlyBlockDirectory_CountEntriesBetween(gi->blkdir,
+														 scan->seginfo[scan->cur_seg]->segno,
+														 attno,
+														 cc->blockFirstRowNum,
+														 entry.range.firstRowNum);
+
+	datumstreamread_block_seek(ds, entry.range.fileOffset,
+							   entry.range.afterFileOffset);
+	if (datumstreamread_block_header_only(ds) <= 0)
+	{
+		cc->exhausted = true;
+		cc->headerValid = false;
+		return false;
+	}
+
+	/* Pre-4.0 blocks carry no firstRowNum in the header; the directory does. */
+	if (ds->getBlockInfo.firstRow < 0)
+		ds->blockFirstRowNum = entry.range.firstRowNum;
+
+	stagedscan_note_block(cc, ds);
+	gi->blocksSeeked++;
+#ifdef FAULT_INJECTOR
+	FaultInjector_InjectFaultIfSet(isStage ? "StagedScan_Stage_Seek"
+								   : "StagedScan_PhaseB_Seek",
+								   DDLNotSpecified, "",
+								   RelationGetRelationName(scan->rs_base.rs_rd));
+#endif
+	return true;
+}
+
+/*
+ * Staged Scan Phase B: position one column's datum stream on the varblock
+ * holding 'rowNum' and extract the datum.
+ *
+ * Blocks whose row range ends before 'rowNum' are stepped over with
+ * datumstreamread_block_skip_content(), so their content is never
+ * decompressed. This is where Staged Scan earns its keep.
+ *
+ * 'stage' is the Phase B stage fetching the column, or 0 for a projected
+ * column fetched after the last stage. It selects the fault-injection points
+ * hit, so that a benchmark can tell blocks skipped for a filter stage from
+ * blocks skipped for a projected column, and charges the stage for the
+ * blocks it had decompressed, which the adaptive reordering weighs.
+ *
+ * Returns false if the column's segfile ran out before 'rowNum', which would
+ * mean the survivor set and the segfile disagree.
+ */
+static bool
+stagedscan_fetch_column(AOCSScanDesc scan, AttrNumber attno, int64 rowNum,
+						Datum *value, bool *isnull, int stage)
+{
+	StagedScanState *gi = scan->stagedScan;
+	StagedScanColumnCursor *cc = &gi->colCursor[attno];
+	DatumStreamRead *ds = scan->columnScanInfo.ds[attno];
+	bool		isStage = (stage > 0);
+
+	/* Walk headers forward until the block containing rowNum. */
+	while (!cc->headerValid || rowNum > cc->blockLastRowNum)
+	{
+		/*
+		 * Before paying for the next block, see if the block directory can
+		 * take us past it; on a seek the skipped blocks are never read.
+		 */
+		if (cc->headerValid && gi->blkdir != NULL &&
+			!cc->dirExhausted && rowNum != cc->noSeekRow &&
+			stagedscan_jump_is_long(cc, ds, rowNum) &&
+			stagedscan_seek_column(scan, attno, rowNum, isStage))
+			continue;
+
+		if (cc->exhausted)
+			return false;
+
+		if (cc->headerValid && !cc->contentLoaded)
+		{
+			/*
+			 * We read this block's header, decided it held no survivor, and
+			 * are now moving past it without paying for decompression.
+			 */
+			datumstreamread_block_skip_content(ds);
+			gi->blocksSkipped++;
+#ifdef FAULT_INJECTOR
+			FaultInjector_InjectFaultIfSet(isStage ? "StagedScan_Stage_BlockSkipped"
+										   : "StagedScan_PhaseB_BlockSkipped",
+										   DDLNotSpecified, "",
+										   RelationGetRelationName(scan->rs_base.rs_rd));
+#endif
+		}
+
+		if (datumstreamread_block_header_only(ds) <= 0)
+		{
+			cc->exhausted = true;
+			cc->headerValid = false;
+			return false;
+		}
+
+		stagedscan_note_block(cc, ds);
+
+		/* a walk to a far survivor steps over many blocks before returning */
+		CHECK_FOR_INTERRUPTS();
+	}
+
+	/*
+	 * Survivors are ascending and every column shares the same row numbering,
+	 * so we should never be asked to go backwards.
+	 */
+	if (rowNum < cc->blockFirstRowNum)
+		elog(ERROR, "staged scan: row " INT64_FORMAT " precedes current block ["
+			 INT64_FORMAT ", " INT64_FORMAT "] of column %d in table \"%s\"",
+			 rowNum, cc->blockFirstRowNum, cc->blockLastRowNum, attno,
+			 RelationGetRelationName(scan->rs_base.rs_rd));
+
+	if (!cc->contentLoaded)
+	{
+		datumstreamread_block_content(ds);
+		cc->contentLoaded = true;
+		gi->blocksDecompressed++;
+		if (isStage)
+			gi->stages[stage].blocksDecompressed++;
+		AOCSScanDesc_UpdateTotalBytesRead(scan, attno);
+		pgstat_count_buffer_read_ao(scan->rs_base.rs_rd,
+									RelationGuessNumberOfBlocksFromSize(scan->totalBytesRead));
+#ifdef FAULT_INJECTOR
+		FaultInjector_InjectFaultIfSet(isStage ? "StagedScan_Stage_BlockDecompressed"
+									   : "StagedScan_PhaseB_BlockDecompressed",
+									   DDLNotSpecified, "",
+									   RelationGetRelationName(scan->rs_base.rs_rd));
+#endif
+	}
+
+	datumstreamread_find(ds, (int32) (rowNum - cc->blockFirstRowNum));
+	datumstreamread_get(ds, value, isnull);
+	return true;
+}
+
+/*
+ * Materialize one column of one surviving row into the output slot.
+ *
+ * The Phase A column, when it is carried in the survivor batch
+ * (StagedScanState.carryAttno), is taken from there: Phase A read it
+ * for this very row, and walking its segfile again would cost Phase B a
+ * header walk over the whole column for nothing. A column added by ALTER
+ * TABLE ADD COLUMN has no bytes in the segfile for older rows; take the
+ * default instead of touching the stream.
+ */
+static inline void
+stagedscan_materialize(AOCSScanDesc scan, AOCSFileSegInfo *seginfo,
+					   TupleTableSlot *slot, AttrNumber attno, int64 rowNum,
+					   int stage)
+{
+	StagedScanState *gi = scan->stagedScan;
+	Datum	   *d = slot->tts_values;
+	bool	   *null = slot->tts_isnull;
+
+#ifdef USE_ASSERT_CHECKING
+	gi->outStamp[attno] = gi->rowStamp;
+#endif
+
+	if (attno == gi->carryAttno)
+	{
+		d[attno] = gi->surv.values[gi->curSurv];
+		null[attno] = gi->surv.isnull[gi->curSurv];
+		return;
+	}
+
+	if (AO_ATTR_VAL_IS_MISSING(rowNum, attno, seginfo->segno,
+							   scan->columnScanInfo.attnum_to_rownum))
+	{
+		d[attno] = getmissingattr(slot->tts_tupleDescriptor, attno + 1,
+								  &null[attno]);
+		return;
+	}
+
+	if (!stagedscan_fetch_column(scan, attno, rowNum, &d[attno], &null[attno],
+								 stage))
+		elog(ERROR, "staged scan: column %d of table \"%s\" ended before row "
+			 INT64_FORMAT, attno + 1,
+			 RelationGetRelationName(scan->rs_base.rs_rd), rowNum);
+}
+
+/*
+ * Seed the Phase B cursors from the streams as they stand right after
+ * open_all_datumstreamread_segfiles().
+ *
+ * That function already read the first block (header *and* content) of every
+ * projected column, so the cursors must reflect that rather than assume the
+ * streams are untouched.
+ */
+static void
+stagedscan_seed_cursors(AOCSScanDesc scan)
+{
+	StagedScanState *gi = scan->stagedScan;
+
+	for (AttrNumber i = 0; i < scan->columnScanInfo.num_proj_atts; i++)
+	{
+		AttrNumber	attno = scan->columnScanInfo.proj_atts[i];
+		DatumStreamRead *ds = scan->columnScanInfo.ds[attno];
+		StagedScanColumnCursor *cc = &gi->colCursor[attno];
+
+		cc->exhausted = false;
+		stagedscan_note_block(cc, ds);
+		cc->contentLoaded = true;
+	}
+}
+
+/*
+ * Run the later filter stages for one surviving row. Returns false when the
+ * row is rejected and the caller should move on to the next survivor.
+ *
+ * A stage fetches its column(s) into the output slot, mirrors them into the
+ * slot its clauses are compiled against, and evaluates. The first failure
+ * abandons the row, so no column of a later stage is ever touched for it.
+ *
+ * A column needed only by OR clauses is not fetched once every one of them is
+ * settled for this row, and a true disjunct settles its clause (the bypass):
+ * the later disjuncts are neither evaluated nor are their columns fetched. An
+ * OR clause still open at its last disjunct's evaluation rejects the row.
+ */
+static inline bool
+stagedscan_stage_row(AOCSScanDesc scan, AOCSFileSegInfo *curseginfo,
+					 TupleTableSlot *slot, int64 rowNum)
+{
+	StagedScanState *gi = scan->stagedScan;
+	ExprContext *econtext = gi->econtext;
+	TupleTableSlot *filterSlot = gi->filterSlot;
+	Datum	   *d = slot->tts_values;
+	bool	   *null = slot->tts_isnull;
+	bool		rejected = false;
+
+	ResetExprContext(econtext);
+	econtext->ecxt_scantuple = filterSlot;
+	memset(gi->clauseDecided, 0, sizeof(bool) * gi->nclauses);
+
+	for (int s = 1; s < gi->nstages && !rejected; s++)
+	{
+		StagedScanStage *st = &gi->stages[s];
+
+		st->rowsIn++;
+		for (int j = 0; j < st->nfetch; j++)
+		{
+			AttrNumber	attno = st->fetchAttnos[j];
+			List	   *neededBy = st->fetchNeededBy[j];
+
+			if (neededBy != NIL)
+			{
+				bool		needed = false;
+				ListCell   *lc;
+
+				foreach(lc, neededBy)
+				{
+					if (!gi->clauseDecided[lfirst_int(lc)])
+					{
+						needed = true;
+						break;
+					}
+				}
+				if (!needed)
+				{
+					/*
+					 * Not fetched for this row. Nothing reads it -- the OR
+					 * clauses that wanted it are settled and the scan node
+					 * runs no qual -- so leave NULL rather than a stale
+					 * value.
+					 */
+					d[attno] = (Datum) 0;
+					null[attno] = true;
+					continue;
+				}
+			}
+
+			stagedscan_materialize(scan, curseginfo, slot, attno, rowNum, s);
+			filterSlot->tts_values[attno] = d[attno];
+			filterSlot->tts_isnull[attno] = null[attno];
+#ifdef USE_ASSERT_CHECKING
+			gi->filterStamp[attno] = gi->rowStamp;
+#endif
+		}
+
+		for (int e = 0; e < st->nevals && !rejected; e++)
+		{
+			StagedScanEval *ev = &st->evals[e];
+			bool		pass;
+
+			if (gi->clauseDecided[ev->clause])
+				continue;
+
+#ifdef USE_ASSERT_CHECKING
+			/* every column it reads was fetched for this row (build_stages) */
+			for (AttrNumber a = 0; a < gi->ncols; a++)
+				Assert(!ev->cols[a] || gi->filterStamp[a] == gi->rowStamp);
+#endif
+			pass = ExecQual(ev->qual, econtext);
+			if (ev->disjunct < 0)
+			{
+				/* a whole clause: false rejects, true settles */
+				if (pass)
+					gi->clauseDecided[ev->clause] = true;
+				else
+					rejected = true;
+			}
+			else if (pass)
+			{
+				gi->clauseDecided[ev->clause] = true;
+				if (!ev->last)
+				{
+					gi->rowsBypassed++;
+					st->rowsSettled++;
+#ifdef FAULT_INJECTOR
+					FaultInjector_InjectFaultIfSet("StagedScan_Stage_Bypassed",
+												   DDLNotSpecified, "",
+												   RelationGetRelationName(scan->rs_base.rs_rd));
+#endif
+				}
+			}
+			else if (ev->last)
+				rejected = true;	/* every disjunct was false */
+		}
+
+		if (rejected)
+			st->rowsRejected++;
+	}
+
+	if (rejected)
+	{
+		gi->rowsRejectedLater++;
+		if (scan->stagedInstrument != NULL)
+			scan->stagedInstrument->staged_rows_removed++;
+#ifdef FAULT_INJECTOR
+		FaultInjector_InjectFaultIfSet("StagedScan_Stage_Rejected",
+									   DDLNotSpecified, "",
+									   RelationGetRelationName(scan->rs_base.rs_rd));
+#endif
+		return false;
+	}
+
+	return true;
+}
+
+/*
+ * Staged Scan executor entry point.
+ *
+ * Runs Phase A once per segfile, then hands out the surviving rows one at a
+ * time. For each survivor the later filter stages come first: each stage's
+ * column is fetched and its clauses evaluated, and a row that fails is
+ * dropped before any further column is touched. Only then are the remaining
+ * projected columns materialized. Every fetch goes through
+ * stagedscan_fetch_column(), so each column skips the blocks that hold no row
+ * still alive at the moment it is asked -- the later the column, the smaller
+ * that set.
+ *
+ * Every row returned satisfies the qual; the scan node runs no qual of its
+ * own (AOCSScanDescData.stagedQualOwned). If Staged Scan gives up (the first
+ * batch of a segment file shows the predicate unselective or dense, or a
+ * Phase A column has missing values there), 'scan->stagedFellBack' latches and
+ * the rest of the scan runs the ordinary aocs_getnext() with the whole qual
+ * applied here (stagedscan_fallback_getnext()). That handover is safe only
+ * because Phase A runs before any row of the current segment has been
+ * emitted, so the projected streams are still sitting at the segment's first
+ * block.
+ */
+static bool aocs_stagedscan_getnext_guts(AOCSScanDesc scan, ScanDirection direction,
+										 TupleTableSlot *slot);
+
+/*
+ * The ordinary scan behind the Staged Scan contract: rows from
+ * aocs_getnext(), each tested against the whole qual before it leaves, so
+ * that the scan node, which runs no qual of its own on a Staged Scan plan,
+ * still sees only rows that pass. Used when Staged Scan was declined at open
+ * and once a segment file has fallen back. The rejected rows count as
+ * removed by the filter.
+ */
+static bool
+stagedscan_fallback_getnext(AOCSScanDesc scan, ScanDirection direction,
+							TupleTableSlot *slot)
+{
+	ExprContext *econtext;
+
+	if (scan->stagedFallbackEcontext == NULL)
+	{
+		MemoryContext oldctx = MemoryContextSwitchTo(scan->columnScanInfo.scanCtx);
+
+		scan->stagedFallbackEcontext = CreateStandaloneExprContext();
+		/* parent is NULL: the plan's qual has no subplans or params here */
+		scan->stagedFallbackQual = ExecInitQual(scan->stagedQual, NULL);
+		MemoryContextSwitchTo(oldctx);
+	}
+	econtext = scan->stagedFallbackEcontext;
+
+	while (aocs_getnext(scan, direction, slot))
+	{
+		/*
+		 * A segment file the ordinary scan reads counts as scanned without
+		 * Staged Scan, once: the one Phase A gave up on was counted when it
+		 * did (stagedscan_run_phase_a()), every later one, and every one when
+		 * Staged Scan was declined at open, is counted on its first row here.
+		 */
+		if (scan->cur_seg != scan->stagedFallbackSeg)
+		{
+			scan->stagedFallbackSeg = scan->cur_seg;
+			if (scan->stagedInstrument != NULL)
+				scan->stagedInstrument->staged_fallbacks++;
+		}
+
+		if (scan->stagedFallbackQual == NULL)
+			return true;
+
+		/*
+		 * aocs_getnext() filled tts_values/tts_isnull and set tts_nvalid;
+		 * the slot is stored by the caller once we return true.
+		 */
+		ResetExprContext(econtext);
+		econtext->ecxt_scantuple = slot;
+		if (ExecQual(scan->stagedFallbackQual, econtext))
+			return true;
+
+		if (scan->stagedInstrument != NULL)
+			scan->stagedInstrument->staged_rows_removed++;
+
+		/*
+		 * The ordinary scan returns every rejected row to the executor, which
+		 * checks for interrupts there; here the rows are rejected without
+		 * leaving this loop, so check in their place.
+		 */
+		CHECK_FOR_INTERRUPTS();
+	}
+	return false;
+}
+
+bool
+aocs_stagedscan_getnext(AOCSScanDesc scan, ScanDirection direction,
+						TupleTableSlot *slot)
+{
+	bool		ok;
+
+	if (!scan->stagedEnabled || scan->stagedFellBack)
+		ok = stagedscan_fallback_getnext(scan, direction, slot);
+	else
+		ok = aocs_stagedscan_getnext_guts(scan, direction, slot);
+
+	/*
+	 * Hand Phase B's running block totals to EXPLAIN ANALYZE. Phase A
+	 * publishes its row counts per batch; the block counters move while
+	 * survivors are being fetched, so they are published here, after every
+	 * row and at the end, where nodeSeqscan.c picks them up.
+	 */
+	if (scan->stagedScan != NULL && scan->stagedInstrument != NULL)
+	{
+		StagedScanState *gi = scan->stagedScan;
+
+		scan->stagedInstrument->staged_blocks_decompressed = gi->blocksDecompressed;
+		scan->stagedInstrument->staged_blocks_skipped = gi->blocksSkipped + gi->blocksJumped;
+		scan->stagedInstrument->staged_blocks_seeked = gi->blocksSeeked;
+	}
+	return ok;
+}
+
+static bool
+aocs_stagedscan_getnext_guts(AOCSScanDesc scan, ScanDirection direction,
+							 TupleTableSlot *slot)
+{
+	StagedScanState *gi;
+	AttrNumber	natts;
+	bool		needNextSeg;
+
+	Assert(ScanDirectionIsForward(direction));
+	Assert(scan->stagedEnabled && !scan->stagedFellBack);
+
+	if (scan->columnScanInfo.relationTupleDesc == NULL)
+	{
+		scan->columnScanInfo.relationTupleDesc = slot->tts_tupleDescriptor;
+		PinTupleDesc(scan->columnScanInfo.relationTupleDesc);
+		initscan_with_colinfo(scan);
+	}
+
+	/*
+	 * Compile the quals now: the tuple descriptor the Vars refer to only
+	 * became known above.
+	 */
+	if (scan->stagedScan == NULL)
+	{
+		MemoryContext oldctx = MemoryContextSwitchTo(scan->columnScanInfo.scanCtx);
+
+		scan->stagedScan = stagedscan_begin(scan, scan->stagedFilterAttnos,
+											scan->stagedPhaseAWidth,
+											scan->stagedQual,
+											CreateStandaloneExprContext(),
+											scan->columnScanInfo.scanCtx);
+		MemoryContextSwitchTo(oldctx);
+	}
+	gi = scan->stagedScan;
+
+	natts = slot->tts_tupleDescriptor->natts;
+
+	/*
+	 * close_cur_scan_seg() leaves scan->cur_seg alone -- aocs_getnext() moves
+	 * on via its own 'err' flag -- so track "this segment is finished"
+	 * explicitly. Without this the loop below would close the same segment
+	 * forever.
+	 */
+	needNextSeg = (scan->cur_seg < 0);
+
+	for (;;)
+	{
+		AOCSFileSegInfo *curseginfo;
+		int64		rowNum;
+		AOTupleId	aoTupleId;
+
+		if (needNextSeg)
+		{
+			if (scan->columnScanInfo.num_proj_atts == 0)
+				return false;
+
+			if (open_next_scan_seg(scan) < 0)
+			{
+				ExecClearTuple(slot);
+				scan->cur_seg = -1;
+				return false;
+			}
+			scan->segrowsprocessed = 0;
+			stagedscan_reset_for_segment(gi);
+			stagedscan_seed_cursors(scan);
+			needNextSeg = false;
+		}
+
+		curseginfo = scan->seginfo[scan->cur_seg];
+
+		if (!gi->phaseADone)
+		{
+			if (!stagedscan_run_phase_a(gi, scan, curseginfo))
+			{
+				/*
+				 * Give up for the rest of the scan: ordinary scan, qual
+				 * applied here. Phase A counted this segment file already.
+				 */
+				scan->stagedFellBack = true;
+				scan->stagedFallbackSeg = scan->cur_seg;
+				return stagedscan_fallback_getnext(scan, direction, slot);
+			}
+		}
+
+		if (gi->cursor >= gi->surv.nrows)
+		{
+			if (!gi->phaseAEof)
+			{
+				/* This batch is consumed; have Phase A produce the next. */
+				gi->phaseADone = false;
+				continue;
+			}
+
+			/* This segment is done; learn from it, then move on. */
+			stagedscan_adapt_stage_order(gi, scan);
+			close_cur_scan_seg(scan);
+			needNextSeg = true;
+			continue;
+		}
+
+		/*
+		 * A window of survivors is complete: re-score the Phase B stages on
+		 * what this window showed and, if the order changes, the rows that
+		 * follow are fetched in the new order. Between rows nothing else
+		 * depends on the order: each column's cursor only moves forward.
+		 */
+		if (gi->rowsSinceAdapt >= gi->adaptWindow)
+		{
+			stagedscan_adapt_stage_order(gi, scan);
+			gi->rowsSinceAdapt = 0;
+			gi->adaptWindow *= 2;
+		}
+
+		gi->curSurv = gi->cursor;
+		rowNum = gi->surv.rownums[gi->cursor++];
+		gi->rowsSinceAdapt++;
+#ifdef USE_ASSERT_CHECKING
+		gi->rowStamp++;
+#endif
+
+		/*
+		 * Later filter stages, in order: a row that fails one is dropped
+		 * before any further column is touched.
+		 */
+		if (gi->nstages > 1 &&
+			!stagedscan_stage_row(scan, curseginfo, slot, rowNum))
+		{
+			/* a rejected survivor never reaches the executor's own check */
+			CHECK_FOR_INTERRUPTS();
+			continue;
+		}
+
+		for (int i = 0; i < gi->nrest; i++)
+			stagedscan_materialize(scan, curseginfo, slot, gi->restAttnos[i],
+								   rowNum, 0);
+
+#ifdef USE_ASSERT_CHECKING
+		/* every column the scan's consumers read is there for this row */
+		if (scan->stagedTargetCols != NULL)
+		{
+			for (AttrNumber a = 0; a < natts; a++)
+				Assert(!scan->stagedTargetCols[a] || gi->outStamp[a] == gi->rowStamp);
+		}
+		else
+		{
+			for (int i = 0; i < scan->columnScanInfo.num_proj_atts; i++)
+				Assert(gi->outStamp[scan->columnScanInfo.proj_atts[i]] == gi->rowStamp);
+		}
+#endif
+
+		/*
+		 * Visibility was already established in Phase A, so there
+		 * is deliberately no visimap check here.
+		 */
+		AOTupleIdInit(&aoTupleId, curseginfo->segno, rowNum);
+		scan->cdb_fake_ctid = *((ItemPointer) &aoTupleId);
+
+		/*
+		 * Leave ExecStoreVirtualTuple() to aoco_getnextslot(), which is what
+		 * aocs_getnext() does too; it asserts the slot is empty, so storing
+		 * here as well would trip it.
+		 */
+		scan->segrowsprocessed++;
+		slot->tts_nvalid = natts;
+		slot->tts_tid = scan->cdb_fake_ctid;
+		return true;
+	}
 }
 
 

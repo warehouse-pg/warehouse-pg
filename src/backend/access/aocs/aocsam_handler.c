@@ -31,6 +31,8 @@
 #include "catalog/storage_xlog.h"
 #include "cdb/cdbappendonlyam.h"
 #include "cdb/cdbaocsam.h"
+#include "cdb/cdbaocsam_stagedscan.h"
+#include "executor/instrument.h"
 #include "cdb/cdbvars.h"
 #include "commands/progress.h"
 #include "commands/vacuum.h"
@@ -517,7 +519,7 @@ extractcolumns_walker(Node *node, struct ExtractcolumnContext *ecCtx)
 	return expression_tree_walker(node, extractcolumns_walker, (void *)ecCtx);
 }
 
-static bool
+bool
 extractcolumns_from_node(Node *expr, bool *cols, AttrNumber natts)
 {
 	struct ExtractcolumnContext	ecCtx;
@@ -534,7 +536,9 @@ extractcolumns_from_node(Node *expr, bool *cols, AttrNumber natts)
 static TableScanDesc
 aoco_beginscan_extractcolumns(Relation rel, Snapshot snapshot,
 							  List *targetlist, List *qual, bool *proj,
-							  List* constraintList, uint32 flags)
+							  List* constraintList, uint32 flags,
+							  int stagedPhaseAWidth, List *stagedFilterAttnos,
+							  double stagedPhaseASel)
 {
 	bool needFree = false;
 	AOCSProjectionKind projKind = AOCS_PROJ_SOME;
@@ -570,6 +574,74 @@ aoco_beginscan_extractcolumns(Relation rel, Snapshot snapshot,
 							proj,
 							projKind,
 							flags);
+
+	/*
+	 * Staged Scan: the planner asked for it (cost_aocs_stagedscan() in
+	 * stagedscancost.c). The scan node of such a plan runs no qual of its own
+	 * (ExecInitSeqScan), so from here on this scan owns the predicate:
+	 * whatever path a row takes, it is filtered before it is returned
+	 * (aocs_stagedscan_getnext()). That holds whether or not the two-phase
+	 * scan is applicable below, and is conditioned on nothing else, so that
+	 * the node's promise and this one can never come apart. The Staged Scan
+	 * arguments mean nothing without SO_STAGED_SCAN (see TableAmRoutine).
+	 */
+	if ((flags & SO_STAGED_SCAN) == 0)
+		stagedPhaseAWidth = 0;
+	if (stagedPhaseAWidth > 0)
+	{
+		/* one clause per conjunct, whichever optimizer built the qual */
+		qual = stagedscan_flatten_qual(qual);
+
+		aoscan->stagedQualOwned = true;
+		aoscan->stagedQual = qual;
+		aoscan->stagedFallbackSeg = -1;
+
+		/* where the scan reports its counts for EXPLAIN ANALYZE */
+		if (aoscan->stagedInstrument == NULL)
+			aoscan->stagedInstrument = palloc0_object(TableScanInstrumentation);
+	}
+
+	/*
+	 * The two-phase scan itself runs only when the structural preconditions
+	 * the planner cannot see still hold -- an AOCO relation, the qual's
+	 * columns being exactly the stage columns, something left to fetch after
+	 * Phase A -- and only for a plain forward sequential scan; the
+	 * ANALYZE/sample paths use aocs_get_target_tuple() instead. The planner's
+	 * choice is permission, not instruction.
+	 */
+	if (stagedPhaseAWidth > 0 &&
+		(flags & SO_TYPE_SEQSCAN) != 0 &&
+		(flags & (SO_TYPE_ANALYZE | SO_TYPE_SAMPLESCAN)) == 0)
+	{
+		AttrNumber	natts = RelationGetNumberOfAttributes(rel);
+
+		/*
+		 * The planner and the AM derive the qual's column set by different
+		 * code (pull_varattnos over the scan's reltarget, versus
+		 * extractcolumns_from_node over the plan's qual), so
+		 * stagedscan_applicable() declines rather than asserts if the two ever
+		 * disagree -- running Phase A on the wrong column would silently
+		 * return wrong rows.
+		 */
+		if (stagedscan_applicable(rel, targetlist, qual, proj, natts,
+								  stagedFilterAttnos, stagedPhaseAWidth))
+		{
+			aoscan->stagedEnabled = true;
+			aoscan->stagedFilterAttnos = stagedFilterAttnos;
+			aoscan->stagedPhaseAWidth = stagedPhaseAWidth;
+			aoscan->stagedPhaseASel = stagedPhaseASel;
+
+			/*
+			 * The columns the scan's consumers read, as opposed to the ones
+			 * only the qual needs: Phase B may leave a qual-only column
+			 * unfetched (NULL) on a row whose OR clauses are settled without
+			 * it, but a column anything else reads must always be there.
+			 */
+			aoscan->stagedTargetCols = palloc0(sizeof(bool) * natts);
+			extractcolumns_from_node((Node *) targetlist, aoscan->stagedTargetCols, natts);
+			extractcolumns_from_node((Node *) constraintList, aoscan->stagedTargetCols, natts);
+		}
+	}
 
 	if (needFree)
 		pfree(proj);
@@ -706,9 +778,16 @@ static bool
 aoco_getnextslot(TableScanDesc scan, ScanDirection direction, TupleTableSlot *slot)
 {
 	AOCSScanDesc  aoscan = (AOCSScanDesc)scan;
+	bool		  ok;
 
 	ExecClearTuple(slot);
-	if (aocs_getnext(aoscan, direction, slot))
+
+	if (aoscan->stagedQualOwned)
+		ok = aocs_stagedscan_getnext(aoscan, direction, slot);
+	else
+		ok = aocs_getnext(aoscan, direction, slot);
+
+	if (ok)
 	{
 		ExecStoreVirtualTuple(slot);
 		pgstat_count_heap_getnext(aoscan->rs_base.rs_rd);

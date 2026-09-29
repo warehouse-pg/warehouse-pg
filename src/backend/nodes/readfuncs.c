@@ -2686,6 +2686,23 @@ ReadCommonScan(Scan *local_node)
 }
 
 /*
+ * ReadCommonSeqScan
+ *	Assign the basic stuff of all nodes that inherit from SeqScan
+ */
+static void
+ReadCommonSeqScan(SeqScan *local_node)
+{
+	READ_TEMP_LOCALS();
+
+	ReadCommonScan(&local_node->scan);
+
+	READ_BOOL_FIELD(staged.enabled);
+	READ_INT_FIELD(staged.phaseAWidth);
+	READ_NODE_FIELD(staged.filterAttnos);
+	READ_FLOAT_FIELD(staged.phaseASel);
+}
+
+/*
  * _readScan
  */
 static Scan *
@@ -2706,7 +2723,7 @@ _readSeqScan(void)
 {
 	READ_LOCALS_NO_FIELDS(SeqScan);
 
-	ReadCommonScan(&local_node->scan);
+	ReadCommonSeqScan(local_node);
 
 	READ_DONE();
 }
