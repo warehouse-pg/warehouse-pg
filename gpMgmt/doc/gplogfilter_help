@@ -79,6 +79,17 @@ TIMESTAMP OPTIONS
  [hh][:mm[:ss]]. If used without either the -b or -e option, will use the 
  current time as a basis. 
 
+
+--prunefiles 
+
+ Skips input files whose names show that they cannot contain log entries 
+ in the requested timestamp range. This applies to files named 
+ gpdb-YYYY-MM-DD[_HHMMSS].csv, optionally with a .gz suffix, as the server 
+ names rotated log files. A file is skipped if it was created after the 
+ end of the range, or if the next log file in the same directory was 
+ created before the start of the range. Without this option, every input 
+ file is read and only its entries are filtered by timestamp. 
+
 PATTERN MATCHING OPTIONS 
 ************************* 
 

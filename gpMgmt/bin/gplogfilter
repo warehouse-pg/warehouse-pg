@@ -7,14 +7,17 @@
 #
 
 # import Python standard library modules
+import codecs
 import csv
 import gzip
+import io
 import locale
 import os
 import os.path
 import re
 import sys
 
+from datetime import datetime, timedelta
 from optparse import Option, OptionGroup, OptionParser, OptionValueError, SUPPRESS_USAGE
 
 # import GPDB modules
@@ -22,7 +25,7 @@ try:
     from gppylib.gpparseopts import *
     from gppylib.datetimeutils import str_to_datetime, str_to_duration, DatetimeValueError
     from gppylib.logfilter import *
-    from gppylib.commands.gp import get_coordinatordatadir
+    from gppylib.commands.gp import get_coordinatordatadir, GpError
 except ImportError as e:
     sys.exit('ERROR: Cannot import modules.  Please check that you have sourced greenplum_path.sh.  Detail: ' + str(e))
 
@@ -133,7 +136,8 @@ def parseargs():
     optgrp.add_option('-d', '--duration', type='duration', metavar='[h][:m[:s]]',
                       help='duration from beginning to end')
     optgrp.add_option('--prunefiles', action='store_true', default=False,
-                      help="Discard files based on filename of the form gpdb-%Y-%m-%d_%H%M%S.csv")
+                      help='skip input files named gpdb-YYYY-MM-DD[_HHMMSS].csv[.gz] '
+                           'whose name shows they cannot hold entries in the timestamp range')
     parser.add_option_group(optgrp)
 
     optgrp = OptionGroup(parser, 'Pattern and string matching',
@@ -224,6 +228,45 @@ def parseargs():
 
 # -------------------------------------------------------------------------
 
+# Log data is passed through as text.  It is decoded and encoded with the
+# locale's encoding, but a server log can mix encodings, so bytes that are
+# not valid in that encoding are carried through unchanged (surrogateescape)
+# rather than making the utility fail.  A character that the output
+# encoding cannot represent, which happens when the output encoding differs
+# from the input encoding, is written as a backslash escape rather than
+# failing either.  newline='' leaves the original line ends alone.
+def lenientTextErrors(exc):
+    try:
+        return codecs.lookup_error('surrogateescape')(exc)
+    except UnicodeError:
+        return codecs.lookup_error('backslashreplace')(exc)
+
+codecs.register_error('gplogfilter', lenientTextErrors)
+TEXT_ERRORS = 'gplogfilter'
+
+
+def textStream(binary, **kwargs):
+    """Wrap a binary stream for reading or writing log text."""
+    return io.TextIOWrapper(binary, errors=TEXT_ERRORS, newline='', **kwargs)
+
+
+def lenientStdio():
+    """
+    Give stdin and stdout the same text handling as log files opened by
+    name, keeping their encoding and buffering.
+    """
+    for name in ('stdin', 'stdout'):
+        stream = getattr(sys, name)
+        try:
+            encoding = stream.encoding
+            line_buffering = stream.line_buffering
+            binary = stream.detach()
+        except (AttributeError, ValueError, io.UnsupportedOperation):
+            continue
+        setattr(sys, name, textStream(binary, encoding=encoding,
+                                      line_buffering=line_buffering))
+
+
 def openInputFile(ifn, options):
     filesToClose = []
     unzip = options.unzip
@@ -231,7 +274,8 @@ def openInputFile(ifn, options):
     # Open input file, unless reading from stdin
     if ifn == '-':
         ifn = zname = 'stdin'
-        fileIn = sys.stdin
+        # gzip works on bytes, so hand it the underlying binary stream
+        fileIn = sys.stdin.buffer if unzip else sys.stdin
     else:
         ifn = os.path.abspath(ifn)
         # In case a coordinator or segment instance's data directory name
@@ -245,12 +289,18 @@ def openInputFile(ifn, options):
             zname = zname[0:-3]
             if os.path.splitext(zname)[1] == '':
                 zname += '.log'
-        fileIn = open(ifn, (unzip and 'rb') or 'r')
+        if unzip:
+            fileIn = open(ifn, 'rb')
+        else:
+            fileIn = open(ifn, 'r', errors=TEXT_ERRORS, newline='')
         filesToClose.append(fileIn)
 
-    # Set up input decompression
+    # Set up input decompression.  Decode the decompressed bytes so that the
+    # filter pipeline always sees text, exactly as for a plain input file.
     if unzip:
         fileIn = gzip.GzipFile(zname, 'rb', fileobj=fileIn)
+        filesToClose.insert(0, fileIn)
+        fileIn = textStream(fileIn)
         filesToClose.insert(0, fileIn)
 
     if zname.endswith('.csv'):
@@ -269,19 +319,12 @@ def openOutputFile(ifn, zname, options):
     else:
         omode = 'w'
 
-    # Compressed output file should be opened in binary mode
     zipout = options.zip and options.zip > '0'
-    if zipout:
-        omode += 'b'
-
-    # Open output file in binary mode so as not to disturb the
-    # original line ending control characters.
-    else:
-        omode += 'b'
 
     # Open output file, unless writing to stdout
     if options.out is None:
-        fileOut = sys.stdout
+        # gzip works on bytes, so hand it the underlying binary stream
+        fileOut = sys.stdout.buffer if zipout else sys.stdout
     else:
         # let error messages show full path in case something goes wrong
         ofn = os.path.abspath(options.out)
@@ -304,8 +347,13 @@ def openOutputFile(ifn, zname, options):
         if not os.access(odn, os.W_OK):
             raise IOError('output directory not found or not writable: %s' % odn)
 
-        # open the file
-        fileOut = open(ofn, omode)
+        # open the file.  A compressed output file is written in binary
+        # mode through gzip; a plain one is written as text with newline=''
+        # so as not to disturb the original line ending control characters.
+        if zipout:
+            fileOut = open(ofn, omode + 'b')
+        else:
+            fileOut = open(ofn, omode, errors=TEXT_ERRORS, newline='')
         filesToClose.append(fileOut)
 
         if options.verbose:
@@ -314,14 +362,84 @@ def openOutputFile(ifn, zname, options):
             else:
                 print(' output to', ofn, file=sys.stderr)
 
-    # Set up output compression
+    # Set up output compression.  The filtered lines are text, so put a
+    # text layer on top of the gzip stream.
     if zipout:
-        fileOut = gzip.GzipFile(zname, omode,
+        fileOut = gzip.GzipFile(zname, omode + 'b',
                                 compresslevel=int(options.zip),
                                 fileobj=fileOut)
         filesToClose.insert(0, fileOut)
+        fileOut = textStream(fileOut)
+        filesToClose.insert(0, fileOut)
 
     return fileOut, filesToClose
+
+
+# A rotation is not instantaneous: a log file named for its rotation time
+# can still receive a few entries stamped shortly after that time, and the
+# file that follows it can hold entries stamped shortly before.  Leave that
+# much slack when deciding from file names alone that a file can be skipped.
+ROTATION_SLACK = timedelta(minutes=1)
+
+
+def logFileDate(name):
+    """
+    Return the datetime encoded in a rotated log file name of the form
+    gpdb-YYYY-MM-DD_HHMMSS.csv or gpdb-YYYY-MM-DD.csv (optionally with a
+    .gz suffix), or None if the name is not of that form.
+    """
+    if name.endswith('.gz'):
+        name = name[:-3]
+    if not (name.startswith('gpdb-') and name.endswith('.csv')):
+        return None
+    for fmt in ('%Y-%m-%d_%H%M%S', '%Y-%m-%d'):
+        try:
+            return datetime.strptime(name[5:-4], fmt)
+        except ValueError:
+            pass
+    return None
+
+
+def logFileOutOfRange(filedate, nextdate, begin, end):
+    """
+    Decide from file names alone whether a rotated log file can be skipped.
+
+    A log file named for the time it was created holds the entries written
+    from then until the next log file was created in the same directory, so
+    it cannot hold entries in the requested range if it was created after
+    the end of the range, or superseded before the start of the range, by
+    more than ROTATION_SLACK.
+    """
+    if end and filedate - ROTATION_SLACK >= end:
+        return True
+    if begin and nextdate and nextdate + ROTATION_SLACK <= begin:
+        return True
+    return False
+
+
+def logFileDates(args):
+    """
+    Map each input file whose name carries a timestamp to a pair of that
+    timestamp and the timestamp of the next such file in the same directory,
+    i.e. the time at which the file stopped receiving log entries, or None
+    for the last file of a directory.
+    """
+    byDir = {}
+    for a in args:
+        if a == '-':
+            continue
+        path = os.path.abspath(a)
+        filedate = logFileDate(os.path.basename(path))
+        if filedate:
+            byDir.setdefault(os.path.dirname(path), []).append((filedate, path))
+
+    dates = {}
+    for files in byDir.values():
+        files.sort()
+        following = files[1:] + [(None, None)]
+        for (filedate, path), (nextdate, _) in zip(files, following):
+            dates[path] = (filedate, nextdate)
+    return dates
 
 
 # ------------------------------- Mainline --------------------------------
@@ -331,6 +449,12 @@ try:
     locale.setlocale(locale.LC_ALL, '')
 except Exception:
     pass
+
+lenientStdio()
+
+# A single logged statement can be far longer than the csv module's default
+# 128 KiB field limit.  The limit has to fit a C long on every platform.
+csv.field_size_limit(2**31 - 1)
 
 # Parse the command line arguments
 options, args = parseargs()
@@ -364,11 +488,14 @@ if (options.zip is None and
 try:
     # If no inputfile arg, try COORDINATOR_DATA_DIRECTORY environment variable
     if len(args) == 0:
-        s = get_coordinatordatadir()
+        try:
+            s = get_coordinatordatadir()
+        except GpError:
+            s = None
         if s:
             # we only support log rotation in log dir.
             if os.path.exists(s + "/log"):
-                for logfile in os.listdir(s + "/log"):
+                for logfile in sorted(os.listdir(s + "/log")):
                     args.append(s + "/log/" + logfile)
             else:
                 raise IOError('Specify input file or "-" for standard input')
@@ -401,44 +528,29 @@ try:
                    % (begin or 'beginning of data', end or 'end of data'))
             print(msg, file=sys.stderr)
 
+        # With --prunefiles and a timestamp range, note when each rotated log
+        # file was created and superseded so that whole files can be skipped
+        # unread.
+        fileDates = {}
+        if options.prunefiles and (begin or end):
+            fileDates = logFileDates(args)
+
         # Loop over input files
         for ifn in args:
-            """ 
-            Open each file in the logs directory. Check to see if the file name
-            looks anything like a log file name with a time stamp that we 
-            recognize. If true, and the user specified a time range, skip the
-            file if it is outside the range. That is, close the file and any
-            associated temporary files.
+            # Skip a file whose name shows that it cannot contain entries
+            # within the requested timestamp range.  Every other file is
+            # read, and when a timestamp range was requested only the
+            # entries within it are kept.
+            path = None if ifn == '-' else os.path.abspath(ifn)
+            if path in fileDates:
+                filedate, nextdate = fileDates[path]
+                if logFileOutOfRange(filedate, nextdate, begin, end):
+                    if options.verbose:
+                        print("SKIP file: %s" % path, file=sys.stderr)
+                    continue
 
-            All other files with names that do not look like time stamps are
-            processed. That is, their log information is extracted, and if 
-            the user specified a time range, only those entries that are
-            within that range are kept.
-            """
             # Open next input file
             fileIn, inputFilesToClose, ifn, zname = openInputFile(ifn, options)
-
-            # if we can skip the whole file, let's do so
-            if zname.startswith('gpdb') and zname.endswith('.csv'):
-                goodFormat = True
-                try:
-                    # try format YYYY-MM-DD_HHMMSS
-                    filedate = datetime.strptime(zname[5:-4], '%Y-%m-%d_%H%M%S')
-                except:
-                    try:
-                        # try format YYYY-MM-DD
-                        filedate = datetime.strptime(zname[5:-4], '%Y-%m-%d')
-                    except:
-                        # the format isn't anything I understand
-                        goodFormat = False
-
-                if goodFormat and begin and filedate < begin:
-                    if end and filedate > end:
-                        print("SKIP file: %s" % zname, file=sys.stderr)
-                        for f in inputFilesToClose:
-                            f.close()
-                        inputFilesToClose = []
-                        continue
 
             # Announce each input file *before* its output file if --out is dir
             if options.verbose and outputFilePerInputFile:
@@ -463,8 +575,15 @@ try:
 
             # Write filtered lines to output file.  Don't append \n to
             # each line, because the original line ends are still there.
+            lastLine = ''
             for line in filteredInput:
-                print(line, file=fileOut)
+                fileOut.write(line)
+                lastLine = line
+
+            # Unless the last line had no line end: the next input file's
+            # first entry must still start on a line of its own.
+            if lastLine and not lastLine.endswith('\n'):
+                fileOut.write('\n')
 
             # Close input and output files
             for file in inputFilesToClose:
