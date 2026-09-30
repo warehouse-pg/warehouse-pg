@@ -407,15 +407,26 @@ anchorFilePath(char *path, size_t len, const char *name, bool tmp)
  * Durable: a crash after a plain unlink could bring the file back and let
  * the next start re-register an anchor whose tuples a cleanup record the
  * restart never replays again has already removed.
+ *
+ * elevel is the caller's stance on a removal that fails.  A start
+ * registers only the file the GUC names and sweeps every other, so a file
+ * that survives its entry is harmless unless the GUC names it: retirement
+ * and eviction never remove the published anchor and the promotion clear
+ * runs where nothing registers, so they WARN.  The conflict hooks and the
+ * kept-file removal can be removing the published anchor's file, and a
+ * start whose redo begins past the invalidating record would register it
+ * again, so they ERROR: the startup process exits, the next start
+ * registers the file, replays this record again and retries the removal.
+ * Replay does not pass a record whose effect is not durable.
  */
 static void
-anchorRemoveFile(const char *path)
+anchorRemoveFile(const char *path, int elevel)
 {
 	struct stat st;
 
 	if (stat(path, &st) != 0 && errno == ENOENT)
 		return;
-	(void) durable_unlink(path, WARNING);
+	(void) durable_unlink(path, elevel);
 }
 
 /*
@@ -647,9 +658,11 @@ anchorParseUint(const char *val, size_t vlen, int base, unsigned long max,
 }
 
 /*
- * The startup process must never ERROR on our account: an ERROR there is
- * FATAL and would make every start of the standby fail on the same file.
- * Allocate without the out-of-memory ERROR and let the caller WARN.
+ * The startup process must never ERROR over a file's content: an ERROR
+ * there is FATAL and would make every start of the standby fail on the
+ * same file.  Allocate without the out-of-memory ERROR and let the caller
+ * WARN.  (A removal that fails is different, see anchorRemoveFile: there
+ * the start must not proceed to register the file it could not remove.)
  */
 static void *
 startupAlloc(size_t size)
@@ -969,7 +982,7 @@ sweepAnchorFiles(const char *keep)
 		if (keep != NULL && strcmp(de->d_name, keep) == 0)
 			continue;
 		snprintf(path, sizeof(path), ANCHOR_SNAPSHOT_DIR "/%s", de->d_name);
-		anchorRemoveFile(path);
+		anchorRemoveFile(path, WARNING);
 	}
 	FreeDir(dir);
 }
@@ -1276,7 +1289,7 @@ AnchorSnapshotExportOnRestorePoint(XLogReaderState *record)
 
 			pendingSet = false;
 			anchorFilePath(path, sizeof(path), pendingName, false);
-			anchorRemoveFile(path);
+			anchorRemoveFile(path, WARNING);
 			ereport(WARNING,
 					(errmsg("pending anchor snapshot for restore point \"%s\" dropped: replay passed %X/%X without meeting its restore-point record",
 							pendingName,
@@ -1386,7 +1399,7 @@ AnchorSnapshotExportOnRestorePoint(XLogReaderState *record)
 		char		path[MAXPGPATH];
 
 		anchorFilePath(path, sizeof(path), name, false);
-		anchorRemoveFile(path);
+		anchorRemoveFile(path, WARNING);
 		ereport(WARNING,
 				(errmsg("anchor snapshot for restore point \"%s\" not exported: registry full (whpg_max_anchor_snapshots = %d) and only the published anchor is registered",
 						name, anchorRegistry->capacity),
@@ -1493,9 +1506,9 @@ invalidateKeptAnchor(TransactionId horizon, XLogRecPtr lsn)
 		TransactionIdFollows(keptXmin, horizon))
 		return false;
 
-	keptSet = false;
 	anchorFilePath(path, sizeof(path), keptName, false);
-	anchorRemoveFile(path);
+	anchorRemoveFile(path, ERROR);
+	keptSet = false;
 	return true;
 }
 
@@ -1538,7 +1551,7 @@ evictOldestUnpublished(const char *newname)
 
 	anchorRemovalBarrier();
 	anchorFilePath(path, sizeof(path), victimName, false);
-	anchorRemoveFile(path);
+	anchorRemoveFile(path, WARNING);
 	ereport(LOG,
 			(errmsg("evicted anchor snapshot for restore point \"%s\" to make room for \"%s\": registry full (whpg_max_anchor_snapshots = %d)",
 					victimName, newname, anchorRegistry->capacity)));
@@ -1571,7 +1584,7 @@ AnchorSnapshotInvalidate(const char *rp_name)
 	}
 
 	anchorFilePath(path, sizeof(path), rp_name, false);
-	anchorRemoveFile(path);
+	anchorRemoveFile(path, WARNING);
 	if (e != NULL)
 		ereport(LOG,
 				(errmsg("invalidated anchor snapshot for restore point \"%s\"", rp_name)));
@@ -1608,7 +1621,8 @@ AnchorSnapshotInvalidate(const char *rp_name)
  * pending anchor by LSN instead.  The kept anchor, whose restore point may
  * already be applied, is gated by the record's position.
  *
- * Startup process only; nothing here ERRORs.
+ * Startup process only.  ERRORs only when a file it must remove cannot be
+ * removed (anchorRemoveFile): the start fails and retries this record.
  */
 void
 AnchorSnapshotOnCleanupRecord(TransactionId latestRemovedXid, RelFileNode node,
@@ -1631,7 +1645,7 @@ AnchorSnapshotOnCleanupRecord(TransactionId latestRemovedXid, RelFileNode node,
 		const char *rp_name = retireNames + i * MAXFNAMELEN;
 
 		anchorFilePath(path, sizeof(path), rp_name, false);
-		anchorRemoveFile(path);
+		anchorRemoveFile(path, ERROR);
 		ereport(LOG,
 				(errmsg("invalidated anchor snapshot for restore point \"%s\": replayed cleanup of relation %u/%u/%u removed row versions through transaction %u",
 						rp_name, node.spcNode, node.dbNode, node.relNode,
@@ -1677,7 +1691,8 @@ AnchorSnapshotOnCleanupRecord(TransactionId latestRemovedXid, RelFileNode node,
  * which took its anchored snapshot and then waited behind the replayed
  * AccessExclusiveLock is cancelled instead of waking into the relation's
  * new file with a snapshot that describes the old one.  Startup process
- * only; nothing here ERRORs.
+ * only.  ERRORs only when a file it must remove cannot be removed
+ * (anchorRemoveFile): the start fails and retries this record.
  */
 TransactionId
 AnchorSnapshotOnRelfilenodeDrop(TransactionId xid, XLogRecPtr lsn, int nrels)
@@ -1699,7 +1714,7 @@ AnchorSnapshotOnRelfilenodeDrop(TransactionId xid, XLogRecPtr lsn, int nrels)
 		const char *rp_name = retireNames + i * MAXFNAMELEN;
 
 		anchorFilePath(path, sizeof(path), rp_name, false);
-		anchorRemoveFile(path);
+		anchorRemoveFile(path, ERROR);
 		ereport(LOG,
 				(errmsg("invalidated anchor snapshot for restore point \"%s\": transaction %u committed dropping %d relation file(s)",
 						rp_name, xid, nrels)));
@@ -1767,7 +1782,7 @@ applyPublication(const char *name)
 		char		path[MAXPGPATH];
 
 		anchorFilePath(path, sizeof(path), retireNames + i * MAXFNAMELEN, false);
-		anchorRemoveFile(path);
+		anchorRemoveFile(path, WARNING);
 		ereport(LOG,
 				(errmsg("retired anchor snapshot for restore point \"%s\": superseded by \"%s\"",
 						retireNames + i * MAXFNAMELEN, name)));

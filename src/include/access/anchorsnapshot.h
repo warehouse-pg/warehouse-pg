@@ -178,7 +178,9 @@ extern void AnchorSnapshotInvalidate(const char *rp_name);
 /*
  * Conflict linkage (redo sites in heapam.c, nbtxlog.c, gistxlog.c,
  * hash_xlog.c, spgxlog.c, and xact.c), see the header comment.  lsn is the
- * record's end position.  Both never ERROR.  The second returns the
+ * record's end position.  Both ERROR only when a file they must remove
+ * cannot be removed; the start then fails and retries the record.  The
+ * second returns the
  * highest xmin among the anchors it invalidated (InvalidTransactionId when
  * none), the horizon for the standard resolution the caller runs before
  * releasing the transaction's standby locks.
