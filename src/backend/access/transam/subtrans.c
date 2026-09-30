@@ -396,3 +396,25 @@ SubTransPagePrecedes(int page1, int page2)
 	return (TransactionIdPrecedes(xid1, xid2) &&
 			TransactionIdPrecedes(xid1, xid2 + SUBTRANS_XACTS_PER_PAGE - 1));
 }
+
+/*
+ * Will the parent links of the xids below xmax survive a start whose
+ * StartupSUBTRANS zeroes pg_subtrans from oldestActiveXID on?  That zeroing
+ * is by page, so an xid on the same page as oldestActiveXID loses its link
+ * even when it is smaller: the range is safe only when its last xid
+ * (xmax - 1) lies on a page before oldestActiveXID's.  A hot standby's anchor
+ * snapshot asks this before re-registering an overflowed anchor, whose
+ * readers map subtransactions to their parents through pg_subtrans.
+ */
+bool
+SubTransXidRangeSurvivesStartup(TransactionId xmax, TransactionId oldestActiveXID)
+{
+	TransactionId last = xmax;
+	int			lastPage;
+	int			zeroedPage;
+
+	TransactionIdRetreat(last);
+	lastPage = TransactionIdToPage(last);
+	zeroedPage = TransactionIdToPage(oldestActiveXID);
+	return lastPage != zeroedPage && SubTransPagePrecedes(lastPage, zeroedPage);
+}

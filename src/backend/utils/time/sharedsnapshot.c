@@ -860,6 +860,8 @@ readSharedLocalSnapshot_forCursor(Snapshot snapshot, DtxContext distributedTrans
 	snapshot->xcnt = dumpsnapshot->xcnt;
 	snapshot->suboverflowed = dumpsnapshot->suboverflowed;
 	snapshot->subxcnt = dumpsnapshot->subxcnt;
+	/* recovery-shaped snapshots keep every xid in subxip (see updateSharedLocalSnapshot) */
+	snapshot->takenDuringRecovery = dumpsnapshot->takenDuringRecovery;
 
 	memcpy(snapshot->xip, dumpsnapshot->xip, snapshot->xcnt * sizeof(TransactionId));
 
@@ -877,6 +879,13 @@ readSharedLocalSnapshot_forCursor(Snapshot snapshot, DtxContext distributedTrans
 	}
 
 	snapshot->curcid = dumpsnapshot->curcid;
+
+	/*
+	 * Like copyLocalSnapshot(): the writer's snapshot may be older than this
+	 * reader's own xmin, and subtransaction lookups assert xid >= TransactionXmin.
+	 */
+	if (TransactionIdPrecedes(snapshot->xmin, TransactionXmin))
+		TransactionXmin = snapshot->xmin;
 
 	SetSharedTransactionId_reader(
 		localXid,

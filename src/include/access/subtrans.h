@@ -32,5 +32,7 @@ extern void ShutdownSUBTRANS(void);
 extern void CheckPointSUBTRANS(void);
 extern void ExtendSUBTRANS(TransactionId newestXact);
 extern void TruncateSUBTRANS(TransactionId oldestXact);
+extern bool SubTransXidRangeSurvivesStartup(TransactionId xmax,
+											TransactionId oldestActiveXID);
 
 #endif							/* SUBTRANS_H */

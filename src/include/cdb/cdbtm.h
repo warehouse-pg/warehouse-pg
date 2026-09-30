@@ -353,6 +353,8 @@ int			mppTxOptions_IsoLevel(int txnOptions);
 bool		isMppTxOptions_ReadOnly(int txnOptions);
 bool		isMppTxOptions_NeedDtx(int txnOptions);
 bool		isMppTxOptions_ExplicitBegin(int txnOptions);
+bool		isMppTxOptions_Anchored(int txnOptions);
+int			mppTxOptions_SetAnchored(int txnOptions);
 
 extern void getAllDistributedXactStatus(TMGALLXACTSTATUS **allDistributedXactStatus);
 extern bool getNextDistributedXactStatus(TMGALLXACTSTATUS *allDistributedXactStatus, TMGXACTSTATUS **distributedXactStatus);
