@@ -761,8 +761,19 @@ aocs_rescan(AOCSScanDesc scan)
 	close_cur_scan_seg(scan);
 	if (scan->columnScanInfo.ds)
 		close_ds_read(scan->columnScanInfo.ds, scan->columnScanInfo.relationTupleDesc->natts);
-	initscan_with_colinfo(scan);
 
+	/*
+	 * Rescan before the first tuple was fetched (e.g. a TABLESAMPLE inner scan
+	 * whose previous iteration sampled nothing): relationTupleDesc has not been
+	 * lazily initialized yet.  Do this only after close_cur_scan_seg(), which
+	 * relies on the NULL check to tell whether the scan ever started.
+	 */
+	if (scan->columnScanInfo.relationTupleDesc == NULL)
+	{
+		scan->columnScanInfo.relationTupleDesc = RelationGetDescr(scan->rs_base.rs_rd);
+		PinTupleDesc(scan->columnScanInfo.relationTupleDesc);
+	}
+	initscan_with_colinfo(scan);
 
 	/* TABLESAMPLE related state */
 	scan->segrowsprocessed = 0;
