@@ -617,10 +617,17 @@ bool gpvars_check_gp_resource_group_cgroup_parent(char **newval, void **extra, G
 	pg_wchar *wpattern = palloc((strlen(pattern) + 1) * sizeof(pg_wchar));
 	int		  wlen = pg_mb2wchar_with_len(pattern, wpattern, strlen(pattern));
 	pg_wchar *data = palloc((strlen(*newval) + 1) * sizeof(pg_wchar));
-	int		  data_len = pg_mb2wchar_with_len(*newval, data, sizeof(*newval));
+	int		  data_len = pg_mb2wchar_with_len(*newval, data, strlen(*newval));
 	bool	  match = true;
 
-	regres = pg_regcomp(&re, wpattern, wlen, REG_ADVANCED, DEFAULT_COLLATION_OID);
+	/*
+	 * The pattern is pure ASCII, so validate with the C collation.  This hook
+	 * also runs in the postmaster while the GUCs are initialized, before any
+	 * database locale has been applied; with DEFAULT_COLLATION_OID,
+	 * pg_regcomp() would call lc_ctype_is_c() then and cache the answer for
+	 * the postmaster's environment LC_CTYPE, which every backend inherits.
+	 */
+	regres = pg_regcomp(&re, wpattern, wlen, REG_ADVANCED, C_COLLATION_OID);
 	if (regres != REG_OKAY)
 	{
 		pg_regerror(regres, &re, err, sizeof(err));
