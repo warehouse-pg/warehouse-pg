@@ -59,3 +59,11 @@ WITH cte(안녕세계x, こんにちわx) AS
 SELECT * FROM hi_안녕세계 hi_안녕세계1, hi_안녕세계 hi_안녕세계2 WHERE hi_안녕세계1.안녕세계1 LIKE '%UPDATE';
 
 RESET optimizer_trace_fallback;
+
+--
+-- Case conversion must take the C-locale path in a LC_CTYPE=C database, even
+-- when the server process runs under a UTF-8 environment locale.  Both the
+-- constant and the table forms are checked, the latter runs on the segments.
+--
+SELECT upper('as한극'), lower('AS한극'), initcap('as한극');
+SELECT upper(안녕세계1), lower(안녕세계1), initcap(안녕세계1) FROM hi_안녕세계;
