@@ -39,12 +39,10 @@ makeRegistry(int capacity)
 	reg->capacity = capacity;
 	reg->next_ordinal = 1;
 	anchorRegistry = reg;
-	/* the name buffer is sized by the first registry that needs it */
+	/* the name buffer AnchorSnapshotStartup sizes to the registry */
 	if (retireNames != NULL)
-	{
 		free(retireNames);
-		retireNames = NULL;
-	}
+	retireNames = (char *) calloc(capacity > 0 ? capacity : 1, MAXFNAMELEN);
 	return reg;
 }
 
@@ -742,14 +740,17 @@ test__relfilenode_drop_invalidates_all(void **state)
 	assert_int_equal(registerAnchor("a", 400), REGISTER_OK);
 	assert_int_equal(registerAnchor("c", 450), REGISTER_OK);
 
+	/* the horizon handed to the standard resolution is the highest xmin */
 	expectBarrier(1);
-	AnchorSnapshotOnRelfilenodeDrop(450, (XLogRecPtr) 7000, 2);
+	assert_int_equal(AnchorSnapshotOnRelfilenodeDrop(450, (XLogRecPtr) 7000, 2), 450);
 	assert_false(AnchorSnapshotLookup("a", &xmin, NULL));
 	assert_false(AnchorSnapshotLookup("c", &xmin, NULL));
 
-	/* an empty registry: no barrier */
-	AnchorSnapshotOnRelfilenodeDrop(600, (XLogRecPtr) 7100, 1);
-	AnchorSnapshotOnRelfilenodeDrop(InvalidTransactionId, (XLogRecPtr) 7200, 1);
+	/* an empty registry: no barrier, no horizon */
+	assert_int_equal(AnchorSnapshotOnRelfilenodeDrop(600, (XLogRecPtr) 7100, 1),
+					 InvalidTransactionId);
+	assert_int_equal(AnchorSnapshotOnRelfilenodeDrop(InvalidTransactionId, (XLogRecPtr) 7200, 1),
+					 InvalidTransactionId);
 
 	anchorRegistry = NULL;
 	free(reg);

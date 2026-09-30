@@ -147,7 +147,10 @@ static TransactionId keptXmin;
 
 /*
  * Names collected under the spinlock for retirement or invalidation, the
- * files unlinked outside it; sized to capacity on first use.
+ * files unlinked outside it; sized to capacity by AnchorSnapshotStartup
+ * before redo, so that no removal can fail for want of memory (a file that
+ * outlived its entry would be re-registered by a later start whose redo
+ * begins past the record that invalidated it).
  */
 static char *retireNames = NULL;
 
@@ -190,8 +193,7 @@ typedef enum RegisterResult
 static RegisterResult registerAnchor(const char *name, TransactionId xmin);
 static bool evictOldestUnpublished(const char *newname);
 static void anchorRemovalBarrier(void);
-static bool ensureRetireNames(const char *purpose, const char *name);
-static int	invalidateAtOrBelow(TransactionId horizon, bool *named);
+static int	invalidateAtOrBelow(TransactionId horizon, TransactionId *maxXmin);
 static bool invalidateKeptAnchor(TransactionId horizon, XLogRecPtr lsn);
 static bool applyPublication(const char *name);
 static AnchorRegistryEntry *findEntryLocked(const char *name);
@@ -1033,6 +1035,17 @@ AnchorSnapshotStartup(XLogRecPtr redoStart, List *history,
 	pendingSet = false;
 	keptSet = false;
 
+	if (registryEnabled() && retireNames == NULL)
+	{
+		retireNames = (char *) malloc(anchorRegistry->capacity * MAXFNAMELEN);
+		if (retireNames == NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_OUT_OF_MEMORY),
+					 errmsg("out of memory"),
+					 errdetail("The anchor snapshot registry needs %d bytes to remove anchors.",
+							   anchorRegistry->capacity * MAXFNAMELEN)));
+	}
+
 	if (stat(ANCHOR_SNAPSHOT_DIR, &st) != 0)
 	{
 		if (MakePGDirectory(ANCHOR_SNAPSHOT_DIR) != 0 && errno != EEXIST)
@@ -1421,43 +1434,27 @@ anchorRemovalBarrier(void)
 	LWLockRelease(ProcArrayLock);
 }
 
-/* The collection buffer; a WARNING names the caller's purpose on OOM. */
-static bool
-ensureRetireNames(const char *purpose, const char *name)
-{
-	if (retireNames != NULL)
-		return true;
-	retireNames = (char *) malloc(anchorRegistry->capacity * MAXFNAMELEN);
-	if (retireNames == NULL)
-		ereport(WARNING,
-				(errcode(ERRCODE_OUT_OF_MEMORY),
-				 errmsg("%s of anchor \"%s\" removed nothing: out of memory",
-						purpose, name)));
-	return retireNames != NULL;
-}
-
 /*
  * Invalidate every registered anchor whose xmin is at or below horizon
  * (the direction GetConflictingVirtualXIDs uses: a snapshot with xmin X
  * still treats X as possibly running, so a version removed up to X is one
  * it may need), collect their names in retireNames and run the removal
- * barrier when any was invalidated.  Returns the count; the caller unlinks
- * the files and logs its reason.  The entries are invalidated even when
- * the name buffer cannot be allocated (*named is then false and the files
- * stay, harmless: nothing reads a file without an entry and the next start
- * sweeps it); an anchor must never outlive the purge.  Startup process
- * only.
+ * barrier when any was invalidated.  Returns the count and, in *maxXmin,
+ * the highest xmin among them (InvalidTransactionId when none): the
+ * horizon for the standard resolution that cancels the readers holding
+ * such an xmin.  The caller unlinks the files and logs its reason.
+ * Startup process only.
  */
 static int
-invalidateAtOrBelow(TransactionId horizon, bool *named)
+invalidateAtOrBelow(TransactionId horizon, TransactionId *maxXmin)
 {
 	int			n = 0;
 	int			i;
 
-	*named = false;
+	*maxXmin = InvalidTransactionId;
 	if (!registryEnabled() || !TransactionIdIsValid(horizon))
 		return 0;
-	*named = ensureRetireNames("invalidation", "*");
+	Assert(retireNames != NULL);
 
 	SpinLockAcquire(&anchorRegistry->lock);
 	for (i = 0; i < anchorRegistry->capacity; i++)
@@ -1467,8 +1464,10 @@ invalidateAtOrBelow(TransactionId horizon, bool *named)
 		if (e->valid && !TransactionIdFollows(e->xmin, horizon))
 		{
 			e->valid = false;
-			if (*named)
-				strlcpy(retireNames + n * MAXFNAMELEN, e->rp_name, MAXFNAMELEN);
+			strlcpy(retireNames + n * MAXFNAMELEN, e->rp_name, MAXFNAMELEN);
+			if (!TransactionIdIsValid(*maxXmin) ||
+				TransactionIdFollows(e->xmin, *maxXmin))
+				*maxXmin = e->xmin;
 			n++;
 		}
 	}
@@ -1617,7 +1616,7 @@ AnchorSnapshotOnCleanupRecord(TransactionId latestRemovedXid, RelFileNode node,
 {
 	int			n;
 	int			i;
-	bool		named;
+	TransactionId maxXmin;
 	bool		keptRemoved;
 
 	if (!TransactionIdIsValid(latestRemovedXid))
@@ -1625,8 +1624,8 @@ AnchorSnapshotOnCleanupRecord(TransactionId latestRemovedXid, RelFileNode node,
 	if (!registryEnabled() && !keptSet)
 		return;
 
-	n = invalidateAtOrBelow(latestRemovedXid, &named);
-	for (i = 0; named && i < n; i++)
+	n = invalidateAtOrBelow(latestRemovedXid, &maxXmin);
+	for (i = 0; i < n; i++)
 	{
 		char		path[MAXPGPATH];
 		const char *rp_name = retireNames + i * MAXFNAMELEN;
@@ -1638,11 +1637,6 @@ AnchorSnapshotOnCleanupRecord(TransactionId latestRemovedXid, RelFileNode node,
 						rp_name, node.spcNode, node.dbNode, node.relNode,
 						latestRemovedXid)));
 	}
-	if (n > 0 && !named)
-		ereport(LOG,
-				(errmsg("invalidated %d anchor snapshot(s): replayed cleanup of relation %u/%u/%u removed row versions through transaction %u; the files are removed at the next start",
-						n, node.spcNode, node.dbNode, node.relNode,
-						latestRemovedXid)));
 
 	keptRemoved = invalidateKeptAnchor(latestRemovedXid, lsn);
 	if (keptRemoved)
@@ -1677,23 +1671,29 @@ AnchorSnapshotOnCleanupRecord(TransactionId latestRemovedXid, RelFileNode node,
  * and committed after it.  The commit's list of dropped files is the
  * destruction itself and is present in every recovery mode.
  *
- * Startup process only; nothing here ERRORs.
+ * Returns the highest xmin among the anchors it invalidated, or
+ * InvalidTransactionId: the caller hands it to the standard resolution
+ * before it releases the transaction's standby locks, so that a reader
+ * which took its anchored snapshot and then waited behind the replayed
+ * AccessExclusiveLock is cancelled instead of waking into the relation's
+ * new file with a snapshot that describes the old one.  Startup process
+ * only; nothing here ERRORs.
  */
-void
+TransactionId
 AnchorSnapshotOnRelfilenodeDrop(TransactionId xid, XLogRecPtr lsn, int nrels)
 {
 	int			n;
 	int			i;
-	bool		named;
+	TransactionId maxXmin = InvalidTransactionId;
 	bool		keptRemoved;
 
 	if (!TransactionIdIsValid(xid))
-		return;
+		return InvalidTransactionId;
 	if (!registryEnabled() && !keptSet)
-		return;
+		return InvalidTransactionId;
 
-	n = invalidateAtOrBelow(xid, &named);
-	for (i = 0; named && i < n; i++)
+	n = invalidateAtOrBelow(xid, &maxXmin);
+	for (i = 0; i < n; i++)
 	{
 		char		path[MAXPGPATH];
 		const char *rp_name = retireNames + i * MAXFNAMELEN;
@@ -1704,10 +1704,6 @@ AnchorSnapshotOnRelfilenodeDrop(TransactionId xid, XLogRecPtr lsn, int nrels)
 				(errmsg("invalidated anchor snapshot for restore point \"%s\": transaction %u committed dropping %d relation file(s)",
 						rp_name, xid, nrels)));
 	}
-	if (n > 0 && !named)
-		ereport(LOG,
-				(errmsg("invalidated %d anchor snapshot(s): transaction %u committed dropping %d relation file(s); the files are removed at the next start",
-						n, xid, nrels)));
 
 	keptRemoved = invalidateKeptAnchor(xid, lsn);
 	if (keptRemoved)
@@ -1717,6 +1713,7 @@ AnchorSnapshotOnRelfilenodeDrop(TransactionId xid, XLogRecPtr lsn, int nrels)
 
 	if (n > 0 || keptRemoved)
 		SIMPLE_FAULT_INJECTOR("anchor_snapshot_conflict_invalidated");
+	return maxXmin;
 }
 
 /*
@@ -1739,8 +1736,7 @@ applyPublication(const char *name)
 		return false;
 
 	/* the names are collected under the spinlock, the files unlinked outside it */
-	if (!ensureRetireNames("publication", name))
-		return false;
+	Assert(retireNames != NULL);
 
 	SpinLockAcquire(&anchorRegistry->lock);
 	e = findEntryLocked(name);

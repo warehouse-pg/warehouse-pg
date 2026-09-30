@@ -148,7 +148,21 @@
 1: insert into hs_conf_barrier select generate_series(1, 30);
 -1S: select count(*) from hs_conf_t where a = 7;
 -1M: select rp_name from gp_toolkit.whpg_anchor_snapshots() order by 1;
+-- a reader that took its anchored snapshot and then waits behind the
+-- replayed AccessExclusiveLock (a STABLE function locks the table only when
+-- it first runs, after the statement's snapshot) is cancelled when the
+-- commit is replayed, before the lock is released: it must not wake into
+-- the truncated file with a snapshot that describes the old one.  The
+-- barrier insert from a second session waits until every node has applied
+-- the lock record.
+1: create function hs_conf_count() returns bigint language sql stable as 'select count(*) from hs_conf_t';
+1: insert into hs_conf_barrier select generate_series(1, 30);
+1: begin;
 1: truncate hs_conf_t;
+2: insert into hs_conf_barrier select generate_series(1, 30);
+-1S&: select hs_conf_count();
+1: commit;
+-1S<:
 -1S: select count(*) from hs_conf_t where a = 7;
 -1M: select rp_name from gp_toolkit.whpg_anchor_snapshots() order by 1;
 0M: select rp_name from gp_toolkit.whpg_anchor_snapshots() order by 1;
@@ -246,11 +260,13 @@
 ----------------------------------------------------------------
 -- Cleanup: no published anchor
 ----------------------------------------------------------------
+1: drop function hs_conf_count();
 1: drop table hs_conf_t;
 1: drop table hs_conf_ao;
 1: drop table hs_conf_churn3;
 1: drop table hs_conf_barrier;
 1q:
+2q:
 -1Sq:
 -1Mq:
 0Mq:

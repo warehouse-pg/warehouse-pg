@@ -69,7 +69,11 @@
  *   REINDEX; temporary relations excepted) invalidates every registered
  *   anchor (AnchorSnapshotOnRelfilenodeDrop): the catalog is read at the
  *   replay position, so an anchored read would follow the relation to a
- *   file the anchor never saw.
+ *   file the anchor never saw.  The standard resolution then cancels the
+ *   readers holding such an xmin before the transaction's standby locks
+ *   are released: a reader that took its anchored snapshot and waits
+ *   behind the replayed AccessExclusiveLock must not wake into the new
+ *   file.
  * - Invalidation is per node.  A cleanup replayed on a segment leaves the
  *   coordinator's anchor registered; the next statement is refused by that
  *   segment with the segment suffix.
@@ -174,12 +178,15 @@ extern void AnchorSnapshotInvalidate(const char *rp_name);
 /*
  * Conflict linkage (redo sites in heapam.c, nbtxlog.c, gistxlog.c,
  * hash_xlog.c, spgxlog.c, and xact.c), see the header comment.  lsn is the
- * record's end position.  Both never ERROR.
+ * record's end position.  Both never ERROR.  The second returns the
+ * highest xmin among the anchors it invalidated (InvalidTransactionId when
+ * none), the horizon for the standard resolution the caller runs before
+ * releasing the transaction's standby locks.
  */
 extern void AnchorSnapshotOnCleanupRecord(TransactionId latestRemovedXid,
 										  RelFileNode node, XLogRecPtr lsn);
-extern void AnchorSnapshotOnRelfilenodeDrop(TransactionId xid, XLogRecPtr lsn,
-											int nrels);
+extern TransactionId AnchorSnapshotOnRelfilenodeDrop(TransactionId xid,
+													 XLogRecPtr lsn, int nrels);
 
 /*
  * Lookup for backends (import path); false when no valid entry exists.
