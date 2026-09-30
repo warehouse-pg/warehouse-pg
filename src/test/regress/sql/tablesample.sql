@@ -155,3 +155,20 @@ create table parted_sample_2 partition of parted_sample for values in (2);
 explain (costs off)
   select * from parted_sample tablesample bernoulli (100);
 drop table parted_sample, parted_sample_1, parted_sample_2;
+
+-- rescan of an AOCS scan before its first tuple is fetched: a low sampling
+-- rate can legitimately sample zero rows, so the NestLoop inner scan is
+-- rescanned before relationTupleDesc was lazily initialized.
+create table ts_rescan_outer(id int) distributed by (id);
+insert into ts_rescan_outer select generate_series(1, 200);
+create table ts_rescan_aocs(id int) with (appendonly=true, orientation=column) distributed by (id);
+insert into ts_rescan_aocs select generate_series(1, 50);
+analyze ts_rescan_outer;
+analyze ts_rescan_aocs;
+set enable_hashjoin = off;
+set enable_mergejoin = off;
+select count(*) > 0 as sampled from ts_rescan_outer o,
+  lateral (select id from ts_rescan_aocs tablesample bernoulli (0.5) repeatable (o.id)) a;
+reset enable_hashjoin;
+reset enable_mergejoin;
+drop table ts_rescan_outer, ts_rescan_aocs;
