@@ -3495,6 +3495,155 @@ append_string_to_pipe_chunk(PipeProtoChunk *buffer, const char* input)
 }
 
 /*
+ * nm-based symbol lookup for resolving function names at file offsets.
+ *
+ * addr2line -f sometimes returns "??" for function names even when file:line
+ * is available (depends on DWARF completeness). nm reads the ELF symbol table
+ * directly and always works for unstripped binaries, so we use it as a
+ * fallback.
+ *
+ * The symbol table is loaded on first use and cached per binary path.
+ */
+#if !defined(WIN32) && !defined(_AIX)
+
+#define NM_NAME_SIZE    256
+#define NM_CACHE_SLOTS  8
+
+typedef struct
+{
+	unsigned long	offset;
+	char			name[NM_NAME_SIZE];
+} NmSymEntry;
+
+typedef struct
+{
+	char			path[1024];
+	NmSymEntry	   *syms;
+	int				count;
+} NmBinaryCache;
+
+static NmBinaryCache nm_cache[NM_CACHE_SLOTS];
+static int nm_cache_count = 0;
+
+static NmSymEntry *
+nm_load_symbols(const char *binary_path, int *out_count)
+{
+	char		cmd[CMD_BUFFER_SIZE];
+	FILE	   *fp;
+	NmSymEntry *syms = NULL;
+	int			count = 0;
+	int			capacity = 0;
+	char		line_buf[SYMBOL_SIZE];
+
+	/*
+	 * nm flags:
+	 * -C, --demangle[=STYLE] Decode mangled/processed symbol names
+	 * -n, --numeric-sort     Sort symbols numerically by address
+	 */
+	snprintf(cmd, sizeof(cmd), "nm -nC %s", binary_path);
+	fp = popen(cmd, "r");
+	if (!fp)
+		return NULL;
+
+	while (fgets(line_buf, sizeof(line_buf), fp))
+	{
+		unsigned long	sym_offset;
+		char			sym_type;
+		char			sym_name[NM_NAME_SIZE];
+
+		if (sscanf(line_buf, "%lx %c %255s", &sym_offset, &sym_type, sym_name) != 3)
+			continue;
+		if (sym_type != 'T' && sym_type != 't' &&
+			sym_type != 'W' && sym_type != 'w')
+			continue;
+
+		if (count >= capacity)
+		{
+			int		new_cap = capacity ? capacity * 2 : 4096;
+			NmSymEntry *new_syms = realloc(syms, new_cap * sizeof(NmSymEntry));
+
+			if (!new_syms)
+			{
+				free(syms);
+				pclose(fp);
+				*out_count = 0;
+				return NULL;
+			}
+			syms = new_syms;
+			capacity = new_cap;
+		}
+
+		syms[count].offset = sym_offset;
+		strncpy(syms[count].name, sym_name, NM_NAME_SIZE - 1);
+		syms[count].name[NM_NAME_SIZE - 1] = '\0';
+		count++;
+	}
+
+	pclose(fp);
+	*out_count = count;
+	return syms;
+}
+
+static const char *
+nm_lookup(NmSymEntry *syms, int count, unsigned long file_offset)
+{
+	int		lo = 0;
+	int		hi = count - 1;
+	int		best = -1;
+
+	while (lo <= hi)
+	{
+		int		mid = lo + (hi - lo) / 2;
+
+		if (syms[mid].offset <= file_offset)
+		{
+			best = mid;
+			lo = mid + 1;
+		}
+		else
+			hi = mid - 1;
+	}
+
+	/* Accept if within 1MB of the symbol start (generous for large functions) */
+	if (best >= 0 && (file_offset - syms[best].offset) < 0x100000)
+		return syms[best].name;
+
+	return NULL;
+}
+
+static const char *
+nm_resolve_function(const char *binary_path, unsigned long file_offset)
+{
+	int		i;
+	NmBinaryCache *entry = NULL;
+
+	for (i = 0; i < nm_cache_count; i++)
+	{
+		if (strcmp(nm_cache[i].path, binary_path) == 0)
+		{
+			entry = &nm_cache[i];
+			break;
+		}
+	}
+
+	if (!entry && nm_cache_count < NM_CACHE_SLOTS)
+	{
+		entry = &nm_cache[nm_cache_count++];
+		strncpy(entry->path, binary_path, sizeof(entry->path) - 1);
+		entry->path[sizeof(entry->path) - 1] = '\0';
+		entry->syms = nm_load_symbols(binary_path, &entry->count);
+	}
+
+	if (entry && entry->syms)
+		return nm_lookup(entry->syms, entry->count, file_offset);
+
+	return NULL;
+}
+
+#endif /* !WIN32 && !_AIX */
+
+
+/*
  * Append the backtrace to the given PipeProtoChunk or the syslogger file or stderr.
  *
  * We can not use the default backtrace_symbols since it calls malloc, which
@@ -3515,17 +3664,29 @@ append_stacktrace(PipeProtoChunk *buffer, StringInfo append, void *const *stacka
 	Dl_info dli;
 	int symbol_len;
 
-
 	FILE * fd;
-	bool fd_ok = false;
 	char cmd[CMD_BUFFER_SIZE];
-	char cmdresult[STACK_DEPTH_MAX][SYMBOL_SIZE];
+	char cmdresult[STACK_DEPTH_MAX][SYMBOL_SIZE];	/* file:line from addr2line */
+	char cmdfunc[STACK_DEPTH_MAX][SYMBOL_SIZE];		/* function name from addr2line -f */
 	char addrtxt[ADDRESS_SIZE];
+
+	/* Pre-resolved dladdr info for all frames */
+	Dl_info dli_all[STACK_DEPTH_MAX];
+	bool dli_ok_all[STACK_DEPTH_MAX];
+	int actual_stacksize;
 
 #if defined(__darwin__)
 	const char * prog = "atos -o";
 #else
-	const char * prog = "addr2line -s -e";
+/*
+ * addr2line flags:
+ * -f
+ * -e --exe=<executable>  Set the input file name (default is a.out)
+ * -s --basenames         Strip directory names
+ * -f --functions         Show function names
+ * -C --demangle[=style]  Demangle function names
+ */
+	const char * prog = "addr2line -fC -e";
 #endif
 
 	static bool in_translate_stacktrace = false;
@@ -3534,6 +3695,15 @@ append_stacktrace(PipeProtoChunk *buffer, StringInfo append, void *const *stacka
 	if (stacksize == 0)
 		return;
 
+	actual_stacksize = (stacksize < STACK_DEPTH_MAX) ? stacksize : STACK_DEPTH_MAX;
+
+	/* Pre-resolve dladdr for all frames before running addr2line */
+	for (stack_no = 0; stack_no < actual_stacksize; stack_no++)
+	{
+		dli_ok_all[stack_no] = (dladdr(stackarray[stack_no], &dli_all[stack_no]) != 0);
+		cmdresult[stack_no][0] = '\0';
+		cmdfunc[stack_no][0] = '\0';
+	}
 
 	if (!in_translate_stacktrace && addr2line_ok)
 	{
@@ -3542,48 +3712,119 @@ append_stacktrace(PipeProtoChunk *buffer, StringInfo append, void *const *stacka
 		 * try to do it again when we recurse back here,
 		 */
 		in_translate_stacktrace = true;
+		const char *unique_bins[STACK_DEPTH_MAX];
+		int num_unique_bins = 0;
+		int bin_idx;
 
-		snprintf(cmd,sizeof(cmd),"%s %s ",prog,my_exec_path);
-
-		for (stack_no = 0; stack_no < stacksize && stack_no < 100; stack_no++)
+		/*
+		 * Collect unique binary paths from dladdr results.  Each frame belongs
+		 * to either the main postgres binary or an extension shared library.
+		 * We run a separate addr2line invocation per binary.
+		 */
+		for (stack_no = 0; stack_no < actual_stacksize; stack_no++)
 		{
-			cmdresult[stack_no][0] = '\0';   /* clear this array for later */
-			snprintf(addrtxt, sizeof(addrtxt),"%p ",stackarray[stack_no]);
-			
-			Assert(sizeof(cmd) > strlen(cmd));
-			strncat(cmd, addrtxt, sizeof(cmd) - strlen(cmd) - 1);
+			const char *bin_path;
+			bool found = false;
+			int i;
+
+			if (!dli_ok_all[stack_no] || dli_all[stack_no].dli_fbase == NULL)
+				continue;
+
+			bin_path = dli_all[stack_no].dli_fname;
+			if (bin_path == NULL || bin_path[0] == '\0')
+				continue;
+
+			/* Use my_exec_path for the main postgres binary */
+			if (strncmp(bin_path, "postgres:", strlen("postgres:")) == 0)
+				bin_path = my_exec_path;
+
+			for (i = 0; i < num_unique_bins; i++)
+			{
+				if (strcmp(unique_bins[i], bin_path) == 0)
+				{
+					found = true;
+					break;
+				}
+			}
+			if (!found && num_unique_bins < STACK_DEPTH_MAX)
+				unique_bins[num_unique_bins++] = bin_path;
 		}
 
-		cmdresult[0][0] = '\0';
-		fd = popen(cmd,"r");
-		if (fd != NULL)
-			fd_ok = true;
-
-		if (fd_ok)
+		/* Run addr2line once per unique binary with correct file offsets */
+		for (bin_idx = 0; bin_idx < num_unique_bins; bin_idx++)
 		{
-			for (stack_no = 0; stack_no < stacksize && stack_no < STACK_DEPTH_MAX; stack_no++)
+			const char *binary = unique_bins[bin_idx];
+			int frame_indices[STACK_DEPTH_MAX];
+			int num_frames = 0;
+
+			snprintf(cmd, sizeof(cmd), "%s %s ", prog, binary);
+
+			for (stack_no = 0; stack_no < actual_stacksize; stack_no++)
 			{
-				/* initialize the string */
-				cmdresult[stack_no][0] = '\0';
-				// Get one line of the result from addr2line (or atos)
-				if (fgets(cmdresult[stack_no],SYMBOL_SIZE,fd) == NULL)
-					break;
-				// Force it to be a valid string (in case it was too long)
-				cmdresult[stack_no][SYMBOL_SIZE-1] = '\0';
-				// Get rid of the newline at the end.
-				if (strlen(cmdresult[stack_no]) > 0 &&
-					cmdresult[stack_no][strlen(cmdresult[stack_no])-1] == '\n')
-					cmdresult[stack_no][strlen(cmdresult[stack_no])-1] = '\0';
+				const char *bin_path;
+				unsigned long file_offset;
+
+				if (!dli_ok_all[stack_no] || dli_all[stack_no].dli_fbase == NULL)
+					continue;
+
+				bin_path = dli_all[stack_no].dli_fname;
+				if (bin_path == NULL || bin_path[0] == '\0')
+					continue;
+				if (strncmp(bin_path, "postgres:", strlen("postgres:")) == 0)
+					bin_path = my_exec_path;
+				if (strcmp(bin_path, binary) != 0)
+					continue;
+
+				frame_indices[num_frames++] = stack_no;
+
+				/*
+				 * Compute file offset by subtracting the load base address.
+				 * This is essential for PIE binaries and shared libraries where
+				 * the runtime virtual address differs from the file offset.
+				 */
+				file_offset = (unsigned long)((char *)stackarray[stack_no] -
+											  (char *)dli_all[stack_no].dli_fbase);
+				snprintf(addrtxt, sizeof(addrtxt), "0x%lx ", file_offset);
+
+				Assert(sizeof(cmd) > strlen(cmd));
+				strncat(cmd, addrtxt, sizeof(cmd) - strlen(cmd) - 1);
+			}
+
+			if (num_frames == 0)
+				continue;
+
+			fd = popen(cmd, "r");
+			if (fd != NULL)
+			{
+				int i;
+
+				for (i = 0; i < num_frames; i++)
+				{
+					int idx = frame_indices[i];
+					int len;
+
+					/*
+					 * With -f, addr2line outputs two lines per address:
+					 *   line 1: function name (or "??")
+					 *   line 2: file:line     (or "??:0")
+					 */
+					if (fgets(cmdfunc[idx], SYMBOL_SIZE, fd) == NULL)
+						break;
+					cmdfunc[idx][SYMBOL_SIZE - 1] = '\0';
+					len = strlen(cmdfunc[idx]);
+					if (len > 0 && cmdfunc[idx][len - 1] == '\n')
+						cmdfunc[idx][len - 1] = '\0';
+
+					if (fgets(cmdresult[idx], SYMBOL_SIZE, fd) == NULL)
+						break;
+					cmdresult[idx][SYMBOL_SIZE - 1] = '\0';
+					len = strlen(cmdresult[idx]);
+					if (len > 0 && cmdresult[idx][len - 1] == '\n')
+						cmdresult[idx][len - 1] = '\0';
+				}
+				pclose(fd);
 			}
 		}
-
-		if (!fd_ok || strlen(cmdresult[0]) <= 1)
-		{
-			addr2line_ok = false;
-		}
-
-		if (fd != NULL)
-			pclose(fd);
 
 		in_translate_stacktrace = false;
 	}
@@ -3597,7 +3838,14 @@ append_stacktrace(PipeProtoChunk *buffer, StringInfo append, void *const *stacka
 			lineInfo = cmdresult[stack_no];
 		}
 
-		if (dladdr(stackarray[stack_no], &dli) != 0)
+		/* Use pre-resolved dladdr results when available, fall back to live call */
+		if (stack_no < actual_stacksize)
+		{
+			dli = dli_all[stack_no];
+		}
+
+		if (stack_no < actual_stacksize ? dli_ok_all[stack_no]
+										: dladdr(stackarray[stack_no], &dli) != 0)
 		{
 			const char *file = dli.dli_fname;
 			if (file != NULL &&	file[0] != '\0')
@@ -3621,7 +3869,42 @@ append_stacktrace(PipeProtoChunk *buffer, StringInfo append, void *const *stacka
 			const char *function = dli.dli_sname;
 			if (function == NULL || function[0] == '\0')
 			{
-				function = "<symbol not found>";
+				/*
+				 * dladdr only sees the dynamic symbol table (.dynsym).
+				 * Try addr2line -f first (uses DWARF, resolves all functions
+				 * including static/inline). Fall back to nm which reads the
+				 * full ELF symbol table (.symtab).
+				 */
+				if (stack_no < actual_stacksize &&
+					cmdfunc[stack_no][0] != '\0' &&
+					strcmp(cmdfunc[stack_no], "??") != 0)
+				{
+					function = cmdfunc[stack_no];
+				}
+				else if (stack_no < actual_stacksize &&
+						 dli_ok_all[stack_no] &&
+						 dli_all[stack_no].dli_fbase != NULL)
+				{
+					const char *bin_path = dli_all[stack_no].dli_fname;
+					unsigned long file_offset;
+
+					if (bin_path != NULL && bin_path[0] != '\0')
+					{
+						if (strncmp(bin_path, "postgres:", strlen("postgres:")) == 0)
+							bin_path = my_exec_path;
+
+						file_offset = (unsigned long)((char *)stackarray[stack_no] -
+													  (char *)dli_all[stack_no].dli_fbase);
+						function = nm_resolve_function(bin_path, file_offset);
+					}
+
+					if (function == NULL)
+						function = "<symbol not found>";
+				}
+				else
+				{
+					function = "<symbol not found>";
+				}
 			}
 
 			// check if lineInfo was retrieved
