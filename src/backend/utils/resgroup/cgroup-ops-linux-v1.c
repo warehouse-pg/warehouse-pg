@@ -181,6 +181,61 @@ static char *dumpio_v1(List *limit_list);
 static void cleario_v1(Oid groupid);
 
 /*
+ * Read the next line of /proc/1/cgroup into buf.
+ *
+ * Each line has the format "id:comps:path".  On success the "id:" prefix is
+ * stripped so that buf holds "comps:path", and true is returned.  false is
+ * returned at end of file, or when the line does not fit in buf or has no
+ * "id:" prefix; *malformed tells these two cases apart.  A line that does not
+ * fit is consumed up to its end, so the next call starts on a line boundary.
+ */
+static bool
+read_proc_cgroup_line(FILE *f, char *buf, size_t bufsize, bool *malformed)
+{
+	char	   *p;
+	size_t		len;
+
+	*malformed = false;
+
+	if (fgets(buf, bufsize, f) == NULL)
+		return false;
+
+	len = strlen(buf);
+	if (len > 0 && buf[len - 1] == '\n')
+		buf[--len] = '\0';
+	else
+	{
+		int			c = fgetc(f);
+
+		if (c != '\n' && c != EOF)
+		{
+			/* the line did not fit in buf, skip the remainder of it */
+			do
+				c = fgetc(f);
+			while (c != '\n' && c != EOF);
+
+			*malformed = true;
+			return false;
+		}
+	}
+
+	/* strip the "id:" prefix */
+	for (p = buf; *p >= '0' && *p <= '9'; p++)
+		;
+
+	if (p == buf || *p != ':')
+	{
+		*malformed = true;
+		return false;
+	}
+
+	p++;
+	memmove(buf, p, len - (p - buf) + 1);
+
+	return true;
+}
+
+/*
  * Detect gpdb cgroup component dirs.
  *
  * Take cpu for example, by default we expect gpdb dir to locate at
@@ -202,6 +257,7 @@ detect_component_dirs_v1(void)
 	CGroupComponentType component;
 	FILE	   *f;
 	char		buf[MAX_CGROUP_PATHLEN * 2];
+	bool		malformed;
 	int			maskAll = (1 << CGROUP_COMPONENT_COUNT) - 1;
 	int			maskDetected = 0;
 
@@ -217,7 +273,7 @@ detect_component_dirs_v1(void)
 	 *     1:name=systemd:/init.scope
 	 *     0::/init.scope
 	 */
-	while (fscanf(f, "%*d:%s", buf) != EOF)
+	while (read_proc_cgroup_line(f, buf, sizeof(buf), &malformed))
 	{
 		CGroupComponentType components[CGROUP_COMPONENT_COUNT];
 		int			ncomps = 0;
@@ -235,6 +291,8 @@ detect_component_dirs_v1(void)
 		for (ptr = buf; sep != ':'; ptr = tmp)
 		{
 			tmp = strpbrk(ptr, ":,=");
+			if (tmp == NULL)
+				goto fallback; /* no path in the line */
 
 			sep = *tmp;
 			*tmp++ = 0;
@@ -258,7 +316,8 @@ detect_component_dirs_v1(void)
 		}
 
 		/* now ptr point to the path */
-		Assert(strlen(ptr) < MAX_CGROUP_PATHLEN);
+		if (strlen(ptr) >= MAX_CGROUP_PATHLEN)
+			goto fallback; /* too long for the component dirs */
 
 		/* if the path is "/" then use empty string "" instead of it */
 		if (strcmp(ptr, "/") == 0)
@@ -279,6 +338,9 @@ detect_component_dirs_v1(void)
 			maskDetected |= 1 << component;
 		}
 	}
+
+	if (malformed)
+		goto fallback; /* a line we can not parse */
 
 	if (maskDetected != maskAll)
 		goto fallback; /* not all the comps are detected */
@@ -335,7 +397,8 @@ check_component_hierarchy_v1()
 	CGroupComponentType component;
 	FILE       *f;
 	char        buf[MAX_CGROUP_PATHLEN * 2];
-	
+	bool        malformed;
+
 	f = fopen("/proc/1/cgroup", "r");
 	if (!f)
 	{
@@ -352,7 +415,7 @@ check_component_hierarchy_v1()
 	 * 1:name=systemd:/init.scope
 	 * 0::/init.scope
 	 */
-	while (fscanf(f, "%*d:%s", buf) != EOF)
+	while (read_proc_cgroup_line(f, buf, sizeof(buf), &malformed))
 	{
 		char       *ptr;
 		char       *tmp;
@@ -368,7 +431,13 @@ check_component_hierarchy_v1()
 		for (ptr = buf; sep != ':'; ptr = tmp)
 		{
 			tmp = strpbrk(ptr, ":,=");
-			
+			if (tmp == NULL)
+			{
+				fclose(f);
+				CGROUP_CONFIG_ERROR("can't parse '/proc/1/cgroup': line has no path");
+				return;
+			}
+
 			sep = *tmp;
 			*tmp++ = 0;
 
@@ -397,6 +466,9 @@ check_component_hierarchy_v1()
 	}
 
 	fclose(f);
+
+	if (malformed)
+		CGROUP_CONFIG_ERROR("can't parse '/proc/1/cgroup': line too long or malformed");
 }
 
 /*
