@@ -280,6 +280,36 @@ cdbdisp_seterrcode(int errcode, /* ERRCODE_xxx or 0 */
 
 
 /*
+ * Would a message of the given elevel reach the server log under the current
+ * log_min_messages?  This mirrors is_log_level_output() in elog.c, which is
+ * static there.  For log_min_messages, LOG sorts between ERROR and FATAL, so
+ * a plain numeric comparison (LOG = 15 is below WARNING = 19) wrongly
+ * suppresses LOG-level messages under the default log_min_messages = WARNING;
+ * that hid every "Error on receive from <segment>" the dispatcher recorded
+ * while a query hung after two segments had crashed.
+ */
+static bool
+dispatch_message_goes_to_log(int elevel)
+{
+	if (elevel == LOG || elevel == LOG_SERVER_ONLY)
+	{
+		if (log_min_messages == LOG || log_min_messages <= ERROR)
+			return true;
+	}
+	else if (log_min_messages == LOG)
+	{
+		/* elevel != LOG */
+		if (elevel >= FATAL)
+			return true;
+	}
+	/* Neither is LOG */
+	else if (elevel >= log_min_messages)
+		return true;
+
+	return false;
+}
+
+/*
  * NonThread version of cdbdisp_appendMessage.
  *
  * It's safe to use palloc/pfree or elog/ereport.
@@ -316,7 +346,7 @@ cdbdisp_appendMessageNonThread(CdbDispatchResult *dispatchResult,
 	 * Display the message on stderr for debugging, if requested. This helps
 	 * to clarify the actual timing of threaded events.
 	 */
-	if (elevel >= log_min_messages)
+	if (dispatch_message_goes_to_log(elevel))
 	{
 		oneTrailingNewlinePQ(dispatchResult->error_message);
 		elog(LOG, "%s", dispatchResult->error_message->data + msgoff);
