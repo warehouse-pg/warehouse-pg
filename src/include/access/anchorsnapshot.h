@@ -46,14 +46,41 @@
  *   alone), so the session never announces the replay-position xmin
  *   between taking the snapshot and anchoring it.  The lowering happens
  *   under ProcArrayLock (shared) after re-checking that the anchor is
- *   still registered; every path that removes an entry (invalidation,
- *   publication retirement, eviction, the clear at the end of recovery)
- *   marks it invalid first and then takes ProcArrayLock exclusively once
- *   before anything collects xmins (a conflict resolution, the
- *   restartpoint's GetOldestXmin()), so that every installer that saw the
- *   entry has published its xmin by then and every later one finds the
- *   entry gone.  The installer writes its xmin before the re-check, and
- *   the restartpoint reads the registry on both sides of GetOldestXmin().
+ *   still registered; every path that removes an entry (conflict
+ *   invalidation, publication retirement, eviction, the clear at the end
+ *   of recovery) marks it invalid first and then takes ProcArrayLock
+ *   exclusively once before anything collects xmins, so that every
+ *   installer that saw the entry has published its xmin by then and every
+ *   later one finds the entry gone.  The installer writes its xmin before
+ *   the re-check, and the restartpoint reads the registry on both sides
+ *   of GetOldestXmin().
+ *
+ * Conflict linkage (the startup process, at redo):
+ *
+ * - A record that removes or hides row versions up to some xid (heap
+ *   cleanup-info, prune, freeze and all-visible records; index vacuum
+ *   deletes and page reuse) first invalidates every registered anchor
+ *   whose xmin is at or below that xid (AnchorSnapshotOnCleanupRecord,
+ *   called at each redo site outside its InHotStandby test), then the
+ *   standard resolution cancels the readers that hold such an xmin, then
+ *   the record is applied.  New imports of the anchor fail from the
+ *   invalidation on (55000); nothing waits.
+ * - A commit record that drops relation files (TRUNCATE, rewrites, DROP,
+ *   REINDEX; temporary relations excepted) invalidates every registered
+ *   anchor (AnchorSnapshotOnRelfilenodeDrop): the catalog is read at the
+ *   replay position, so an anchored read would follow the relation to a
+ *   file the anchor never saw.  The standard resolution then cancels the
+ *   readers holding such an xmin before the transaction's standby locks
+ *   are released: a reader that took its anchored snapshot and waits
+ *   behind the replayed AccessExclusiveLock must not wake into the new
+ *   file.
+ * - Invalidation is per node.  A cleanup replayed on a segment leaves the
+ *   coordinator's anchor registered; the next statement is refused by that
+ *   segment with the segment suffix.
+ * - An anchor file kept at a start that could not register it (hot standby
+ *   disabled, or the registry off) is tracked by the startup process and
+ *   removed by the same hooks once replay passes its restore point, so a
+ *   later start cannot register an anchor whose rows are gone.
  * - An executor writer publishes its snapshot to the reader gang only
  *   after the anchor is laid over it (GetSnapshotData() skips its usual
  *   publication under an anchored dispatch), so a reader never copies the
@@ -107,6 +134,7 @@
 #include "access/xlog_internal.h"
 #include "access/xlogreader.h"
 #include "nodes/pg_list.h"
+#include "storage/relfilenode.h"
 #include "utils/snapshot.h"
 
 /* The data-directory subdirectory holding the snapshot files. */
@@ -143,10 +171,24 @@ extern void AnchorSnapshotClearAll(void);
 /*
  * Removal of one anchor by name (entry and file), with the removal
  * barrier; startup process only.  No production caller today (the
- * conflict linkage of a later change sweeps by xmin); the unit tests'
- * primitive.
+ * conflict linkage sweeps by xmin); kept as the unit tests' primitive.
  */
 extern void AnchorSnapshotInvalidate(const char *rp_name);
+
+/*
+ * Conflict linkage (redo sites in heapam.c, nbtxlog.c, gistxlog.c,
+ * hash_xlog.c, spgxlog.c, and xact.c), see the header comment.  lsn is the
+ * record's end position.  Both ERROR only when a file they must remove
+ * cannot be removed; the start then fails and retries the record.  The
+ * second returns the
+ * highest xmin among the anchors it invalidated (InvalidTransactionId when
+ * none), the horizon for the standard resolution the caller runs before
+ * releasing the transaction's standby locks.
+ */
+extern void AnchorSnapshotOnCleanupRecord(TransactionId latestRemovedXid,
+										  RelFileNode node, XLogRecPtr lsn);
+extern TransactionId AnchorSnapshotOnRelfilenodeDrop(TransactionId xid,
+													 XLogRecPtr lsn, int nrels);
 
 /*
  * Lookup for backends (import path); false when no valid entry exists.

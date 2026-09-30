@@ -29,6 +29,7 @@
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
+#include "access/anchorsnapshot.h"
 #include "access/xact_storage_tablespace.h"
 #include "access/xlogutils.h"
 #include "catalog/index.h"
@@ -64,6 +65,7 @@
 #include "storage/procarray.h"
 #include "storage/sinvaladt.h"
 #include "storage/smgr.h"
+#include "storage/standby.h"
 #include "utils/builtins.h"
 #include "utils/catcache.h"
 #include "utils/combocid.h"
@@ -7137,10 +7139,38 @@ xact_redo_commit(xl_xact_parsed_commit *parsed,
 	TransactionId max_xid;
 	TimestampTz commit_time;
 	Oid tablespace_oid_to_delete = parsed->tablespace_oid_to_delete_on_commit;
+	TransactionId anchorHorizon = InvalidTransactionId;
+	RelFileNode anchorNode = {0, 0, 0};
 
 	Assert(TransactionIdIsValid(xid));
 
 	max_xid = TransactionIdLatest(xid, parsed->nsubxacts, parsed->subxacts);
+
+	/*
+	 * Anchor snapshots first (anchorsnapshot.h): the relation files this
+	 * commit drops are what an anchored read at the replay-position catalog
+	 * would no longer find.  Temporary relations are logged here in
+	 * Greenplum (prepared transactions may touch them) and are excluded: no
+	 * anchored read follows a session-private file.  Ahead of the standby
+	 * lock release below, whose waiters the horizon then cancels.
+	 */
+	if (parsed->nrels > 0)
+	{
+		int			nperm = 0;
+		int			i;
+
+		for (i = 0; i < parsed->nrels; i++)
+		{
+			if (!parsed->xnodes[i].isTempRelation)
+			{
+				if (nperm == 0)
+					anchorNode = parsed->xnodes[i].node;
+				nperm++;
+			}
+		}
+		if (nperm > 0)
+			anchorHorizon = AnchorSnapshotOnRelfilenodeDrop(xid, lsn, nperm);
+	}
 
 	ereportif(OidIsValid(tablespace_oid_to_delete), DEBUG5,
 		(errmsg("in xact_redo_commit_internal with tablespace oid to delete: %u",
@@ -7216,6 +7246,16 @@ xact_redo_commit(xl_xact_parsed_commit *parsed,
 											 parsed->msgs, parsed->nmsgs,
 											 XactCompletionRelcacheInitFileInval(parsed->xinfo),
 											 parsed->dbId, parsed->tsId);
+
+		/*
+		 * Readers holding an invalidated anchor's xmin go before the locks
+		 * are released: one that took its anchored snapshot and then waited
+		 * behind this transaction's AccessExclusiveLock would otherwise wake
+		 * and read the relation's new file with a snapshot that describes
+		 * the old one.  The same delay-then-cancel as the cleanup sites.
+		 */
+		if (InHotStandby && TransactionIdIsValid(anchorHorizon))
+			ResolveRecoveryConflictWithSnapshot(anchorHorizon, anchorNode);
 
 		/*
 		 * Release locks, if any. We do this for both two phase and normal one
