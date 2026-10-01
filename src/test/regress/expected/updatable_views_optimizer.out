@@ -1998,7 +1998,7 @@ INSERT INTO rw_view1 VALUES (15, 20); -- should fail
 ERROR:  new row violates check option for view "rw_view1"
 DETAIL:  Failing row contains (15, 10).
 UPDATE rw_view1 SET a = 20, b = 30; -- should fail
-ERROR:  UPDATE on distributed key column not allowed on relation with update triggers
+ERROR:  UPDATE that may move tuples across segments is not allowed on a relation with update triggers
 DROP TABLE base_tbl CASCADE;
 NOTICE:  drop cascades to view rw_view1
 DROP FUNCTION base_tbl_trig_fn();

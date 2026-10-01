@@ -198,7 +198,7 @@ NOTICE:  TD[table_schema] => public
 NOTICE:  TD[when] => AFTER
 -- GPDB: Fails, updating the distribution key with triggers is not allowed.
 update trigger_test_generated set i = 11 where i = 1;
-ERROR:  UPDATE on distributed key column not allowed on relation with update triggers
+ERROR:  UPDATE that may move tuples across segments is not allowed on a relation with update triggers
 -- try this instead:
 update trigger_test_generated set j = default where i = 1;
 NOTICE:  TD[args] => None

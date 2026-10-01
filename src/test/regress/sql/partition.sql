@@ -4269,4 +4269,221 @@ EXPLAIN (COSTS OFF) SELECT id::text, count(*) FROM test_pullup_ec GROUP BY id::t
 
 SELECT id::text, count(*) FROM test_pullup_ec GROUP BY id::text ORDER BY 1;
 
+--
+-- Test that segment is chosen correctly in case of tuple routing
+-- with differently distributed partitions (2nd phase of gpexpand)
+--
+SELECT gp_debug_set_create_table_default_numsegments(2);
+-- create different kinds of partitioned tables
+CREATE TABLE rank (id INT, rank INT, year INT, gender CHAR(1), count INT)
+DISTRIBUTED BY (id)
+PARTITION BY RANGE (year)
+( START (2006) INCLUSIVE END (2008) EXCLUSIVE EVERY (1),
+DEFAULT PARTITION extra);
+
+CREATE TABLE rank2 (id INT, rank INT, year INT, gender CHAR(1), count INT)
+WITH (appendonly='true', orientation='column', compresstype=zstd, compresslevel='1')
+DISTRIBUTED BY (id)
+PARTITION BY RANGE (year)
+( START (2006) INCLUSIVE END (2008) EXCLUSIVE EVERY (1),
+DEFAULT PARTITION extra);
+
+-- insert data for future movement
+INSERT INTO rank VALUES (543,1,2006,'m',1);
+INSERT INTO rank VALUES (543,1,2007,'f',1);
+INSERT INTO rank2 VALUES (543,1,2006,'m',1);
+INSERT INTO rank2 VALUES (543,1,2007,'f',1);
+
+-- prepare for expansion (1st stage of gpexpand)
+ALTER TABLE rank EXPAND PARTITION PREPARE;
+ALTER TABLE rank2 EXPAND PARTITION PREPARE;
+
+-- complete expansion for some leafs, thus simulating middle of 2nd stage of gpexpand
+ALTER TABLE rank_1_prt_2 SET WITH (REORGANIZE=true) DISTRIBUTED BY (id);
+ALTER TABLE rank2_1_prt_2 SET WITH (REORGANIZE=true) DISTRIBUTED BY (id);
+
+-- check values distribution before update
+SELECT gp_segment_id, * FROM rank_1_prt_2;
+SELECT gp_segment_id, * FROM rank2_1_prt_2;
+SELECT gp_segment_id, * FROM rank_1_prt_3;
+SELECT gp_segment_id, * FROM rank2_1_prt_3;
+
+-- see if update is done with splitting and explicit redistribution
+EXPLAIN (COSTS OFF) UPDATE rank SET year=2006 WHERE gender='f';
+EXPLAIN (COSTS OFF) UPDATE rank2 SET year=2006 WHERE gender='f';
+
+-- update key columns so partition change will be triggered
+UPDATE rank SET year=2006 WHERE gender='f';
+UPDATE rank2 SET year=2006 WHERE gender='f';
+
+-- check that update ended up where it should
+SELECT gp_segment_id, * FROM rank_1_prt_2;
+SELECT gp_segment_id, * FROM rank2_1_prt_2;
+SELECT gp_segment_id, * FROM rank_1_prt_3;
+SELECT gp_segment_id, * FROM rank2_1_prt_3;
+
+--
+-- Test that segment is chosen correctly in case of insertion also
+--
+CREATE TABLE rank3 (id INT, rank INT, year INT, gender CHAR(1), count INT)
+DISTRIBUTED BY (id)
+PARTITION BY RANGE (year)
+( START (2006) INCLUSIVE END (2008) EXCLUSIVE EVERY (1),
+DEFAULT PARTITION extra);
+
+-- get to 2nd stage of gpexpand
+ALTER TABLE rank3 EXPAND PARTITION PREPARE;
+ALTER TABLE rank3_1_prt_2 SET WITH (REORGANIZE=true) DISTRIBUTED BY (id);
+
+-- insert data
+INSERT INTO rank3 VALUES (543,1,2006,'m',1);
+INSERT INTO rank3 VALUES (543,1,2007,'f',1);
+
+-- check, that it's inserted right
+SELECT gp_segment_id, * FROM rank3_1_prt_2;
+
+--
+-- Test that segment is chosen correctly even in case of different attribute number
+--
+CREATE TABLE rank4 (id INT, rank INT, year INT, gender CHAR(1), count INT)
+DISTRIBUTED BY (id)
+PARTITION BY RANGE (year)
+( START (2006) END (2010) EVERY (1),
+DEFAULT PARTITION extra);
+
+-- create partition with changed attribute number
+CREATE TABLE rank4_1_prt_6 (rank INT, year INT, gender CHAR(1), count INT, id INT) DISTRIBUTED BY (id);
+ALTER TABLE rank4_1_prt_6 DROP year, ADD year INT;
+ALTER TABLE rank4 EXCHANGE PARTITION FOR (INT '2009') WITH TABLE rank4_1_prt_6;
+
+INSERT INTO rank4 VALUES (543,1,2006,'m',1);
+INSERT INTO rank4 VALUES (543,1,2009,'f',1);
+
+ALTER TABLE rank4 EXPAND PARTITION PREPARE;
+
+ALTER TABLE rank4_1_prt_2 SET WITH (REORGANIZE=true) DISTRIBUTED BY (id);
+
+SELECT gp_segment_id, * FROM rank4_1_prt_2;
+SELECT gp_segment_id, * FROM rank4_1_prt_5;
+
+-- see if update is done with splitting and explicit redistribution
+EXPLAIN (COSTS OFF) UPDATE rank4 SET year=2006 WHERE gender='f';
+
+UPDATE rank4 SET year=2006 WHERE gender='f';
+
+SELECT gp_segment_id, * FROM rank4_1_prt_2;
+SELECT gp_segment_id, * FROM rank4_1_prt_5;
+
+--
+-- Test that segment is chosen correctly in case of update on distribution
+-- and partitioning columns simultaneously.
+--
+CREATE TABLE rank5 (id INT, rank INT, year INT, gender CHAR(1), count INT)
+DISTRIBUTED BY (id)
+PARTITION BY RANGE (year)
+( START (2006) INCLUSIVE END (2008) EXCLUSIVE EVERY (1),
+DEFAULT PARTITION extra);
+
+INSERT INTO rank5 VALUES (543,1,2006,'m',1);
+INSERT INTO rank5 VALUES (543,1,2007,'f',1);
+
+ALTER TABLE rank5 EXPAND PARTITION PREPARE;
+
+ALTER TABLE rank5_1_prt_2 SET WITH (REORGANIZE=true) DISTRIBUTED BY (id);
+
+SELECT gp_segment_id, * FROM rank5_1_prt_2;
+SELECT gp_segment_id, * FROM rank5_1_prt_3;
+
+EXPLAIN (COSTS OFF) UPDATE rank5 SET year=2006, id=id+1 WHERE gender='f';
+
+UPDATE rank5 SET year=2006, id=id+1 WHERE gender='f';
+
+SELECT gp_segment_id, * FROM rank5_1_prt_2;
+SELECT gp_segment_id, * FROM rank5_1_prt_3;
+
+--
+-- Test that segment is chosen correctly in case of update on partitioning
+-- columns where plan contains 'fake' gp_segment_id column.
+--
+CREATE TABLE t (id INT, year INT, r INT) DISTRIBUTED BY (id)
+PARTITION BY RANGE (year) (START (2006) END (2008) EVERY (1));
+CREATE TABLE o (id INT) DISTRIBUTED BY (id);
+
+ALTER TABLE o EXPAND TABLE;
+
+INSERT INTO o SELECT generate_series(1, 600);
+INSERT INTO t SELECT i, 2007, 0 FROM generate_series(1, 600) i;
+
+ALTER TABLE t EXPAND PARTITION PREPARE;
+ALTER TABLE t_1_prt_1 SET WITH (REORGANIZE = TRUE) DISTRIBUTED BY (id);
+
+SELECT string_agg(id::text, ',') AS ids
+FROM (SELECT id FROM t_1_prt_2 WHERE gp_segment_id = 1 ORDER BY ctid LIMIT 5) s \gset
+
+-- If gp_segment_id column were treated incorrectly:
+-- delete part will go to segment 0 ("id % 1 AS gp_segment_id" will always give
+-- 0), so it will delete nothing (as real query shows that delete's tuple id
+-- resides on segment 1 - by definition of ids);
+-- but insert will go to 0 too and successfully insert something.
+-- That way we will get duplicates, which we will check on next query.
+UPDATE t SET year = 2006, r = o.gp_segment_id
+FROM (SELECT id, id % 1 AS gp_segment_id FROM o) o
+WHERE t.id = o.id AND t.id IN (:ids);
+
+-- Check duplicates
+SELECT count(*), count(DISTINCT id) FROM t;
+
+--
+-- Test that segment is chosen correctly when ORCA's column ids of the target
+-- table don't match its attribute numbers: the root has a dropped column
+-- before the distribution key, and the UPDATE has a CTE.
+--
+CREATE TABLE rank6 (junk INT, id INT, year INT) DISTRIBUTED BY (id)
+PARTITION BY RANGE (year) (START (2006) END (2008) EVERY (1));
+ALTER TABLE rank6 DROP COLUMN junk;
+INSERT INTO rank6 SELECT i, 2007 FROM generate_series(1, 60) i;
+
+ALTER TABLE rank6 EXPAND PARTITION PREPARE;
+ALTER TABLE rank6_1_prt_1 SET WITH (REORGANIZE = TRUE) DISTRIBUTED BY (id);
+
+EXPLAIN (COSTS OFF) UPDATE rank6 SET year = 2006 WHERE id <= 20;
+UPDATE rank6 SET year = 2006 WHERE id <= 20;
+
+EXPLAIN (COSTS OFF) WITH w AS (SELECT id FROM o WHERE id BETWEEN 21 AND 40)
+UPDATE rank6 SET year = 2006 FROM w WHERE rank6.id = w.id;
+WITH w AS (SELECT id FROM o WHERE id BETWEEN 21 AND 40)
+UPDATE rank6 SET year = 2006 FROM w WHERE rank6.id = w.id;
+
+-- All moved rows must be on the segment given by their hash (o is hash
+-- distributed by id on the full cluster), and there must be no duplicates.
+SELECT count(*) AS moved,
+       count(*) FILTER (WHERE r.gp_segment_id <> o.gp_segment_id) AS misplaced
+FROM rank6_1_prt_1 r JOIN o USING (id);
+SELECT count(*), count(DISTINCT id) FROM rank6;
+
+-- Updates on leaf partitions shouldn't be planned with split update as update
+-- on leaf partition suppose to not move rows away from this partition thus,
+-- keeping distribution the same.
+EXPLAIN (COSTS OFF) UPDATE rank6_1_prt_2 SET year = 2007 WHERE id = 50;
+
+-- A BEFORE UPDATE trigger must not prevent such an UPDATE.
+CREATE FUNCTION rank6_trg() RETURNS trigger LANGUAGE plpgsql AS
+$$ BEGIN RETURN NEW; END $$;
+CREATE TRIGGER rank6_tr BEFORE UPDATE ON rank6_1_prt_2
+FOR EACH ROW EXECUTE FUNCTION rank6_trg();
+UPDATE rank6_1_prt_2 SET year = 2007 WHERE id = 50;
+DROP TRIGGER rank6_tr ON rank6_1_prt_2;
+DROP FUNCTION rank6_trg();
+
+SELECT gp_debug_reset_create_table_default_numsegments();
+
+DROP TABLE rank;
+DROP TABLE rank2;
+DROP TABLE rank3;
+DROP TABLE rank4;
+DROP TABLE rank4_1_prt_6;
+DROP TABLE rank5;
+DROP TABLE t;
+DROP TABLE o;
+DROP TABLE rank6;
 DROP TABLE test_pullup_ec;

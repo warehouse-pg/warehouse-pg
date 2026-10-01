@@ -14,7 +14,7 @@ CREATE TABLE trigger_test_generated (
 );
 
 -- GPDB: The UPDATEs below fail otherwise:
--- ERROR:  UPDATE on distributed key column not allowed on relation with update triggers
+-- ERROR:  UPDATE that may move tuples across segments is not allowed on a relation with update triggers
 alter table trigger_test set distributed randomly;
 alter table trigger_test_generated set distributed randomly;
 

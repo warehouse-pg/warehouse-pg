@@ -201,7 +201,7 @@ SELECT * FROM document WHERE did = 8; -- and confirm we can't see it
 
 -- RLS policies are checked before constraints
 INSERT INTO document VALUES (8, 44, 1, 'regress_rls_carol', 'my third manga'); -- Should fail with RLS check violation, not duplicate key violation
--- GPDB: UPDATE on distributed key column not allowed on relation with update triggers
+-- GPDB: UPDATE that may move tuples across segments is not allowed on a relation with update triggers
 -- start_ignore
 UPDATE document SET did = 8, dauthor = 'regress_rls_carol' WHERE did = 5; -- Should fail with RLS check violation, not duplicate key violation
 -- end_ignore
