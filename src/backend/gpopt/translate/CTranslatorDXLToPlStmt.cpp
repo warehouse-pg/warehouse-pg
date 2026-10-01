@@ -4989,6 +4989,90 @@ CTranslatorDXLToPlStmt::GetDXLDatumGPDBHash(CDXLDatumArray *dxl_datum_array,
 }
 
 //---------------------------------------------------------------------------
+//	@function: set_resjunk_flag
+//
+//	@doc: Set resjunk flag to true for TargetEntry from given context on given
+//		  id.
+//
+//---------------------------------------------------------------------------
+static void
+set_resjunk_flag(const CDXLTranslateContext *context, const ULONG id)
+{
+	TargetEntry *te = const_cast<TargetEntry *>(context->GetTargetEntry(id));
+	GPOS_ASSERT(te != nullptr);
+	te->resjunk = true;
+}
+
+//---------------------------------------------------------------------------
+//	@function:
+//		CTranslatorDXLToPlStmt::SetSplitUpdateHashInfo
+//
+//	@doc:
+//		Check and set hash info in split node.
+//
+//---------------------------------------------------------------------------
+void
+CTranslatorDXLToPlStmt::SetSplitUpdateHashInfo(
+	SplitUpdate *split, const CDXLTranslateContext *output_context,
+	ULongPtrArray *delete_colids)
+{
+	// List of result relations shouldn't be null, as we could get here only
+	// with DML query.
+	GPOS_ASSERT(m_result_rel_list != nullptr);
+
+	Index id = static_cast<Index>(gpdb::ListLastInt(m_result_rel_list));
+	RangeTblEntry *rte = m_dxl_to_plstmt_context->GetRTEByIndex(id);
+	Oid target_relid = rte->relid;
+
+	if (target_relid == InvalidOid)
+	{
+		char err_msg[256];
+		snprintf(err_msg, 256, "Couldn't fetch target relid for \"%i\" id.",
+				 id);
+		GpdbEreport(ERRCODE_INTERNAL_ERROR, ERROR, err_msg, nullptr);
+	}
+
+	gpdb::RelationWrapper target_rel = gpdb::GetRelation(target_relid);
+
+	GpPolicy *policy = target_rel ? target_rel->rd_cdbpolicy : nullptr;
+
+	// If we're here, relation must have hash distribution.
+	GPOS_ASSERT(policy && policy->ptype == POLICYTYPE_PARTITIONED &&
+				policy->nattrs > 0);
+
+	int policy_nattrs = policy->nattrs;
+	TupleDesc resultDesc = target_rel->rd_att;
+
+	split->numHashAttrs = policy_nattrs;
+	split->numHashSegments = policy->numsegments;
+	split->hashAttnos =
+		(AttrNumber *) gpdb::GPDBAlloc(policy_nattrs * sizeof(AttrNumber));
+	split->hashFuncs = (Oid *) gpdb::GPDBAlloc(policy_nattrs * sizeof(Oid));
+
+	for (int i = 0; i < policy_nattrs; i++)
+	{
+		// Position of the column among non-dropped columns
+		ULONG pos = 0;
+		for (AttrNumber a = 1; a < policy->attrs[i]; a++)
+		{
+			if (!(&(resultDesc)->attrs[(a - 1)])->attisdropped)
+				pos++;
+		}
+		ULONG colid = *(*delete_colids)[pos];
+
+		const TargetEntry *te = output_context->GetTargetEntry(colid);
+		const Form_pg_attribute att =
+			&(resultDesc->attrs[(policy->attrs[i] - 1)]);
+
+		Oid typeoid = att->atttypid;
+		Oid opfamily = gpdb::GetOpclassFamily(policy->opclasses[i]);
+
+		split->hashAttnos[i] = te->resno;
+		split->hashFuncs[i] = gpdb::GetHashProcInOpfamily(opfamily, typeoid);
+	}
+}
+
+//---------------------------------------------------------------------------
 //	@function:
 //		CTranslatorDXLToPlStmt::TranslateDXLSplit
 //
@@ -5054,6 +5138,44 @@ CTranslatorDXLToPlStmt::TranslateDXLSplit(
 	plan->lefttree = child_plan;
 	plan->plan_node_id = m_dxl_to_plstmt_context->GetNextPlanId();
 
+	// If we're updating hash-distributed table we need to fill hash-related
+	// fields.
+	if (phy_split_dxlop->GetNeedsResJunk())
+	{
+		SetSplitUpdateHashInfo(split, output_context, deletion_colid_array);
+		// Junk flag setting for child and output plans.
+		ULONG split_ctid_colid = phy_split_dxlop->GetCtIdColId();
+		ULONG split_segid_colid = phy_split_dxlop->GetSegmentIdColId();
+
+		// Set junk attributes to target list entries of output plan.
+		set_resjunk_flag(output_context, split_ctid_colid);
+		set_resjunk_flag(output_context, split_segid_colid);
+
+		// Iterate through projection list to get gp_segment_id and ctid
+		const ULONG proj_arity = project_list_dxlnode->Arity();
+		for (ULONG ul = 0; ul < proj_arity; ++ul)
+		{
+			CDXLNode *proj_elem_dxlnode = (*project_list_dxlnode)[ul];
+			CDXLScalarProjElem *proj_elem =
+				CDXLScalarProjElem::Cast(proj_elem_dxlnode->GetOperator());
+
+			// Check if this projection element is ctid or gp_segment_id for output plan
+			if (proj_elem->IsColDefined(split_ctid_colid) ||
+				proj_elem->IsColDefined(split_segid_colid))
+			{
+				CDXLNode *expr_dxlnode = (*proj_elem_dxlnode)[0];
+
+				// Extract the child node's ColId
+				ULONG child_colid =
+					CDXLScalarIdent::Cast(expr_dxlnode->GetOperator())
+						->GetDXLColRef()
+						->Id();
+
+				// Look up the TargetEntry in the child's translation context
+				set_resjunk_flag(&child_context, child_colid);
+			}
+		}
+	}
 	SetParamIds(plan);
 
 	// cleanup

@@ -4538,13 +4538,188 @@ copy partial_rpt_to to stdout;
 set search_path=test_partial_table,public;
 copy partial_rpt_to to stdout;
 1	1
+--
+-- Test that segment is chosen correctly in case of tuple routing
+-- with differently distributed partitions (2nd phase of gpexpand)
+--
+select gp_debug_set_create_table_default_numsegments(2);
+ gp_debug_set_create_table_default_numsegments 
+-----------------------------------------------
+ 2
+(1 row)
+
+-- create different kinds of partitioned tables
+create table sales (trans_id int, date date, amount decimal(9,2), region text)
+distributed by (trans_id)
+partition by range (date)
+subpartition by list (region)
+subpartition template
+(subpartition usa values ('usa'),
+subpartition asia values ('asia'),
+default subpartition other_regions)
+(start (date '2011-01-01') inclusive
+end (date '2011-03-01') inclusive
+every (interval '1 month'),
+default partition outlying_dates);
+-- insert data for future movement
+insert into sales values (543,'2011-01-01',1000,'usa');
+insert into sales values (543,'2011-02-01',1234,'usa');
+insert into sales values (543,'2011-03-01',1000,'asia');
+-- prepare for expansion (1st stage of gpexpand)
+alter table sales expand partition prepare;
+-- complete expansion for some leafs, thus simulating middle of 2nd stage of gpexpand
+alter table sales_1_prt_2_2_prt_usa set with (reorganize=true) distributed by (trans_id);
+alter table sales_1_prt_4_2_prt_usa set with (reorganize=true) distributed by (trans_id);
+-- check values distribution before update
+select gp_segment_id, * from sales_1_prt_2_2_prt_usa;
+ gp_segment_id | trans_id |    date    | amount  | region 
+---------------+----------+------------+---------+--------
+             2 |      543 | 01-01-2011 | 1000.00 | usa
+(1 row)
+
+select gp_segment_id, * from sales_1_prt_3_2_prt_usa;
+ gp_segment_id | trans_id |    date    | amount  | region 
+---------------+----------+------------+---------+--------
+             0 |      543 | 02-01-2011 | 1234.00 | usa
+(1 row)
+
+select gp_segment_id, * from sales_1_prt_4_2_prt_asia;
+ gp_segment_id | trans_id |    date    | amount  | region 
+---------------+----------+------------+---------+--------
+             0 |      543 | 03-01-2011 | 1000.00 | asia
+(1 row)
+
+-- see if update is done with splitting and explicit redistribution
+explain (costs off) update sales set date='2011-01-01' where amount=1234;
+                                  QUERY PLAN                                  
+------------------------------------------------------------------------------
+ Update on sales
+   Update on sales_1_prt_2_2_prt_asia
+   Update on sales_1_prt_2_2_prt_usa
+   Update on sales_1_prt_2_2_prt_other_regions
+   Update on sales_1_prt_3_2_prt_asia
+   Update on sales_1_prt_3_2_prt_usa
+   Update on sales_1_prt_3_2_prt_other_regions
+   Update on sales_1_prt_4_2_prt_asia
+   Update on sales_1_prt_4_2_prt_usa
+   Update on sales_1_prt_4_2_prt_other_regions
+   Update on sales_1_prt_outlying_dates_2_prt_asia
+   Update on sales_1_prt_outlying_dates_2_prt_usa
+   Update on sales_1_prt_outlying_dates_2_prt_other_regions
+   ->  Explicit Redistribute Motion 3:3  (slice1; segments: 3)
+         ->  Split
+               ->  Seq Scan on sales_1_prt_2_2_prt_asia
+                     Filter: (amount = '1234'::numeric)
+   ->  Seq Scan on sales_1_prt_2_2_prt_usa
+         Filter: (amount = '1234'::numeric)
+   ->  Explicit Redistribute Motion 3:3  (slice2; segments: 3)
+         ->  Split
+               ->  Seq Scan on sales_1_prt_2_2_prt_other_regions
+                     Filter: (amount = '1234'::numeric)
+   ->  Explicit Redistribute Motion 3:3  (slice3; segments: 3)
+         ->  Split
+               ->  Seq Scan on sales_1_prt_3_2_prt_asia
+                     Filter: (amount = '1234'::numeric)
+   ->  Explicit Redistribute Motion 3:3  (slice4; segments: 3)
+         ->  Split
+               ->  Seq Scan on sales_1_prt_3_2_prt_usa
+                     Filter: (amount = '1234'::numeric)
+   ->  Explicit Redistribute Motion 3:3  (slice5; segments: 3)
+         ->  Split
+               ->  Seq Scan on sales_1_prt_3_2_prt_other_regions
+                     Filter: (amount = '1234'::numeric)
+   ->  Explicit Redistribute Motion 3:3  (slice6; segments: 3)
+         ->  Split
+               ->  Seq Scan on sales_1_prt_4_2_prt_asia
+                     Filter: (amount = '1234'::numeric)
+   ->  Seq Scan on sales_1_prt_4_2_prt_usa
+         Filter: (amount = '1234'::numeric)
+   ->  Explicit Redistribute Motion 3:3  (slice7; segments: 3)
+         ->  Split
+               ->  Seq Scan on sales_1_prt_4_2_prt_other_regions
+                     Filter: (amount = '1234'::numeric)
+   ->  Explicit Redistribute Motion 3:3  (slice8; segments: 3)
+         ->  Split
+               ->  Seq Scan on sales_1_prt_outlying_dates_2_prt_asia
+                     Filter: (amount = '1234'::numeric)
+   ->  Explicit Redistribute Motion 3:3  (slice9; segments: 3)
+         ->  Split
+               ->  Seq Scan on sales_1_prt_outlying_dates_2_prt_usa
+                     Filter: (amount = '1234'::numeric)
+   ->  Explicit Redistribute Motion 3:3  (slice10; segments: 3)
+         ->  Split
+               ->  Seq Scan on sales_1_prt_outlying_dates_2_prt_other_regions
+                     Filter: (amount = '1234'::numeric)
+ Optimizer: Postgres-based planner
+(58 rows)
+
+explain (costs off) update sales set region='usa' where region='asia';
+                             QUERY PLAN                              
+---------------------------------------------------------------------
+ Update on sales
+   Update on sales_1_prt_2_2_prt_asia
+   Update on sales_1_prt_3_2_prt_asia
+   Update on sales_1_prt_4_2_prt_asia
+   Update on sales_1_prt_outlying_dates_2_prt_asia
+   ->  Explicit Redistribute Motion 3:3  (slice1; segments: 3)
+         ->  Split
+               ->  Seq Scan on sales_1_prt_2_2_prt_asia
+                     Filter: (region = 'asia'::text)
+   ->  Explicit Redistribute Motion 3:3  (slice2; segments: 3)
+         ->  Split
+               ->  Seq Scan on sales_1_prt_3_2_prt_asia
+                     Filter: (region = 'asia'::text)
+   ->  Explicit Redistribute Motion 3:3  (slice3; segments: 3)
+         ->  Split
+               ->  Seq Scan on sales_1_prt_4_2_prt_asia
+                     Filter: (region = 'asia'::text)
+   ->  Explicit Redistribute Motion 3:3  (slice4; segments: 3)
+         ->  Split
+               ->  Seq Scan on sales_1_prt_outlying_dates_2_prt_asia
+                     Filter: (region = 'asia'::text)
+ Optimizer: Postgres-based planner
+(22 rows)
+
+-- update key columns so partition change will be triggered
+update sales set date='2011-01-01' where amount=1234;
+update sales set region='usa' where region='asia';
+-- check that update ended up where it should
+select gp_segment_id, * from sales_1_prt_2_2_prt_usa;
+ gp_segment_id | trans_id |    date    | amount  | region 
+---------------+----------+------------+---------+--------
+             2 |      543 | 01-01-2011 | 1000.00 | usa
+             2 |      543 | 01-01-2011 | 1234.00 | usa
+(2 rows)
+
+select gp_segment_id, * from sales_1_prt_4_2_prt_usa;
+ gp_segment_id | trans_id |    date    | amount  | region 
+---------------+----------+------------+---------+--------
+             2 |      543 | 03-01-2011 | 1000.00 | usa
+(1 row)
+
+select gp_segment_id, * from sales_1_prt_3_2_prt_usa;
+ gp_segment_id | trans_id | date | amount | region 
+---------------+----------+------+--------+--------
+(0 rows)
+
+select gp_segment_id, * from sales_1_prt_4_2_prt_asia;
+ gp_segment_id | trans_id | date | amount | region 
+---------------+----------+------+--------+--------
+(0 rows)
+
+select gp_debug_reset_create_table_default_numsegments();
+ gp_debug_reset_create_table_default_numsegments 
+-------------------------------------------------
+ 
+(1 row)
+
 -- start_ignore
 -- We need to do a cluster expansion which will check if there are partial
 -- tables, we need to drop the partial tables to keep the cluster expansion
 -- run correctly.
 reset search_path;
 drop schema test_partial_table cascade;
-NOTICE:  drop cascades to 9 other objects
+NOTICE:  drop cascades to 10 other objects
 DETAIL:  drop cascades to table test_partial_table.t1
 drop cascades to table test_partial_table.d1
 drop cascades to table test_partial_table.r1
@@ -4554,4 +4729,5 @@ drop cascades to table test_partial_table.r2
 drop cascades to table test_partial_table.size_sanity_check
 drop cascades to table test_partial_table.partial_rpt_from
 drop cascades to table test_partial_table.partial_rpt_to
+drop cascades to table test_partial_table.sales
 -- end_ignore

@@ -39,7 +39,9 @@ const CHAR *rgszDMLFileNames[] = {
 	"../data/dxl/minidump/InsertMismatchedDistrubution-2.mdp",
 	"../data/dxl/minidump/DeleteMismatchedDistribution.mdp",
 	"../data/dxl/minidump/UpdateNoDistKeyMismatchedDistribution.mdp",
+	"../data/dxl/minidump/UpdateNoDistKeyMismatchedDistribution2.mdp",
 	"../data/dxl/minidump/UpdateDistKeyMismatchedDistribution.mdp",
+	"../data/dxl/minidump/UpdateDistKeyMismatchedDistribution2.mdp",
 	"../data/dxl/minidump/InsertConstTupleRandomDistribution.mdp",
 	"../data/dxl/minidump/InsertCoordinatorOnlyTable.mdp",
 	"../data/dxl/minidump/InsertCoordinatorOnlyTableConstTuple.mdp",
@@ -92,6 +94,12 @@ const CHAR *rgszDMLFileNames[] = {
 	"../data/dxl/minidump/UpdateWindowGatherMerge.mdp",
 	"../data/dxl/minidump/UpdateDistKeyWithNestedJoin.mdp",
 	"../data/dxl/minidump/RTErequiredPerms.mdp",
+	"../data/dxl/minidump/UpdatePartColumnExpandSecondPhaseOneKey.mdp",
+	"../data/dxl/minidump/UpdatePartAndDistColumnExpandSecondPhaseOneKey.mdp",
+	"../data/dxl/minidump/UpdateOtherColumnExpandSecondPhaseOneKey.mdp",
+	"../data/dxl/minidump/UpdatePartColumnExpandSecondPhaseTwoKey.mdp",
+	"../data/dxl/minidump/UpdatePartAndSecondDistColumnExpandSecondPhaseTwoKey.mdp",
+	"../data/dxl/minidump/UpdatePartAndBothDistColumnExpandSecondPhaseTwoKey.mdp",
 };
 
 //---------------------------------------------------------------------------

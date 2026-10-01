@@ -47,6 +47,9 @@ private:
 	// action column
 	CColRef *m_pcrAction;
 
+	// special field for resjunk flag assignment
+	BOOL m_needsResJunk;
+
 public:
 	CLogicalSplit(const CLogicalSplit &) = delete;
 
@@ -56,7 +59,7 @@ public:
 	// ctor
 	CLogicalSplit(CMemoryPool *mp, CColRefArray *pdrgpcrDelete,
 				  CColRefArray *pdrgpcrInsert, CColRef *pcrCtid,
-				  CColRef *pcrSegmentId, CColRef *pcrAction);
+				  CColRef *pcrSegmentId, CColRef *pcrAction, BOOL needsResJunk);
 
 	// dtor
 	~CLogicalSplit() override;
@@ -108,6 +111,13 @@ public:
 	PcrAction() const
 	{
 		return m_pcrAction;
+	}
+
+	// resjunk flag
+	BOOL
+	NeedsResJunk() const
+	{
+		return m_needsResJunk;
 	}
 
 	// operator specific hash function

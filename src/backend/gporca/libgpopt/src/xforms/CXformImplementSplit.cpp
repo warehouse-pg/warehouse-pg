@@ -94,11 +94,13 @@ CXformImplementSplit::Transform(CXformContext *pxfctxt, CXformResult *pxfres,
 	pexprChild->AddRef();
 	pexprProjList->AddRef();
 
+	BOOL needsResJunk = popSplit->NeedsResJunk();
+
 	// create physical Split
 	CExpression *pexprAlt = GPOS_NEW(mp) CExpression(
 		mp,
 		GPOS_NEW(mp) CPhysicalSplit(mp, pdrgpcrDelete, pdrgpcrInsert, pcrCtid,
-									pcrSegmentId, pcrAction),
+									pcrSegmentId, pcrAction, needsResJunk),
 		pexprChild, pexprProjList);
 	// add alternative to transformation result
 	pxfres->Add(pexprAlt);

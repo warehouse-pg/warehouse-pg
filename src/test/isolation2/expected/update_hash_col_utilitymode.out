@@ -7,7 +7,7 @@ UPDATE 0
 
 -- But this throws an error.
 1U: update t_update_hash_col_utilitymode set c = c + 1;
-ERROR:  cannot update distribution key columns in utility mode
+ERROR:  updates changing tuples distribution across segments can not be executed in utility mode
 
 drop table t_update_hash_col_utilitymode;
 DROP TABLE

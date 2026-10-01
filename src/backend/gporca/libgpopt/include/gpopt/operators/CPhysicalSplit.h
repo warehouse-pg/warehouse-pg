@@ -49,13 +49,17 @@ private:
 	// required columns by local members
 	CColRefSet *m_pcrsRequiredLocal;
 
+	// special field for resjunk flag assignment
+	BOOL m_needsResJunk;
+
 public:
 	CPhysicalSplit(const CPhysicalSplit &) = delete;
 
 	// ctor
 	CPhysicalSplit(CMemoryPool *mp, CColRefArray *pdrgpcrDelete,
 				   CColRefArray *pdrgpcrInsert, CColRef *pcrCtid,
-				   CColRef *pcrSegmentId, CColRef *pcrAction);
+				   CColRef *pcrSegmentId, CColRef *pcrAction,
+				   BOOL needsResJunk);
 
 	// dtor
 	~CPhysicalSplit() override;
@@ -107,6 +111,13 @@ public:
 	PdrgpcrInsert() const
 	{
 		return m_pdrgpcrInsert;
+	}
+
+	// resjunk flag
+	BOOL
+	NeedsResJunk() const
+	{
+		return m_needsResJunk;
 	}
 
 	// match function

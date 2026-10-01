@@ -539,7 +539,7 @@ FOR EACH STATEMENT EXECUTE PROCEDURE trigger_func('before_stmt');
 ERROR:  Triggers for statements are not yet supported
 -- update should fail
 update table_with_update_trigger set a = a + 1;
-ERROR:  UPDATE on distributed key column not allowed on relation with update triggers
+ERROR:  UPDATE that may move tuples across segments is not allowed on a relation with update triggers
 -- data expansion should success and not hiting any triggers.
 Alter table table_with_update_trigger expand table;
 select gp_segment_id, count(*) from table_with_update_trigger group by 1 order by 1;
