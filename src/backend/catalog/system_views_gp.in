@@ -1,7 +1,11 @@
 # This file lists all the PG system views 'pg_%' that we would like to create an
 # MPP-aware view 'gp_%' out of. The generated 'gp_%' view definitions will be placed
 # in system_views_gp.sql, and initialized at the same time as system_views.sql.
-pg_backend_memory_contexts
+#
+# pg_backend_memory_contexts is left out on purpose: its gp_ twin needs the same
+# privileges as the source view (REVOKE from PUBLIC, GRANT to pg_read_all_stats),
+# which the generated views cannot carry, so it is defined by hand in
+# system_views.sql right after its source view.
 pg_config
 pg_cursors
 pg_file_settings

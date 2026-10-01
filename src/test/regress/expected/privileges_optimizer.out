@@ -2815,12 +2815,18 @@ REVOKE EXECUTE ON FUNCTION gp_add_coordinator_standby(text, text, text, integer)
 REVOKE EXECUTE ON FUNCTION gp_add_master_standby(text, text, text) FROM regress_standby_user;
 REVOKE EXECUTE ON FUNCTION gp_add_master_standby(text, text, text, integer) FROM regress_standby_user;
 DROP ROLE regress_standby_user;
-
--- test to check privileges of system view pg_backend_memory_contexts.
+-- test to check privileges of system views pg_backend_memory_contexts and
+-- gp_backend_memory_contexts.
 -- switch to superuser
 \c -
 CREATE ROLE regress_readallstats;
 SELECT has_table_privilege('regress_readallstats','pg_backend_memory_contexts','SELECT'); -- no
+ has_table_privilege 
+---------------------
+ f
+(1 row)
+
+SELECT has_table_privilege('regress_readallstats','gp_backend_memory_contexts','SELECT'); -- no
  has_table_privilege 
 ---------------------
  f
@@ -2833,9 +2839,21 @@ SELECT has_table_privilege('regress_readallstats','pg_backend_memory_contexts','
  t
 (1 row)
 
+SELECT has_table_privilege('regress_readallstats','gp_backend_memory_contexts','SELECT'); -- yes
+ has_table_privilege 
+---------------------
+ t
+(1 row)
+
 -- run query to ensure that functions within views can be executed
 SET ROLE regress_readallstats;
 SELECT COUNT(*) >= 0 AS ok FROM pg_backend_memory_contexts;
+ ok 
+----
+ t
+(1 row)
+
+SELECT COUNT(*) >= 0 AS ok FROM gp_backend_memory_contexts;
  ok 
 ----
  t

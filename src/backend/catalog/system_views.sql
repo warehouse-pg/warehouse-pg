@@ -562,6 +562,19 @@ GRANT SELECT ON pg_backend_memory_contexts TO pg_read_all_stats;
 REVOKE EXECUTE ON FUNCTION pg_get_backend_memory_contexts() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION pg_get_backend_memory_contexts() TO pg_read_all_stats;
 
+-- The cluster-wide twin of pg_backend_memory_contexts is defined here
+-- instead of being generated from system_views_gp.in, so that it carries the
+-- same privileges as the view it is built on; the generated gp_* views are
+-- readable by PUBLIC regardless of the privileges of their source view.
+CREATE VIEW gp_backend_memory_contexts AS
+    SELECT gp_execution_segment() AS gp_segment_id, *
+    FROM gp_dist_random('pg_backend_memory_contexts')
+    UNION ALL
+    SELECT -1 AS gp_segment_id, * FROM pg_backend_memory_contexts;
+
+REVOKE ALL ON gp_backend_memory_contexts FROM PUBLIC;
+GRANT SELECT ON gp_backend_memory_contexts TO pg_read_all_stats;
+
 -- Statistics views
 
 CREATE VIEW pg_stat_all_tables AS

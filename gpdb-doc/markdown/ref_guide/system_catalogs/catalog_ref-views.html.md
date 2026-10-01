@@ -130,7 +130,7 @@ For more information about the standard system views supported in PostgreSQL and
 
 ## <a id="gp_backend_memory_contexts"></a>gp_backend_memory_contexts
 
-The `gp_backend_memory_contexts` view is a cluster-wide view that displays the [`pg_backend_memory_contexts`](#pg_backend_memory_contexts) information from every primary segment.
+The `gp_backend_memory_contexts` view is a cluster-wide view that displays the [`pg_backend_memory_contexts`](#pg_backend_memory_contexts) information from every primary segment. Like `pg_backend_memory_contexts`, by default it can be read only by superusers and members of the `pg_read_all_stats` role. To let another role read it, grant that role `SELECT` on the view and `EXECUTE` on the `pg_get_backend_memory_contexts()` function, or make the role a member of `pg_read_all_stats`.
 
 |column|type|references|description|
 |------|----|----------|-----------|
@@ -1208,7 +1208,7 @@ The maximum number of entries in the array fields can be controlled on a column-
 
 ## <a id="pg_backend_memory_contexts"></a>pg_backend_memory_contexts
 
-The `pg_backend_memory_contexts` system view displays all of the memory contexts in use by the server process attached to the current session.
+The `pg_backend_memory_contexts` system view displays all of the memory contexts in use by the server process attached to the current session. By default, it can be read only by superusers and members of the `pg_read_all_stats` role. To let another role read it, grant that role `SELECT` on the view and `EXECUTE` on the `pg_get_backend_memory_contexts()` function that the view calls, or make the role a member of `pg_read_all_stats`.
 
 `pg_backend_memory_contexts` contains one row for each memory context.
 
