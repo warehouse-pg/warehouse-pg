@@ -1741,7 +1741,8 @@ REVOKE EXECUTE ON FUNCTION gp_add_master_standby(text, text, text) FROM regress_
 REVOKE EXECUTE ON FUNCTION gp_add_master_standby(text, text, text, integer) FROM regress_standby_user;
 DROP ROLE regress_standby_user;
 
--- test to check privileges of system view pg_backend_memory_contexts.
+-- test to check privileges of system views pg_backend_memory_contexts and
+-- gp_backend_memory_contexts.
 
 -- switch to superuser
 \c -
@@ -1749,14 +1750,17 @@ DROP ROLE regress_standby_user;
 CREATE ROLE regress_readallstats;
 
 SELECT has_table_privilege('regress_readallstats','pg_backend_memory_contexts','SELECT'); -- no
+SELECT has_table_privilege('regress_readallstats','gp_backend_memory_contexts','SELECT'); -- no
 
 GRANT pg_read_all_stats TO regress_readallstats;
 
 SELECT has_table_privilege('regress_readallstats','pg_backend_memory_contexts','SELECT'); -- yes
+SELECT has_table_privilege('regress_readallstats','gp_backend_memory_contexts','SELECT'); -- yes
 
 -- run query to ensure that functions within views can be executed
 SET ROLE regress_readallstats;
 SELECT COUNT(*) >= 0 AS ok FROM pg_backend_memory_contexts;
+SELECT COUNT(*) >= 0 AS ok FROM gp_backend_memory_contexts;
 RESET ROLE;
 
 -- clean up
