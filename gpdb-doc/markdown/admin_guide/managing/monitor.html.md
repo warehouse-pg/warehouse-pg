@@ -350,7 +350,7 @@ SELECT * FROM pg_backend_memory_contexts;
 
 ### <a id="topic_memcontext_func"></a>About the Memory Context Admin Functions
 
-You can use the system administration function `pg_log_backend_memory_contexts()` to instruct Greenplum Database to dump the memory usage of other sessions running on the coordinator host into the server log. Execution of this function is restricted to superusers only, and cannot be granted to other roles.
+You can use the system administration function `pg_log_backend_memory_contexts()` to instruct Greenplum Database to dump the memory usage of other sessions running on the coordinator host into the server log. By default only superusers can execute this function; `EXECUTE` privilege may be granted to other roles.
 
 The signature of `pg_log_backend_memory_contexts()` function follows:
 
@@ -362,18 +362,33 @@ where `pid` identifies the process whose memory contexts you want dumped.
 
 `pg_log_backend_memory_contexts()` returns `true` when memory context logging is successfully activated for the process on the local host. When logging is activated, Greenplum writes one message to the log for each memory context at the `LOG` message level. The log messages appear in the server log based on the log configuration set; refer to [Error Reporting and Logging](https://www.postgresql.org/docs/12/runtime-config-logging.html) in the PostgreSQL documentation for more information. *The memory context log messages are not sent to the client*.
 
-Memory context logging functions that dump memory usage across all Greenplum segments, or dump usage for a specific segment are named `gp_log_backend_memory_contexts()`.
+Memory context logging functions that dump memory usage across all Greenplum segments, or dump usage for a specific segment are named `gp_log_backend_memory_contexts()`. They require the same privilege as `pg_log_backend_memory_contexts()`: by default only superusers can call them.
 
 `gp_log_backend_memory_contexts()` has two signatures:
 
 ``` pre
-gp_log_backend_memory_contexts( sess_id integer )
-gp_log_backend_memory_contexts( sess_id integer, contentId integer )
+gp_log_backend_memory_contexts( sess_id bigint )
+gp_log_backend_memory_contexts( sess_id bigint, contentId bigint )
 ```
 
 where `sess_id` is the Greenplum Database identifier assigned to the session (typically obtained from the `pg_stat_activity` view), and `contentID` in the second signature identifies the segment instance of interest.
 
 When you invoke `gp_log_backend_memory_contexts()` on the Greenplum Database coordinator host, it invokes `pg_log_backend_memory_contexts()` on the individual segments, which in turn triggers a memory usage dump to each segment log. The functions return an integer identifying the number of segments on which memory context logging was successfully activated.
+
+To let another role use `gp_log_backend_memory_contexts()`, grant it `EXECUTE` on `pg_log_backend_memory_contexts(integer)`, which the function checks every time it is called, and on the two `gp_log_backend_memory_contexts()` signatures:
+
+``` sql
+GRANT EXECUTE ON FUNCTION pg_log_backend_memory_contexts(integer) TO <role>;
+GRANT EXECUTE ON FUNCTION gp_log_backend_memory_contexts(bigint) TO <role>;
+GRANT EXECUTE ON FUNCTION gp_log_backend_memory_contexts(bigint, bigint) TO <role>;
+```
+
+A cluster that was upgraded from a release in which `gp_log_backend_memory_contexts()` was executable by every role keeps that privilege; the function still refuses callers that lack `EXECUTE` on `pg_log_backend_memory_contexts(integer)`. To give such a cluster the same privileges as a newly initialized one, run the following statements as a superuser in every database, including `template1` and `template0` (`template0` must first be made connectable with `ALTER DATABASE template0 ALLOW_CONNECTIONS true`, and set back to `false` afterwards):
+
+``` sql
+REVOKE EXECUTE ON FUNCTION gp_log_backend_memory_contexts(bigint) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION gp_log_backend_memory_contexts(bigint, bigint) FROM PUBLIC;
+```
 
 ### <a id="topic_memcontext_samplelog"></a>Sample Log Messages
 
