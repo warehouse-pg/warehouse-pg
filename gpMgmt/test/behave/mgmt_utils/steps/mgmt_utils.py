@@ -3357,7 +3357,7 @@ def impl(context, table_name):
     try:
         data_result = dbconn.execSQL(conn, query)
     except Exception, msg:
-        key_msg = "FATAL:  cluster is expaneded"
+        key_msg = "FATAL:  cluster is expanded"
         if key_msg not in msg.__str__():
             raise Exception("transaction not abort correctly, errmsg:%s" % msg)
     else:
