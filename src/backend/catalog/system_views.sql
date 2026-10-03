@@ -1866,6 +1866,12 @@ GRANT EXECUTE ON FUNCTION pg_logdir_ls() TO pg_read_server_files;
 REVOKE EXECUTE ON FUNCTION gp_create_restore_point(text) FROM public;
 REVOKE EXECUTE ON FUNCTION gp_switch_wal() FROM public;
 
+-- The catalog lock and the version bump used by gpexpand are reserved to
+-- superusers. The functions enforce that themselves as well; this is defense
+-- in depth for new initdbs.
+REVOKE EXECUTE ON FUNCTION gp_expand_lock_catalog() FROM public;
+REVOKE EXECUTE ON FUNCTION gp_expand_bump_version() FROM public;
+
 --
 -- We also set up some things as accessible to standard roles.
 --
