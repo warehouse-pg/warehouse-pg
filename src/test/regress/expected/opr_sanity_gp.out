@@ -48,3 +48,86 @@ and oprleft IN (
 -----+---------+--------------+----------+---------+-------------+------------+---------+----------+-----------+--------+-----------+---------+---------+---------
 (0 rows)
 
+-- Everything in pg_catalog that PUBLIC may not execute or read. PostgreSQL's
+-- system_views.sql and ours revoke a number of privileged functions and views
+-- from PUBLIC; the expected output is that complete set, so a lost REVOKE
+-- shows up as a vanished row and a new one as an added row.
+select p.proname, pg_get_function_identity_arguments(p.oid) as args
+from pg_proc p
+where p.pronamespace = 'pg_catalog'::regnamespace
+  and not has_function_privilege('public', p.oid, 'EXECUTE')
+order by 1, 2;
+                proname                 |                                                                                                               args                                                                                                                
+----------------------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ gp_create_restore_point                | restore_point_name text, OUT gp_segment_id smallint, OUT restore_lsn pg_lsn
+ gp_switch_wal                          | OUT gp_segment_id smallint, OUT pg_switch_wal pg_lsn, OUT pg_walfile_name text
+ lo_export                              | oid, text
+ lo_import                              | text
+ lo_import                              | text, oid
+ pg_config                              | OUT name text, OUT setting text
+ pg_create_restore_point                | text
+ pg_current_logfile                     | 
+ pg_current_logfile                     | text
+ pg_file_rename                         | text, text, text
+ pg_file_unlink                         | text
+ pg_file_write                          | text, text, boolean
+ pg_get_backend_memory_contexts         | OUT name text, OUT ident text, OUT parent text, OUT level integer, OUT total_bytes bigint, OUT total_nblocks bigint, OUT free_bytes bigint, OUT free_chunks bigint, OUT used_bytes bigint
+ pg_hba_file_rules                      | OUT line_number integer, OUT type text, OUT database text[], OUT user_name text[], OUT address text, OUT netmask text, OUT auth_method text, OUT options text[], OUT error text
+ pg_log_backend_memory_contexts         | integer
+ pg_logdir_ls                           | 
+ pg_ls_archive_statusdir                | OUT name text, OUT size bigint, OUT modification timestamp with time zone
+ pg_ls_dir                              | text
+ pg_ls_dir                              | text, boolean, boolean
+ pg_ls_logdir                           | OUT name text, OUT size bigint, OUT modification timestamp with time zone
+ pg_ls_tmpdir                           | OUT name text, OUT size bigint, OUT modification timestamp with time zone
+ pg_ls_tmpdir                           | tablespace oid, OUT name text, OUT size bigint, OUT modification timestamp with time zone
+ pg_ls_waldir                           | OUT name text, OUT size bigint, OUT modification timestamp with time zone
+ pg_promote                             | wait boolean, wait_seconds integer
+ pg_read_binary_file                    | text
+ pg_read_binary_file                    | text, bigint, bigint
+ pg_read_binary_file                    | text, bigint, bigint, boolean
+ pg_read_file                           | text
+ pg_read_file                           | text, bigint, bigint
+ pg_read_file                           | text, bigint, bigint, boolean
+ pg_reload_conf                         | 
+ pg_rotate_logfile                      | 
+ pg_show_all_file_settings              | OUT sourcefile text, OUT sourceline integer, OUT seqno integer, OUT name text, OUT setting text, OUT applied boolean, OUT error text
+ pg_start_backup                        | label text, fast boolean, exclusive boolean
+ pg_stat_file                           | filename text, missing_ok boolean, OUT size bigint, OUT access timestamp with time zone, OUT modification timestamp with time zone, OUT change timestamp with time zone, OUT creation timestamp with time zone, OUT isdir boolean
+ pg_stat_file                           | filename text, OUT size bigint, OUT access timestamp with time zone, OUT modification timestamp with time zone, OUT change timestamp with time zone, OUT creation timestamp with time zone, OUT isdir boolean
+ pg_stat_reset                          | 
+ pg_stat_reset_shared                   | text
+ pg_stat_reset_single_function_counters | oid
+ pg_stat_reset_single_table_counters    | oid
+ pg_stat_reset_slru                     | text
+ pg_stop_backup                         | 
+ pg_stop_backup                         | exclusive boolean, wait_for_archive boolean, OUT lsn pg_lsn, OUT labelfile text, OUT spcmapfile text
+ pg_switch_wal                          | 
+ pg_wal_replay_pause                    | 
+ pg_wal_replay_resume                   | 
+(46 rows)
+
+select c.relname
+from pg_class c
+where c.relnamespace = 'pg_catalog'::regnamespace
+  and c.relkind in ('r', 'v', 'm', 'S')
+  and not has_table_privilege('public', c.oid, 'SELECT')
+order by 1;
+           relname            
+------------------------------
+ gp_backend_memory_contexts
+ pg_authid
+ pg_backend_memory_contexts
+ pg_config
+ pg_exttable
+ pg_file_settings
+ pg_hba_file_rules
+ pg_largeobject
+ pg_replication_origin_status
+ pg_shadow
+ pg_statistic
+ pg_statistic_ext_data
+ pg_subscription
+ pg_user_mapping
+(14 rows)
+
