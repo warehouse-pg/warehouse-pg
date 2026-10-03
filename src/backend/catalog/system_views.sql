@@ -1831,6 +1831,14 @@ REVOKE EXECUTE ON FUNCTION pg_ls_dir(text,boolean,boolean) FROM public;
 
 REVOKE EXECUTE ON FUNCTION pg_log_backend_memory_contexts(integer) FROM PUBLIC;
 
+-- gp_log_backend_memory_contexts() makes the segments call
+-- pg_log_backend_memory_contexts() for the backends of another session, so it
+-- is revoked from PUBLIC like that function. It also checks the caller's
+-- EXECUTE privilege on pg_log_backend_memory_contexts() at call time, which
+-- covers clusters that were not initdb'd with this REVOKE.
+REVOKE EXECUTE ON FUNCTION gp_log_backend_memory_contexts(bigint) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION gp_log_backend_memory_contexts(bigint, bigint) FROM PUBLIC;
+
 -- pg_file_write/pg_file_rename/pg_file_unlink have proacl NULL (PUBLIC
 -- EXECUTE) because their _v1_1 bodies were copied in-core from adminpack
 -- without adminpack's matching REVOKE. genfile.c now also checks for
