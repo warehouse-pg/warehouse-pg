@@ -46,3 +46,19 @@ and oprleft IN (
   'anyarray'::regtype,
   'oidvector'::regtype,
   'money'::regtype);
+
+-- Everything in pg_catalog that PUBLIC may not execute or read. PostgreSQL's
+-- system_views.sql and ours revoke a number of privileged functions and views
+-- from PUBLIC; the expected output is that complete set, so a lost REVOKE
+-- shows up as a vanished row and a new one as an added row.
+select p.proname, pg_get_function_identity_arguments(p.oid) as args
+from pg_proc p
+where p.pronamespace = 'pg_catalog'::regnamespace
+  and not has_function_privilege('public', p.oid, 'EXECUTE')
+order by 1, 2;
+select c.relname
+from pg_class c
+where c.relnamespace = 'pg_catalog'::regnamespace
+  and c.relkind in ('r', 'v', 'm', 'S')
+  and not has_table_privilege('public', c.oid, 'SELECT')
+order by 1;
