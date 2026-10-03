@@ -2216,3 +2216,16 @@ DROP USER regressuser4;
 DROP USER regressuser5;
 DROP USER regressuser6;
 ERROR:  role "regressuser6" does not exist
+-- gp_add_master_standby() is reserved to superusers: a regular role is refused
+-- by the function itself, before the mode of the connection or the arguments
+-- are checked.
+CREATE ROLE regress_standby_user;
+SET SESSION AUTHORIZATION regress_standby_user;
+SELECT gp_add_master_standby('localhost', 'localhost', '/nonexistent');
+ERROR:  gp_add_master_standby can only be run by a superuser
+SELECT gp_add_master_standby('localhost', 'localhost', '/nonexistent', 5432);
+ERROR:  gp_add_master_standby can only be run by a superuser
+SELECT gp_add_master_standby(NULL, NULL, NULL);
+ERROR:  gp_add_master_standby can only be run by a superuser
+RESET SESSION AUTHORIZATION;
+DROP ROLE regress_standby_user;

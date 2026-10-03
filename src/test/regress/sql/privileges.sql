@@ -1336,3 +1336,14 @@ DROP USER regressuser3;
 DROP USER regressuser4;
 DROP USER regressuser5;
 DROP USER regressuser6;
+
+-- gp_add_master_standby() is reserved to superusers: a regular role is refused
+-- by the function itself, before the mode of the connection or the arguments
+-- are checked.
+CREATE ROLE regress_standby_user;
+SET SESSION AUTHORIZATION regress_standby_user;
+SELECT gp_add_master_standby('localhost', 'localhost', '/nonexistent');
+SELECT gp_add_master_standby('localhost', 'localhost', '/nonexistent', 5432);
+SELECT gp_add_master_standby(NULL, NULL, NULL);
+RESET SESSION AUTHORIZATION;
+DROP ROLE regress_standby_user;
