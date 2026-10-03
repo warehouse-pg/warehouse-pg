@@ -1704,3 +1704,38 @@ CREATE SCHEMA test_non_superuser_schema AUTHORIZATION "non_superuser_schema";
 -- clean up
 DROP TABLE lock_table;
 DROP USER regress_locktable_user;
+
+-- gp_add_coordinator_standby() and its alias gp_add_master_standby() are
+-- reserved to superusers: a regular role is denied at the privilege layer,
+-- and with EXECUTE granted - the state of a cluster upgraded without initdb,
+-- where proacl stays NULL - by the function itself.
+
+-- switch to superuser
+\c -
+
+CREATE ROLE regress_standby_user;
+
+SET SESSION AUTHORIZATION regress_standby_user;
+SELECT gp_add_coordinator_standby('localhost', 'localhost', '/nonexistent');
+SELECT gp_add_coordinator_standby('localhost', 'localhost', '/nonexistent', 5432);
+SELECT gp_add_master_standby('localhost', 'localhost', '/nonexistent');
+SELECT gp_add_master_standby('localhost', 'localhost', '/nonexistent', 5432);
+RESET SESSION AUTHORIZATION;
+
+GRANT EXECUTE ON FUNCTION gp_add_coordinator_standby(text, text, text) TO regress_standby_user;
+GRANT EXECUTE ON FUNCTION gp_add_coordinator_standby(text, text, text, integer) TO regress_standby_user;
+GRANT EXECUTE ON FUNCTION gp_add_master_standby(text, text, text) TO regress_standby_user;
+GRANT EXECUTE ON FUNCTION gp_add_master_standby(text, text, text, integer) TO regress_standby_user;
+SET SESSION AUTHORIZATION regress_standby_user;
+SELECT gp_add_coordinator_standby('localhost', 'localhost', '/nonexistent');
+SELECT gp_add_coordinator_standby('localhost', 'localhost', '/nonexistent', 5432);
+SELECT gp_add_master_standby('localhost', 'localhost', '/nonexistent');
+SELECT gp_add_master_standby('localhost', 'localhost', '/nonexistent', 5432);
+RESET SESSION AUTHORIZATION;
+
+-- clean up
+REVOKE EXECUTE ON FUNCTION gp_add_coordinator_standby(text, text, text) FROM regress_standby_user;
+REVOKE EXECUTE ON FUNCTION gp_add_coordinator_standby(text, text, text, integer) FROM regress_standby_user;
+REVOKE EXECUTE ON FUNCTION gp_add_master_standby(text, text, text) FROM regress_standby_user;
+REVOKE EXECUTE ON FUNCTION gp_add_master_standby(text, text, text, integer) FROM regress_standby_user;
+DROP ROLE regress_standby_user;
