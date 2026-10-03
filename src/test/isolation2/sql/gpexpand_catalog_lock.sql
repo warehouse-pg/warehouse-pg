@@ -152,3 +152,17 @@ create table t30 (c1 int, c2 int) distributed by (c1);
 30: rollback;
 
 10: end;
+
+--
+-- the catalog lock and the version bump are reserved to superusers
+--
+
+drop role if exists regress_gpexpand_user;
+create role regress_gpexpand_user;
+
+40: set session authorization regress_gpexpand_user;
+40: select gp_expand_lock_catalog();
+40: select gp_expand_bump_version();
+40q:
+
+drop role regress_gpexpand_user;
