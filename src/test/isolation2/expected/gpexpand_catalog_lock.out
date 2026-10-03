@@ -247,3 +247,23 @@ ROLLBACK
 
 10: end;
 END
+
+--
+-- the catalog lock and the version bump are reserved to superusers
+--
+
+drop role if exists regress_gpexpand_user;
+DROP
+create role regress_gpexpand_user;
+CREATE
+
+40: set session authorization regress_gpexpand_user;
+SET
+40: select gp_expand_lock_catalog();
+ERROR:  must be superuser to lock the catalog for gpexpand
+40: select gp_expand_bump_version();
+ERROR:  must be superuser to bump the gpexpand version
+40q: ... <quitting>
+
+drop role regress_gpexpand_user;
+DROP
