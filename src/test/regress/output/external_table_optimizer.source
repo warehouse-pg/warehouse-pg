@@ -5326,3 +5326,32 @@ SELECT a FROM ext_chk_part ORDER BY 1;
 
 DROP TABLE ext_chk_part;
 DROP EXTERNAL TABLE ext_chk;
+-- same check through the file protocol (a different data-delivery path
+-- than EXECUTE; the constraint is evaluated after the protocol has
+-- produced the row)
+CREATE EXTERNAL TABLE ext_chk_file (
+    c_custkey int, c_name text, c_address text, c_nationkey int,
+    c_phone text, c_acctbal numeric, c_mktsegment text, c_comment text)
+  LOCATION ('file://@hostname@@abs_srcdir@/data/customer.csv')
+  FORMAT 'text' (DELIMITER '|');
+SELECT count(*) FROM ext_chk_file;
+ count 
+-------
+  1500
+(1 row)
+
+ALTER FOREIGN TABLE ext_chk_file ADD CONSTRAINT ext_chk_file_seg CHECK (c_mktsegment = 'BUILDING');
+SELECT count(*) FROM ext_chk_file;
+ count 
+-------
+   337
+(1 row)
+
+-- constrained column not projected, with a WHERE on another column
+SELECT min(c_custkey), max(c_custkey), count(*) FROM ext_chk_file WHERE c_nationkey = 15;
+ min | max  | count 
+-----+------+-------
+   1 | 1368 |    21
+(1 row)
+
+DROP EXTERNAL TABLE ext_chk_file;
