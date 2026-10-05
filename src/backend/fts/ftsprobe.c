@@ -24,6 +24,7 @@
 #include "libpq-fe.h"
 #include "libpq-int.h"
 #include "access/xact.h"
+#include "cdb/cdbconn.h"
 #include "cdb/cdbfts.h"
 #include "cdb/cdbvars.h"
 #include "postmaster/fts.h"
@@ -147,7 +148,6 @@ allDone(fts_context *context)
 static bool
 ftsConnectStart(fts_segment_info *ftsInfo)
 {
-	char conninfo[1024];
 	char *hostip;
 
 	/*
@@ -164,10 +164,68 @@ ftsConnectStart(fts_segment_info *ftsInfo)
 				SEGMENT_IS_ACTIVE_PRIMARY(ftsInfo->primary_cdbinfo));
 
 	hostip = ftsInfo->primary_cdbinfo->config->hostip;
-	snprintf(conninfo, 1024, "host=%s port=%d gpconntype=%s",
-			 hostip ? hostip : "", ftsInfo->primary_cdbinfo->config->port,
-			 GPCONN_TYPE_FTS);
-	ftsInfo->conn = PQconnectStart(conninfo);
+
+	{
+		const char *keywords[16];
+		const char *values[16];
+		char		portstr[16];
+		const char *sslmode;
+		const char *certfile;
+		const char *keyfile;
+		const char *rootcertfile;
+		char		certbuf[MAXPGPATH];
+		char		keybuf[MAXPGPATH];
+		char		rootbuf[MAXPGPATH];
+		int			n = 0;
+
+		/*
+		 * Build the connection parameters in keyword/value form (rather than a
+		 * conninfo string) so cert/key/CA paths -- which can be long and may
+		 * contain spaces -- need no length accounting or quoting.  TLS for the
+		 * internal FTS probe connection follows gp_internal_tls; see
+		 * cdbconn_internal_tls_resolve().
+		 */
+		sslmode = cdbconn_internal_tls_resolve(certbuf, keybuf, rootbuf,
+											   &certfile, &keyfile, &rootcertfile);
+
+		keywords[n] = "host";
+		values[n] = hostip ? hostip : "";
+		n++;
+		snprintf(portstr, sizeof(portstr), "%d", ftsInfo->primary_cdbinfo->config->port);
+		keywords[n] = "port";
+		values[n] = portstr;
+		n++;
+		keywords[n] = GPCONN_TYPE;
+		values[n] = GPCONN_TYPE_FTS;
+		n++;
+		keywords[n] = "sslmode";
+		values[n] = sslmode;
+		n++;
+		if (certfile)
+		{
+			keywords[n] = "sslcert";
+			values[n] = certfile;
+			n++;
+		}
+		if (keyfile)
+		{
+			keywords[n] = "sslkey";
+			values[n] = keyfile;
+			n++;
+		}
+		if (rootcertfile)
+		{
+			keywords[n] = "sslrootcert";
+			values[n] = rootcertfile;
+			n++;
+		}
+		keywords[n] = NULL;
+		values[n] = NULL;
+
+		Assert(n < lengthof(keywords));
+
+		ftsInfo->conn = PQconnectStartParams(keywords, values, false);
+	}
 
 	if (ftsInfo->conn == NULL)
 	{
