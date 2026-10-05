@@ -30,9 +30,73 @@ typedef struct ICProxyDelay ICProxyDelay;
  *
  * TODO: allocate the name buffer on demand.
  */
+/* Forward decl — full type in ic_proxy_tls.h. */
+typedef struct ICProxyTlsConn ICProxyTlsConn;
+
 struct ICProxyPeer
 {
 	uv_tcp_t	tcp;			/* the libuv handle */
+
+	/*
+	 * Per-peer TLS state.
+	 *
+	 * Non-NULL when ic_proxy_tls_is_enabled() and the peer has
+	 * migrated from uv_tcp_t to uv_poll_t (see ic_proxy_peer.c's
+	 * ic_proxy_peer_tls_on_tcp_closed_for_* callbacks). In this state:
+	 *
+	 *  - tls_fd holds the actual TCP fd (taken via uv_fileno + dup
+	 *    out of peer->tcp before uv_close fired on tcp); libuv is
+	 *    no longer reading or writing peer->tcp.
+	 *  - tls_poll is registered on tls_fd for UV_READABLE/UV_WRITABLE
+	 *    events. The events drive the handshake first, then SSL_read /
+	 *    SSL_write on the data plane.
+	 *  - tls_real_read_cb is the data-plane callback the existing
+	 *    state machine (on_hello_data / on_data / ...) registered;
+	 *    we invoke it from the SSL_read loop with plaintext bytes
+	 *    in a pkt-cache buffer, matching the uv_read_cb signature
+	 *    those callbacks expect.
+	 *  - tls_tx_queue is the per-peer outbound queue. With uv_poll_t
+	 *    we lose uv_write's built-in queueing; we maintain our own
+	 *    list of ICProxyTlsTxItem and drain it on UV_WRITABLE events.
+	 *
+	 * tls == NULL means the peer is on plain TCP (uv_tcp_t still
+	 * active, normal uv_read_start / uv_write semantics).
+	 */
+	ICProxyTlsConn *tls;
+	uv_poll_t	tls_poll;
+	int			tls_fd;
+	uv_read_cb	tls_real_read_cb;
+	List	   *tls_tx_queue;	/* List<ICProxyTlsTxItem *> */
+
+	/*
+	 * Cached event mask currently set on tls_poll. Used to skip
+	 * uv_poll_start (and therefore EPOLL_CTL_MOD) when the desired
+	 * mask hasn't changed since the last arm — common during a busy
+	 * data plane where the queue stays non-empty across drains.
+	 * 0 means tls_poll is stopped.
+	 */
+	int			tls_poll_armed_events;
+
+	/*
+	 * Per-peer 64 KB scratch used by ic_proxy_peer_tls_drain_tx to
+	 * coalesce queued packets into one SSL_write per drain cycle.
+	 * Lazily allocated on first drain to avoid the cost for peers
+	 * that never write (e.g. pure-receive direction in a Gather).
+	 * Reused across drains so the same physical pages stay warm in
+	 * L1d / L2 — beats a 64 KB stack alloc that gets re-zeroed in
+	 * each call and competes with cache lines from other peers.
+	 */
+	char	   *tls_tx_scratch;
+
+	/*
+	 * Per-peer freelist of ICProxyTlsTxItem structs. Each motion
+	 * packet enqueued via ic_proxy_peer_tls_queue_write costs one
+	 * palloc; pop-from-this-list instead avoids the MemoryContext
+	 * round trip for the hot path. Bounded at
+	 * IC_PROXY_TLS_TX_ITEM_FREELIST_CAP so a long-idle peer doesn't
+	 * pin too much memory. Drained on peer free.
+	 */
+	List	   *tls_tx_item_freelist;
 
 	int16		content;		/* content, aka segid, only for logging */
 	uint16		dbid;			/* dbid is peerid */
@@ -137,5 +201,17 @@ extern ICProxyDelay *ic_proxy_peer_build_delay(ICProxyPeer *peer,
 											   ICProxyPkt *pkt,
 											   ic_proxy_sent_cb callback,
 											   void *opaque);
+
+/*
+ * TLS-queue write path. Called by the router (ic_proxy_router_write)
+ * when the destination peer has migrated to the uv_poll_t + SSL data
+ * plane — we can't use uv_write on a uv_poll_t handle, so the packet
+ * is enqueued on peer->tls_tx_queue and drained on UV_WRITABLE events.
+ * Body lives in ic_proxy_peer.c.
+ */
+extern void ic_proxy_peer_tls_queue_write(ICProxyPeer *peer, ICProxyPkt *pkt,
+										  int32 offset,
+										  ic_proxy_sent_cb callback,
+										  void *opaque);
 
 #endif   /* IC_PROXY_SERVER_H */

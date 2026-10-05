@@ -32,6 +32,7 @@ OBJS += ic_proxy_key.o
 OBJS += ic_proxy_packet.o
 OBJS += ic_proxy_pkt_cache.o
 OBJS += ic_proxy_iobuf.o
+OBJS += ic_proxy_tls.o
 endif  # enable_ic_proxy
 
 include $(top_srcdir)/src/backend/common.mk
