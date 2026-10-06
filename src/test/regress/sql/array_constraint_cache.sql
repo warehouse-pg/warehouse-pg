@@ -11,6 +11,11 @@
 --   C2  List + DEFAULT    (main IN matrix + IS NULL sub-variant)
 --   C3  Join with IN      (operator-pointer recycle stress)
 --   C4  CHECK (col IN)    (infer_nulls_as=true via table constraint)
+--   C5  Threshold under NOT   (LIST DEFAULT partition must not be pruned)
+--   C6  Threshold on a partition key (documented trade-off, default = no limit)
+--   C7  NULL in the IN list   (never skipped by the threshold)
+--   C8  CHECK (c IN ('a', NULL)) (NULL passes a CHECK; must not derive c = 'a')
+--   C9  NOT IN of only NULLs  (used to crash the backend)
 
 
 -- ---- Setup ---------------------------------------------------------------
@@ -98,7 +103,8 @@ SET optimizer_array_constraints = on;
 -- ============================================================================
 -- IN of size 7 on the small joined table foo. range_t partitions are
 -- selected at exec time based on rows passing the IN filter.
--- Expected rows: range_t.id = foo.id ∈ {1,2,3,5,7,9,11} → 7 matches.
+-- Expected rows: range_t.id = foo.id ∈ {1,2,3,5,7,9,11}; foo only has ids
+-- 1..10, so 11 matches nothing → 6 matches.
 
 \echo '##############################'
 \echo '# C1: DYNAMIC PRUNING        #'
@@ -277,6 +283,132 @@ SELECT count(*) FROM qux WHERE status IN ('open','closed');          -- expected
 \echo '--- contradiction smoke test: status outside CHECK set ---'
 EXPLAIN (COSTS off) SELECT * FROM qux WHERE status = 'invalid';
 SELECT count(*) FROM qux WHERE status = 'invalid';                   -- expected: 0
+
+
+-- ============================================================================
+-- C5. THRESHOLD UNDER NOT  (LIST DEFAULT partition constraint)
+-- ============================================================================
+-- The constraint of bar's DEFAULT partition is
+--   NOT (region IS NOT NULL AND region IN (<the 5 sibling values>)).
+-- When the sibling list is longer than optimizer_array_interval_threshold no
+-- constraint is derived from it, and that missing piece must not be
+-- complemented: that used to claim the DEFAULT partition holds only NULL,
+-- prune it, and return no rows for region = 'XX'.
+
+\echo '##############################'
+\echo '# C5: THRESHOLD UNDER NOT    #'
+\echo '##############################'
+
+SET optimizer_array_constraint_cache = on;
+
+\echo '--- threshold=3 (below the 5 sibling values) ---'
+SET optimizer_array_interval_threshold = 3;
+EXPLAIN (COSTS off) SELECT * FROM bar WHERE region = 'XX';
+SELECT count(*) FROM bar WHERE region = 'XX';                        -- expected: 1
+SELECT count(*) FROM bar WHERE region IN ('XX','YY');                -- expected: 3
+
+\echo '--- default threshold (no limit) ---'
+RESET optimizer_array_interval_threshold;
+EXPLAIN (COSTS off) SELECT * FROM bar WHERE region = 'XX';
+SELECT count(*) FROM bar WHERE region = 'XX';                        -- expected: 1
+
+
+-- ============================================================================
+-- C6. THRESHOLD ON A PARTITION KEY  (documented trade-off)
+-- ============================================================================
+-- With the default (no limit) an IN list on the partition key eliminates
+-- partitions, whatever its length. A list longer than the threshold derives
+-- no constraint, so every partition is scanned; this is the price of the
+-- lower planning time and is documented for the GUC. Results never change.
+-- range_i is RANGE partitioned on int; the 25-value list is also above
+-- optimizer_array_expansion_threshold (20), so no other path derives it.
+
+CREATE TABLE range_i (id int, v int) DISTRIBUTED BY (id)
+PARTITION BY RANGE (id) (START (1) END (101) EVERY (10));
+INSERT INTO range_i SELECT i, i FROM generate_series(1,100) i;
+ANALYZE range_i;
+
+\echo '##############################'
+\echo '# C6: THRESHOLD, PART KEY    #'
+\echo '##############################'
+
+\echo '--- default threshold: 25-value IN prunes ---'
+EXPLAIN (COSTS off) SELECT * FROM range_i
+WHERE id IN (1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25);
+SELECT count(*) FROM range_i
+WHERE id IN (1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25);   -- expected: 25
+
+\echo '--- threshold=5: no constraint, all partitions, same result ---'
+SET optimizer_array_interval_threshold = 5;
+EXPLAIN (COSTS off) SELECT * FROM range_i
+WHERE id IN (1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25);
+SELECT count(*) FROM range_i
+WHERE id IN (1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25);   -- expected: 25
+RESET optimizer_array_interval_threshold;
+
+
+-- ============================================================================
+-- C7. NULL IN THE IN LIST  (never skipped by the threshold)
+-- ============================================================================
+-- Without NULLs the 7-value list is above threshold=6 and is skipped. With a
+-- NULL constant the list stays on the interval path, which drops the NULL; it
+-- is not rerouted to the array-expansion path, which would keep it.
+
+\echo '##############################'
+\echo '# C7: NULL IN THE LIST       #'
+\echo '##############################'
+
+SET optimizer_array_interval_threshold = 6;
+
+\echo '--- 7 values with a NULL: constraint derived, filter inferred ---'
+EXPLAIN (COSTS off)
+SELECT r.id, f.val FROM range_t r JOIN foo f ON r.id = f.id
+WHERE f.id IN (1,2,3,5,7,9,NULL);
+SELECT count(*) FROM range_t r JOIN foo f ON r.id = f.id
+WHERE f.id IN (1,2,3,5,7,9,NULL);                                    -- expected: 6
+
+\echo '--- 7 values without NULL: above the threshold, skipped by design ---'
+EXPLAIN (COSTS off)
+SELECT r.id, f.val FROM range_t r JOIN foo f ON r.id = f.id
+WHERE f.id IN (1,2,3,5,7,9,11);
+SELECT count(*) FROM range_t r JOIN foo f ON r.id = f.id
+WHERE f.id IN (1,2,3,5,7,9,11);                                      -- expected: 6
+RESET optimizer_array_interval_threshold;
+
+
+-- ============================================================================
+-- C8. CHECK (c IN ('a', NULL))  (infer_nulls_as=true with a NULL constant)
+-- ============================================================================
+-- For c = 'b' the IN yields NULL, and NULL passes a CHECK constraint, so the
+-- constraint admits every value. ORCA used to derive c = 'a' from it, fold
+-- the filter c = 'b' to false and return no rows.
+
+CREATE TABLE chk_null (c text CHECK (c IN ('a', NULL))) DISTRIBUTED RANDOMLY;
+INSERT INTO chk_null VALUES ('b');
+ANALYZE chk_null;
+
+\echo '##############################'
+\echo '# C8: CHECK WITH NULL        #'
+\echo '##############################'
+
+EXPLAIN (COSTS off) SELECT * FROM chk_null WHERE c = 'b';
+SELECT count(*) FROM chk_null WHERE c = 'b';                         -- expected: 1
+
+
+-- ============================================================================
+-- C9. NOT IN / IN OF ONLY NULLs  (used to dereference a null pointer)
+-- ============================================================================
+-- x <> NULL is NULL for every x, so a NOT IN list that contains a NULL never
+-- qualifies a row, and neither does an IN list of only NULLs.
+
+\echo '##############################'
+\echo '# C9: ONLY NULLS             #'
+\echo '##############################'
+
+EXPLAIN (COSTS off) SELECT * FROM foo WHERE id NOT IN (NULL, NULL);
+SELECT count(*) FROM foo WHERE id NOT IN (NULL, NULL);               -- expected: 0
+SELECT count(*) FROM foo WHERE id IN (NULL, NULL);                   -- expected: 0
+SELECT count(*) FROM foo WHERE id NOT IN (1, NULL);                  -- expected: 0
 
 
 -- ============================================================================
