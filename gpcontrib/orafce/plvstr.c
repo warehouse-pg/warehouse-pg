@@ -370,6 +370,11 @@ plvstr_normalize(PG_FUNCTION_ARGS)
 						ignore_stsp = false;
 						i += sz - 1;
 					}
+					else
+					{
+						/* a bare control byte is dropped; step over it */
+						cur += sz;
+					}
 					continue;
 
 				}
