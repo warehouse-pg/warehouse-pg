@@ -244,14 +244,45 @@ CConstraintInterval::PciIntervalFromScalarExpr(
 	return pci;
 }
 
+// true if the constant array contains at least one NULL constant
+static BOOL
+FArrayHasNullConst(CExpression *pexprArray, ULONG ulArity)
+{
+	for (ULONG ul = 0; ul < ulArity; ul++)
+	{
+		if (CUtils::PScalarArrayConstChildAt(pexprArray, ul)
+				->GetDatum()
+				->IsNull())
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
 //---------------------------------------------------------------------------
 //	@function:
-//		CConstraint::PcnstrFromScalarArrayCmp
+//		CConstraintInterval::PcnstrIntervalFromScalarArrayCmp
 //
 //	@doc:
-//		Create constraint from scalar array comparison expression. Returns
-//		NULL if a constraint interval cannot be created. Has side effect of
-//		removing duplicates
+//		Create an interval from "col IN (const array)" or "col NOT IN (const
+//		array)". Returns NULL if no interval is derived. Has the side effect
+//		of removing duplicates.
+//
+//		Returns NULL, meaning "no information", also when the array has more
+//		than optimizer_array_interval_threshold items and no NULL constants.
+//		That is harmless when the predicate is AND-ed with others, but
+//		complementing a result that was derived without it would be unsound,
+//		so every complement site checks UlArrayCnstrBailouts() (see
+//		PciIntervalFromScalarBoolOp and CConstraint::PcnstrFromScalarBoolOp).
+//		Arrays with NULL constants never bail out: they are not handled by the
+//		array expansion path either.
+//
+//		NULL constants follow SQL semantics. For IN, a non-member yields NULL;
+//		for NOT IN, a non-member also yields NULL (x <> NULL). A NULL result
+//		passes only when infer_nulls_as is true (CHECK constraints, or under a
+//		NOT).
 //
 //---------------------------------------------------------------------------
 CConstraintInterval *
@@ -286,6 +317,11 @@ CConstraintInterval::PcnstrIntervalFromScalarArrayCmp(CMemoryPool *mp,
 	CScalarArrayCmp *popScArrayCmp = CScalarArrayCmp::PopConvert(pexpr->Pop());
 	IMDType::ECmpType cmp_type = CUtils::ParseCmpType(popScArrayCmp->MdIdOp());
 
+	if (IMDType::EcmptEq != cmp_type && IMDType::EcmptNEq != cmp_type)
+	{
+		// does not handle IS DISTINCT FROM or other comparisons
+		return nullptr;
+	}
 
 	CExpression *pexprArray = CUtils::PexprScalarArrayChild(pexpr);
 	const ULONG ulArrayExprArity = CUtils::UlScalarArrayArity(pexprArray);
@@ -294,40 +330,54 @@ CConstraintInterval::PcnstrIntervalFromScalarArrayCmp(CMemoryPool *mp,
 		return nullptr;
 	}
 
-	// Controlled by optimizer_array_constraint_cache GUC.
-	if (GPOS_FTRACE(EopttraceArrayConstraintCache))
+	COptCtxt *poctxt = COptCtxt::PoctxtFromTLS();
+
+	// Skip the (expensive) interval derivation for arrays above the threshold.
+	// Checked before the cache lookup: it is O(1), and a cached entry must not
+	// bypass the threshold.
+	const ULONG array_interval_threshold =
+		poctxt->GetOptimizerConfig()->GetHint()->UlArrayIntervalThreshold();
+	if (ulArrayExprArity > array_interval_threshold &&
+		!FArrayHasNullConst(pexprArray, ulArrayExprArity))
 	{
-		CConstraintInterval *pciCached =
-			COptCtxt::PoctxtFromTLS()->PciLookupArrayCnstrCache(
-				pexpr->Pop(), colref, infer_nulls_as);
+		poctxt->NoteArrayCnstrBailout();
+		return nullptr;
+	}
+
+	// Controlled by optimizer_array_constraint_cache GUC. The key is the array
+	// content, so an equal array that was translated again also hits.
+	const BOOL fUseCache = GPOS_FTRACE(EopttraceArrayConstraintCache);
+	IMDId *mdid_op = popScArrayCmp->MdIdOp();
+	const ULONG earrcmpt = static_cast<ULONG>(popScArrayCmp->Earrcmpt());
+	if (fUseCache)
+	{
+		CConstraintInterval *pciCached = poctxt->PciLookupArrayCnstrCache(
+			pexprArray, mdid_op, earrcmpt, colref, infer_nulls_as);
 		if (nullptr != pciCached)
 		{
 			return pciCached;
 		}
 	}
 
-	// Skip interval constraint creation for arrays exceeding the interval
-	// threshold.
-	COptimizerConfig *optimizer_config =
-		COptCtxt::PoctxtFromTLS()->GetOptimizerConfig();
-	ULONG array_interval_threshold =
-		optimizer_config->GetHint()->UlArrayIntervalThreshold();
-	if (ulArrayExprArity > array_interval_threshold)
-	{
-		return nullptr;
-	}
-
-	const IComparator *pcomp = COptCtxt::PoctxtFromTLS()->Pcomp();
+	const IComparator *pcomp = poctxt->Pcomp();
 	gpos::CAutoRef<CDatumSortedSet> apdatumsortedset(
 		GPOS_NEW(mp) CDatumSortedSet(mp, pexprArray, pcomp));
-	// construct ranges representing IN or NOT IN
-	CRangeArray *prgrng = GPOS_NEW(mp) CRangeArray(mp);
+	// CDatumSortedSet drops NULL constants and remembers that it saw them
+	const BOOL fArrayHasNull = apdatumsortedset->FIncludesNull();
 
-	switch (cmp_type)
+	CConstraintInterval *pci = nullptr;
+	if (IMDType::EcmptEq == cmp_type)
 	{
-		case IMDType::EcmptEq:
+		if (infer_nulls_as && fArrayHasNull)
+		{
+			// IN with a NULL constant is TRUE for members and NULL for every
+			// other value; NULL passes here, so every value (and NULL) passes
+			pci = PciUnbounded(mp, colref, true /*fIncludesNull*/);
+		}
+		else
 		{
 			// IN case, create ranges [X, X] [Y, Y] [Z, Z]
+			CRangeArray *prgrng = GPOS_NEW(mp) CRangeArray(mp);
 			for (ULONG ul = 0; ul < apdatumsortedset->Size(); ul++)
 			{
 				(*apdatumsortedset)[ul]->AddRef();
@@ -335,65 +385,75 @@ CConstraintInterval::PcnstrIntervalFromScalarArrayCmp(CMemoryPool *mp,
 					CRange(pcomp, IMDType::EcmptEq, (*apdatumsortedset)[ul]);
 				prgrng->Append(prng);
 			}
-			break;
-		}
-		case IMDType::EcmptNEq:
-		{
-			// NOT IN case, create ranges: (-inf, X) (X, Y) (Y, Z) (Z, inf)
-			IDatum *pprevdatum = nullptr;
-			IDatum *datum = nullptr;
-
-			for (ULONG ul = 0; ul < apdatumsortedset->Size(); ul++)
-			{
-				if (0 != ul)
-				{
-					pprevdatum->AddRef();
-				}
-
-				datum = (*apdatumsortedset)[ul];
-				datum->AddRef();
-
-				IMDId *mdid = datum->MDId();
-				mdid->AddRef();
-
-				CRange *prng = GPOS_NEW(mp)
-					CRange(mdid, pcomp, pprevdatum, CRange::EriExcluded, datum,
-						   CRange::EriExcluded);
-				prgrng->Append(prng);
-
-				pprevdatum = datum;
-			}
-
-			// add the last datum, making range (last, inf)
-			IMDId *mdid = pprevdatum->MDId();
-			pprevdatum->AddRef();
-			mdid->AddRef();
-			CRange *prng = GPOS_NEW(mp)
-				CRange(mdid, pcomp, pprevdatum, CRange::EriExcluded, nullptr,
-					   CRange::EriExcluded);
-			prgrng->Append(prng);
-			break;
-		}
-		default:
-		{
-			// does not handle IS DISTINCT FROM
-			prgrng->Release();
-			return nullptr;
+			pci = GPOS_NEW(mp)
+				CConstraintInterval(mp, colref, prgrng, infer_nulls_as);
 		}
 	}
-
-	CConstraintInterval *pci =
-		GPOS_NEW(mp) CConstraintInterval(mp, colref, prgrng, infer_nulls_as);
-
-	// Cache the freshly-built interval so subsequent calls within this query
-	// reuse it without re-sorting. InsertArrayCnstrCache AddRefs the value
-	// (cache holds one ref); GPOS_NEW's ref belongs to our caller and is
-	// returned below. The cache's ref is released when m_phmArrayCnstrCache
-	// is released in ~COptCtxt.
-	if (GPOS_FTRACE(EopttraceArrayConstraintCache))
+	else if (0 == apdatumsortedset->Size())
 	{
-		COptCtxt::PoctxtFromTLS()->InsertArrayCnstrCache(
-			pexpr->Pop(), colref, infer_nulls_as, pci);
+		// NOT IN an array of only NULLs: x <> NULL is NULL for every x, so the
+		// predicate is never TRUE. Passes everything only if NULL passes.
+		// (There is no datum to build "last datum, infinity" from.)
+		if (infer_nulls_as)
+		{
+			pci = PciUnbounded(mp, colref, true /*fIncludesNull*/);
+		}
+		else
+		{
+			pci = GPOS_NEW(mp) CConstraintInterval(
+				mp, colref, GPOS_NEW(mp) CRangeArray(mp), false /*fIncludesNull*/);
+		}
+	}
+	else
+	{
+		// NOT IN case, create ranges: (-inf, X) (X, Y) (Y, Z) (Z, inf)
+		// NULL constants, if any, are dropped. Without infer_nulls_as the
+		// exact answer would be "never TRUE"; this stays a superset of it.
+		CRangeArray *prgrng = GPOS_NEW(mp) CRangeArray(mp);
+		IDatum *pprevdatum = nullptr;
+		IDatum *datum = nullptr;
+
+		for (ULONG ul = 0; ul < apdatumsortedset->Size(); ul++)
+		{
+			if (0 != ul)
+			{
+				pprevdatum->AddRef();
+			}
+
+			datum = (*apdatumsortedset)[ul];
+			datum->AddRef();
+
+			IMDId *mdid = datum->MDId();
+			mdid->AddRef();
+
+			CRange *prng = GPOS_NEW(mp)
+				CRange(mdid, pcomp, pprevdatum, CRange::EriExcluded, datum,
+					   CRange::EriExcluded);
+			prgrng->Append(prng);
+
+			pprevdatum = datum;
+		}
+
+		// add the last datum, making range (last, inf)
+		IMDId *mdid = pprevdatum->MDId();
+		pprevdatum->AddRef();
+		mdid->AddRef();
+		CRange *prng = GPOS_NEW(mp)
+			CRange(mdid, pcomp, pprevdatum, CRange::EriExcluded, nullptr,
+				   CRange::EriExcluded);
+		prgrng->Append(prng);
+
+		pci = GPOS_NEW(mp)
+			CConstraintInterval(mp, colref, prgrng, infer_nulls_as);
+	}
+
+	// Cache the freshly-built interval so later derivations within this query
+	// reuse it without re-sorting. The cache takes its own reference; the one
+	// from GPOS_NEW belongs to the caller. It is released with the context.
+	if (fUseCache)
+	{
+		poctxt->InsertArrayCnstrCache(mp, pexprArray, mdid_op, earrcmpt, colref,
+									  infer_nulls_as, pci);
 	}
 
 	return pci;
@@ -787,10 +847,23 @@ CConstraintInterval::PciIntervalFromScalarBoolOp(
 
 		case CScalarBoolOp::EboolopNot:
 		{
+			// AND drops a child it cannot derive, which is fine for the AND
+			// itself (a superset) but not for its complement. If an IN/NOT IN
+			// list inside the child was skipped (threshold), the result is
+			// incomplete, so do not complement it.
+			COptCtxt *poctxt = COptCtxt::PoctxtFromTLS();
+			const ULONG ulBailouts = poctxt->UlArrayCnstrBailouts();
+
 			CConstraintInterval *pciChild = PciIntervalFromScalarExpr(
 				mp, (*pexpr)[0], colref, !infer_nulls_as);
 			if (nullptr == pciChild)
 			{
+				return nullptr;
+			}
+
+			if (ulBailouts != poctxt->UlArrayCnstrBailouts())
+			{
+				pciChild->Release();
 				return nullptr;
 			}
 

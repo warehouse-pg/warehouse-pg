@@ -552,6 +552,11 @@ CConstraint::PcnstrFromScalarBoolOp(
 	*ppdrgpcrs = GPOS_NEW(mp) CColRefSetArray(mp);
 	CConstraintArray *pdrgpcnstr = GPOS_NEW(mp) CConstraintArray(mp);
 
+	// Children that cannot be derived are skipped below. That is fine for
+	// AND (a superset) but not under NOT, so remember whether an IN/NOT IN
+	// list was skipped (threshold) while deriving the children.
+	const ULONG ulBailouts = COptCtxt::PoctxtFromTLS()->UlArrayCnstrBailouts();
+
 	for (ULONG ul = 0; ul < arity; ul++)
 	{
 		CColRefSetArray *pdrgpcrsChild = nullptr;
@@ -577,6 +582,14 @@ CConstraint::PcnstrFromScalarBoolOp(
 		(*ppdrgpcrs)->Release();
 		*ppdrgpcrs = pdrgpcrsMerged;
 		pdrgpcrsChild->Release();
+	}
+
+	if (CPredicateUtils::FNot(pexpr) &&
+		ulBailouts != COptCtxt::PoctxtFromTLS()->UlArrayCnstrBailouts())
+	{
+		// do not negate an incomplete child, see above
+		pdrgpcnstr->Release();
+		return nullptr;
 	}
 
 	const ULONG length = pdrgpcnstr->Size();

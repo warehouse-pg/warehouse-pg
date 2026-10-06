@@ -4186,19 +4186,16 @@ struct config_int ConfigureNamesInt_gp[] =
 
 	{
 		{"optimizer_array_interval_threshold", PGC_USERSET, QUERY_TUNING_METHOD,
-			gettext_noop("Item limit for interval constraint derivation from IN/NOT IN arrays. "
-						 "Above this size, the interval path bails out and the cheaper "
-						 "disjunction path takes over (controlled separately by "
-						 "optimizer_array_expansion_threshold). The per-query interval cache "
-						 "(optimizer_array_constraint_cache) amortises the derivation cost "
-						 "across preprocessing passes, so this default is intentionally "
-						 "generous; lower it only if planning time on very large IN clauses "
-						 "becomes a concern."),
-			NULL,
+			gettext_noop("Sets the maximum number of items in an IN or NOT IN list for which GPORCA derives a constraint."),
+			gettext_noop("For longer lists without NULL constants no constraint is derived: planning is "
+						 "cheaper, but partition elimination, predicate inference and contradiction "
+						 "detection from that predicate are lost. This is independent of "
+						 "optimizer_array_expansion_threshold. The default (no limit) always derives "
+						 "the constraint."),
 			GUC_NOT_IN_SAMPLE
 		},
 		&optimizer_array_interval_threshold,
-		1000, 0, INT_MAX,
+		INT_MAX, 0, INT_MAX,
 		NULL, NULL, NULL
 	},
 

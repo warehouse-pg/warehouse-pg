@@ -3003,7 +3003,6 @@ CExpressionPreprocessor::PcnstrFromChildPartition(
 		IMDIndex::EmdindBtree);
 	CRefCount::SafeRelease(part_constraint_expr);
 	CRefCount::SafeRelease(pdrgpcrsChild);
-	GPOS_ASSERT(cnstr);
 	return cnstr;
 }
 

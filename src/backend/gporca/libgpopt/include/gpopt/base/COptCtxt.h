@@ -34,9 +34,8 @@ using UlongToBitSetMap =
 
 // forward declarations
 class CColRefSet;
-class CConstraint;
 class CConstraintInterval;
-class COperator;
+class CExpression;
 class COptimizerConfig;
 class ICostModel;
 class IConstExprEvaluator;
@@ -46,47 +45,48 @@ class IConstExprEvaluator;
 //		SArrayCnstrCacheKey
 //
 //	@doc:
-//		Composite key for caching CConstraintInterval derived from
-//		ScalarArrayCmp expressions.
-//		Keyed by {operator ptr, colref ptr,infer_nulls_as}.
+//		Key for caching the CConstraintInterval derived from a
+//		"col <op> ANY/ALL (const array)" expression: the CONTENT of the array
+//		expression, the comparison operator, ANY/ALL, the column and
+//		infer_nulls_as.
+//
+//		The key is content based, not pointer based:
+//		  - an equal array that is translated again (for example the CHECK
+//		    constraint path builds a new expression on every derivation) finds
+//		    the entry built earlier;
+//		  - an entry can never be returned for a different array, even if an
+//		    operator is shared between expressions.
+//
+//		The key holds a reference on the array expression and on the operator
+//		mdid for its whole lifetime, so their memory cannot be recycled while
+//		an entry exists. Copying is deleted because a copy would release
+//		those references twice.
 //
 //---------------------------------------------------------------------------
 struct SArrayCnstrCacheKey
 {
-	COperator *m_pop;
+	CExpression *m_pexprArray;
+	IMDId *m_mdid_op;
+	ULONG m_earrcmpt;  // CScalarArrayCmp::EArrCmpType
 	const CColRef *m_pcr;
 	BOOL m_infer_nulls_as;
 
-	// Pins the operator pointer for the lifetime of the key.
-	SArrayCnstrCacheKey(COperator *pop, const CColRef *pcr, BOOL infer_nulls_as)
-		: m_pop(pop), m_pcr(pcr), m_infer_nulls_as(infer_nulls_as)
-	{
-		m_pop->AddRef();
-	}
+	SArrayCnstrCacheKey(CExpression *pexprArray, IMDId *mdid_op,
+						ULONG earrcmpt, const CColRef *pcr,
+						BOOL infer_nulls_as);
 
-	~SArrayCnstrCacheKey()
-	{
-		m_pop->Release();
-	}
+	SArrayCnstrCacheKey(const SArrayCnstrCacheKey &) = delete;
+	SArrayCnstrCacheKey &operator=(const SArrayCnstrCacheKey &) = delete;
 
-	static ULONG
-	HashValue(const SArrayCnstrCacheKey *pkey)
-	{
-		return gpos::CombineHashes(
-			gpos::CombineHashes(gpos::HashPtr<COperator>(pkey->m_pop),
-								gpos::HashPtr<CColRef>(pkey->m_pcr)),
-			static_cast<ULONG>(pkey->m_infer_nulls_as));
-	}
+	~SArrayCnstrCacheKey();
 
-	static BOOL
-	Equals(const SArrayCnstrCacheKey *pkey1, const SArrayCnstrCacheKey *pkey2)
-	{
-		return pkey1->m_pop == pkey2->m_pop && pkey1->m_pcr == pkey2->m_pcr &&
-			   pkey1->m_infer_nulls_as == pkey2->m_infer_nulls_as;
-	}
+	static ULONG HashValue(const SArrayCnstrCacheKey *pkey);
+
+	static BOOL Equals(const SArrayCnstrCacheKey *pkey1,
+					   const SArrayCnstrCacheKey *pkey2);
 };
 
-// hash map: {COperator*, CColRef*} -> CConstraint*
+// hash map: SArrayCnstrCacheKey -> CConstraint*
 // Values are always CConstraintInterval* but stored as base class to avoid
 // including CConstraintInterval.h in this widely-included header.
 using ArrayCnstrCacheMap =
@@ -182,9 +182,17 @@ private:
 	// (required by CDynamicPhysicalScan for recomputing statistics for DPE)
 	SPartSelectorInfo *m_part_selector_info;
 
-	// cache for CConstraintInterval derived from ScalarArrayCmp expressions
-	// avoids repeated O(N log N) sort+dedup.
+	// cache for CConstraintInterval derived from ScalarArrayCmp expressions,
+	// avoids repeated O(N log N) sort+dedup. Allocated on first insert, so a
+	// query without large IN lists pays nothing.
 	ArrayCnstrCacheMap *m_phmArrayCnstrCache;
+
+	// number of times an IN/NOT IN constraint derivation was skipped because
+	// the array exceeded optimizer_array_interval_threshold. A skipped
+	// derivation means "no information" (fine when the predicate is
+	// AND-ed), but complementing a result that was derived without it would
+	// be unsound, so NOT checks whether this changed while deriving its child.
+	ULONG m_ulArrayCnstrBailouts;
 
 public:
 	COptCtxt(COptCtxt &) = delete;
@@ -360,16 +368,35 @@ public:
 
 	const SPartSelectorInfoEntry *GetPartSelectorInfo(ULONG selector_id) const;
 
-	// lookup cached CConstraintInterval for a ScalarArrayCmp expression
+	// lookup the cached CConstraintInterval for "pcr <op> ANY/ALL (pexprArray)"
 	// returns AddRef'd interval if found, nullptr otherwise
-	CConstraintInterval *PciLookupArrayCnstrCache(COperator *pop,
+	CConstraintInterval *PciLookupArrayCnstrCache(CExpression *pexprArray,
+												  IMDId *mdid_op,
+												  ULONG earrcmpt,
 												  const CColRef *pcr,
 												  BOOL infer_nulls_as);
 
-	// insert a CConstraintInterval into the cache for a ScalarArrayCmp expression
-	void InsertArrayCnstrCache(COperator *pop, const CColRef *pcr,
-							   BOOL infer_nulls_as,
+	// cache pci for "pcr <op> ANY/ALL (pexprArray)"; the cache takes its own
+	// reference. Only intervals allocated from the optimization memory pool
+	// are cached (the cache lives until ~COptCtxt), so mp must be that pool,
+	// otherwise the interval is not cached.
+	void InsertArrayCnstrCache(CMemoryPool *mp, CExpression *pexprArray,
+							   IMDId *mdid_op, ULONG earrcmpt,
+							   const CColRef *pcr, BOOL infer_nulls_as,
 							   CConstraintInterval *pci);
+
+	// record that an IN/NOT IN derivation was skipped (threshold exceeded)
+	void
+	NoteArrayCnstrBailout()
+	{
+		m_ulArrayCnstrBailouts++;
+	}
+
+	ULONG
+	UlArrayCnstrBailouts() const
+	{
+		return m_ulArrayCnstrBailouts;
+	}
 
 	// set required system columns
 	void

@@ -18,6 +18,7 @@
 #include "gpopt/base/CDefaultComparator.h"
 #include "gpopt/cost/ICostModel.h"
 #include "gpopt/eval/IConstExprEvaluator.h"
+#include "gpopt/operators/CExpression.h"
 #include "gpopt/optimizer/COptimizerConfig.h"
 #include "naucrates/traceflags/traceflags.h"
 
@@ -53,7 +54,8 @@ COptCtxt::COptCtxt(CMemoryPool *mp, CColumnFactory *col_factory,
 	  m_has_replicated_tables(false),
 	  m_scanid_to_part_map(nullptr),
 	  m_selector_id_counter(0),
-	  m_phmArrayCnstrCache(nullptr)
+	  m_phmArrayCnstrCache(nullptr),
+	  m_ulArrayCnstrBailouts(0)
 {
 	GPOS_ASSERT(nullptr != mp);
 	GPOS_ASSERT(nullptr != col_factory);
@@ -68,7 +70,6 @@ COptCtxt::COptCtxt(CMemoryPool *mp, CColumnFactory *col_factory,
 	m_direct_dispatchable_filters = GPOS_NEW(mp) CExpressionArray(mp);
 	m_scanid_to_part_map = GPOS_NEW(m_mp) UlongToBitSetMap(m_mp);
 	m_part_selector_info = GPOS_NEW(m_mp) SPartSelectorInfo(m_mp);
-	m_phmArrayCnstrCache = GPOS_NEW(m_mp) ArrayCnstrCacheMap(m_mp);
 }
 
 
@@ -83,7 +84,7 @@ COptCtxt::COptCtxt(CMemoryPool *mp, CColumnFactory *col_factory,
 //---------------------------------------------------------------------------
 COptCtxt::~COptCtxt()
 {
-	m_phmArrayCnstrCache->Release();
+	CRefCount::SafeRelease(m_phmArrayCnstrCache);
 	GPOS_DELETE(m_pcf);
 	GPOS_DELETE(m_pcomp);
 	m_pceeval->Release();
@@ -186,18 +187,82 @@ COptCtxt::AddPartSelectorInfo(ULONG selector_id, SPartSelectorInfoEntry *entry)
 
 //---------------------------------------------------------------------------
 //	@function:
+//		SArrayCnstrCacheKey::SArrayCnstrCacheKey
+//
+//	@doc:
+//		ctor, pins the array expression and the operator mdid
+//
+//---------------------------------------------------------------------------
+SArrayCnstrCacheKey::SArrayCnstrCacheKey(CExpression *pexprArray,
+										 IMDId *mdid_op, ULONG earrcmpt,
+										 const CColRef *pcr,
+										 BOOL infer_nulls_as)
+	: m_pexprArray(pexprArray),
+	  m_mdid_op(mdid_op),
+	  m_earrcmpt(earrcmpt),
+	  m_pcr(pcr),
+	  m_infer_nulls_as(infer_nulls_as)
+{
+	m_pexprArray->AddRef();
+	m_mdid_op->AddRef();
+}
+
+SArrayCnstrCacheKey::~SArrayCnstrCacheKey()
+{
+	m_pexprArray->Release();
+	m_mdid_op->Release();
+}
+
+// hash of the array content (all constants), operator, ANY/ALL, column and
+// infer_nulls_as; O(array size), no datum comparison and no executor call
+ULONG
+SArrayCnstrCacheKey::HashValue(const SArrayCnstrCacheKey *pkey)
+{
+	ULONG ulHash = CExpression::HashValue(pkey->m_pexprArray);
+	ulHash = gpos::CombineHashes(ulHash, pkey->m_mdid_op->HashValue());
+	ulHash = gpos::CombineHashes(ulHash, pkey->m_earrcmpt);
+	ulHash = gpos::CombineHashes(ulHash, gpos::HashPtr<CColRef>(pkey->m_pcr));
+	return gpos::CombineHashes(ulHash,
+							   static_cast<ULONG>(pkey->m_infer_nulls_as));
+}
+
+BOOL
+SArrayCnstrCacheKey::Equals(const SArrayCnstrCacheKey *pkey1,
+							const SArrayCnstrCacheKey *pkey2)
+{
+	if (pkey1->m_pcr != pkey2->m_pcr ||
+		pkey1->m_infer_nulls_as != pkey2->m_infer_nulls_as ||
+		pkey1->m_earrcmpt != pkey2->m_earrcmpt ||
+		!pkey1->m_mdid_op->Equals(pkey2->m_mdid_op))
+	{
+		return false;
+	}
+
+	return pkey1->m_pexprArray == pkey2->m_pexprArray ||
+		   pkey1->m_pexprArray->Matches(pkey2->m_pexprArray);
+}
+
+
+//---------------------------------------------------------------------------
+//	@function:
 //		COptCtxt::PciLookupArrayCnstrCache
 //
 //	@doc:
-//		Lookup cached CConstraintInterval for a ScalarArrayCmp expression.
+//		Lookup the cached CConstraintInterval for "pcr <op> ANY/ALL (array)".
 //		Returns AddRef'd interval if found, nullptr otherwise.
 //
 //---------------------------------------------------------------------------
 CConstraintInterval *
-COptCtxt::PciLookupArrayCnstrCache(COperator *pop, const CColRef *pcr,
+COptCtxt::PciLookupArrayCnstrCache(CExpression *pexprArray, IMDId *mdid_op,
+								   ULONG earrcmpt, const CColRef *pcr,
 								   BOOL infer_nulls_as)
 {
-	SArrayCnstrCacheKey key(pop, pcr, infer_nulls_as);
+	if (nullptr == m_phmArrayCnstrCache)
+	{
+		return nullptr;
+	}
+
+	SArrayCnstrCacheKey key(pexprArray, mdid_op, earrcmpt, pcr, infer_nulls_as);
 	CConstraint *pcnstr = m_phmArrayCnstrCache->Find(&key);
 	if (nullptr != pcnstr)
 	{
@@ -214,16 +279,30 @@ COptCtxt::PciLookupArrayCnstrCache(COperator *pop, const CColRef *pcr,
 //		COptCtxt::InsertArrayCnstrCache
 //
 //	@doc:
-//		Insert a CConstraintInterval into the cache for a ScalarArrayCmp
-//		expression.
+//		Insert a CConstraintInterval into the cache. The cache keeps its own
+//		reference until ~COptCtxt.
 //
 //---------------------------------------------------------------------------
 void
-COptCtxt::InsertArrayCnstrCache(COperator *pop, const CColRef *pcr,
-								BOOL infer_nulls_as, CConstraintInterval *pci)
+COptCtxt::InsertArrayCnstrCache(CMemoryPool *mp, CExpression *pexprArray,
+								IMDId *mdid_op, ULONG earrcmpt,
+								const CColRef *pcr, BOOL infer_nulls_as,
+								CConstraintInterval *pci)
 {
-	SArrayCnstrCacheKey *pkey =
-		GPOS_NEW(m_mp) SArrayCnstrCacheKey(pop, pcr, infer_nulls_as);
+	if (mp != m_mp)
+	{
+		// The cache lives as long as this context. An interval allocated from
+		// a shorter-lived pool would dangle on a later hit, so do not cache it.
+		return;
+	}
+
+	if (nullptr == m_phmArrayCnstrCache)
+	{
+		m_phmArrayCnstrCache = GPOS_NEW(m_mp) ArrayCnstrCacheMap(m_mp);
+	}
+
+	SArrayCnstrCacheKey *pkey = GPOS_NEW(m_mp)
+		SArrayCnstrCacheKey(pexprArray, mdid_op, earrcmpt, pcr, infer_nulls_as);
 	// Store as base class pointer; only CConstraintInterval values are inserted
 	CConstraint *pcnstr = static_cast<CConstraint *>(pci);
 	pcnstr->AddRef();

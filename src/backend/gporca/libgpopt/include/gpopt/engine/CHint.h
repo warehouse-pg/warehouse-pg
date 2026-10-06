@@ -102,12 +102,14 @@ public:
 		return m_ulArrayExpansionThreshold;
 	}
 
-	// Maximum number of elements in the scalar comparison with an array which
-	// will be processed through the interval constraint path (Path A:
-	// CDatumSortedSet sort + CRange creation in CConstraintInterval).
-	// Separate from UlArrayExpansionThreshold() which gates the less efficient
-	// disjunction path (Path B). Path A produces a single sorted CConstraintInterval
-	// and, with caching enabled, the sort cost is paid only once per query.
+	// Maximum number of elements in "col IN/NOT IN (array of constants)" for
+	// which a constraint is derived through the interval path (CDatumSortedSet
+	// sort + CRange creation in CConstraintInterval). For a longer array
+	// without NULL constants no constraint is derived at all: planning is
+	// cheaper, but partition elimination, predicate inference and contradiction
+	// detection from that predicate are lost. UlArrayExpansionThreshold() is
+	// independent and does not act as a fallback for arrays above this limit.
+	// The default is no limit.
 	ULONG
 	UlArrayIntervalThreshold() const
 	{
