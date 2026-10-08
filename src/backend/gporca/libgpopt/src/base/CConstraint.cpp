@@ -554,7 +554,9 @@ CConstraint::PcnstrFromScalarBoolOp(
 
 	// Children that cannot be derived are skipped below. That is fine for
 	// AND (a superset) but not under NOT, so remember whether an IN/NOT IN
-	// list was skipped (threshold) while deriving the children.
+	// list was skipped (threshold) while deriving the children. This covers
+	// only skipped lists; the general case (an AND that dropped any child it
+	// could not derive) is a known issue, tracked separately.
 	const ULONG ulBailouts = COptCtxt::PoctxtFromTLS()->UlArrayCnstrBailouts();
 
 	for (ULONG ul = 0; ul < arity; ul++)

@@ -859,7 +859,9 @@ CConstraintInterval::PciIntervalFromScalarBoolOp(
 			// AND drops a child it cannot derive, which is fine for the AND
 			// itself (a superset) but not for its complement. If an IN/NOT IN
 			// list inside the child was skipped (threshold), the result is
-			// incomplete, so do not complement it.
+			// incomplete, so do not complement it. This covers only skipped
+			// lists; the general case (an AND that dropped any child it could
+			// not derive) is a known issue, tracked separately.
 			COptCtxt *poctxt = COptCtxt::PoctxtFromTLS();
 			const ULONG ulBailouts = poctxt->UlArrayCnstrBailouts();
 
