@@ -152,6 +152,9 @@ extern PartitionPruneState *ExecCreatePartitionPruneState(PlanState *planstate,
 extern Bitmapset *ExecFindMatchingSubPlans(PartitionPruneState *prunestate,
 										   EState *estate,
 										   int nplans, List *join_prune_paramids);
+extern Bitmapset *ExecFindMatchingDynamicScanParts(EState *estate,
+												   Oid *partOids, int nparts,
+												   List *join_prune_paramids);
 extern Bitmapset *ExecFindInitialMatchingSubPlans(PartitionPruneState *prunestate,
 												  int nsubplans);
 extern int get_partition_for_tuple(PartitionKey key, PartitionDesc partdesc,
