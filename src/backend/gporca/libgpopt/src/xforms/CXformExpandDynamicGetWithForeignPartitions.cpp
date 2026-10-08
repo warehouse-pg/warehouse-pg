@@ -68,6 +68,12 @@ CXformExpandDynamicGetWithForeignPartitions::Exfp(
 //       |--CPhysicalDynamicTableScan "part" ("part"), Columns: ["a" (9), "b" (10), Scan Id: 1 Parts to scan: 5
 //       +--CPhysicalDynamicForeignScan "part" ("part"), Columns: ["a" (18), "b" (19)] Scan Id: 1 Parts to scan: 3]
 
+// All the resulting scans keep the original scan id, so a join on the partition key gives them
+// one shared Partition Selector, whose partition list is the union of the scans' partitions
+// (COptCtxt::AddPartForScanId). Each scan's own list is only a subset of it, so the executor
+// matches the selector's result to a scan's partitions by OID, not by position
+// (ExecFindMatchingDynamicScanParts).
+
 void
 CXformExpandDynamicGetWithForeignPartitions::Transform(CXformContext *pxfctxt,
 													   CXformResult *pxfres,

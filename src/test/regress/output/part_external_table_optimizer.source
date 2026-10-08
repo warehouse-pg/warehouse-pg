@@ -392,7 +392,7 @@ HINT:  For non-partitioned tables, run analyze <table_name>(<column_list>). For 
  Optimizer: GPORCA
 (13 rows)
 
-select part_dpe.* from part_dpe, part_dpe_dim where part_dpe.a = part_dpe_dim.k;
+select part_dpe.* from part_dpe, part_dpe_dim where part_dpe.a = part_dpe_dim.k order by 1;
 NOTICE:  One or more columns in the following table(s) do not have statistics: part_dpe
 HINT:  For non-partitioned tables, run analyze <table_name>(<column_list>). For partitioned tables, run analyze rootpartition <table_name>(<column_list>). See log for columns missing statistics.
  a | b  
@@ -405,7 +405,7 @@ HINT:  For non-partitioned tables, run analyze <table_name>(<column_list>). For 
 truncate part_dpe_dim;
 insert into part_dpe_dim values (9,0);
 analyze part_dpe_dim;
-select part_dpe.* from part_dpe, part_dpe_dim where part_dpe.a = part_dpe_dim.k;
+select part_dpe.* from part_dpe, part_dpe_dim where part_dpe.a = part_dpe_dim.k order by 1;
 NOTICE:  One or more columns in the following table(s) do not have statistics: part_dpe
 HINT:  For non-partitioned tables, run analyze <table_name>(<column_list>). For partitioned tables, run analyze rootpartition <table_name>(<column_list>). See log for columns missing statistics.
  a | b  
@@ -417,20 +417,20 @@ HINT:  For non-partitioned tables, run analyze <table_name>(<column_list>). For 
 truncate part_dpe_dim;
 insert into part_dpe_dim values (3,0), (4,0);
 analyze part_dpe_dim;
-select part_dpe.* from part_dpe, part_dpe_dim where part_dpe.a = part_dpe_dim.k;
+select part_dpe.* from part_dpe, part_dpe_dim where part_dpe.a = part_dpe_dim.k order by 1;
 NOTICE:  One or more columns in the following table(s) do not have statistics: part_dpe
 HINT:  For non-partitioned tables, run analyze <table_name>(<column_list>). For partitioned tables, run analyze rootpartition <table_name>(<column_list>). See log for columns missing statistics.
  a | b  
 ---+----
- 4 | 40
  3 | 30
+ 4 | 40
 (2 rows)
 
 -- select external partitions and the external default partition
 truncate part_dpe_dim;
 insert into part_dpe_dim values (2,0), (9,0);
 analyze part_dpe_dim;
-select part_dpe.* from part_dpe, part_dpe_dim where part_dpe.a = part_dpe_dim.k;
+select part_dpe.* from part_dpe, part_dpe_dim where part_dpe.a = part_dpe_dim.k order by 1;
 NOTICE:  One or more columns in the following table(s) do not have statistics: part_dpe
 HINT:  For non-partitioned tables, run analyze <table_name>(<column_list>). For partitioned tables, run analyze rootpartition <table_name>(<column_list>). See log for columns missing statistics.
  a | b  

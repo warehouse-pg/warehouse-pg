@@ -118,25 +118,25 @@ create table part_dpe_dim (k int, extra int) distributed by (k);
 insert into part_dpe_dim values (4,0), (5,0);
 analyze part_dpe_dim;
 explain (costs off) select part_dpe.* from part_dpe, part_dpe_dim where part_dpe.a = part_dpe_dim.k;
-select part_dpe.* from part_dpe, part_dpe_dim where part_dpe.a = part_dpe_dim.k;
+select part_dpe.* from part_dpe, part_dpe_dim where part_dpe.a = part_dpe_dim.k order by 1;
 
 -- select the external default partition only
 truncate part_dpe_dim;
 insert into part_dpe_dim values (9,0);
 analyze part_dpe_dim;
-select part_dpe.* from part_dpe, part_dpe_dim where part_dpe.a = part_dpe_dim.k;
+select part_dpe.* from part_dpe, part_dpe_dim where part_dpe.a = part_dpe_dim.k order by 1;
 
 -- select one external and one heap partition
 truncate part_dpe_dim;
 insert into part_dpe_dim values (3,0), (4,0);
 analyze part_dpe_dim;
-select part_dpe.* from part_dpe, part_dpe_dim where part_dpe.a = part_dpe_dim.k;
+select part_dpe.* from part_dpe, part_dpe_dim where part_dpe.a = part_dpe_dim.k order by 1;
 
 -- select external partitions and the external default partition
 truncate part_dpe_dim;
 insert into part_dpe_dim values (2,0), (9,0);
 analyze part_dpe_dim;
-select part_dpe.* from part_dpe, part_dpe_dim where part_dpe.a = part_dpe_dim.k;
+select part_dpe.* from part_dpe, part_dpe_dim where part_dpe.a = part_dpe_dim.k order by 1;
 
 drop table part_dpe_dim;
 drop table part_dpe;
