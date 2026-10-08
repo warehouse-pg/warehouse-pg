@@ -28,6 +28,7 @@
 #include "partitioning/partdesc.h"
 #include "partitioning/partprune.h"
 #include "rewrite/rewriteManip.h"
+#include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/partcache.h"
 #include "utils/rel.h"
@@ -2456,6 +2457,107 @@ ExecFindMatchingSubPlans(PartitionPruneState *prunestate,
 	}
 
 	MemoryContextReset(prunestate->prune_context);
+
+	return result;
+}
+
+/*
+ * ExecFindMatchingDynamicScanParts
+ *		Determine which of a GPORCA Dynamic*Scan's partitions survive the
+ *		join pruning done by the PartitionSelectors in 'join_prune_paramids'.
+ *
+ * Returns the indexes into 'partOids' of the surviving partitions.
+ *
+ * A PartitionSelector reports its result as indexes into its own list of
+ * partitions, which need not be the consumer's list: when ORCA splits a
+ * partitioned table with foreign partitions into a Dynamic Seq Scan and one
+ * or more Dynamic Foreign Scans, all of them consume the same selector, but
+ * each scans only a subset of the selector's partitions.  So translate the
+ * selector's result into partition OIDs and match the consumer's partitions
+ * by OID rather than by position.
+ */
+Bitmapset *
+ExecFindMatchingDynamicScanParts(EState *estate, Oid *partOids, int nparts,
+								 List *join_prune_paramids)
+{
+	Bitmapset  *result;
+	ListCell   *lc;
+
+	Assert(join_prune_paramids != NIL);
+
+	result = bms_add_range(NULL, 0, nparts - 1);
+
+	foreach (lc, join_prune_paramids)
+	{
+		int			paramid = lfirst_int(lc);
+		ParamExecData *param;
+		PartitionSelectorState *psstate;
+		PartitionSelector *ps;
+		Oid		   *selected_oids;
+		int			nselected = 0;
+		int			max_selected = 0;
+		Bitmapset  *matched = NULL;
+		ListCell   *lc2;
+		int			i;
+
+		param = &(estate->es_param_exec_vals[paramid]);
+		Assert(param->execPlan == NULL);
+		Assert(!param->isnull);
+		psstate = (PartitionSelectorState *) DatumGetPointer(param->value);
+
+		if (psstate == NULL)
+		{
+			/*
+			 * The planner should have ensured that the Partition Selector
+			 * is fully executed before the scan.
+			 */
+			elog(WARNING, "partition selector was not fully executed");
+			continue;
+		}
+		Assert(IsA(psstate, PartitionSelectorState));
+		ps = (PartitionSelector *) psstate->ps.plan;
+
+		/* Collect the OIDs of the partitions the selector kept */
+		foreach (lc2, ps->part_prune_info->prune_infos)
+		{
+			ListCell   *lc3;
+
+			foreach (lc3, (List *) lfirst(lc2))
+				max_selected += ((PartitionedRelPruneInfo *) lfirst(lc3))->nparts;
+		}
+		selected_oids = palloc(sizeof(Oid) * Max(max_selected, 1));
+
+		foreach (lc2, ps->part_prune_info->prune_infos)
+		{
+			ListCell   *lc3;
+
+			foreach (lc3, (List *) lfirst(lc2))
+			{
+				PartitionedRelPruneInfo *pinfo = lfirst(lc3);
+
+				for (i = 0; i < pinfo->nparts; i++)
+				{
+					int			subplan = pinfo->subplan_map[i];
+
+					if (subplan >= 0 &&
+						bms_is_member(subplan, psstate->part_prune_result))
+						selected_oids[nselected++] = pinfo->relid_map[i];
+				}
+			}
+		}
+		qsort(selected_oids, nselected, sizeof(Oid), oid_cmp);
+
+		for (i = 0; i < nparts; i++)
+		{
+			if (bsearch(&partOids[i], selected_oids, nselected, sizeof(Oid),
+						oid_cmp) != NULL)
+				matched = bms_add_member(matched, i);
+		}
+
+		result = bms_int_members(result, matched);
+		bms_free(matched);
+		pfree(selected_oids);
+	}
 
 	return result;
 }

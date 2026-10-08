@@ -92,6 +92,55 @@ insert into non_part values (15,15), (32,32);
 explain analyze select * from part, non_part where part.b=non_part.b;
 select * from part, non_part where part.b=non_part.b;
 
+-- DPE over mixed partitions where the partitions selected by the Partition
+-- Selector are not at the same positions in each dynamic scan's own partition
+-- list. The external partitions come first and the DEFAULT partition is
+-- external, so the heap partitions and the default partition used to be
+-- silently skipped.
+create table part_dpe (a int, b int) partition by range (a);
+create external web table part_dpe_e1 (a int, b int) execute 'echo 1,10' on segment 0 format 'text' (delimiter ',');
+create external web table part_dpe_e2 (a int, b int) execute 'echo 2,20' on segment 0 format 'text' (delimiter ',');
+create external web table part_dpe_e3 (a int, b int) execute 'echo 3,30' on segment 0 format 'text' (delimiter ',');
+create external web table part_dpe_edef (a int, b int) execute 'echo 9,90' on segment 0 format 'text' (delimiter ',');
+alter table part_dpe attach partition part_dpe_e1 for values from (1) to (2);
+alter table part_dpe attach partition part_dpe_e2 for values from (2) to (3);
+alter table part_dpe attach partition part_dpe_e3 for values from (3) to (4);
+create table part_dpe_p4 partition of part_dpe for values from (4) to (5);
+create table part_dpe_p5 partition of part_dpe for values from (5) to (6);
+alter table part_dpe attach partition part_dpe_edef default;
+insert into part_dpe_p4 values (4,40);
+insert into part_dpe_p5 values (5,50);
+analyze part_dpe_p4;
+analyze part_dpe_p5;
+create table part_dpe_dim (k int, extra int) distributed by (k);
+
+-- select the heap partitions only
+insert into part_dpe_dim values (4,0), (5,0);
+analyze part_dpe_dim;
+explain (costs off) select part_dpe.* from part_dpe, part_dpe_dim where part_dpe.a = part_dpe_dim.k;
+select part_dpe.* from part_dpe, part_dpe_dim where part_dpe.a = part_dpe_dim.k;
+
+-- select the external default partition only
+truncate part_dpe_dim;
+insert into part_dpe_dim values (9,0);
+analyze part_dpe_dim;
+select part_dpe.* from part_dpe, part_dpe_dim where part_dpe.a = part_dpe_dim.k;
+
+-- select one external and one heap partition
+truncate part_dpe_dim;
+insert into part_dpe_dim values (3,0), (4,0);
+analyze part_dpe_dim;
+select part_dpe.* from part_dpe, part_dpe_dim where part_dpe.a = part_dpe_dim.k;
+
+-- select external partitions and the external default partition
+truncate part_dpe_dim;
+insert into part_dpe_dim values (2,0), (9,0);
+analyze part_dpe_dim;
+select part_dpe.* from part_dpe, part_dpe_dim where part_dpe.a = part_dpe_dim.k;
+
+drop table part_dpe_dim;
+drop table part_dpe;
+
 -- test different servers, should create different scans
 -- note: do not select here, just test plan
 
