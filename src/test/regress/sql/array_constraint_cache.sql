@@ -353,6 +353,10 @@ RESET optimizer_array_interval_threshold;
 -- Without NULLs the 7-value list is above threshold=6 and is skipped. With a
 -- NULL constant the list stays on the interval path, which drops the NULL; it
 -- is not rerouted to the array-expansion path, which would keep it.
+-- The threshold also applies to the arrays ORCA derives itself: the inferred
+-- filters below are the NULL-free 6-value list, so they survive threshold=6
+-- but would be skipped at threshold=5 (a list of N values with a NULL behaves
+-- like an N-1 value list for the inferred predicates).
 
 \echo '##############################'
 \echo '# C7: NULL IN THE LIST       #'
@@ -393,6 +397,16 @@ ANALYZE chk_null;
 
 EXPLAIN (COSTS off) SELECT * FROM chk_null WHERE c = 'b';
 SELECT count(*) FROM chk_null WHERE c = 'b';                         -- expected: 1
+
+-- The same under a complement: NOT (c NOT IN ('a', NULL)) is NULL for every
+-- c other than 'a', so the CHECK admits 'b'. The NOT IN used to be derived as
+-- the superset c <> 'a', whose complement c = 'a' pruned the row.
+CREATE TABLE chk_not_notin (c text CHECK (NOT (c NOT IN ('a', NULL))))
+DISTRIBUTED RANDOMLY;
+INSERT INTO chk_not_notin VALUES ('b');
+ANALYZE chk_not_notin;
+EXPLAIN (COSTS off) SELECT * FROM chk_not_notin WHERE c = 'b';
+SELECT count(*) FROM chk_not_notin WHERE c = 'b';                    -- expected: 1
 
 
 -- ============================================================================

@@ -404,11 +404,20 @@ CConstraintInterval::PcnstrIntervalFromScalarArrayCmp(CMemoryPool *mp,
 				mp, colref, GPOS_NEW(mp) CRangeArray(mp), false /*fIncludesNull*/);
 		}
 	}
+	else if (fArrayHasNull && !infer_nulls_as)
+	{
+		// NOT IN with a NULL constant: x <> NULL is NULL for every x, so the
+		// predicate is never TRUE. Return the exact answer (a contradiction)
+		// rather than a superset: under a NOT the result is complemented, and
+		// the complement of a superset would be unsound.
+		pci = GPOS_NEW(mp) CConstraintInterval(
+			mp, colref, GPOS_NEW(mp) CRangeArray(mp), false /*fIncludesNull*/);
+	}
 	else
 	{
 		// NOT IN case, create ranges: (-inf, X) (X, Y) (Y, Z) (Z, inf)
-		// NULL constants, if any, are dropped. Without infer_nulls_as the
-		// exact answer would be "never TRUE"; this stays a superset of it.
+		// NULL constants, if any, are dropped; with infer_nulls_as a NULL
+		// result passes, so the ranges plus NULL are exact.
 		CRangeArray *prgrng = GPOS_NEW(mp) CRangeArray(mp);
 		IDatum *pprevdatum = nullptr;
 		IDatum *datum = nullptr;

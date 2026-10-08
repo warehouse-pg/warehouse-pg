@@ -16,6 +16,7 @@
 
 #include "gpopt/base/CConstraintInterval.h"
 #include "gpopt/base/CDefaultComparator.h"
+#include "gpopt/base/CUtils.h"
 #include "gpopt/cost/ICostModel.h"
 #include "gpopt/eval/IConstExprEvaluator.h"
 #include "gpopt/operators/CExpression.h"
@@ -214,11 +215,21 @@ SArrayCnstrCacheKey::~SArrayCnstrCacheKey()
 }
 
 // hash of the array content (all constants), operator, ANY/ALL, column and
-// infer_nulls_as; O(array size), no datum comparison and no executor call
+// infer_nulls_as; O(array size), no datum comparison and no executor call.
+// The constants are hashed explicitly: arrays coming from the DXL translator
+// are collapsed (no children, constants kept in the CScalarArray operator),
+// and CExpression::HashValue would then only see the array types.
 ULONG
 SArrayCnstrCacheKey::HashValue(const SArrayCnstrCacheKey *pkey)
 {
-	ULONG ulHash = CExpression::HashValue(pkey->m_pexprArray);
+	CExpression *pexprArray = pkey->m_pexprArray;
+	ULONG ulHash = pexprArray->Pop()->HashValue();
+	const ULONG ulArity = CUtils::UlScalarArrayArity(pexprArray);
+	for (ULONG ul = 0; ul < ulArity; ul++)
+	{
+		ulHash = gpos::CombineHashes(
+			ulHash, CUtils::PScalarArrayConstChildAt(pexprArray, ul)->HashValue());
+	}
 	ulHash = gpos::CombineHashes(ulHash, pkey->m_mdid_op->HashValue());
 	ulHash = gpos::CombineHashes(ulHash, pkey->m_earrcmpt);
 	ulHash = gpos::CombineHashes(ulHash, gpos::HashPtr<CColRef>(pkey->m_pcr));
@@ -289,10 +300,12 @@ COptCtxt::InsertArrayCnstrCache(CMemoryPool *mp, CExpression *pexprArray,
 								const CColRef *pcr, BOOL infer_nulls_as,
 								CConstraintInterval *pci)
 {
+	// The cache lives as long as this context. An interval allocated from a
+	// shorter-lived pool would dangle on a later hit, so it is not cached; in
+	// a debug build, catch a caller that does this.
+	GPOS_ASSERT(mp == m_mp);
 	if (mp != m_mp)
 	{
-		// The cache lives as long as this context. An interval allocated from
-		// a shorter-lived pool would dangle on a later hit, so do not cache it.
 		return;
 	}
 

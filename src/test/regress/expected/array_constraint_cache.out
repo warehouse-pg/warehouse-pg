@@ -775,6 +775,10 @@ RESET optimizer_array_interval_threshold;
 -- Without NULLs the 7-value list is above threshold=6 and is skipped. With a
 -- NULL constant the list stays on the interval path, which drops the NULL; it
 -- is not rerouted to the array-expansion path, which would keep it.
+-- The threshold also applies to the arrays ORCA derives itself: the inferred
+-- filters below are the NULL-free 6-value list, so they survive threshold=6
+-- but would be skipped at threshold=5 (a list of N values with a NULL behaves
+-- like an N-1 value list for the inferred predicates).
 \echo '##############################'
 ##############################
 \echo '# C7: NULL IN THE LIST       #'
@@ -885,6 +889,28 @@ SELECT count(*) FROM chk_null WHERE c = 'b';                         -- expected
      1
 (1 row)
 
+-- The same under a complement: NOT (c NOT IN ('a', NULL)) is NULL for every
+-- c other than 'a', so the CHECK admits 'b'. The NOT IN used to be derived as
+-- the superset c <> 'a', whose complement c = 'a' pruned the row.
+CREATE TABLE chk_not_notin (c text CHECK (NOT (c NOT IN ('a', NULL))))
+DISTRIBUTED RANDOMLY;
+INSERT INTO chk_not_notin VALUES ('b');
+ANALYZE chk_not_notin;
+EXPLAIN (COSTS off) SELECT * FROM chk_not_notin WHERE c = 'b';
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Seq Scan on chk_not_notin
+         Filter: (c = 'b'::text)
+ Optimizer: Postgres-based planner
+(4 rows)
+
+SELECT count(*) FROM chk_not_notin WHERE c = 'b';                    -- expected: 1
+ count 
+-------
+     1
+(1 row)
+
 -- ============================================================================
 -- C9. NOT IN / IN OF ONLY NULLs  (used to dereference a null pointer)
 -- ============================================================================
@@ -931,7 +957,7 @@ RESET optimizer_array_constraints;
 RESET optimizer_array_interval_threshold;
 RESET search_path;
 DROP SCHEMA array_constraint_cache CASCADE;
-NOTICE:  drop cascades to 7 other objects
+NOTICE:  drop cascades to 8 other objects
 DETAIL:  drop cascades to table array_constraint_cache.foo
 drop cascades to table array_constraint_cache.bar
 drop cascades to table array_constraint_cache.baz
@@ -939,3 +965,4 @@ drop cascades to table array_constraint_cache.range_t
 drop cascades to table array_constraint_cache.qux
 drop cascades to table array_constraint_cache.range_i
 drop cascades to table array_constraint_cache.chk_null
+drop cascades to table array_constraint_cache.chk_not_notin

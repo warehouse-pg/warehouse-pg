@@ -1113,6 +1113,47 @@ EresUnittest_CConstraintIntervalArrayCache()
 	GPOS_UNITTEST_ASSERT(nullptr != pci6 && pci1 != pci6);
 	GPOS_UNITTEST_ASSERT(4 == pci6->Pdrgprng()->Size());  // (-inf,1) (1,3) (3,5) (5,inf)
 
+	// Arrays as the DXL translator produces them are collapsed: no children,
+	// the constants live in the CScalarArray operator. Different collapsed
+	// arrays must hash apart (the constants are part of the hash), and an
+	// equal collapsed array must hit.
+	CExpression *pexprA1c = CUtils::PexprCollapseConstArray(mp, pexprA1);
+	CExpression *pexprA2c = CUtils::PexprCollapseConstArray(mp, pexprA2);
+	CExpression *pexprBc = CUtils::PexprCollapseConstArray(mp, pexprB);
+	CExpression *pexprArrA1c = CUtils::PexprScalarArrayChild(pexprA1c);
+	CExpression *pexprArrBc = CUtils::PexprScalarArrayChild(pexprBc);
+	GPOS_UNITTEST_ASSERT(CUtils::FScalarArrayCollapsed(pexprArrA1c));
+	GPOS_UNITTEST_ASSERT(0 == pexprArrA1c->Arity());
+	{
+		IMDId *mdid_op = CScalarArrayCmp::PopConvert(pexprA1c->Pop())->MdIdOp();
+		const ULONG earrcmpt = static_cast<ULONG>(
+			CScalarArrayCmp::PopConvert(pexprA1c->Pop())->Earrcmpt());
+		SArrayCnstrCacheKey keyA(pexprArrA1c, mdid_op, earrcmpt, colref, false);
+		SArrayCnstrCacheKey keyB(pexprArrBc, mdid_op, earrcmpt, colref, false);
+		GPOS_UNITTEST_ASSERT(SArrayCnstrCacheKey::HashValue(&keyA) !=
+							 SArrayCnstrCacheKey::HashValue(&keyB));
+		GPOS_UNITTEST_ASSERT(!SArrayCnstrCacheKey::Equals(&keyA, &keyB));
+	}
+	CConstraintInterval *pciC1 =
+		CConstraintInterval::PcnstrIntervalFromScalarArrayCmp(mp, pexprA1c,
+															  colref, false);
+	CConstraintInterval *pciC2 =
+		CConstraintInterval::PcnstrIntervalFromScalarArrayCmp(mp, pexprA2c,
+															  colref, false);
+	CConstraintInterval *pciC3 =
+		CConstraintInterval::PcnstrIntervalFromScalarArrayCmp(mp, pexprBc,
+															  colref, false);
+	GPOS_UNITTEST_ASSERT(nullptr != pciC1 && pciC1 == pciC2);
+	GPOS_UNITTEST_ASSERT(nullptr != pciC3 && pciC1 != pciC3);
+	GPOS_UNITTEST_ASSERT(3 == pciC1->Pdrgprng()->Size());
+	GPOS_UNITTEST_ASSERT(4 == pciC3->Pdrgprng()->Size());
+	pciC1->Release();
+	pciC2->Release();
+	pciC3->Release();
+	pexprA1c->Release();
+	pexprA2c->Release();
+	pexprBc->Release();
+
 	pci1->Release();
 	pci2->Release();
 	pci3->Release();
@@ -1299,6 +1340,36 @@ EresUnittest_CConstraintIntervalArrayThreshold()
 	GPOS_UNITTEST_ASSERT(nullptr != pciNotInNullsCheck);
 	GPOS_UNITTEST_ASSERT(pciNotInNullsCheck->IsConstraintUnbounded());
 	pciNotInNullsCheck->Release();
+
+	// NOT IN (1, 2, 3, NULL): never TRUE in a WHERE clause (x <> NULL is
+	// NULL), so the exact interval is a contradiction. It used to be the
+	// superset (-inf,1) (1,2) (2,3) (3,inf), whose complement under a NOT
+	// (CHECK (NOT (c NOT IN (...)))) wrongly excluded every other value.
+	CExpression *pexprNotInWithNull =
+		PexprArrayCmpOnColRef(mp, colref, CScalarArrayCmp::EarrcmpAll,
+							  IMDType::EcmptNEq, rgi3, 3, true /*fAddNull*/);
+	CConstraintInterval *pciNotInWithNull =
+		CConstraintInterval::PcnstrIntervalFromScalarArrayCmp(
+			mp, pexprNotInWithNull, colref, false);
+	GPOS_UNITTEST_ASSERT(nullptr != pciNotInWithNull);
+	GPOS_UNITTEST_ASSERT(pciNotInWithNull->FContradiction());
+	pciNotInWithNull->Release();
+
+	pexprNotInWithNull->AddRef();
+	CExpressionArray *pdrgpexprNotNotIn = GPOS_NEW(mp) CExpressionArray(mp);
+	pdrgpexprNotNotIn->Append(pexprNotInWithNull);
+	CExpression *pexprNotNotIn = CUtils::PexprScalarBoolOp(
+		mp, CScalarBoolOp::EboolopNot, pdrgpexprNotNotIn);
+	// CHECK semantics: NOT (c NOT IN (1, 2, 3, NULL)) is NULL for every c
+	// outside the list, and NULL passes a CHECK, so every value passes
+	CConstraintInterval *pciNotNotIn =
+		CConstraintInterval::PciIntervalFromScalarExpr(mp, pexprNotNotIn,
+													   colref, true);
+	GPOS_UNITTEST_ASSERT(nullptr != pciNotNotIn);
+	GPOS_UNITTEST_ASSERT(pciNotNotIn->IsConstraintUnbounded());
+	pciNotNotIn->Release();
+	pexprNotNotIn->Release();
+	pexprNotInWithNull->Release();
 
 	pexprNotInNulls->Release();
 	pexprNull5->Release();
