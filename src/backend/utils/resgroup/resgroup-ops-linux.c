@@ -313,6 +313,65 @@ compSetDir(ResGroupCompType comp, const char *dir)
 	strcpy(compdirs[comp], dir);
 }
 
+/* Result of readProcCgroupLine() */
+typedef enum ProcCgroupLineStatus
+{
+	PROC_CGROUP_LINE_OK,		/* buf holds "comps:path" */
+	PROC_CGROUP_LINE_EOF,		/* no more lines */
+	PROC_CGROUP_LINE_TOO_LONG,	/* line does not fit in buf */
+	PROC_CGROUP_LINE_NO_ID		/* line has no "id:" prefix */
+} ProcCgroupLineStatus;
+
+/*
+ * Read the next line of /proc/1/cgroup into buf.
+ *
+ * Each line has the format "id:comps:path".  On success the "id:" prefix is
+ * stripped so that buf holds "comps:path", and PROC_CGROUP_LINE_OK is
+ * returned.  Otherwise the return value says whether we hit end of file or
+ * why the line could not be parsed.  A line that does not fit is consumed up
+ * to its end, so the next call starts on a line boundary.
+ */
+static ProcCgroupLineStatus
+readProcCgroupLine(FILE *f, char *buf, size_t bufsize)
+{
+	char	   *p;
+	size_t		len;
+
+	if (fgets(buf, bufsize, f) == NULL)
+		return PROC_CGROUP_LINE_EOF;
+
+	len = strlen(buf);
+	if (len > 0 && buf[len - 1] == '\n')
+		buf[--len] = '\0';
+	else
+	{
+		int			c = fgetc(f);
+
+		if (c != '\n' && c != EOF)
+		{
+			/* the line did not fit in buf, skip the remainder of it */
+			do
+			{
+				c = fgetc(f);
+			} while (c != '\n' && c != EOF);
+
+			return PROC_CGROUP_LINE_TOO_LONG;
+		}
+	}
+
+	/* strip the "id:" prefix */
+	for (p = buf; *p >= '0' && *p <= '9'; p++)
+		;
+
+	if (p == buf || *p != ':')
+		return PROC_CGROUP_LINE_NO_ID;
+
+	p++;
+	memmove(buf, p, len - (p - buf) + 1);
+
+	return PROC_CGROUP_LINE_OK;
+}
+
 /*
  * Detect gpdb cgroup component dirs.
  *
@@ -335,6 +394,7 @@ detectCompDirs(void)
 	ResGroupCompType comp;
 	FILE	   *f;
 	char		buf[MAXPATHLEN * 2];
+	ProcCgroupLineStatus status;
 	int			maskAll = (1 << RESGROUP_COMP_TYPE_COUNT) - 1;
 	int			maskDetected = 0;
 
@@ -350,7 +410,8 @@ detectCompDirs(void)
 	 *     1:name=systemd:/init.scope
 	 *     0::/init.scope
 	 */
-	while (fscanf(f, "%*d:%s", buf) != EOF)
+	while ((status = readProcCgroupLine(f, buf, sizeof(buf))) ==
+		   PROC_CGROUP_LINE_OK)
 	{
 		ResGroupCompType comps[RESGROUP_COMP_TYPE_COUNT];
 		int			ncomps = 0;
@@ -368,6 +429,8 @@ detectCompDirs(void)
 		for (ptr = buf; sep != ':'; ptr = tmp)
 		{
 			tmp = strpbrk(ptr, ":,=");
+			if (tmp == NULL)
+				goto fallback; /* no path in the line */
 
 			sep = *tmp;
 			*tmp++ = 0;
@@ -391,7 +454,8 @@ detectCompDirs(void)
 		}
 
 		/* now ptr point to the path */
-		Assert(strlen(ptr) < MAXPATHLEN);
+		if (strlen(ptr) >= MAXPATHLEN)
+			goto fallback; /* too long for the comp dirs */
 
 		/* if the path is "/" then use empty string "" instead of it */
 		if (strcmp(ptr, "/") == 0)
@@ -412,6 +476,9 @@ detectCompDirs(void)
 			maskDetected |= 1 << comp;
 		}
 	}
+
+	if (status != PROC_CGROUP_LINE_EOF)
+		goto fallback; /* a line we can not parse */
 
 	if (maskDetected != maskAll)
 		goto fallback; /* not all the comps are detected */
@@ -1103,7 +1170,8 @@ checkCompHierarchy()
 	ResGroupCompType comp;
 	FILE       *f;
 	char        buf[MAXPATHLEN * 2];
-	
+	ProcCgroupLineStatus status;
+
 	f = fopen("/proc/1/cgroup", "r");
 	if (!f)
 	{
@@ -1120,7 +1188,8 @@ checkCompHierarchy()
 	 * 1:name=systemd:/init.scope
 	 * 0::/init.scope
 	 */
-	while (fscanf(f, "%*d:%s", buf) != EOF)
+	while ((status = readProcCgroupLine(f, buf, sizeof(buf))) ==
+		   PROC_CGROUP_LINE_OK)
 	{
 		char       *ptr;
 		char       *tmp;
@@ -1136,7 +1205,13 @@ checkCompHierarchy()
 		for (ptr = buf; sep != ':'; ptr = tmp)
 		{
 			tmp = strpbrk(ptr, ":,=");
-			
+			if (tmp == NULL)
+			{
+				fclose(f);
+				CGROUP_CONFIG_ERROR("can't parse '/proc/1/cgroup': line has no path");
+				return;
+			}
+
 			sep = *tmp;
 			*tmp++ = 0;
 
@@ -1165,6 +1240,12 @@ checkCompHierarchy()
 	}
 
 	fclose(f);
+
+	if (status == PROC_CGROUP_LINE_TOO_LONG)
+		CGROUP_CONFIG_ERROR("can't parse '/proc/1/cgroup': line longer than %zu bytes",
+							sizeof(buf) - 1);
+	else if (status == PROC_CGROUP_LINE_NO_ID)
+		CGROUP_CONFIG_ERROR("can't parse '/proc/1/cgroup': line has no numeric id prefix");
 }
 
 /* get total ram and total swap (in Byte) from sysinfo */
