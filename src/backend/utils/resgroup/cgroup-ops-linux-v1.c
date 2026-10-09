@@ -180,25 +180,32 @@ static List* getiostat_v1(Oid group, List *io_limit);
 static char *dumpio_v1(List *limit_list);
 static void cleario_v1(Oid groupid);
 
+/* Result of read_proc_cgroup_line() */
+typedef enum ProcCgroupLineStatus
+{
+	PROC_CGROUP_LINE_OK,		/* buf holds "comps:path" */
+	PROC_CGROUP_LINE_EOF,		/* no more lines */
+	PROC_CGROUP_LINE_TOO_LONG,	/* line does not fit in buf */
+	PROC_CGROUP_LINE_NO_ID		/* line has no "id:" prefix */
+} ProcCgroupLineStatus;
+
 /*
  * Read the next line of /proc/1/cgroup into buf.
  *
  * Each line has the format "id:comps:path".  On success the "id:" prefix is
- * stripped so that buf holds "comps:path", and true is returned.  false is
- * returned at end of file, or when the line does not fit in buf or has no
- * "id:" prefix; *malformed tells these two cases apart.  A line that does not
- * fit is consumed up to its end, so the next call starts on a line boundary.
+ * stripped so that buf holds "comps:path", and PROC_CGROUP_LINE_OK is
+ * returned.  Otherwise the return value says whether we hit end of file or
+ * why the line could not be parsed.  A line that does not fit is consumed up
+ * to its end, so the next call starts on a line boundary.
  */
-static bool
-read_proc_cgroup_line(FILE *f, char *buf, size_t bufsize, bool *malformed)
+static ProcCgroupLineStatus
+read_proc_cgroup_line(FILE *f, char *buf, size_t bufsize)
 {
 	char	   *p;
 	size_t		len;
 
-	*malformed = false;
-
 	if (fgets(buf, bufsize, f) == NULL)
-		return false;
+		return PROC_CGROUP_LINE_EOF;
 
 	len = strlen(buf);
 	if (len > 0 && buf[len - 1] == '\n')
@@ -211,11 +218,11 @@ read_proc_cgroup_line(FILE *f, char *buf, size_t bufsize, bool *malformed)
 		{
 			/* the line did not fit in buf, skip the remainder of it */
 			do
+			{
 				c = fgetc(f);
-			while (c != '\n' && c != EOF);
+			} while (c != '\n' && c != EOF);
 
-			*malformed = true;
-			return false;
+			return PROC_CGROUP_LINE_TOO_LONG;
 		}
 	}
 
@@ -224,15 +231,12 @@ read_proc_cgroup_line(FILE *f, char *buf, size_t bufsize, bool *malformed)
 		;
 
 	if (p == buf || *p != ':')
-	{
-		*malformed = true;
-		return false;
-	}
+		return PROC_CGROUP_LINE_NO_ID;
 
 	p++;
 	memmove(buf, p, len - (p - buf) + 1);
 
-	return true;
+	return PROC_CGROUP_LINE_OK;
 }
 
 /*
@@ -257,7 +261,7 @@ detect_component_dirs_v1(void)
 	CGroupComponentType component;
 	FILE	   *f;
 	char		buf[MAX_CGROUP_PATHLEN * 2];
-	bool		malformed;
+	ProcCgroupLineStatus status;
 	int			maskAll = (1 << CGROUP_COMPONENT_COUNT) - 1;
 	int			maskDetected = 0;
 
@@ -273,7 +277,8 @@ detect_component_dirs_v1(void)
 	 *     1:name=systemd:/init.scope
 	 *     0::/init.scope
 	 */
-	while (read_proc_cgroup_line(f, buf, sizeof(buf), &malformed))
+	while ((status = read_proc_cgroup_line(f, buf, sizeof(buf))) ==
+		   PROC_CGROUP_LINE_OK)
 	{
 		CGroupComponentType components[CGROUP_COMPONENT_COUNT];
 		int			ncomps = 0;
@@ -339,7 +344,7 @@ detect_component_dirs_v1(void)
 		}
 	}
 
-	if (malformed)
+	if (status != PROC_CGROUP_LINE_EOF)
 		goto fallback; /* a line we can not parse */
 
 	if (maskDetected != maskAll)
@@ -397,7 +402,7 @@ check_component_hierarchy_v1()
 	CGroupComponentType component;
 	FILE       *f;
 	char        buf[MAX_CGROUP_PATHLEN * 2];
-	bool        malformed;
+	ProcCgroupLineStatus status;
 
 	f = fopen("/proc/1/cgroup", "r");
 	if (!f)
@@ -415,7 +420,8 @@ check_component_hierarchy_v1()
 	 * 1:name=systemd:/init.scope
 	 * 0::/init.scope
 	 */
-	while (read_proc_cgroup_line(f, buf, sizeof(buf), &malformed))
+	while ((status = read_proc_cgroup_line(f, buf, sizeof(buf))) ==
+		   PROC_CGROUP_LINE_OK)
 	{
 		char       *ptr;
 		char       *tmp;
@@ -467,8 +473,11 @@ check_component_hierarchy_v1()
 
 	fclose(f);
 
-	if (malformed)
-		CGROUP_CONFIG_ERROR("can't parse '/proc/1/cgroup': line too long or malformed");
+	if (status == PROC_CGROUP_LINE_TOO_LONG)
+		CGROUP_CONFIG_ERROR("can't parse '/proc/1/cgroup': line longer than %zu bytes",
+							sizeof(buf) - 1);
+	else if (status == PROC_CGROUP_LINE_NO_ID)
+		CGROUP_CONFIG_ERROR("can't parse '/proc/1/cgroup': line has no numeric id prefix");
 }
 
 /*
