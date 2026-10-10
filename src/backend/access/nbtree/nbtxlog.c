@@ -20,6 +20,7 @@
 #include "access/transam.h"
 #include "access/xlog.h"
 #include "access/xlogutils.h"
+#include "access/anchorsnapshot.h"
 #include "storage/procarray.h"
 #include "miscadmin.h"
 
@@ -523,13 +524,15 @@ btree_xlog_delete(XLogReaderState *record)
 	 * just once when that arrives.  After that we know that no conflicts
 	 * exist from individual btree vacuum records on that index.
 	 */
-	if (InHotStandby)
 	{
 		RelFileNode rnode;
 
 		XLogRecGetBlockTag(record, 0, &rnode, NULL, NULL);
 
-		ResolveRecoveryConflictWithSnapshot(xlrec->latestRemovedXid, rnode);
+		AnchorSnapshotOnCleanupRecord(xlrec->latestRemovedXid, rnode,
+									  record->EndRecPtr);
+		if (InHotStandby)
+			ResolveRecoveryConflictWithSnapshot(xlrec->latestRemovedXid, rnode);
 	}
 
 	/*
@@ -810,6 +813,8 @@ btree_xlog_reuse_page(XLogReaderState *record)
 	 * Consequently, one XID value achieves the same exclusion effect on
 	 * primary and standby.
 	 */
+	AnchorSnapshotOnCleanupRecord(xlrec->latestRemovedXid, xlrec->node,
+								  record->EndRecPtr);
 	if (InHotStandby)
 	{
 		ResolveRecoveryConflictWithSnapshot(xlrec->latestRemovedXid,

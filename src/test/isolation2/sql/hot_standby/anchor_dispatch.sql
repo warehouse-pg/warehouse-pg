@@ -14,10 +14,12 @@
 --
 -- Observations use per-segment counts of a table distributed by its column:
 -- select gp_segment_id, count(*) ... group by 1.  The other cases of the
--- suite read at the replay position, the server default; anchored sessions
--- here SET the mode.  Publication goes through gpconfig + reload, as in
--- anchor_import; a backend applies the pending reload before it runs the
--- next command it reads.
+-- suite read at the replay position, the server default; this test sets
+-- anchored cluster-wide the way a replica does (a node exports anchors only
+-- under that configuration) and anchored sessions SET the mode as well.
+-- Publication goes through gpconfig + reload, as in anchor_import; a
+-- backend applies the pending reload before it runs the next command it
+-- reads.
 --
 -- Session roles: 1: primary QD; 2: primary QD (transactions left in flight);
 -- -1S: standby QD (dispatch); -1M: standby QD utility; 0M/1M: mirror utility.
@@ -27,6 +29,8 @@
 -- s/\(seg\d+ [0-9.]+:\d+ pid=\d+\)/(segN IP:PORT pid=PID)/
 -- end_matchsubs
 
+!\retcode gpconfig -c whpg_hot_standby_snapshot_mode -v anchored --skipvalidation;
+!\retcode gpstop -u;
 1: create table hs_disp_t(a int) distributed by (a);
 1: insert into hs_disp_t select generate_series(1, 30);
 -- a running-xacts record on every node, so that restore points export
@@ -321,5 +325,6 @@
 -1Mq:
 0Mq:
 1Mq:
+!\retcode gpconfig -r whpg_hot_standby_snapshot_mode --skipvalidation;
 !\retcode gpconfig -r whpg_hot_standby_anchor_name --skipvalidation;
 !\retcode gpstop -ar;

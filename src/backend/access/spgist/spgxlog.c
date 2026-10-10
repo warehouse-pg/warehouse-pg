@@ -20,6 +20,7 @@
 #include "access/transam.h"
 #include "access/xlog.h"
 #include "access/xlogutils.h"
+#include "access/anchorsnapshot.h"
 #include "storage/standby.h"
 #include "utils/memutils.h"
 
@@ -873,16 +874,16 @@ spgRedoVacuumRedirect(XLogReaderState *record)
 	 * If any redirection tuples are being removed, make sure there are no
 	 * live Hot Standby transactions that might need to see them.
 	 */
-	if (InHotStandby)
+	if (TransactionIdIsValid(xldata->newestRedirectXid))
 	{
-		if (TransactionIdIsValid(xldata->newestRedirectXid))
-		{
-			RelFileNode node;
+		RelFileNode node;
 
-			XLogRecGetBlockTag(record, 0, &node, NULL, NULL);
+		XLogRecGetBlockTag(record, 0, &node, NULL, NULL);
+		AnchorSnapshotOnCleanupRecord(xldata->newestRedirectXid, node,
+									  record->EndRecPtr);
+		if (InHotStandby)
 			ResolveRecoveryConflictWithSnapshot(xldata->newestRedirectXid,
 												node);
-		}
 	}
 
 	if (XLogReadBufferForRedo(record, 0, &buffer) == BLK_NEEDS_REDO)

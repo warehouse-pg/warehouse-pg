@@ -36,11 +36,28 @@
 -- a stale anchor line from an aborted earlier run would be re-registered
 -- by the restart below and skew the counts
 !\retcode gpconfig -r whpg_hot_standby_anchor_name --skipvalidation;
+!\retcode gpconfig -r whpg_hot_standby_snapshot_mode --skipvalidation;
 !\retcode gpconfig -c whpg_max_anchor_snapshots -v 3 --skipvalidation;
 !\retcode gpconfig -c gp_fts_probe_interval -v 10 --coordinatoronly;
 !\retcode gpstop -ar;
 
 1: create table hs_anchor_t(a int) distributed by (a);
+----------------------------------------------------------------
+-- A node exports anchors only where its configuration sets
+-- whpg_hot_standby_snapshot_mode = anchored (the line a read replica's
+-- configuration is to carry).  With the server default a replayed restore
+-- point registers nothing and writes no file.
+----------------------------------------------------------------
+1: select count(*) from gp_create_restore_point('hs_anchor_rp0');
+1: insert into hs_anchor_t select generate_series(1, 30);
+0M: select count(*) from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_anchor_rp0';
+-1M: select count(*) from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_anchor_rp0';
+!\retcode mdir=$(psql -d postgres -Atc "select datadir from gp_segment_configuration where content = 0 and role = 'm'"); test ! -e "$mdir/pg_anchor_snapshots/hs_anchor_rp0";
+-- the sessions below read with ordinary snapshots; the configuration line
+-- is for the startup process
+-1S: set whpg_hot_standby_snapshot_mode = unanchored;
+!\retcode gpconfig -c whpg_hot_standby_snapshot_mode -v anchored --skipvalidation;
+!\retcode gpstop -u;
 
 ----------------------------------------------------------------
 -- Export at restore-point replay
@@ -268,6 +285,8 @@
 
 0M: select count(*) from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_anchor_fault';
 1M: select count(*) from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_anchor_fault';
+-- the session was reopened above and would start anchored
+-1S: set whpg_hot_standby_snapshot_mode = unanchored;
 -1S: select count(*) from hs_anchor_t;
 !\retcode mdir=$(psql -d postgres -Atc "select datadir from gp_segment_configuration where content = 0 and role = 'm'"); test ! -e "$mdir/pg_anchor_snapshots/hs_anchor_fault" && test ! -e "$mdir/pg_anchor_snapshots/hs_anchor_fault.tmp" && grep -q 'could not write anchor snapshot file ..pg_anchor_snapshots/hs_anchor_fault.tmp..: fault injected' "$mdir"/log/*.csv;
 1: select gp_inject_fault('anchor_snapshot_export_write', 'reset', dbid) from gp_segment_configuration where content = 0 and role = 'm';
@@ -328,6 +347,7 @@
 1q:
 1Uq:
 -1Mq:
+!\retcode gpconfig -r whpg_hot_standby_snapshot_mode --skipvalidation;
 !\retcode gpconfig -r whpg_max_anchor_snapshots --skipvalidation;
 !\retcode gpconfig -r whpg_hot_standby_anchor_name --skipvalidation;
 !\retcode gpstop -ar;

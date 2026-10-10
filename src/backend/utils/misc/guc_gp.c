@@ -4980,7 +4980,11 @@ struct config_enum ConfigureNamesEnum_gp[] =
 						 "anchored in its configuration file. Only dispatch-role sessions "
 						 "of a server in recovery are affected; utility-mode sessions, "
 						 "servers not in recovery and servers with "
-						 "whpg_max_anchor_snapshots = 0 ignore the setting."),
+						 "whpg_max_anchor_snapshots = 0 ignore the setting. The value the "
+						 "startup process reads from the configuration files also decides "
+						 "whether this node exports an anchor snapshot at a replayed restore "
+						 "point: a hot standby whose configuration keeps the default never "
+						 "registers anchors, and a session's SET does not change that."),
 			GUC_NOT_IN_SAMPLE | GUC_GPDB_NO_SYNC
 		},
 		&whpg_hot_standby_snapshot_mode,

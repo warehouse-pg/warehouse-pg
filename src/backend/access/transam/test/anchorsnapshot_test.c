@@ -38,13 +38,13 @@ makeRegistry(int capacity)
 	SpinLockInit(&reg->lock);
 	reg->capacity = capacity;
 	reg->next_ordinal = 1;
+	reg->nvalid = 0;
+	pg_atomic_init_u32(&reg->dropOrdinalHorizon, 0);
 	anchorRegistry = reg;
-	/* the name buffer is sized by the first registry that needs it */
+	/* the name buffer AnchorSnapshotStartup sizes to the registry */
 	if (retireNames != NULL)
-	{
 		free(retireNames);
-		retireNames = NULL;
-	}
+	retireNames = (char *) calloc(capacity > 0 ? capacity : 1, MAXFNAMELEN);
 	return reg;
 }
 
@@ -679,6 +679,288 @@ test__oldest_xmin_and_restart_rule(void **state)
 	}
 }
 
+/*
+ * Conflict linkage: a replayed cleanup record invalidates exactly the
+ * anchors whose xmin is at or below its horizon, the published one
+ * included, runs the barrier once for the lot, and runs nothing when no
+ * anchor qualifies, when the horizon is invalid, or when the registry is
+ * off and no kept anchor exists.
+ */
+static void
+test__cleanup_record_invalidates_at_or_below(void **state)
+{
+	AnchorRegistryData *reg = makeRegistry(4);
+	TransactionId xmin;
+	RelFileNode node = {1663, 12345, 16384};
+
+	assert_int_equal(registerAnchor("a", 400), REGISTER_OK);
+	assert_int_equal(registerAnchor("b", 300), REGISTER_OK);
+	assert_int_equal(registerAnchor("c", 450), REGISTER_OK);
+	whpg_hot_standby_anchor_name = "a";
+
+	/* below every xmin: nothing happens, no barrier */
+	AnchorSnapshotOnCleanupRecord(299, node, (XLogRecPtr) 5000);
+	assert_true(AnchorSnapshotLookup("b", &xmin, NULL));
+
+	/* an invalid horizon is not a conflict */
+	AnchorSnapshotOnCleanupRecord(InvalidTransactionId, node, (XLogRecPtr) 5000);
+	assert_true(AnchorSnapshotLookup("b", &xmin, NULL));
+
+	/* at the published anchor's xmin: a (equal) and b (below) go, c stays */
+	expectBarrier(1);
+	AnchorSnapshotOnCleanupRecord(400, node, (XLogRecPtr) 5000);
+	assert_false(AnchorSnapshotLookup("a", &xmin, NULL));
+	assert_false(AnchorSnapshotLookup("b", &xmin, NULL));
+	assert_true(AnchorSnapshotLookup("c", &xmin, NULL));
+	assert_int_equal(AnchorSnapshotOldestXmin(), 450);
+
+	/* the freed slots are reusable */
+	assert_int_equal(registerAnchor("d", 500), REGISTER_OK);
+
+	anchorRegistry = NULL;
+	free(reg);
+	whpg_hot_standby_anchor_name = NULL;
+}
+
+/*
+ * A commit that drops relation files invalidates every registered anchor:
+ * every commit replayed after a registration belongs to a transaction the
+ * anchor holds as in progress or not yet started, so its xid is at or
+ * above every registered xmin.
+ */
+static void
+test__relfilenode_drop_invalidates_all(void **state)
+{
+	AnchorRegistryData *reg = makeRegistry(4);
+	TransactionId xmin;
+
+	assert_int_equal(registerAnchor("a", 400), REGISTER_OK);
+	assert_int_equal(registerAnchor("c", 450), REGISTER_OK);
+
+	expectBarrier(1);
+	AnchorSnapshotOnRelfilenodeDrop(450, (XLogRecPtr) 7000, 2);
+	assert_false(AnchorSnapshotLookup("a", &xmin, NULL));
+	assert_false(AnchorSnapshotLookup("c", &xmin, NULL));
+
+	/* an empty registry: no barrier */
+	AnchorSnapshotOnRelfilenodeDrop(600, (XLogRecPtr) 7100, 1);
+
+	anchorRegistry = NULL;
+	free(reg);
+}
+
+/*
+ * The kept anchor (a file a start could not register) is removed by both
+ * hooks once the record lies past its restore point and the horizon
+ * reaches its xmin; it has no entry, so no barrier runs for it.  The clear
+ * at the end of recovery forgets it too.
+ */
+static void
+test__kept_anchor_gate(void **state)
+{
+	AnchorRegistryData *reg = makeRegistry(0);
+	RelFileNode node = {1663, 12345, 16384};
+
+	keptSet = true;
+	strlcpy(keptName, "k", MAXFNAMELEN);
+	keptXmin = 400;
+	keptLSN = (XLogRecPtr) 1000;
+
+	/* the record precedes the restore point: never a conflict */
+	AnchorSnapshotOnCleanupRecord(500, node, (XLogRecPtr) 900);
+	assert_true(keptSet);
+	AnchorSnapshotOnCleanupRecord(500, node, (XLogRecPtr) 1000);
+	assert_true(keptSet);
+	/* past it, below the xmin: kept */
+	AnchorSnapshotOnCleanupRecord(399, node, (XLogRecPtr) 2000);
+	assert_true(keptSet);
+	/* past it, at the xmin: removed */
+	AnchorSnapshotOnCleanupRecord(400, node, (XLogRecPtr) 2000);
+	assert_false(keptSet);
+
+	keptSet = true;
+	AnchorSnapshotOnRelfilenodeDrop(500, (XLogRecPtr) 1000, 1);
+	assert_true(keptSet);
+	AnchorSnapshotOnRelfilenodeDrop(500, (XLogRecPtr) 1001, 1);
+	assert_false(keptSet);
+
+	/* the clear at the end of recovery forgets a kept anchor */
+	keptSet = true;
+	AnchorSnapshotClearAll();
+	assert_false(keptSet);
+
+	anchorRegistry = NULL;
+	free(reg);
+
+	/* the clear runs the barrier only when it invalidates an entry */
+	reg = makeRegistry(2);
+	AnchorSnapshotClearAll();
+	assert_int_equal(registerAnchor("a", 400), REGISTER_OK);
+	expectBarrier(1);
+	AnchorSnapshotClearAll();
+	assert_int_equal(AnchorSnapshotOldestXmin(), InvalidTransactionId);
+	anchorRegistry = NULL;
+	free(reg);
+}
+
+/*
+ * Every path that removes an entry lowers the count, registration raises
+ * it, and none of them but a file-dropping commit touches the drop
+ * horizon.
+ */
+static void
+test__removal_count_and_horizon(void **state)
+{
+	AnchorRegistryData *reg = makeRegistry(4);
+	RelFileNode node = {1663, 12345, 16384};
+	TransactionId xmin;
+
+	assert_int_equal(registerAnchor("a", 400), REGISTER_OK);
+	assert_int_equal(registerAnchor("b", 300), REGISTER_OK);
+	assert_int_equal(registerAnchor("c", 450), REGISTER_OK);
+	assert_int_equal(reg->nvalid, 3);
+
+	/* a cleanup record: b goes */
+	whpg_hot_standby_anchor_name = "a";
+	expectBarrier(1);
+	AnchorSnapshotOnCleanupRecord(300, node, (XLogRecPtr) 5000);
+	assert_int_equal(reg->nvalid, 2);
+
+	/* eviction of the oldest unpublished: c goes (a is published) */
+	expectBarrier(1);
+	assert_true(evictOldestUnpublished("d"));
+	assert_int_equal(reg->nvalid, 1);
+
+	/* registration again */
+	assert_int_equal(registerAnchor("d", 500), REGISTER_OK);
+	assert_int_equal(reg->nvalid, 2);
+
+	/* publication of d retires a */
+	whpg_hot_standby_anchor_name = "d";
+	expectBarrier(1);
+	assert_true(applyPublication("d"));
+	assert_false(AnchorSnapshotLookup("a", &xmin, NULL));
+	assert_int_equal(reg->nvalid, 1);
+
+	/* removal by name */
+	expectBarrier(1);
+	AnchorSnapshotInvalidate("d");
+	assert_int_equal(reg->nvalid, 0);
+
+	/* the clear at the end of recovery */
+	assert_int_equal(registerAnchor("e", 600), REGISTER_OK);
+	expectBarrier(1);
+	AnchorSnapshotClearAll();
+	assert_int_equal(reg->nvalid, 0);
+
+	/* none of that moved the drop horizon */
+	assert_int_equal(pg_atomic_read_u32(&reg->dropOrdinalHorizon), 0);
+
+	anchorRegistry = NULL;
+	free(reg);
+	whpg_hot_standby_anchor_name = NULL;
+}
+
+/*
+ * With nothing registered and no kept file the hooks return before the
+ * scan.  An entry planted as valid while the count says zero survives a
+ * horizon that would invalidate it, which only the early return explains;
+ * the drop hook still raises the drop horizon, an ordinal having been
+ * handed out on this node.
+ */
+static void
+test__hooks_skip_an_empty_registry(void **state)
+{
+	AnchorRegistryData *reg = makeRegistry(4);
+	RelFileNode node = {1663, 12345, 16384};
+	TransactionId xmin;
+
+	keptSet = false;
+	assert_int_equal(registerAnchor("a", 400), REGISTER_OK);
+	reg->nvalid = 0;			/* the plant: the scan would find "a" */
+
+	AnchorSnapshotOnCleanupRecord(1000, node, (XLogRecPtr) 5000);
+	assert_true(AnchorSnapshotLookup("a", &xmin, NULL));
+
+	AnchorSnapshotOnRelfilenodeDrop(1000, (XLogRecPtr) 5000, 3);
+	assert_true(AnchorSnapshotLookup("a", &xmin, NULL));
+	assert_int_equal(pg_atomic_read_u32(&reg->dropOrdinalHorizon), 1);
+
+	anchorRegistry = NULL;
+	free(reg);
+}
+
+/*
+ * The verdict a backend's lock-time check reaches for the ordinal its
+ * active snapshot carries: none before any file-dropping commit; after
+ * one, every ordinal handed out before it predates it (registered,
+ * retired or evicted alike) and every later one does not; no anchor and a
+ * disabled registry never do.
+ */
+static void
+test__drop_horizon_verdicts(void **state)
+{
+	AnchorRegistryData *reg = makeRegistry(4);
+	TransactionId xmin;
+	uint32		oa,
+				ob,
+				oc,
+				od;
+
+	/* a node that never registered an anchor leaves the horizon alone */
+	AnchorSnapshotOnRelfilenodeDrop(450, (XLogRecPtr) 5000, 1);
+	assert_int_equal(pg_atomic_read_u32(&reg->dropOrdinalHorizon), 0);
+
+	assert_int_equal(registerAnchor("a", 400), REGISTER_OK);
+	assert_int_equal(registerAnchor("b", 410), REGISTER_OK);
+	assert_true(AnchorSnapshotLookup("a", &xmin, &oa));
+	assert_true(AnchorSnapshotLookup("b", &xmin, &ob));
+	assert_false(anchorOrdinalPredatesDrop(0));
+	assert_false(anchorOrdinalPredatesDrop(oa));
+
+	/* publication of b retires a: running statements on a carry on */
+	whpg_hot_standby_anchor_name = "b";
+	expectBarrier(1);
+	assert_true(applyPublication("b"));
+	assert_false(anchorOrdinalPredatesDrop(oa));
+	assert_false(anchorOrdinalPredatesDrop(ob));
+
+	/* a file-dropping commit: a (retired, maybe in use) and b predate it */
+	expectBarrier(1);
+	AnchorSnapshotOnRelfilenodeDrop(500, (XLogRecPtr) 6000, 1);
+	assert_true(anchorOrdinalPredatesDrop(oa));
+	assert_true(anchorOrdinalPredatesDrop(ob));
+	assert_false(anchorOrdinalPredatesDrop(0));
+
+	/* an anchor registered afterwards does not, until the next drop */
+	assert_int_equal(registerAnchor("c", 600), REGISTER_OK);
+	assert_true(AnchorSnapshotLookup("c", &xmin, &oc));
+	assert_false(anchorOrdinalPredatesDrop(oc));
+	assert_int_equal(registerAnchor("d", 610), REGISTER_OK);
+	assert_true(AnchorSnapshotLookup("d", &xmin, &od));
+
+	/* an eviction moves nothing either: c evicted (d is published) */
+	whpg_hot_standby_anchor_name = "d";
+	expectBarrier(1);
+	assert_true(evictOldestUnpublished("e"));
+	assert_false(AnchorSnapshotLookup("c", &xmin, NULL));
+	assert_false(anchorOrdinalPredatesDrop(oc));
+
+	/* the next drop covers the evicted c and the registered d alike */
+	expectBarrier(1);
+	AnchorSnapshotOnRelfilenodeDrop(700, (XLogRecPtr) 7000, 1);
+	assert_true(anchorOrdinalPredatesDrop(oc));
+	assert_true(anchorOrdinalPredatesDrop(od));
+
+	/* a disabled registry never reports one */
+	reg->capacity = 0;
+	assert_false(anchorOrdinalPredatesDrop(oc));
+
+	anchorRegistry = NULL;
+	free(reg);
+	whpg_hot_standby_anchor_name = NULL;
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -695,6 +977,12 @@ main(int argc, char *argv[])
 		unit_test(test__file_roundtrip_and_validation),
 		unit_test(test__parse_returns_xid_set),
 		unit_test(test__oldest_xmin_and_restart_rule),
+		unit_test(test__cleanup_record_invalidates_at_or_below),
+		unit_test(test__relfilenode_drop_invalidates_all),
+		unit_test(test__kept_anchor_gate),
+		unit_test(test__removal_count_and_horizon),
+		unit_test(test__hooks_skip_an_empty_registry),
+		unit_test(test__drop_horizon_verdicts),
 	};
 
 	MemoryContextInit();
