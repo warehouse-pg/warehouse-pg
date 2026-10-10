@@ -340,6 +340,8 @@ PlannerConfig *DefaultPlannerConfig(void)
 
 	c1->may_rescan = false;
 
+	c1->cte_sharing_allowed = true;
+
 	return c1;
 }
 
