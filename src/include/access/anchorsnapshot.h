@@ -2,7 +2,9 @@
  *
  * anchorsnapshot.h
  *	  Anchor snapshots: node-local xid snapshots exported by the startup
- *	  process at every replayed restore point on a hot standby, kept in a
+ *	  process at every replayed restore point on a hot standby whose
+ *	  configuration files set whpg_hot_standby_snapshot_mode = anchored
+ *	  (a hot standby left at the default exports none), kept in a
  *	  fixed-capacity shared-memory registry and persisted under
  *	  pg_anchor_snapshots/.  Dispatch-role backends on that standby import
  *	  the anchor named by whpg_hot_standby_anchor_name as their snapshot.
@@ -12,7 +14,7 @@
  *
  * - Applies to a dispatch-role session (Gp_role == GP_ROLE_DISPATCH) when
  *   whpg_hot_standby_snapshot_mode is anchored (the server default is
- *   unanchored; a read replica's configuration file sets anchored, and any
+ *   unanchored; a read replica's configuration is to set anchored, and any
  *   session may SET it), the server is in recovery and the registry is
  *   enabled (whpg_max_anchor_snapshots > 0), and the session has finished
  *   initialization.  Outside recovery, or with the registry disabled, the
