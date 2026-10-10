@@ -29,6 +29,7 @@
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
+#include "access/anchorsnapshot.h"
 #include "access/xact_storage_tablespace.h"
 #include "access/xlogutils.h"
 #include "catalog/index.h"
@@ -7141,6 +7142,30 @@ xact_redo_commit(xl_xact_parsed_commit *parsed,
 	Assert(TransactionIdIsValid(xid));
 
 	max_xid = TransactionIdLatest(xid, parsed->nsubxacts, parsed->subxacts);
+
+	/*
+	 * Anchor snapshots first (anchorsnapshot.h): the relation files this
+	 * commit drops are what an anchored read at the replay-position catalog
+	 * would no longer find.  Temporary relations are logged here in
+	 * Greenplum (prepared transactions may touch them) and are excluded: no
+	 * anchored read follows a session-private file.  Ahead of the standby
+	 * lock release below: the hook raises the drop horizon, and a reader
+	 * waiting behind those locks finds its snapshot's anchor at or below
+	 * it when it acquires the lock (AnchorSnapshotCheckAfterLock).
+	 */
+	if (parsed->nrels > 0)
+	{
+		int			nperm = 0;
+		int			i;
+
+		for (i = 0; i < parsed->nrels; i++)
+		{
+			if (!parsed->xnodes[i].isTempRelation)
+				nperm++;
+		}
+		if (nperm > 0)
+			AnchorSnapshotOnRelfilenodeDrop(xid, lsn, nperm);
+	}
 
 	ereportif(OidIsValid(tablespace_oid_to_delete), DEBUG5,
 		(errmsg("in xact_redo_commit_internal with tablespace oid to delete: %u",

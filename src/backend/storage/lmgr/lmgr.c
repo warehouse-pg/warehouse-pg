@@ -30,6 +30,7 @@
 #include "utils/inval.h"
 #include "utils/memutils.h"
 
+#include "access/anchorsnapshot.h"
 #include "access/heapam.h"
 #include "catalog/namespace.h"
 #include "cdb/cdbvars.h"
@@ -144,6 +145,7 @@ LockRelationOid(Oid relid, LOCKMODE lockmode)
 	{
 		AcceptInvalidationMessages();
 		MarkLockClear(locallock);
+		AnchorSnapshotCheckAfterLock(relid);
 	}
 }
 
@@ -178,6 +180,7 @@ ConditionalLockRelationOid(Oid relid, LOCKMODE lockmode)
 	{
 		AcceptInvalidationMessages();
 		MarkLockClear(locallock);
+		AnchorSnapshotCheckAfterLock(relid);
 	}
 
 	return true;
@@ -242,6 +245,7 @@ LockRelation(Relation relation, LOCKMODE lockmode)
 	{
 		AcceptInvalidationMessages();
 		MarkLockClear(locallock);
+		AnchorSnapshotCheckAfterLock(relation->rd_id);
 	}
 }
 
@@ -269,7 +273,10 @@ LockRelationNoWait(Relation relation, LOCKMODE lockmode)
 	 * in LockRelationOid.
 	 */
 	if (res != LOCKACQUIRE_ALREADY_HELD)
+	{
 		AcceptInvalidationMessages();
+		AnchorSnapshotCheckAfterLock(relation->rd_id);
+	}
 
 	return res;
 }
@@ -305,6 +312,7 @@ ConditionalLockRelation(Relation relation, LOCKMODE lockmode)
 	{
 		AcceptInvalidationMessages();
 		MarkLockClear(locallock);
+		AnchorSnapshotCheckAfterLock(relation->rd_id);
 	}
 
 	return true;

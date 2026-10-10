@@ -1,14 +1,87 @@
 -- reset the setup for hot standby tests
 !\retcode gpconfig -r hot_standby;
+-- start_ignore
+20261010:20:30:12:1760889 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-r hot_standby'
+
+-- end_ignore
 (exited with code 0)
 !\retcode gpconfig -r synchronous_commit;
+-- start_ignore
+20261010:20:30:12:1760937 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-r synchronous_commit'
+
+-- end_ignore
 (exited with code 0)
 !\retcode gpconfig -r max_standby_streaming_delay;
+-- start_ignore
+20261010:20:30:12:1760985 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-r max_standby_streaming_delay'
+
+-- end_ignore
+(exited with code 0)
+-- what an anchor suite that aborted midway can leave behind
+1: select gp_inject_fault('all', 'reset', dbid) from gp_segment_configuration where role = 'm';
+ gp_inject_fault 
+-----------------
+ Success:        
+ Success:        
+ Success:        
+ Success:        
+(4 rows)
+1q: ... <quitting>
+!\retcode gpconfig -r whpg_hot_standby_snapshot_mode --skipvalidation;
+-- start_ignore
+20261010:20:30:12:1761040 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-r whpg_hot_standby_snapshot_mode --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpconfig -r whpg_hot_standby_anchor_name --skipvalidation;
+-- start_ignore
+20261010:20:30:12:1761087 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-r whpg_hot_standby_anchor_name --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
+!\retcode sed -i '/^hot_standby = off$/d; /^whpg_hot_standby_snapshot_mode = unanchored$/d' "$COORDINATOR_DATA_DIRECTORY/../../standby/postgresql.conf";
+-- start_ignore
+
+-- end_ignore
 (exited with code 0)
 -- a run that died inside an anchor case may have left the standby paused
 -- on a restore point; a paused standby would wedge every remote_apply
 -- commit and the restart below
 !\retcode sed -i '/gp_pause_on_restore_point_replay/d' "$COORDINATOR_DATA_DIRECTORY/../../standby/postgresql.conf"; pg_ctl reload -D "$COORDINATOR_DATA_DIRECTORY/../../standby"; sport=$(psql -d postgres -Atc "select port from gp_segment_configuration where content = -1 and role = 'm'"); PGOPTIONS='-c gp_role=utility' psql -p "$sport" -d postgres -Atc 'select pg_wal_replay_resume()' > /dev/null 2>&1; true;
+-- start_ignore
+server signaled
+
+-- end_ignore
 (exited with code 0)
 !\retcode gpstop -ar;
+-- start_ignore
+20261010:20:30:12:1761143 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -ar
+20261010:20:30:12:1761143 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20261010:20:30:12:1761143 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20261010:20:30:12:1761143 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20261010:20:30:12:1761143 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20261010:20:30:12:1761143 gpstop:localhost:yjf-[INFO]:-Commencing Coordinator instance shutdown with mode='smart'
+20261010:20:30:12:1761143 gpstop:localhost:yjf-[INFO]:-Coordinator segment instance directory=/home/yjf/wpg-1792-wt/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
+20261010:20:30:12:1761143 gpstop:localhost:yjf-[INFO]:-Stopping coordinator segment and waiting for user connections to finish ...
+server shutting down
+20261010:20:30:13:1761143 gpstop:localhost:yjf-[INFO]:-Attempting forceful termination of any leftover coordinator process
+20261010:20:30:13:1761143 gpstop:localhost:yjf-[INFO]:-Terminating processes for segment /home/yjf/wpg-1792-wt/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
+20261010:20:30:13:1761143 gpstop:localhost:yjf-[INFO]:-Stopping coordinator standby host localhost.localdomain mode=smart
+20261010:20:30:13:1761143 gpstop:localhost:yjf-[INFO]:-Successfully shutdown standby process on localhost.localdomain
+20261010:20:30:13:1761143 gpstop:localhost:yjf-[INFO]:-Targeting dbid [2, 5, 3, 6, 4, 7] for shutdown
+20261010:20:30:13:1761143 gpstop:localhost:yjf-[INFO]:-Commencing parallel primary segment instance shutdown, please wait...
+20261010:20:30:13:1761143 gpstop:localhost:yjf-[INFO]:-0.00% of jobs completed
+20261010:20:30:16:1761143 gpstop:localhost:yjf-[INFO]:-100.00% of jobs completed
+20261010:20:30:16:1761143 gpstop:localhost:yjf-[INFO]:-Commencing parallel mirror segment instance shutdown, please wait...
+20261010:20:30:16:1761143 gpstop:localhost:yjf-[INFO]:-0.00% of jobs completed
+20261010:20:30:18:1761143 gpstop:localhost:yjf-[INFO]:-100.00% of jobs completed
+20261010:20:30:18:1761143 gpstop:localhost:yjf-[INFO]:-----------------------------------------------------
+20261010:20:30:18:1761143 gpstop:localhost:yjf-[INFO]:-   Segments stopped successfully      = 6
+20261010:20:30:18:1761143 gpstop:localhost:yjf-[INFO]:-   Segments with errors during stop   = 0
+20261010:20:30:18:1761143 gpstop:localhost:yjf-[INFO]:-----------------------------------------------------
+20261010:20:30:18:1761143 gpstop:localhost:yjf-[INFO]:-Successfully shutdown 6 of 6 segment instances 
+20261010:20:30:18:1761143 gpstop:localhost:yjf-[INFO]:-Database successfully shutdown with no errors reported
+20261010:20:30:18:1761143 gpstop:localhost:yjf-[INFO]:-Restarting System...
+
+-- end_ignore
 (exited with code 0)
