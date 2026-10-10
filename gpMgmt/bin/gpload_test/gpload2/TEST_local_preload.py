@@ -79,3 +79,25 @@ def test_609_gpload_fail_preload_truncate_rollback():
         f.write("\\!  psql -d reuse_gptest -c \"SELECT count(*) from  testtruncate;\"\n")
     copy_data('external_file_13.csv','data_file.csv')
     write_config_file(reuse_tables=False, format='csv', file='data_file.csv', table='testtruncate', delimiter="';'", truncate=True )
+
+@prepare_before_test(num=610, times=0)
+def test_610_with_reuse_tables_non_superuser():
+    "610 gpload with reuse_tables and fast_match as a non-superuser"
+    drop_tables()
+    file = mkpath('setup.sql')
+    runfile(file)
+    sql = '''DROP ROLE IF EXISTS gpload_610_user;
+             CREATE ROLE gpload_610_user CREATEEXTTABLE(type='readable', protocol='gpfdist');
+             GRANT INSERT ON texttable TO gpload_610_user;'''
+    (ok, out) = psql_run(cmd=sql,dbname='reuse_gptest')
+    if not ok:
+        raise Exception("Unable to execute sql %s" % out)
+    with open(mkpath('query610.sql'), 'w') as f:
+        f.write("\\! gpload -f "+mkpath('config/config_file1')+"\n")
+        f.write("\\! gpload -f "+mkpath('config/config_file2')+"\n")
+        f.write("\\! psql -d reuse_gptest -c \"SELECT count(*) FROM pg_class WHERE relname LIKE 'ext_gpload_reusable%' AND relowner = 'gpload_610_user'::regrole;\"\n")
+        f.write("\\! psql -d reuse_gptest -c \"DROP OWNED BY gpload_610_user; DROP ROLE gpload_610_user;\"\n")
+    copy_data('external_file_04.txt','data_file.txt')
+    # The reuse lookups run after the BEFORE sql, so they run as the non-superuser.
+    write_config_file(mode='insert',config='config/config_file1',reuse_tables=True,fast_match=False,file='data_file.txt',table='texttable',error_limit=1002,sql=True,before='"SET ROLE gpload_610_user"')
+    write_config_file(mode='insert',config='config/config_file2',reuse_tables=True,fast_match=True,file='data_file.txt',table='texttable',error_limit=1002,sql=True,before='"SET ROLE gpload_610_user"')

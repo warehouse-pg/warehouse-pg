@@ -5,7 +5,7 @@ SHLIB_LINK_INTERNAL = $(libpq)
 #SHLIB_LINK += -lcurl
 
 EXTENSION = gp_exttable_fdw
-DATA = gp_exttable_fdw--1.0.sql
+DATA = gp_exttable_fdw--1.0.sql gp_exttable_fdw--1.0--1.1.sql
 
 REGRESS = gp_exttable_fdw
 

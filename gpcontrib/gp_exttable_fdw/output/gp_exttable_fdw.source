@@ -87,6 +87,15 @@ SELECT ftoptions FROM pg_foreign_table WHERE ftrelid='public.ext_special_uri'::r
 ftoptions
 {format=csv,"delimiter=,","location_uris=file://@hostname@@abs_srcdir@/data/spe\\\\cial1\\||file://@hostname@@abs_srcdir@/data/\\|special2\\\\"}
 (1 row)
+-- Every role can read the pg_exttable view, like pg_foreign_table.
+CREATE ROLE gp_exttable_fdw_reader;
+SET ROLE gp_exttable_fdw_reader;
+SELECT urilocation FROM pg_exttable WHERE reloid = 'public.ext_special_uri'::regclass;
+urilocation
+{"file://@hostname@@abs_srcdir@/data/spe\\cial1|","file://@hostname@@abs_srcdir@/data/|special2\\"}
+(1 row)
+RESET ROLE;
+DROP ROLE gp_exttable_fdw_reader;
 \a
 SELECT * FROM ext_special_uri ORDER BY a;
  a | b 
