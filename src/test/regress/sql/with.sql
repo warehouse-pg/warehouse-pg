@@ -84,6 +84,14 @@ SELECT count(*) FROM (SELECT a FROM ins UNION ALL SELECT a FROM ins) x;
 SELECT count(*) FROM cte_dml_t;
 DROP TABLE cte_dml_t;
 
+-- A volatile CTE referenced twice at a nested CTE level, with no InitPlan
+-- involved, must also be evaluated once (all rows equal: true).
+WITH d AS (
+  WITH t AS (SELECT a, random() AS r FROM cte_vol_t)
+  SELECT bool_and(t1.r = t2.r) AS same FROM t t1 JOIN t t2 USING (a)
+)
+SELECT * FROM d;
+
 set gp_cte_sharing to on;
 
 DROP TABLE cte_vol_t;
