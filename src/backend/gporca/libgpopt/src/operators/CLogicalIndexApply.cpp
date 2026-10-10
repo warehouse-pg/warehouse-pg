@@ -100,7 +100,8 @@ CLogicalIndexApply::PstatsDerive(CMemoryPool *mp, CExpressionHandle &exprhdl,
 	statistics_array->Append(inner_side_stats);
 	IStatistics *stats = CJoinStatsProcessor::CalcAllJoinStats(
 		mp, statistics_array, pexprScalar,
-		const_cast<CLogicalIndexApply *>(this));
+		const_cast<CLogicalIndexApply *>(this),
+		true /* stats_are_join_children */);
 	statistics_array->Release();
 
 	return stats;

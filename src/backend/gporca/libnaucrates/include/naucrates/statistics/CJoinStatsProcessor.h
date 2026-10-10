@@ -63,9 +63,14 @@ public:
 		IStatistics::EStatsJoinType join_type,
 		BOOL DoIgnoreLASJHistComputation);
 
+	// join the statistics objects one by one using the predicates in expr.
+	// stats_are_join_children says whether the array holds the statistics of
+	// pop's relational children, in that order; only then can an NAry join's
+	// per-child LOJ predicate indexes be applied to it.
 	static IStatistics *CalcAllJoinStats(CMemoryPool *mp,
 										 IStatisticsArray *statistics_array,
-										 CExpression *expr, COperator *pop);
+										 CExpression *expr, COperator *pop,
+										 BOOL stats_are_join_children);
 
 	// derive statistics for join operation given array of statistics object
 	static IStatistics *DeriveJoinStats(CMemoryPool *mp,

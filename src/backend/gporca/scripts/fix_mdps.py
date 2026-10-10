@@ -1,4 +1,4 @@
-#!/usr/local/bin/python
+#!/usr/bin/env python
 #
 # updates plan and plan size in mdp files. Run ./fix_mdps.py --help for detailed description
 # Should be run from within <orca_src>/build directory
@@ -21,8 +21,9 @@ dryrun = False
 def run_command(command):
     p = subprocess.Popen(command,
                          stdout=subprocess.PIPE,
-                         stderr=subprocess.STDOUT)
-    return iter(p.stdout.readline, b'')
+                         stderr=subprocess.STDOUT,
+                         text=True)
+    return iter(p.stdout.readline, '')
 
 def parseInputFile(inputFile):
     failed_tests = []
@@ -44,12 +45,30 @@ def replacePlanSize(filename, actual, expected):
         fp.write(filedata)
 
 def replacePlanInFile(filename, innerContent):
+    """Replace the <dxl:Plan> section of a minidump; returns True if the file was rewritten."""
     with open(filename, "r") as fp:
         filedata = fp.read()
-    filedata = re.sub('    <dxl:Plan.*</dxl:Plan>\n',innerContent,filedata,flags=re.DOTALL)
+    # anchor on "<dxl:Plan" followed by a space or ">" so the match can
+    # neither start at a <dxl:PlanHint> element earlier in the file nor miss
+    # an attribute-less <dxl:Plan>
+    plan_pattern = re.compile(r'    <dxl:Plan[ >].*</dxl:Plan>\n', flags=re.DOTALL)
+    if not plan_pattern.search(filedata):
+        print("Could not find the plan section in %s, please update this file by hand" % (filename))
+        return False
+    # the replacement is literal text, not a template: plans may contain
+    # backslashes (e.g. in string constants) that re.sub would interpret
+    newdata = plan_pattern.sub(lambda _match: innerContent, filedata)
+    if newdata == filedata:
+        return False
+    # the replaced region must only be the plan; refuse to write a file that
+    # lost its metadata or query sections
+    for tag in ('<dxl:Metadata', '<dxl:Query'):
+        if tag in filedata and tag not in newdata:
+            print("Refusing to update %s: replacement would remove the %s section" % (filename, tag))
+            return False
     with open(filename, 'w') as fp:
-        fp.write(filedata)
-    return
+        fp.write(newdata)
+    return True
 
 def processLogFile(logFileLines):
     current_file =""
@@ -72,7 +91,7 @@ def processLogFile(logFileLines):
             current_file = line.split()[-1]
             current_file = current_file.split('\"')[0]
             if read_plan > 0:
-                print "Log file contains partial plans for %s, please update this file by hand" % (current_file)
+                print("Log file contains partial plans for %s, please update this file by hand" % (current_file))
                 read_plan = 0
         elif actualPlanMatch:
             read_plan = 1
@@ -84,39 +103,39 @@ def processLogFile(logFileLines):
             read_plan = 0
             actual_plan = actual_plan + "    " + line
             if not dryrun:
-                replacePlanInFile(current_file, actual_plan )
-                print "Changed query plan in %s \n" % (current_file)
+                if replacePlanInFile(current_file, actual_plan):
+                    print("Changed query plan in %s \n" % (current_file))
             else:
-                print "Query plan is different in %s \n" % (current_file)
+                print("Query plan is different in %s \n" % (current_file))
         elif read_plan > 1:
             actual_plan = actual_plan + "    " + line
             if re.search(r',TRACE,', line):
                 # we reached the end of the plan section without finding the end plan tag
-                print "Log file contains partial plans for %s, please update this file by hand" % (current_file)
+                print("Log file contains partial plans for %s, please update this file by hand" % (current_file))
                 read_plan = 0
         elif actualSizeMatch:
-            actualSize = re.search('Actual size: (\d+)', line).group(1)
+            actualSize = re.search(r'Actual size: (\d+)', line).group(1)
         elif expectedSizeMatch:
-            expectedSize = re.search('Expected size: (\d+)', line).group(1)
+            expectedSize = re.search(r'Expected size: (\d+)', line).group(1)
             if not dryrun:
                 replacePlanSize(current_file, actualSize, expectedSize)
-                print "Changed plan size in %s \n" % (current_file)
+                print("Changed plan size in %s \n" % (current_file))
             else:
-                print "Plan size is different in %s \n" % (current_file)
+                print("Plan size is different in %s \n" % (current_file))
             failureMatch = 0
         elif errorLogMatch:
-            print "Error in file %s: %s" % (current_file, line)
+            print("Error in file %s: %s" % (current_file, line))
         elif failureMatch:
             if not re.search(r'Plan [a-z ]*comparison', line) and not re.search(r'Unittest', line):
                 if errorfile != current_file:
-                    print "File %s failed for some other reason\n" % (current_file)
+                    print("File %s failed for some other reason\n" % (current_file))
                     errorfile = current_file
 
 def runTests(testFileNames):
     tests_to_fix = parseInputFile(testFileNames)
     for test in tests_to_fix:
         command = "./server/gporca_test -U " + test
-        print "Running test: " + test
+        print("Running test: " + test)
         command = command.split()
         all_lines = run_command(command)
         processLogFile(all_lines)
@@ -135,18 +154,19 @@ def main():
 
     args = parser.parse_args()
 
+    global dryrun
     dryrun = args.dryRun
     inputfile = args.failed_tests_file
     logfile = args.logFile
 
     if inputfile is None and logfile is None:
-        print "Either a file with failed tests or a log file needs to be specified\n"
+        print("Either a file with failed tests or a log file needs to be specified\n")
         exit(1)
     elif inputfile is not None and logfile is not None:
-        print "If a file with failed tests is specified, the --logFile is not allowed\n"
+        print("If a file with failed tests is specified, the --logFile is not allowed\n")
         exit(1)
 
-    print "File: %s, dryrun %s, logfile %s\n" % (inputfile, dryrun, logfile)
+    print("File: %s, dryrun %s, logfile %s\n" % (inputfile, dryrun, logfile))
 
     if inputfile is not None:
         runTests(inputfile)
