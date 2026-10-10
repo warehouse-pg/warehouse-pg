@@ -3148,7 +3148,6 @@ set_cte_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 		 * disallow sharing of ctes at lower levels.
 		 */
 		config->gp_cte_sharing = false;
-		config->cte_sharing_allowed = false;
 
 		config->honor_order_by = false;
 
