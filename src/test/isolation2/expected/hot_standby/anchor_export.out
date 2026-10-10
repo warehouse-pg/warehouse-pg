@@ -37,57 +37,112 @@
 -- by the restart below and skew the counts
 !\retcode gpconfig -r whpg_hot_standby_anchor_name --skipvalidation;
 -- start_ignore
-20260924:09:51:02:547966 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-r whpg_hot_standby_anchor_name --skipvalidation'
+20261010:19:32:09:1494010 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-r whpg_hot_standby_anchor_name --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpconfig -r whpg_hot_standby_snapshot_mode --skipvalidation;
+-- start_ignore
+20261010:19:32:10:1494057 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-r whpg_hot_standby_snapshot_mode --skipvalidation'
 
 -- end_ignore
 (exited with code 0)
 !\retcode gpconfig -c whpg_max_anchor_snapshots -v 3 --skipvalidation;
 -- start_ignore
-20260924:09:51:02:548013 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_max_anchor_snapshots -v 3 --skipvalidation'
+20261010:19:32:10:1494104 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_max_anchor_snapshots -v 3 --skipvalidation'
 
 -- end_ignore
 (exited with code 0)
 !\retcode gpconfig -c gp_fts_probe_interval -v 10 --coordinatoronly;
 -- start_ignore
-20260924:09:51:02:548060 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c gp_fts_probe_interval -v 10 --coordinatoronly'
+20261010:19:32:10:1494151 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c gp_fts_probe_interval -v 10 --coordinatoronly'
 
 -- end_ignore
 (exited with code 0)
 !\retcode gpstop -ar;
 -- start_ignore
-20260924:09:51:02:548090 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -ar
-20260924:09:51:02:548090 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
-20260924:09:51:02:548090 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
-20260924:09:51:02:548090 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
-20260924:09:51:02:548090 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
-20260924:09:51:02:548090 gpstop:localhost:yjf-[INFO]:-Commencing Coordinator instance shutdown with mode='smart'
-20260924:09:51:02:548090 gpstop:localhost:yjf-[INFO]:-Coordinator segment instance directory=/home/yjf/wpg-1789-wt/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
-20260924:09:51:02:548090 gpstop:localhost:yjf-[INFO]:-Stopping coordinator segment and waiting for user connections to finish ...
+20261010:19:32:10:1494182 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -ar
+20261010:19:32:10:1494182 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20261010:19:32:10:1494182 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20261010:19:32:10:1494182 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20261010:19:32:10:1494182 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20261010:19:32:10:1494182 gpstop:localhost:yjf-[INFO]:-Commencing Coordinator instance shutdown with mode='smart'
+20261010:19:32:10:1494182 gpstop:localhost:yjf-[INFO]:-Coordinator segment instance directory=/home/yjf/wpg-1792-wt/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
+20261010:19:32:10:1494182 gpstop:localhost:yjf-[INFO]:-Stopping coordinator segment and waiting for user connections to finish ...
 server shutting down
-20260924:09:51:03:548090 gpstop:localhost:yjf-[INFO]:-Attempting forceful termination of any leftover coordinator process
-20260924:09:51:03:548090 gpstop:localhost:yjf-[INFO]:-Terminating processes for segment /home/yjf/wpg-1789-wt/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
-20260924:09:51:03:548090 gpstop:localhost:yjf-[INFO]:-Stopping coordinator standby host localhost.localdomain mode=smart
-20260924:09:51:04:548090 gpstop:localhost:yjf-[INFO]:-Successfully shutdown standby process on localhost.localdomain
-20260924:09:51:04:548090 gpstop:localhost:yjf-[INFO]:-Targeting dbid [2, 5, 3, 6, 4, 7] for shutdown
-20260924:09:51:04:548090 gpstop:localhost:yjf-[INFO]:-Commencing parallel primary segment instance shutdown, please wait...
-20260924:09:51:04:548090 gpstop:localhost:yjf-[INFO]:-0.00% of jobs completed
-20260924:09:51:06:548090 gpstop:localhost:yjf-[INFO]:-100.00% of jobs completed
-20260924:09:51:06:548090 gpstop:localhost:yjf-[INFO]:-Commencing parallel mirror segment instance shutdown, please wait...
-20260924:09:51:06:548090 gpstop:localhost:yjf-[INFO]:-0.00% of jobs completed
-20260924:09:51:08:548090 gpstop:localhost:yjf-[INFO]:-100.00% of jobs completed
-20260924:09:51:08:548090 gpstop:localhost:yjf-[INFO]:-----------------------------------------------------
-20260924:09:51:08:548090 gpstop:localhost:yjf-[INFO]:-   Segments stopped successfully      = 6
-20260924:09:51:08:548090 gpstop:localhost:yjf-[INFO]:-   Segments with errors during stop   = 0
-20260924:09:51:08:548090 gpstop:localhost:yjf-[INFO]:-----------------------------------------------------
-20260924:09:51:08:548090 gpstop:localhost:yjf-[INFO]:-Successfully shutdown 6 of 6 segment instances 
-20260924:09:51:08:548090 gpstop:localhost:yjf-[INFO]:-Database successfully shutdown with no errors reported
-20260924:09:51:08:548090 gpstop:localhost:yjf-[INFO]:-Restarting System...
+20261010:19:32:11:1494182 gpstop:localhost:yjf-[INFO]:-Attempting forceful termination of any leftover coordinator process
+20261010:19:32:11:1494182 gpstop:localhost:yjf-[INFO]:-Terminating processes for segment /home/yjf/wpg-1792-wt/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
+20261010:19:32:11:1494182 gpstop:localhost:yjf-[INFO]:-Stopping coordinator standby host localhost.localdomain mode=smart
+20261010:19:32:11:1494182 gpstop:localhost:yjf-[INFO]:-Successfully shutdown standby process on localhost.localdomain
+20261010:19:32:11:1494182 gpstop:localhost:yjf-[INFO]:-Targeting dbid [2, 5, 3, 6, 4, 7] for shutdown
+20261010:19:32:11:1494182 gpstop:localhost:yjf-[INFO]:-Commencing parallel primary segment instance shutdown, please wait...
+20261010:19:32:11:1494182 gpstop:localhost:yjf-[INFO]:-0.00% of jobs completed
+20261010:19:32:13:1494182 gpstop:localhost:yjf-[INFO]:-100.00% of jobs completed
+20261010:19:32:13:1494182 gpstop:localhost:yjf-[INFO]:-Commencing parallel mirror segment instance shutdown, please wait...
+20261010:19:32:13:1494182 gpstop:localhost:yjf-[INFO]:-0.00% of jobs completed
+20261010:19:32:16:1494182 gpstop:localhost:yjf-[INFO]:-100.00% of jobs completed
+20261010:19:32:16:1494182 gpstop:localhost:yjf-[INFO]:-----------------------------------------------------
+20261010:19:32:16:1494182 gpstop:localhost:yjf-[INFO]:-   Segments stopped successfully      = 6
+20261010:19:32:16:1494182 gpstop:localhost:yjf-[INFO]:-   Segments with errors during stop   = 0
+20261010:19:32:16:1494182 gpstop:localhost:yjf-[INFO]:-----------------------------------------------------
+20261010:19:32:16:1494182 gpstop:localhost:yjf-[INFO]:-Successfully shutdown 6 of 6 segment instances 
+20261010:19:32:16:1494182 gpstop:localhost:yjf-[INFO]:-Database successfully shutdown with no errors reported
+20261010:19:32:16:1494182 gpstop:localhost:yjf-[INFO]:-Restarting System...
 
 -- end_ignore
 (exited with code 0)
 
 1: create table hs_anchor_t(a int) distributed by (a);
 CREATE TABLE
+----------------------------------------------------------------
+-- A node exports anchors only where its configuration sets
+-- whpg_hot_standby_snapshot_mode = anchored (the line a read replica's
+-- configuration is to carry).  With the server default a replayed restore
+-- point registers nothing and writes no file.
+----------------------------------------------------------------
+1: select count(*) from gp_create_restore_point('hs_anchor_rp0');
+ count 
+-------
+ 4     
+(1 row)
+1: insert into hs_anchor_t select generate_series(1, 30);
+INSERT 0 30
+0M: select count(*) from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_anchor_rp0';
+ count 
+-------
+ 0     
+(1 row)
+-1M: select count(*) from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_anchor_rp0';
+ count 
+-------
+ 0     
+(1 row)
+!\retcode mdir=$(psql -d postgres -Atc "select datadir from gp_segment_configuration where content = 0 and role = 'm'"); test ! -e "$mdir/pg_anchor_snapshots/hs_anchor_rp0";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-- the sessions below read with ordinary snapshots; the configuration line
+-- is for the startup process
+-1S: set whpg_hot_standby_snapshot_mode = unanchored;
+SET
+!\retcode gpconfig -c whpg_hot_standby_snapshot_mode -v anchored --skipvalidation;
+-- start_ignore
+20261010:19:32:17:1496844 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_snapshot_mode -v anchored --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -u;
+-- start_ignore
+20261010:19:32:17:1496891 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20261010:19:32:17:1496891 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20261010:19:32:17:1496891 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20261010:19:32:17:1496891 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20261010:19:32:17:1496891 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20261010:19:32:17:1496891 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+
+-- end_ignore
+(exited with code 0)
 
 ----------------------------------------------------------------
 -- Export at restore-point replay
@@ -270,18 +325,18 @@ INSERT 0 30
 ----------------------------------------------------------------
 !\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_anchor_rp3 --skipvalidation;
 -- start_ignore
-20260924:09:51:09:550813 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_anchor_rp3 --skipvalidation'
+20261010:19:32:17:1496955 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_anchor_rp3 --skipvalidation'
 
 -- end_ignore
 (exited with code 0)
 !\retcode gpstop -u;
 -- start_ignore
-20260924:09:51:09:550860 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
-20260924:09:51:09:550860 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
-20260924:09:51:09:550860 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
-20260924:09:51:09:550860 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
-20260924:09:51:09:550860 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
-20260924:09:51:09:550860 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+20261010:19:32:17:1497002 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20261010:19:32:17:1497002 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20261010:19:32:17:1497002 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20261010:19:32:17:1497002 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20261010:19:32:17:1497002 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20261010:19:32:17:1497002 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
 
 -- end_ignore
 (exited with code 0)
@@ -320,18 +375,18 @@ INSERT 0 30
 -- the formerly published rp3 included
 !\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_anchor_none --skipvalidation;
 -- start_ignore
-20260924:09:51:09:550890 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_anchor_none --skipvalidation'
+20261010:19:32:17:1497030 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_anchor_none --skipvalidation'
 
 -- end_ignore
 (exited with code 0)
 !\retcode gpstop -u;
 -- start_ignore
-20260924:09:51:10:550937 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
-20260924:09:51:10:550937 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
-20260924:09:51:10:550937 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
-20260924:09:51:10:550937 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
-20260924:09:51:10:550937 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
-20260924:09:51:10:550937 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+20261010:19:32:17:1497077 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20261010:19:32:17:1497077 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20261010:19:32:17:1497077 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20261010:19:32:17:1497077 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20261010:19:32:17:1497077 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20261010:19:32:17:1497077 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
 
 -- end_ignore
 (exited with code 0)
@@ -363,18 +418,18 @@ INSERT 0 30
 ----------------------------------------------------------------
 !\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_anchor_rp7 --skipvalidation;
 -- start_ignore
-20260924:09:51:10:550968 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_anchor_rp7 --skipvalidation'
+20261010:19:32:17:1497106 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_anchor_rp7 --skipvalidation'
 
 -- end_ignore
 (exited with code 0)
 !\retcode gpstop -u;
 -- start_ignore
-20260924:09:51:10:551015 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
-20260924:09:51:10:551015 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
-20260924:09:51:10:551015 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
-20260924:09:51:10:551015 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
-20260924:09:51:10:551015 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
-20260924:09:51:10:551015 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+20261010:19:32:17:1497153 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20261010:19:32:17:1497153 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20261010:19:32:17:1497153 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20261010:19:32:17:1497153 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20261010:19:32:17:1497153 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20261010:19:32:17:1497153 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
 
 -- end_ignore
 (exited with code 0)
@@ -447,33 +502,33 @@ INSERT 0 30
 -1Sq: ... <quitting>
 !\retcode gpstop -ar;
 -- start_ignore
-20260924:09:51:10:551056 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -ar
-20260924:09:51:10:551056 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
-20260924:09:51:10:551056 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
-20260924:09:51:10:551056 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
-20260924:09:51:10:551056 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
-20260924:09:51:10:551056 gpstop:localhost:yjf-[INFO]:-Commencing Coordinator instance shutdown with mode='smart'
-20260924:09:51:10:551056 gpstop:localhost:yjf-[INFO]:-Coordinator segment instance directory=/home/yjf/wpg-1789-wt/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
-20260924:09:51:10:551056 gpstop:localhost:yjf-[INFO]:-Stopping coordinator segment and waiting for user connections to finish ...
+20261010:19:32:17:1497188 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -ar
+20261010:19:32:17:1497188 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20261010:19:32:17:1497188 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20261010:19:32:17:1497188 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20261010:19:32:17:1497188 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20261010:19:32:17:1497188 gpstop:localhost:yjf-[INFO]:-Commencing Coordinator instance shutdown with mode='smart'
+20261010:19:32:17:1497188 gpstop:localhost:yjf-[INFO]:-Coordinator segment instance directory=/home/yjf/wpg-1792-wt/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
+20261010:19:32:17:1497188 gpstop:localhost:yjf-[INFO]:-Stopping coordinator segment and waiting for user connections to finish ...
 server shutting down
-20260924:09:51:11:551056 gpstop:localhost:yjf-[INFO]:-Attempting forceful termination of any leftover coordinator process
-20260924:09:51:11:551056 gpstop:localhost:yjf-[INFO]:-Terminating processes for segment /home/yjf/wpg-1789-wt/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
-20260924:09:51:11:551056 gpstop:localhost:yjf-[INFO]:-Stopping coordinator standby host localhost.localdomain mode=smart
-20260924:09:51:11:551056 gpstop:localhost:yjf-[INFO]:-Successfully shutdown standby process on localhost.localdomain
-20260924:09:51:11:551056 gpstop:localhost:yjf-[INFO]:-Targeting dbid [2, 5, 3, 6, 4, 7] for shutdown
-20260924:09:51:11:551056 gpstop:localhost:yjf-[INFO]:-Commencing parallel primary segment instance shutdown, please wait...
-20260924:09:51:11:551056 gpstop:localhost:yjf-[INFO]:-0.00% of jobs completed
-20260924:09:51:14:551056 gpstop:localhost:yjf-[INFO]:-100.00% of jobs completed
-20260924:09:51:14:551056 gpstop:localhost:yjf-[INFO]:-Commencing parallel mirror segment instance shutdown, please wait...
-20260924:09:51:14:551056 gpstop:localhost:yjf-[INFO]:-0.00% of jobs completed
-20260924:09:51:16:551056 gpstop:localhost:yjf-[INFO]:-100.00% of jobs completed
-20260924:09:51:16:551056 gpstop:localhost:yjf-[INFO]:-----------------------------------------------------
-20260924:09:51:16:551056 gpstop:localhost:yjf-[INFO]:-   Segments stopped successfully      = 6
-20260924:09:51:16:551056 gpstop:localhost:yjf-[INFO]:-   Segments with errors during stop   = 0
-20260924:09:51:16:551056 gpstop:localhost:yjf-[INFO]:-----------------------------------------------------
-20260924:09:51:16:551056 gpstop:localhost:yjf-[INFO]:-Successfully shutdown 6 of 6 segment instances 
-20260924:09:51:16:551056 gpstop:localhost:yjf-[INFO]:-Database successfully shutdown with no errors reported
-20260924:09:51:16:551056 gpstop:localhost:yjf-[INFO]:-Restarting System...
+20261010:19:32:18:1497188 gpstop:localhost:yjf-[INFO]:-Attempting forceful termination of any leftover coordinator process
+20261010:19:32:18:1497188 gpstop:localhost:yjf-[INFO]:-Terminating processes for segment /home/yjf/wpg-1792-wt/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
+20261010:19:32:18:1497188 gpstop:localhost:yjf-[INFO]:-Stopping coordinator standby host localhost.localdomain mode=smart
+20261010:19:32:18:1497188 gpstop:localhost:yjf-[INFO]:-Successfully shutdown standby process on localhost.localdomain
+20261010:19:32:18:1497188 gpstop:localhost:yjf-[INFO]:-Targeting dbid [2, 5, 3, 6, 4, 7] for shutdown
+20261010:19:32:18:1497188 gpstop:localhost:yjf-[INFO]:-Commencing parallel primary segment instance shutdown, please wait...
+20261010:19:32:18:1497188 gpstop:localhost:yjf-[INFO]:-0.00% of jobs completed
+20261010:19:32:21:1497188 gpstop:localhost:yjf-[INFO]:-100.00% of jobs completed
+20261010:19:32:21:1497188 gpstop:localhost:yjf-[INFO]:-Commencing parallel mirror segment instance shutdown, please wait...
+20261010:19:32:21:1497188 gpstop:localhost:yjf-[INFO]:-0.00% of jobs completed
+20261010:19:32:23:1497188 gpstop:localhost:yjf-[INFO]:-100.00% of jobs completed
+20261010:19:32:23:1497188 gpstop:localhost:yjf-[INFO]:-----------------------------------------------------
+20261010:19:32:23:1497188 gpstop:localhost:yjf-[INFO]:-   Segments stopped successfully      = 6
+20261010:19:32:23:1497188 gpstop:localhost:yjf-[INFO]:-   Segments with errors during stop   = 0
+20261010:19:32:23:1497188 gpstop:localhost:yjf-[INFO]:-----------------------------------------------------
+20261010:19:32:23:1497188 gpstop:localhost:yjf-[INFO]:-Successfully shutdown 6 of 6 segment instances 
+20261010:19:32:23:1497188 gpstop:localhost:yjf-[INFO]:-Database successfully shutdown with no errors reported
+20261010:19:32:23:1497188 gpstop:localhost:yjf-[INFO]:-Restarting System...
 
 -- end_ignore
 (exited with code 0)
@@ -554,18 +609,18 @@ INSERT 0 30
 -- publishing pend_z retires pend_x and the first pend_y, entry and file
 !\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_anchor_pend_z --skipvalidation;
 -- start_ignore
-20260924:09:51:17:553704 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_anchor_pend_z --skipvalidation'
+20261010:19:32:24:1499926 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_anchor_pend_z --skipvalidation'
 
 -- end_ignore
 (exited with code 0)
 !\retcode gpstop -u;
 -- start_ignore
-20260924:09:51:17:553751 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
-20260924:09:51:17:553751 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
-20260924:09:51:17:553751 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
-20260924:09:51:17:553751 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
-20260924:09:51:17:553751 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
-20260924:09:51:17:553751 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+20261010:19:32:24:1499973 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20261010:19:32:24:1499973 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20261010:19:32:24:1499973 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20261010:19:32:24:1499973 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20261010:19:32:24:1499973 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20261010:19:32:24:1499973 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
 
 -- end_ignore
 (exited with code 0)
@@ -587,18 +642,18 @@ INSERT 0 30
 INSERT 0 30
 !\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_anchor_pend_y --skipvalidation;
 -- start_ignore
-20260924:09:51:17:553784 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_anchor_pend_y --skipvalidation'
+20261010:19:32:25:1500006 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_anchor_pend_y --skipvalidation'
 
 -- end_ignore
 (exited with code 0)
 !\retcode gpstop -u;
 -- start_ignore
-20260924:09:51:17:553831 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
-20260924:09:51:17:553831 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
-20260924:09:51:17:553831 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
-20260924:09:51:17:553831 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
-20260924:09:51:17:553831 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
-20260924:09:51:17:553831 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+20261010:19:32:25:1500074 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20261010:19:32:25:1500074 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20261010:19:32:25:1500074 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20261010:19:32:25:1500074 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20261010:19:32:25:1500074 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20261010:19:32:25:1500074 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
 
 -- end_ignore
 (exited with code 0)
@@ -624,11 +679,11 @@ INSERT 0 30
 waiting for server to shut down.... done
 server stopped
 server starting
-2026-09-24 09:51:17.769771 CST,,,p553857,th-1112118304,,,,0,,,seg-1,,,,,"LOG","00000","starting PostgreSQL 12.12 (Greenplum Database 7.0.0-beta.0 build dev) on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14), 64-bit",,,,,,,,"PostmasterMain","postmaster.c",1242,
-2026-09-24 09:51:17.769962 CST,,,p553857,th-1112118304,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv4 address ""0.0.0.0"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
-2026-09-24 09:51:17.770023 CST,,,p553857,th-1112118304,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv6 address ""::"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
-2026-09-24 09:51:17.770152 CST,,,p553857,th-1112118304,,,,0,,,seg-1,,,,,"LOG","00000","listening on Unix socket ""/tmp/.s.PGSQL.7001""",,,,,,,,"StreamServerPort","pqcomm.c",634,
-2026-09-24 09:51:17.781249 CST,,,p553857,th-1112118304,,,,0,,,seg-1,,,,,"LOG","00000","redirecting log output to logging collector process",,"Future log output will appear in directory ""log"".",,,,,,"SysLogger_Start","syslogger.c",920,
+2026-10-10 19:32:25.215530 CST,,,p1500101,th-1699329056,,,,0,,,seg-1,,,,,"LOG","00000","starting PostgreSQL 12.12 (Greenplum Database 7.0.0-beta.0 build dev) on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14), 64-bit",,,,,,,,"PostmasterMain","postmaster.c",1242,
+2026-10-10 19:32:25.215751 CST,,,p1500101,th-1699329056,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv4 address ""0.0.0.0"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
+2026-10-10 19:32:25.215822 CST,,,p1500101,th-1699329056,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv6 address ""::"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
+2026-10-10 19:32:25.215940 CST,,,p1500101,th-1699329056,,,,0,,,seg-1,,,,,"LOG","00000","listening on Unix socket ""/tmp/.s.PGSQL.7001""",,,,,,,,"StreamServerPort","pqcomm.c",634,
+2026-10-10 19:32:25.225864 CST,,,p1500101,th-1699329056,,,,0,,,seg-1,,,,,"LOG","00000","redirecting log output to logging collector process",,"Future log output will appear in directory ""log"".",,,,,,"SysLogger_Start","syslogger.c",920,
 t
 
 -- end_ignore
@@ -703,11 +758,11 @@ INSERT 0 30
 -- start_ignore
 waiting for server to shut down.... done
 server stopped
-waiting for server to start....2026-09-24 09:51:18.950116 CST,,,p553894,th-1130140704,,,,0,,,seg-1,,,,,"LOG","00000","starting PostgreSQL 12.12 (Greenplum Database 7.0.0-beta.0 build dev) on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14), 64-bit",,,,,,,,"PostmasterMain","postmaster.c",1242,
-2026-09-24 09:51:18.950405 CST,,,p553894,th-1130140704,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv4 address ""0.0.0.0"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
-2026-09-24 09:51:18.950487 CST,,,p553894,th-1130140704,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv6 address ""::"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
-2026-09-24 09:51:18.950621 CST,,,p553894,th-1130140704,,,,0,,,seg-1,,,,,"LOG","00000","listening on Unix socket ""/tmp/.s.PGSQL.7001""",,,,,,,,"StreamServerPort","pqcomm.c",634,
-2026-09-24 09:51:18.963717 CST,,,p553894,th-1130140704,,,,0,,,seg-1,,,,,"LOG","00000","redirecting log output to logging collector process",,"Future log output will appear in directory ""log"".",,,,,,"SysLogger_Start","syslogger.c",920,
+waiting for server to start....2026-10-10 19:32:26.415203 CST,,,p1500139,th-1686680608,,,,0,,,seg-1,,,,,"LOG","00000","starting PostgreSQL 12.12 (Greenplum Database 7.0.0-beta.0 build dev) on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14), 64-bit",,,,,,,,"PostmasterMain","postmaster.c",1242,
+2026-10-10 19:32:26.415517 CST,,,p1500139,th-1686680608,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv4 address ""0.0.0.0"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
+2026-10-10 19:32:26.415599 CST,,,p1500139,th-1686680608,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv6 address ""::"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
+2026-10-10 19:32:26.415752 CST,,,p1500139,th-1686680608,,,,0,,,seg-1,,,,,"LOG","00000","listening on Unix socket ""/tmp/.s.PGSQL.7001""",,,,,,,,"StreamServerPort","pqcomm.c",634,
+2026-10-10 19:32:26.431149 CST,,,p1500139,th-1686680608,,,,0,,,seg-1,,,,,"LOG","00000","redirecting log output to logging collector process",,"Future log output will appear in directory ""log"".",,,,,,"SysLogger_Start","syslogger.c",920,
  done
 server started
 
@@ -741,11 +796,11 @@ INSERT 0 30
 -- start_ignore
 waiting for server to shut down.... done
 server stopped
-waiting for server to start....2026-09-24 09:51:19.170387 CST,,,p553907,th-1932063776,,,,0,,,seg-1,,,,,"LOG","00000","starting PostgreSQL 12.12 (Greenplum Database 7.0.0-beta.0 build dev) on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14), 64-bit",,,,,,,,"PostmasterMain","postmaster.c",1242,
-2026-09-24 09:51:19.170735 CST,,,p553907,th-1932063776,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv4 address ""0.0.0.0"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
-2026-09-24 09:51:19.170831 CST,,,p553907,th-1932063776,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv6 address ""::"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
-2026-09-24 09:51:19.171042 CST,,,p553907,th-1932063776,,,,0,,,seg-1,,,,,"LOG","00000","listening on Unix socket ""/tmp/.s.PGSQL.7001""",,,,,,,,"StreamServerPort","pqcomm.c",634,
-2026-09-24 09:51:19.187125 CST,,,p553907,th-1932063776,,,,0,,,seg-1,,,,,"LOG","00000","redirecting log output to logging collector process",,"Future log output will appear in directory ""log"".",,,,,,"SysLogger_Start","syslogger.c",920,
+waiting for server to start....2026-10-10 19:32:26.630982 CST,,,p1500150,th-2017260576,,,,0,,,seg-1,,,,,"LOG","00000","starting PostgreSQL 12.12 (Greenplum Database 7.0.0-beta.0 build dev) on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14), 64-bit",,,,,,,,"PostmasterMain","postmaster.c",1242,
+2026-10-10 19:32:26.631337 CST,,,p1500150,th-2017260576,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv4 address ""0.0.0.0"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
+2026-10-10 19:32:26.631447 CST,,,p1500150,th-2017260576,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv6 address ""::"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
+2026-10-10 19:32:26.631628 CST,,,p1500150,th-2017260576,,,,0,,,seg-1,,,,,"LOG","00000","listening on Unix socket ""/tmp/.s.PGSQL.7001""",,,,,,,,"StreamServerPort","pqcomm.c",634,
+2026-10-10 19:32:26.650424 CST,,,p1500150,th-2017260576,,,,0,,,seg-1,,,,,"LOG","00000","redirecting log output to logging collector process",,"Future log output will appear in directory ""log"".",,,,,,"SysLogger_Start","syslogger.c",920,
  done
 server started
 
@@ -791,10 +846,13 @@ INSERT 0 30
 -------
  1     
 (1 row)
+-- the session was reopened above and would start anchored
+-1S: set whpg_hot_standby_snapshot_mode = unanchored;
+SET
 -1S: select count(*) from hs_anchor_t;
  count 
 -------
- 690   
+ 720   
 (1 row)
 !\retcode mdir=$(psql -d postgres -Atc "select datadir from gp_segment_configuration where content = 0 and role = 'm'"); test ! -e "$mdir/pg_anchor_snapshots/hs_anchor_fault" && test ! -e "$mdir/pg_anchor_snapshots/hs_anchor_fault.tmp" && grep -q 'could not write anchor snapshot file ..pg_anchor_snapshots/hs_anchor_fault.tmp..: fault injected' "$mdir"/log/*.csv;
 -- start_ignore
@@ -820,18 +878,18 @@ INSERT 0 30
 INSERT 0 30
 !\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_anchor_crc --skipvalidation;
 -- start_ignore
-20260924:09:51:19:553939 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_anchor_crc --skipvalidation'
+20261010:19:32:26:1500178 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_anchor_crc --skipvalidation'
 
 -- end_ignore
 (exited with code 0)
 !\retcode gpstop -u;
 -- start_ignore
-20260924:09:51:19:553986 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
-20260924:09:51:19:553986 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
-20260924:09:51:19:553986 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
-20260924:09:51:19:553986 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
-20260924:09:51:19:553986 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
-20260924:09:51:19:553986 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+20261010:19:32:26:1500225 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20261010:19:32:26:1500225 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20261010:19:32:26:1500225 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20261010:19:32:26:1500225 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20261010:19:32:26:1500225 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20261010:19:32:26:1500225 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
 
 -- end_ignore
 (exited with code 0)
@@ -854,11 +912,11 @@ INSERT 0 30
 -- start_ignore
 waiting for server to shut down.... done
 server stopped
-waiting for server to start....2026-09-24 09:51:19.551186 CST,,,p554013,th-1177072672,,,,0,,,seg-1,,,,,"LOG","00000","starting PostgreSQL 12.12 (Greenplum Database 7.0.0-beta.0 build dev) on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14), 64-bit",,,,,,,,"PostmasterMain","postmaster.c",1242,
-2026-09-24 09:51:19.551412 CST,,,p554013,th-1177072672,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv4 address ""0.0.0.0"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
-2026-09-24 09:51:19.551474 CST,,,p554013,th-1177072672,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv6 address ""::"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
-2026-09-24 09:51:19.551583 CST,,,p554013,th-1177072672,,,,0,,,seg-1,,,,,"LOG","00000","listening on Unix socket ""/tmp/.s.PGSQL.7001""",,,,,,,,"StreamServerPort","pqcomm.c",634,
-2026-09-24 09:51:19.563123 CST,,,p554013,th-1177072672,,,,0,,,seg-1,,,,,"LOG","00000","redirecting log output to logging collector process",,"Future log output will appear in directory ""log"".",,,,,,"SysLogger_Start","syslogger.c",920,
+waiting for server to start....2026-10-10 19:32:27.021311 CST,,,p1500250,th-1948967968,,,,0,,,seg-1,,,,,"LOG","00000","starting PostgreSQL 12.12 (Greenplum Database 7.0.0-beta.0 build dev) on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14), 64-bit",,,,,,,,"PostmasterMain","postmaster.c",1242,
+2026-10-10 19:32:27.021540 CST,,,p1500250,th-1948967968,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv4 address ""0.0.0.0"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
+2026-10-10 19:32:27.021608 CST,,,p1500250,th-1948967968,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv6 address ""::"", port 7001",,,,,,,,"StreamServerPort","pqcomm.c",639,
+2026-10-10 19:32:27.021716 CST,,,p1500250,th-1948967968,,,,0,,,seg-1,,,,,"LOG","00000","listening on Unix socket ""/tmp/.s.PGSQL.7001""",,,,,,,,"StreamServerPort","pqcomm.c",634,
+2026-10-10 19:32:27.032882 CST,,,p1500250,th-1948967968,,,,0,,,seg-1,,,,,"LOG","00000","redirecting log output to logging collector process",,"Future log output will appear in directory ""log"".",,,,,,"SysLogger_Start","syslogger.c",920,
  done
 server started
 
@@ -928,36 +986,36 @@ server started
 -- bring the downed mirror back and rebalance
 !\retcode gprecoverseg -aF;
 -- start_ignore
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:-Starting gprecoverseg with args: -aF
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:-local Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:-coordinator Greenplum Version: 'PostgreSQL 12.12 (Greenplum Database 7.0.0-beta.0 build dev) on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14), 64-bit compiled on Sep 21 2026 14:16:52 (with assert checking) Bhuvnesh C. WarehousePG'
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:-Successfully finished pg_controldata /home/yjf/wpg-1789-wt/gpAux/gpdemo/datadirs/dbfast_mirror2/demoDataDir1 for dbid 6:
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:-Starting gprecoverseg with args: -aF
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:-local Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:-coordinator Greenplum Version: 'PostgreSQL 12.12 (Greenplum Database 7.0.0-beta.0 build dev) on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14), 64-bit compiled on Oct 10 2026 17:42:56 (with assert checking) Bhuvnesh C. WarehousePG'
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:-Successfully finished pg_controldata /home/yjf/wpg-1792-wt/gpAux/gpdemo/datadirs/dbfast_mirror2/demoDataDir1 for dbid 6:
 stdout: pg_control version number:            12010700
 Catalog version number:               302307241
-Database system identifier:           7687869123279662336
+Database system identifier:           7690501834085459044
 Database cluster state:               in production
-pg_control last modified:             Thu 24 Sep 2026 09:51:24 AM CST
-Latest checkpoint location:           2/7819A850
-Latest checkpoint's REDO location:    2/78199C18
-Latest checkpoint's REDO WAL file:    00000020000000020000001E
-Latest checkpoint's TimeLineID:       32
-Latest checkpoint's PrevTimeLineID:   32
+pg_control last modified:             Sat 10 Oct 2026 07:32:32 PM CST
+Latest checkpoint location:           8/B05CA118
+Latest checkpoint's REDO location:    8/B05CA0E0
+Latest checkpoint's REDO WAL file:    00000036000000080000002C
+Latest checkpoint's TimeLineID:       54
+Latest checkpoint's PrevTimeLineID:   54
 Latest checkpoint's full_page_writes: on
-Latest checkpoint's NextXID:          0:41857
-Latest checkpoint's NextGxid:         98499
-Latest checkpoint's NextOID:          63418
-Latest checkpoint's NextRelfilenode:  107521
-Latest checkpoint's NextMultiXactId:  9
-Latest checkpoint's NextMultiOffset:  20
-Latest checkpoint's oldestXID:        529
+Latest checkpoint's NextXID:          0:168757
+Latest checkpoint's NextGxid:         255817
+Latest checkpoint's NextOID:          29857
+Latest checkpoint's NextRelfilenode:  326061
+Latest checkpoint's NextMultiXactId:  33
+Latest checkpoint's NextMultiOffset:  77
+Latest checkpoint's oldestXID:        531
 Latest checkpoint's oldestXID's DB:   13718
-Latest checkpoint's oldestActiveXID:  41857
+Latest checkpoint's oldestActiveXID:  168757
 Latest checkpoint's oldestMultiXid:   1
 Latest checkpoint's oldestMulti's DB: 13719
 Latest checkpoint's oldestCommitTsXid:0
 Latest checkpoint's newestCommitTsXid:0
-Time of latest checkpoint:            Thu 24 Sep 2026 09:51:24 AM CST
+Time of latest checkpoint:            Sat 10 Oct 2026 07:32:32 PM CST
 Fake LSN counter for unlogged rels:   0/3E8
 Minimum recovery ending location:     0/0
 Min recovery ending loc's timeline:   0
@@ -985,35 +1043,35 @@ Date/time type storage:               64-bit integers
 Float4 argument passing:              by value
 Float8 argument passing:              by value
 Data page checksum version:           1
-Mock authentication nonce:            cbc021c22cd6584aebf9a1f5b0819b7899d3003a7aa9b96c20a52bc521c24b05
+Mock authentication nonce:            c7150f462923e433ed4d97dec24c9c6a205b4ad4664660bdb30623d4a5fd7797
 
 stderr: 
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:-Successfully finished pg_controldata /home/yjf/wpg-1789-wt/gpAux/gpdemo/datadirs/dbfast2/demoDataDir1 for dbid 3:
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:-Successfully finished pg_controldata /home/yjf/wpg-1792-wt/gpAux/gpdemo/datadirs/dbfast2/demoDataDir1 for dbid 3:
 stdout: pg_control version number:            12010700
 Catalog version number:               302307241
-Database system identifier:           7687869123279662336
+Database system identifier:           7690501834085459044
 Database cluster state:               in production
-pg_control last modified:             Thu 24 Sep 2026 09:51:19 AM CST
-Latest checkpoint location:           2/781993D0
-Latest checkpoint's REDO location:    2/78199398
-Latest checkpoint's REDO WAL file:    0000001F000000020000001E
-Latest checkpoint's TimeLineID:       31
-Latest checkpoint's PrevTimeLineID:   31
+pg_control last modified:             Sat 10 Oct 2026 07:32:26 PM CST
+Latest checkpoint location:           8/B05C9860
+Latest checkpoint's REDO location:    8/B05C9828
+Latest checkpoint's REDO WAL file:    00000035000000080000002C
+Latest checkpoint's TimeLineID:       53
+Latest checkpoint's PrevTimeLineID:   53
 Latest checkpoint's full_page_writes: on
-Latest checkpoint's NextXID:          0:41856
-Latest checkpoint's NextGxid:         98518
-Latest checkpoint's NextOID:          63418
-Latest checkpoint's NextRelfilenode:  107521
-Latest checkpoint's NextMultiXactId:  9
-Latest checkpoint's NextMultiOffset:  20
-Latest checkpoint's oldestXID:        529
+Latest checkpoint's NextXID:          0:168756
+Latest checkpoint's NextGxid:         255836
+Latest checkpoint's NextOID:          29857
+Latest checkpoint's NextRelfilenode:  326061
+Latest checkpoint's NextMultiXactId:  33
+Latest checkpoint's NextMultiOffset:  77
+Latest checkpoint's oldestXID:        531
 Latest checkpoint's oldestXID's DB:   13718
-Latest checkpoint's oldestActiveXID:  41856
+Latest checkpoint's oldestActiveXID:  168756
 Latest checkpoint's oldestMultiXid:   1
 Latest checkpoint's oldestMulti's DB: 13719
 Latest checkpoint's oldestCommitTsXid:0
 Latest checkpoint's newestCommitTsXid:0
-Time of latest checkpoint:            Thu 24 Sep 2026 09:51:19 AM CST
+Time of latest checkpoint:            Sat 10 Oct 2026 07:32:26 PM CST
 Fake LSN counter for unlogged rels:   0/3E8
 Minimum recovery ending location:     0/0
 Min recovery ending loc's timeline:   0
@@ -1041,47 +1099,107 @@ Date/time type storage:               64-bit integers
 Float4 argument passing:              by value
 Float8 argument passing:              by value
 Data page checksum version:           1
-Mock authentication nonce:            cbc021c22cd6584aebf9a1f5b0819b7899d3003a7aa9b96c20a52bc521c24b05
+Mock authentication nonce:            c7150f462923e433ed4d97dec24c9c6a205b4ad4664660bdb30623d4a5fd7797
 
 stderr: 
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:-Heap checksum setting is consistent between coordinator and the segments that are candidates for recoverseg
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:-Greenplum instance recovery parameters
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:----------------------------------------------------------
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:-Recovery type              = Standard
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:----------------------------------------------------------
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:-Recovery 1 of 1
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:----------------------------------------------------------
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:-   Synchronization mode                 = Full
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:-   Failed instance host                 = localhost.localdomain
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:-   Failed instance address              = localhost.localdomain
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:-   Failed instance directory            = /home/yjf/wpg-1789-wt/gpAux/gpdemo/datadirs/dbfast2/demoDataDir1
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:-   Failed instance port                 = 7003
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:-   Recovery Source instance host        = localhost.localdomain
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:-   Recovery Source instance address     = localhost.localdomain
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:-   Recovery Source instance directory   = /home/yjf/wpg-1789-wt/gpAux/gpdemo/datadirs/dbfast_mirror2/demoDataDir1
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:-   Recovery Source instance port        = 7006
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:-   Recovery Target                      = in-place
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:----------------------------------------------------------
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:-Starting to create new pg_hba.conf on primary segments
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:-killing existing walsender process on primary localhost.localdomain:7006 to refresh replication connection
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:-Successfully modified pg_hba.conf on primary segments to allow replication connections
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:-1 segment(s) to recover
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:-Ensuring 1 failed segment(s) are stopped
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:-Setting up the required segments for recovery
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:-Updating configuration for mirrors
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:-Initiating segment recovery. Upon completion, will start the successfully recovered segments
-20260924:09:51:24:554059 gprecoverseg:localhost:yjf-[INFO]:-era is 879fa2c149869843_260924095116
-2026-09-24 09:51:25.224419: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
-2026-09-24 09:51:26.227749: localhost.localdomain (dbid 3): pg_basebackup: base backup completed
-2026-09-24 09:51:26.258337: localhost.localdomain (dbid 3): pg_basebackup: base backup completed
-20260924:09:51:26:554059 gprecoverseg:localhost:yjf-[INFO]:-Triggering FTS probe
-20260924:09:51:26:554059 gprecoverseg:localhost:yjf-[INFO]:-********************************
-20260924:09:51:26:554059 gprecoverseg:localhost:yjf-[INFO]:-Future gprecoverseg executions might remove the currently created pg_basebackup/pg_rewind/rsync progress files, please save these files if needed.
-20260924:09:51:26:554059 gprecoverseg:localhost:yjf-[INFO]:-********************************
-20260924:09:51:26:554059 gprecoverseg:localhost:yjf-[INFO]:-Segments successfully recovered.
-20260924:09:51:26:554059 gprecoverseg:localhost:yjf-[INFO]:-********************************
-20260924:09:51:26:554059 gprecoverseg:localhost:yjf-[INFO]:-Recovered mirror segments need to sync WAL with primary segments.
-20260924:09:51:26:554059 gprecoverseg:localhost:yjf-[INFO]:-Use 'gpstate -e' to check progress of WAL sync remaining bytes
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:-Heap checksum setting is consistent between coordinator and the segments that are candidates for recoverseg
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:-Greenplum instance recovery parameters
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:----------------------------------------------------------
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:-Recovery type              = Standard
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:----------------------------------------------------------
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:-Recovery 1 of 1
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:----------------------------------------------------------
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:-   Synchronization mode                 = Full
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:-   Failed instance host                 = localhost.localdomain
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:-   Failed instance address              = localhost.localdomain
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:-   Failed instance directory            = /home/yjf/wpg-1792-wt/gpAux/gpdemo/datadirs/dbfast2/demoDataDir1
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:-   Failed instance port                 = 7003
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:-   Recovery Source instance host        = localhost.localdomain
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:-   Recovery Source instance address     = localhost.localdomain
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:-   Recovery Source instance directory   = /home/yjf/wpg-1792-wt/gpAux/gpdemo/datadirs/dbfast_mirror2/demoDataDir1
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:-   Recovery Source instance port        = 7006
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:-   Recovery Target                      = in-place
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:----------------------------------------------------------
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:-Starting to create new pg_hba.conf on primary segments
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:-killing existing walsender process on primary localhost.localdomain:7006 to refresh replication connection
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:-Successfully modified pg_hba.conf on primary segments to allow replication connections
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:-1 segment(s) to recover
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:-Ensuring 1 failed segment(s) are stopped
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:-Setting up the required segments for recovery
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:-Updating configuration for mirrors
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:-Initiating segment recovery. Upon completion, will start the successfully recovered segments
+20261010:19:32:32:1500296 gprecoverseg:localhost:yjf-[INFO]:-era is b94205e77c7b1342_261010193224
+2026-10-10 19:32:33.393371: localhost.localdomain (dbid 3):  348006/1990046 kB (17%), 0/1 tablespace (...2/demoDataDir1/base/43437/275666)
+2026-10-10 19:32:34.398043: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:32:35.409622: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:32:36.421259: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:32:37.430395: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:32:38.441011: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:32:39.450341: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:32:40.455874: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:32:41.460294: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:32:42.469307: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:32:43.478919: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:32:44.489619: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:32:45.499178: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:32:46.506961: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:32:47.517798: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:32:48.528175: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:32:49.538708: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:32:50.548884: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:32:51.559025: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:32:52.569035: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:32:53.579714: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:32:54.590051: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:32:55.600267: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:32:56.609791: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:32:57.613083: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:32:58.616316: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:32:59.625775: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:33:00.633888: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:33:01.643882: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:33:02.654222: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:33:03.665035: localhost.localdomain (dbid 3): 1604847/1990046 kB (80%), 0/1 tablespace (...oDataDir1/base/43437/321482.4865)
+2026-10-10 19:33:04.667948: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:05.677504: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:06.685878: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:07.695694: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:08.705073: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:09.714112: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:10.724620: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:11.734215: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:12.744281: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:13.754052: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:14.764196: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:15.772814: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:16.782715: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:17.790999: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:18.800576: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:19.810074: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:20.820022: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:21.827791: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:22.837833: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:23.847411: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:24.856734: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:25.866624: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:26.876155: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:27.886093: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:28.895912: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:29.905244: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:30.914322: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:31.923866: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:32.934533: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:33.942384: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:34.954479: localhost.localdomain (dbid 3): pg_basebackup: syncing data to disk ...
+2026-10-10 19:33:35.223974: localhost.localdomain (dbid 3): pg_basebackup: base backup completed
+20261010:19:33:35:1500296 gprecoverseg:localhost:yjf-[INFO]:-Triggering FTS probe
+20261010:19:33:35:1500296 gprecoverseg:localhost:yjf-[INFO]:-********************************
+20261010:19:33:35:1500296 gprecoverseg:localhost:yjf-[INFO]:-Future gprecoverseg executions might remove the currently created pg_basebackup/pg_rewind/rsync progress files, please save these files if needed.
+20261010:19:33:35:1500296 gprecoverseg:localhost:yjf-[INFO]:-********************************
+20261010:19:33:35:1500296 gprecoverseg:localhost:yjf-[INFO]:-Segments successfully recovered.
+20261010:19:33:35:1500296 gprecoverseg:localhost:yjf-[INFO]:-********************************
+20261010:19:33:35:1500296 gprecoverseg:localhost:yjf-[INFO]:-Recovered mirror segments need to sync WAL with primary segments.
+20261010:19:33:35:1500296 gprecoverseg:localhost:yjf-[INFO]:-Use 'gpstate -e' to check progress of WAL sync remaining bytes
 
 -- end_ignore
 (exited with code 0)
@@ -1092,68 +1210,68 @@ stderr:
 (1 row)
 !\retcode gprecoverseg -ar;
 -- start_ignore
-20260924:09:51:26:554214 gprecoverseg:localhost:yjf-[INFO]:-Starting gprecoverseg with args: -ar
-20260924:09:51:26:554214 gprecoverseg:localhost:yjf-[INFO]:-local Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
-20260924:09:51:26:554214 gprecoverseg:localhost:yjf-[INFO]:-coordinator Greenplum Version: 'PostgreSQL 12.12 (Greenplum Database 7.0.0-beta.0 build dev) on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14), 64-bit compiled on Sep 21 2026 14:16:52 (with assert checking) Bhuvnesh C. WarehousePG'
-20260924:09:51:26:554214 gprecoverseg:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
-20260924:09:51:26:554214 gprecoverseg:localhost:yjf-[INFO]:-Greenplum instance recovery parameters
-20260924:09:51:26:554214 gprecoverseg:localhost:yjf-[INFO]:----------------------------------------------------------
-20260924:09:51:26:554214 gprecoverseg:localhost:yjf-[INFO]:-Recovery type              = Rebalance
-20260924:09:51:26:554214 gprecoverseg:localhost:yjf-[INFO]:----------------------------------------------------------
-20260924:09:51:26:554214 gprecoverseg:localhost:yjf-[INFO]:-Unbalanced segment 1 of 2
-20260924:09:51:26:554214 gprecoverseg:localhost:yjf-[INFO]:----------------------------------------------------------
-20260924:09:51:26:554214 gprecoverseg:localhost:yjf-[INFO]:-   Unbalanced instance host        = localhost.localdomain
-20260924:09:51:26:554214 gprecoverseg:localhost:yjf-[INFO]:-   Unbalanced instance address     = localhost.localdomain
-20260924:09:51:26:554214 gprecoverseg:localhost:yjf-[INFO]:-   Unbalanced instance directory   = /home/yjf/wpg-1789-wt/gpAux/gpdemo/datadirs/dbfast_mirror2/demoDataDir1
-20260924:09:51:26:554214 gprecoverseg:localhost:yjf-[INFO]:-   Unbalanced instance port        = 7006
-20260924:09:51:26:554214 gprecoverseg:localhost:yjf-[INFO]:-   Balanced role                   = Mirror
-20260924:09:51:26:554214 gprecoverseg:localhost:yjf-[INFO]:-   Current role                    = Primary
-20260924:09:51:26:554214 gprecoverseg:localhost:yjf-[INFO]:----------------------------------------------------------
-20260924:09:51:26:554214 gprecoverseg:localhost:yjf-[INFO]:-Unbalanced segment 2 of 2
-20260924:09:51:26:554214 gprecoverseg:localhost:yjf-[INFO]:----------------------------------------------------------
-20260924:09:51:26:554214 gprecoverseg:localhost:yjf-[INFO]:-   Unbalanced instance host        = localhost.localdomain
-20260924:09:51:26:554214 gprecoverseg:localhost:yjf-[INFO]:-   Unbalanced instance address     = localhost.localdomain
-20260924:09:51:26:554214 gprecoverseg:localhost:yjf-[INFO]:-   Unbalanced instance directory   = /home/yjf/wpg-1789-wt/gpAux/gpdemo/datadirs/dbfast2/demoDataDir1
-20260924:09:51:26:554214 gprecoverseg:localhost:yjf-[INFO]:-   Unbalanced instance port        = 7003
-20260924:09:51:26:554214 gprecoverseg:localhost:yjf-[INFO]:-   Balanced role                   = Primary
-20260924:09:51:26:554214 gprecoverseg:localhost:yjf-[INFO]:-   Current role                    = Mirror
-20260924:09:51:26:554214 gprecoverseg:localhost:yjf-[INFO]:----------------------------------------------------------
-20260924:09:51:26:554214 gprecoverseg:localhost:yjf-[INFO]:-Determining primary and mirror segment pairs to rebalance
-20260924:09:51:26:554214 gprecoverseg:localhost:yjf-[INFO]:-Allowed replay lag during rebalance is 10 GB
-20260924:09:51:26:554214 gprecoverseg:localhost:yjf-[INFO]:-Stopping unbalanced primary segments...
+20261010:19:33:35:1501232 gprecoverseg:localhost:yjf-[INFO]:-Starting gprecoverseg with args: -ar
+20261010:19:33:35:1501232 gprecoverseg:localhost:yjf-[INFO]:-local Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20261010:19:33:35:1501232 gprecoverseg:localhost:yjf-[INFO]:-coordinator Greenplum Version: 'PostgreSQL 12.12 (Greenplum Database 7.0.0-beta.0 build dev) on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14), 64-bit compiled on Oct 10 2026 17:42:56 (with assert checking) Bhuvnesh C. WarehousePG'
+20261010:19:33:35:1501232 gprecoverseg:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20261010:19:33:35:1501232 gprecoverseg:localhost:yjf-[INFO]:-Greenplum instance recovery parameters
+20261010:19:33:35:1501232 gprecoverseg:localhost:yjf-[INFO]:----------------------------------------------------------
+20261010:19:33:35:1501232 gprecoverseg:localhost:yjf-[INFO]:-Recovery type              = Rebalance
+20261010:19:33:35:1501232 gprecoverseg:localhost:yjf-[INFO]:----------------------------------------------------------
+20261010:19:33:35:1501232 gprecoverseg:localhost:yjf-[INFO]:-Unbalanced segment 1 of 2
+20261010:19:33:35:1501232 gprecoverseg:localhost:yjf-[INFO]:----------------------------------------------------------
+20261010:19:33:35:1501232 gprecoverseg:localhost:yjf-[INFO]:-   Unbalanced instance host        = localhost.localdomain
+20261010:19:33:35:1501232 gprecoverseg:localhost:yjf-[INFO]:-   Unbalanced instance address     = localhost.localdomain
+20261010:19:33:35:1501232 gprecoverseg:localhost:yjf-[INFO]:-   Unbalanced instance directory   = /home/yjf/wpg-1792-wt/gpAux/gpdemo/datadirs/dbfast_mirror2/demoDataDir1
+20261010:19:33:35:1501232 gprecoverseg:localhost:yjf-[INFO]:-   Unbalanced instance port        = 7006
+20261010:19:33:35:1501232 gprecoverseg:localhost:yjf-[INFO]:-   Balanced role                   = Mirror
+20261010:19:33:35:1501232 gprecoverseg:localhost:yjf-[INFO]:-   Current role                    = Primary
+20261010:19:33:35:1501232 gprecoverseg:localhost:yjf-[INFO]:----------------------------------------------------------
+20261010:19:33:35:1501232 gprecoverseg:localhost:yjf-[INFO]:-Unbalanced segment 2 of 2
+20261010:19:33:35:1501232 gprecoverseg:localhost:yjf-[INFO]:----------------------------------------------------------
+20261010:19:33:35:1501232 gprecoverseg:localhost:yjf-[INFO]:-   Unbalanced instance host        = localhost.localdomain
+20261010:19:33:35:1501232 gprecoverseg:localhost:yjf-[INFO]:-   Unbalanced instance address     = localhost.localdomain
+20261010:19:33:35:1501232 gprecoverseg:localhost:yjf-[INFO]:-   Unbalanced instance directory   = /home/yjf/wpg-1792-wt/gpAux/gpdemo/datadirs/dbfast2/demoDataDir1
+20261010:19:33:35:1501232 gprecoverseg:localhost:yjf-[INFO]:-   Unbalanced instance port        = 7003
+20261010:19:33:35:1501232 gprecoverseg:localhost:yjf-[INFO]:-   Balanced role                   = Primary
+20261010:19:33:35:1501232 gprecoverseg:localhost:yjf-[INFO]:-   Current role                    = Mirror
+20261010:19:33:35:1501232 gprecoverseg:localhost:yjf-[INFO]:----------------------------------------------------------
+20261010:19:33:35:1501232 gprecoverseg:localhost:yjf-[INFO]:-Determining primary and mirror segment pairs to rebalance
+20261010:19:33:35:1501232 gprecoverseg:localhost:yjf-[INFO]:-Allowed replay lag during rebalance is 10 GB
+20261010:19:33:35:1501232 gprecoverseg:localhost:yjf-[INFO]:-Stopping unbalanced primary segments...
 ...
-20260924:09:51:29:554214 gprecoverseg:localhost:yjf-[INFO]:-Triggering segment reconfiguration
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-Starting segment synchronization
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-=============================START ANOTHER RECOVER=========================================
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-local Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-coordinator Greenplum Version: 'PostgreSQL 12.12 (Greenplum Database 7.0.0-beta.0 build dev) on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14), 64-bit compiled on Sep 21 2026 14:16:52 (with assert checking) Bhuvnesh C. WarehousePG'
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-Successfully finished pg_controldata /home/yjf/wpg-1789-wt/gpAux/gpdemo/datadirs/dbfast2/demoDataDir1 for dbid 3:
+20261010:19:33:38:1501232 gprecoverseg:localhost:yjf-[INFO]:-Triggering segment reconfiguration
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-Starting segment synchronization
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-=============================START ANOTHER RECOVER=========================================
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-local Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-coordinator Greenplum Version: 'PostgreSQL 12.12 (Greenplum Database 7.0.0-beta.0 build dev) on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14), 64-bit compiled on Oct 10 2026 17:42:56 (with assert checking) Bhuvnesh C. WarehousePG'
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-Successfully finished pg_controldata /home/yjf/wpg-1792-wt/gpAux/gpdemo/datadirs/dbfast2/demoDataDir1 for dbid 3:
 stdout: pg_control version number:            12010700
 Catalog version number:               302307241
-Database system identifier:           7687869123279662336
+Database system identifier:           7690501834085459044
 Database cluster state:               in production
-pg_control last modified:             Thu 24 Sep 2026 09:51:34 AM CST
-Latest checkpoint location:           2/80000118
-Latest checkpoint's REDO location:    2/800000E0
-Latest checkpoint's REDO WAL file:    000000210000000200000020
-Latest checkpoint's TimeLineID:       33
-Latest checkpoint's PrevTimeLineID:   33
+pg_control last modified:             Sat 10 Oct 2026 07:34:05 PM CST
+Latest checkpoint location:           8/B8000150
+Latest checkpoint's REDO location:    8/B8000118
+Latest checkpoint's REDO WAL file:    00000037000000080000002E
+Latest checkpoint's TimeLineID:       55
+Latest checkpoint's PrevTimeLineID:   55
 Latest checkpoint's full_page_writes: on
-Latest checkpoint's NextXID:          0:41857
-Latest checkpoint's NextGxid:         98499
-Latest checkpoint's NextOID:          63418
-Latest checkpoint's NextRelfilenode:  107521
-Latest checkpoint's NextMultiXactId:  9
-Latest checkpoint's NextMultiOffset:  20
-Latest checkpoint's oldestXID:        529
+Latest checkpoint's NextXID:          0:168757
+Latest checkpoint's NextGxid:         255817
+Latest checkpoint's NextOID:          29857
+Latest checkpoint's NextRelfilenode:  326061
+Latest checkpoint's NextMultiXactId:  33
+Latest checkpoint's NextMultiOffset:  77
+Latest checkpoint's oldestXID:        531
 Latest checkpoint's oldestXID's DB:   13718
-Latest checkpoint's oldestActiveXID:  41857
+Latest checkpoint's oldestActiveXID:  168757
 Latest checkpoint's oldestMultiXid:   1
 Latest checkpoint's oldestMulti's DB: 13719
 Latest checkpoint's oldestCommitTsXid:0
 Latest checkpoint's newestCommitTsXid:0
-Time of latest checkpoint:            Thu 24 Sep 2026 09:51:34 AM CST
+Time of latest checkpoint:            Sat 10 Oct 2026 07:34:05 PM CST
 Fake LSN counter for unlogged rels:   0/3E8
 Minimum recovery ending location:     0/0
 Min recovery ending loc's timeline:   0
@@ -1181,35 +1299,35 @@ Date/time type storage:               64-bit integers
 Float4 argument passing:              by value
 Float8 argument passing:              by value
 Data page checksum version:           1
-Mock authentication nonce:            cbc021c22cd6584aebf9a1f5b0819b7899d3003a7aa9b96c20a52bc521c24b05
+Mock authentication nonce:            c7150f462923e433ed4d97dec24c9c6a205b4ad4664660bdb30623d4a5fd7797
 
 stderr: 
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-Successfully finished pg_controldata /home/yjf/wpg-1789-wt/gpAux/gpdemo/datadirs/dbfast_mirror2/demoDataDir1 for dbid 6:
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-Successfully finished pg_controldata /home/yjf/wpg-1792-wt/gpAux/gpdemo/datadirs/dbfast_mirror2/demoDataDir1 for dbid 6:
 stdout: pg_control version number:            12010700
 Catalog version number:               302307241
-Database system identifier:           7687869123279662336
+Database system identifier:           7690501834085459044
 Database cluster state:               shut down
-pg_control last modified:             Thu 24 Sep 2026 09:51:26 AM CST
-Latest checkpoint location:           2/80000028
-Latest checkpoint's REDO location:    2/80000028
-Latest checkpoint's REDO WAL file:    000000200000000200000020
-Latest checkpoint's TimeLineID:       32
-Latest checkpoint's PrevTimeLineID:   32
+pg_control last modified:             Sat 10 Oct 2026 07:33:36 PM CST
+Latest checkpoint location:           8/B8000060
+Latest checkpoint's REDO location:    8/B8000060
+Latest checkpoint's REDO WAL file:    00000036000000080000002E
+Latest checkpoint's TimeLineID:       54
+Latest checkpoint's PrevTimeLineID:   54
 Latest checkpoint's full_page_writes: on
-Latest checkpoint's NextXID:          0:41857
-Latest checkpoint's NextGxid:         98499
-Latest checkpoint's NextOID:          63418
-Latest checkpoint's NextRelfilenode:  107521
-Latest checkpoint's NextMultiXactId:  9
-Latest checkpoint's NextMultiOffset:  20
-Latest checkpoint's oldestXID:        529
+Latest checkpoint's NextXID:          0:168757
+Latest checkpoint's NextGxid:         255817
+Latest checkpoint's NextOID:          29857
+Latest checkpoint's NextRelfilenode:  326061
+Latest checkpoint's NextMultiXactId:  33
+Latest checkpoint's NextMultiOffset:  77
+Latest checkpoint's oldestXID:        531
 Latest checkpoint's oldestXID's DB:   13718
 Latest checkpoint's oldestActiveXID:  0
 Latest checkpoint's oldestMultiXid:   1
 Latest checkpoint's oldestMulti's DB: 13719
 Latest checkpoint's oldestCommitTsXid:0
 Latest checkpoint's newestCommitTsXid:0
-Time of latest checkpoint:            Thu 24 Sep 2026 09:51:26 AM CST
+Time of latest checkpoint:            Sat 10 Oct 2026 07:33:36 PM CST
 Fake LSN counter for unlogged rels:   0/3E8
 Minimum recovery ending location:     0/0
 Min recovery ending loc's timeline:   0
@@ -1237,49 +1355,49 @@ Date/time type storage:               64-bit integers
 Float4 argument passing:              by value
 Float8 argument passing:              by value
 Data page checksum version:           1
-Mock authentication nonce:            cbc021c22cd6584aebf9a1f5b0819b7899d3003a7aa9b96c20a52bc521c24b05
+Mock authentication nonce:            c7150f462923e433ed4d97dec24c9c6a205b4ad4664660bdb30623d4a5fd7797
 
 stderr: 
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-Heap checksum setting is consistent between coordinator and the segments that are candidates for recoverseg
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-Greenplum instance recovery parameters
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:----------------------------------------------------------
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-Recovery type              = Standard
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:----------------------------------------------------------
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-Recovery 1 of 1
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:----------------------------------------------------------
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-   Synchronization mode                 = Incremental
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-   Failed instance host                 = localhost.localdomain
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-   Failed instance address              = localhost.localdomain
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-   Failed instance directory            = /home/yjf/wpg-1789-wt/gpAux/gpdemo/datadirs/dbfast_mirror2/demoDataDir1
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-   Failed instance port                 = 7006
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-   Recovery Source instance host        = localhost.localdomain
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-   Recovery Source instance address     = localhost.localdomain
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-   Recovery Source instance directory   = /home/yjf/wpg-1789-wt/gpAux/gpdemo/datadirs/dbfast2/demoDataDir1
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-   Recovery Source instance port        = 7003
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-   Recovery Target                      = in-place
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:----------------------------------------------------------
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-Starting to create new pg_hba.conf on primary segments
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-killing existing walsender process on primary localhost.localdomain:7003 to refresh replication connection
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-Successfully modified pg_hba.conf on primary segments to allow replication connections
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-1 segment(s) to recover
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-Ensuring 1 failed segment(s) are stopped
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-Setting up the required segments for recovery
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-Updating configuration for mirrors
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-Initiating segment recovery. Upon completion, will start the successfully recovered segments
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-era is 879fa2c149869843_260924095116
-2026-09-24 09:51:34.310862: localhost.localdomain (dbid 6): pg_rewind: no rewind required
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-Triggering FTS probe
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-********************************
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-Future gprecoverseg executions might remove the currently created pg_basebackup/pg_rewind/rsync progress files, please save these files if needed.
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-********************************
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-Segments successfully recovered.
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-********************************
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-Recovered mirror segments need to sync WAL with primary segments.
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-Use 'gpstate -e' to check progress of WAL sync remaining bytes
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-==============================END ANOTHER RECOVER==========================================
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-******************************************************************
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-The rebalance operation has completed successfully.
-20260924:09:51:34:554214 gprecoverseg:localhost:yjf-[INFO]:-******************************************************************
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-Heap checksum setting is consistent between coordinator and the segments that are candidates for recoverseg
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-Greenplum instance recovery parameters
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:----------------------------------------------------------
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-Recovery type              = Standard
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:----------------------------------------------------------
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-Recovery 1 of 1
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:----------------------------------------------------------
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-   Synchronization mode                 = Incremental
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-   Failed instance host                 = localhost.localdomain
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-   Failed instance address              = localhost.localdomain
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-   Failed instance directory            = /home/yjf/wpg-1792-wt/gpAux/gpdemo/datadirs/dbfast_mirror2/demoDataDir1
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-   Failed instance port                 = 7006
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-   Recovery Source instance host        = localhost.localdomain
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-   Recovery Source instance address     = localhost.localdomain
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-   Recovery Source instance directory   = /home/yjf/wpg-1792-wt/gpAux/gpdemo/datadirs/dbfast2/demoDataDir1
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-   Recovery Source instance port        = 7003
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-   Recovery Target                      = in-place
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:----------------------------------------------------------
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-Starting to create new pg_hba.conf on primary segments
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-killing existing walsender process on primary localhost.localdomain:7003 to refresh replication connection
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-Successfully modified pg_hba.conf on primary segments to allow replication connections
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-1 segment(s) to recover
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-Ensuring 1 failed segment(s) are stopped
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-Setting up the required segments for recovery
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-Updating configuration for mirrors
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-Initiating segment recovery. Upon completion, will start the successfully recovered segments
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-era is b94205e77c7b1342_261010193224
+2026-10-10 19:34:05.626535: localhost.localdomain (dbid 6): pg_rewind: no rewind required
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-Triggering FTS probe
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-********************************
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-Future gprecoverseg executions might remove the currently created pg_basebackup/pg_rewind/rsync progress files, please save these files if needed.
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-********************************
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-Segments successfully recovered.
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-********************************
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-Recovered mirror segments need to sync WAL with primary segments.
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-Use 'gpstate -e' to check progress of WAL sync remaining bytes
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-==============================END ANOTHER RECOVER==========================================
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-******************************************************************
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-The rebalance operation has completed successfully.
+20261010:19:34:05:1501232 gprecoverseg:localhost:yjf-[INFO]:-******************************************************************
 
 -- end_ignore
 (exited with code 0)
@@ -1315,47 +1433,53 @@ DROP TABLE
 1q: ... <quitting>
 1Uq: ... <quitting>
 -1Mq: ... <quitting>
+!\retcode gpconfig -r whpg_hot_standby_snapshot_mode --skipvalidation;
+-- start_ignore
+20261010:19:34:05:1504448 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-r whpg_hot_standby_snapshot_mode --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
 !\retcode gpconfig -r whpg_max_anchor_snapshots --skipvalidation;
 -- start_ignore
-20260924:09:51:34:554879 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-r whpg_max_anchor_snapshots --skipvalidation'
+20261010:19:34:05:1504495 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-r whpg_max_anchor_snapshots --skipvalidation'
 
 -- end_ignore
 (exited with code 0)
 !\retcode gpconfig -r whpg_hot_standby_anchor_name --skipvalidation;
 -- start_ignore
-20260924:09:51:34:554926 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-r whpg_hot_standby_anchor_name --skipvalidation'
+20261010:19:34:06:1504542 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-r whpg_hot_standby_anchor_name --skipvalidation'
 
 -- end_ignore
 (exited with code 0)
 !\retcode gpstop -ar;
 -- start_ignore
-20260924:09:51:34:554973 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -ar
-20260924:09:51:34:554973 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
-20260924:09:51:34:554973 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
-20260924:09:51:34:554973 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
-20260924:09:51:34:554973 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
-20260924:09:51:34:554973 gpstop:localhost:yjf-[INFO]:-Commencing Coordinator instance shutdown with mode='smart'
-20260924:09:51:34:554973 gpstop:localhost:yjf-[INFO]:-Coordinator segment instance directory=/home/yjf/wpg-1789-wt/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
-20260924:09:51:34:554973 gpstop:localhost:yjf-[INFO]:-Stopping coordinator segment and waiting for user connections to finish ...
+20261010:19:34:06:1504589 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -ar
+20261010:19:34:06:1504589 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20261010:19:34:06:1504589 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20261010:19:34:06:1504589 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20261010:19:34:06:1504589 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20261010:19:34:06:1504589 gpstop:localhost:yjf-[INFO]:-Commencing Coordinator instance shutdown with mode='smart'
+20261010:19:34:06:1504589 gpstop:localhost:yjf-[INFO]:-Coordinator segment instance directory=/home/yjf/wpg-1792-wt/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
+20261010:19:34:06:1504589 gpstop:localhost:yjf-[INFO]:-Stopping coordinator segment and waiting for user connections to finish ...
 server shutting down
-20260924:09:51:35:554973 gpstop:localhost:yjf-[INFO]:-Attempting forceful termination of any leftover coordinator process
-20260924:09:51:35:554973 gpstop:localhost:yjf-[INFO]:-Terminating processes for segment /home/yjf/wpg-1789-wt/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
-20260924:09:51:35:554973 gpstop:localhost:yjf-[INFO]:-Stopping coordinator standby host localhost.localdomain mode=smart
-20260924:09:51:35:554973 gpstop:localhost:yjf-[INFO]:-Successfully shutdown standby process on localhost.localdomain
-20260924:09:51:35:554973 gpstop:localhost:yjf-[INFO]:-Targeting dbid [2, 5, 3, 6, 4, 7] for shutdown
-20260924:09:51:35:554973 gpstop:localhost:yjf-[INFO]:-Commencing parallel primary segment instance shutdown, please wait...
-20260924:09:51:35:554973 gpstop:localhost:yjf-[INFO]:-0.00% of jobs completed
-20260924:09:51:38:554973 gpstop:localhost:yjf-[INFO]:-100.00% of jobs completed
-20260924:09:51:38:554973 gpstop:localhost:yjf-[INFO]:-Commencing parallel mirror segment instance shutdown, please wait...
-20260924:09:51:38:554973 gpstop:localhost:yjf-[INFO]:-0.00% of jobs completed
-20260924:09:51:40:554973 gpstop:localhost:yjf-[INFO]:-100.00% of jobs completed
-20260924:09:51:40:554973 gpstop:localhost:yjf-[INFO]:-----------------------------------------------------
-20260924:09:51:40:554973 gpstop:localhost:yjf-[INFO]:-   Segments stopped successfully      = 6
-20260924:09:51:40:554973 gpstop:localhost:yjf-[INFO]:-   Segments with errors during stop   = 0
-20260924:09:51:40:554973 gpstop:localhost:yjf-[INFO]:-----------------------------------------------------
-20260924:09:51:40:554973 gpstop:localhost:yjf-[INFO]:-Successfully shutdown 6 of 6 segment instances 
-20260924:09:51:40:554973 gpstop:localhost:yjf-[INFO]:-Database successfully shutdown with no errors reported
-20260924:09:51:40:554973 gpstop:localhost:yjf-[INFO]:-Restarting System...
+20261010:19:34:07:1504589 gpstop:localhost:yjf-[INFO]:-Attempting forceful termination of any leftover coordinator process
+20261010:19:34:07:1504589 gpstop:localhost:yjf-[INFO]:-Terminating processes for segment /home/yjf/wpg-1792-wt/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
+20261010:19:34:07:1504589 gpstop:localhost:yjf-[INFO]:-Stopping coordinator standby host localhost.localdomain mode=smart
+20261010:19:34:07:1504589 gpstop:localhost:yjf-[INFO]:-Successfully shutdown standby process on localhost.localdomain
+20261010:19:34:07:1504589 gpstop:localhost:yjf-[INFO]:-Targeting dbid [2, 5, 3, 6, 4, 7] for shutdown
+20261010:19:34:07:1504589 gpstop:localhost:yjf-[INFO]:-Commencing parallel primary segment instance shutdown, please wait...
+20261010:19:34:07:1504589 gpstop:localhost:yjf-[INFO]:-0.00% of jobs completed
+20261010:19:34:09:1504589 gpstop:localhost:yjf-[INFO]:-100.00% of jobs completed
+20261010:19:34:09:1504589 gpstop:localhost:yjf-[INFO]:-Commencing parallel mirror segment instance shutdown, please wait...
+20261010:19:34:09:1504589 gpstop:localhost:yjf-[INFO]:-0.00% of jobs completed
+20261010:19:34:12:1504589 gpstop:localhost:yjf-[INFO]:-100.00% of jobs completed
+20261010:19:34:12:1504589 gpstop:localhost:yjf-[INFO]:-----------------------------------------------------
+20261010:19:34:12:1504589 gpstop:localhost:yjf-[INFO]:-   Segments stopped successfully      = 6
+20261010:19:34:12:1504589 gpstop:localhost:yjf-[INFO]:-   Segments with errors during stop   = 0
+20261010:19:34:12:1504589 gpstop:localhost:yjf-[INFO]:-----------------------------------------------------
+20261010:19:34:12:1504589 gpstop:localhost:yjf-[INFO]:-Successfully shutdown 6 of 6 segment instances 
+20261010:19:34:12:1504589 gpstop:localhost:yjf-[INFO]:-Database successfully shutdown with no errors reported
+20261010:19:34:12:1504589 gpstop:localhost:yjf-[INFO]:-Restarting System...
 
 -- end_ignore
 (exited with code 0)

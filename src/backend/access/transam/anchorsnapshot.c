@@ -187,6 +187,22 @@ registryEnabled(void)
 	return anchorRegistry != NULL && anchorRegistry->capacity > 0;
 }
 
+/*
+ * Does this node export and register anchors?  Only where the configuration
+ * files set whpg_hot_standby_snapshot_mode = anchored, the line a read
+ * replica's configuration is to carry in every data directory; a hot
+ * standby that no replica tooling manages keeps the default and never
+ * registers an anchor, whatever its sessions SET (a session's value never
+ * reaches the startup process).  Registration also needs the registry on
+ * and hot standby enabled.
+ */
+static inline bool
+nodeExportsAnchors(void)
+{
+	return registryEnabled() && EnableHotStandby &&
+		whpg_hot_standby_snapshot_mode == WHPG_SNAPSHOT_MODE_ANCHORED;
+}
+
 Size
 AnchorRegistryShmemSize(void)
 {
@@ -974,10 +990,11 @@ sweepAnchorFiles(const char *keep)
  * history does not have at that LSN (the node followed a fork) is swept.
  *
  * The sweep spares the file the GUC names whenever this is a standby
- * (archive recovery), even when the registry is off or hot standby is
- * disabled and the file was therefore not examined: a start with the
- * feature switched off must not destroy the published anchor for the
- * start that switches it back on.  A primary keeps nothing.
+ * (archive recovery), even when the registry is off, hot standby is
+ * disabled or anchored mode is off in the configuration and the file was
+ * therefore not examined: a start with the feature switched off must not
+ * destroy the published anchor for the start that switches it back on.  A
+ * primary keeps nothing.
  */
 /*
  * May an overflowed anchor be registered again by this start?  Its readers
@@ -1038,17 +1055,18 @@ AnchorSnapshotStartup(XLogRecPtr redoStart, List *history,
 	}
 
 	if (ArchiveRecoveryRequested && name != NULL && name[0] != '\0' &&
-		anchorNameIsValid(name) && !(registryEnabled() && EnableHotStandby))
+		anchorNameIsValid(name) && !nodeExportsAnchors())
 	{
 		/* not examined at this start; kept for the start that will */
 		keep = true;
 		ereport(LOG,
 				(errmsg("anchor snapshot file for restore point \"%s\" kept but not registered: %s",
 						name,
-						registryEnabled() ? "hot standby is disabled" :
-						"anchor snapshots are disabled (whpg_max_anchor_snapshots = 0)")));
+						!registryEnabled() ? "anchor snapshots are disabled (whpg_max_anchor_snapshots = 0)" :
+						!EnableHotStandby ? "hot standby is disabled" :
+						"anchored mode is off on this node (whpg_hot_standby_snapshot_mode)")));
 	}
-	else if (registryEnabled() && ArchiveRecoveryRequested && EnableHotStandby &&
+	else if (nodeExportsAnchors() && ArchiveRecoveryRequested &&
 			 name != NULL && name[0] != '\0')
 	{
 		TimeLineID	tli;
@@ -1165,7 +1183,9 @@ AnchorSnapshotExportOnRestorePoint(XLogReaderState *record)
 	 * (standbyState may still be below READY here after a restart under a
 	 * subtransaction-heavy load).  Replay passing its LSN without meeting
 	 * the record means the WAL stream differs from the one it was exported
-	 * from, and the file goes.
+	 * from, and the file goes.  The match completes a decision this start
+	 * made when its configuration had anchored mode on; a reload switching
+	 * the mode off afterwards stops new exports, not this registration.
 	 */
 	if (pendingSet)
 	{
@@ -1221,6 +1241,13 @@ AnchorSnapshotExportOnRestorePoint(XLogReaderState *record)
 
 	if (!isRestorePoint)
 		return;
+	if (!nodeExportsAnchors())
+	{
+		ereport(DEBUG1,
+				(errmsg("anchor snapshot for restore point \"%s\" not exported: anchored mode is off on this node (whpg_hot_standby_snapshot_mode) or hot standby is disabled",
+						printableName(name))));
+		return;
+	}
 
 	/*
 	 * KnownAssignedXids is complete only once the running-xacts snapshot
