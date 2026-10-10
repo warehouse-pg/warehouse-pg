@@ -86,6 +86,7 @@ REGRESS = orafce\
 		regexp_func\
 		gp_partition_by\
 		gp_distributed_by\
+		gp_plvstr_normalize\
 		dbms_sql
 
 #REGRESS_OPTS = --load-language=plpgsql --schedule=parallel_schedule --encoding=utf8
