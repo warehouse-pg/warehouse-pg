@@ -41,6 +41,8 @@ private:
 
 	ULONG m_ulArrayExpansionThreshold;
 
+	ULONG m_ulArrayIntervalThreshold;
+
 	ULONG m_ulJoinOrderDPLimit;
 
 	ULONG m_ulBroadcastThreshold;
@@ -58,13 +60,15 @@ public:
 
 	// ctor
 	CHint(ULONG join_arity_for_associativity_commutativity,
-		  ULONG array_expansion_threshold, ULONG ulJoinOrderDPLimit,
+		  ULONG array_expansion_threshold, ULONG array_interval_threshold,
+		  ULONG ulJoinOrderDPLimit,
 		  ULONG broadcast_threshold, BOOL enforce_constraint_on_dml,
 		  ULONG push_group_by_below_setop_threshold, ULONG xform_bind_threshold,
 		  ULONG skew_factor)
 		: m_ulJoinArityForAssociativityCommutativity(
 			  join_arity_for_associativity_commutativity),
 		  m_ulArrayExpansionThreshold(array_expansion_threshold),
+		  m_ulArrayIntervalThreshold(array_interval_threshold),
 		  m_ulJoinOrderDPLimit(ulJoinOrderDPLimit),
 		  m_ulBroadcastThreshold(broadcast_threshold),
 		  m_fEnforceConstraintsOnDML(enforce_constraint_on_dml),
@@ -96,6 +100,20 @@ public:
 	UlArrayExpansionThreshold() const
 	{
 		return m_ulArrayExpansionThreshold;
+	}
+
+	// Maximum number of elements in "col IN/NOT IN (array of constants)" for
+	// which a constraint is derived through the interval path (CDatumSortedSet
+	// sort + CRange creation in CConstraintInterval). For a longer array
+	// without NULL constants no constraint is derived at all: planning is
+	// cheaper, but partition elimination, predicate inference and contradiction
+	// detection from that predicate are lost. UlArrayExpansionThreshold() is
+	// independent and does not act as a fallback for arrays above this limit.
+	// The default is no limit.
+	ULONG
+	UlArrayIntervalThreshold() const
+	{
+		return m_ulArrayIntervalThreshold;
 	}
 
 	// Maximum number of relations in an n-ary join operator where ORCA will
@@ -151,6 +169,7 @@ public:
 		return GPOS_NEW(mp) CHint(
 			gpos::int_max, /* join_arity_for_associativity_commutativity */
 			gpos::int_max, /* array_expansion_threshold */
+			gpos::int_max, /* array_interval_threshold */
 			JOIN_ORDER_DP_THRESHOLD,			 /*ulJoinOrderDPLimit*/
 			BROADCAST_THRESHOLD,				 /*broadcast_threshold*/
 			true,								 /* enforce_constraint_on_dml */

@@ -66,6 +66,7 @@ enum Edxltoken
 	EdxltokenLeading,
 	EdxltokenJoinArityForAssociativityCommutativity,
 	EdxltokenArrayExpansionThreshold,
+	EdxltokenArrayIntervalThreshold,
 	EdxltokenJoinOrderDPThreshold,
 	EdxltokenBroadcastThreshold,
 	EdxltokenEnforceConstraintsOnDML,

@@ -195,7 +195,8 @@ CArrayCmpTest:
 ArrayConcat ArrayRef FoldedArrayCmp ArrayCmpAll
 UDA-AnyArray InClauseWithMCV CastedInClauseWithMCV FilterScalarCast
 IN-Nulls-ArrayCmpAny ArrayCmp-IN-ManyElements ArrayCmpAnyEmpty ArrayCmpAllEmpty
-ArrayCmpAnyEmptyLessThan ArrayCmpAll-Disjunct;
+ArrayCmpAnyEmptyLessThan ArrayCmpAll-Disjunct
+ArrayConstraintCacheListDefaultIsNull ArrayConstraintCacheCheckIn ArrayConstraintCachePredicateInference;
 
 CCTEPropertiesTest:
 CTE-PushProperties CTE-NoPushProperties;

@@ -110,6 +110,7 @@ These parameters control the usage of GPORCA by Greenplum Database. For informat
 - [optimizer](guc-list.html#optimizer)
 - [optimizer_analyze_root_partition](guc-list.html#optimizer_analyze_root_partition)
 - [optimizer_array_expansion_threshold](guc-list.html#optimizer_array_expansion_threshold)
+- [optimizer_array_interval_threshold](guc-list.html#optimizer_array_interval_threshold)
 - [optimizer_control](guc-list.html#optimizer_control)
 - [optimizer_cost_model](guc-list.html#optimizer_cost_model)
 - [optimizer_cte_inlining_bound](guc-list.html#optimizer_cte_inlining_bound)

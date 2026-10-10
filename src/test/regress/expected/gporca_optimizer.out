@@ -11226,13 +11226,12 @@ SELECT a FROM ggg WHERE a IN (NULL, 'x');
 (3 rows)
 
 EXPLAIN SELECT a FROM ggg WHERE a NOT IN (NULL, '');
-                                  QUERY PLAN                                  
-------------------------------------------------------------------------------
- Gather Motion 3:1  (slice1; segments: 3)  (cost=0.00..431.00 rows=1 width=2)
-   ->  Seq Scan on ggg  (cost=0.00..431.00 rows=1 width=2)
-         Filter: (a <> ALL ('{NULL,""}'::bpchar[]))
+                QUERY PLAN                
+------------------------------------------
+ Result  (cost=0.00..0.00 rows=0 width=8)
+   One-Time Filter: false
  Optimizer: Pivotal Optimizer (GPORCA)
-(4 rows)
+(3 rows)
 
 EXPLAIN SELECT a FROM ggg WHERE a IN (NULL, 'x');
                                   QUERY PLAN                                  
