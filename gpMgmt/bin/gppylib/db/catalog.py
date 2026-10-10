@@ -51,7 +51,7 @@ def getSessionGUC(conn,gucname):
     return basicSQLExec(conn,sql)[0][0]
 
 def getUserDatabaseList(conn):
-    sql = "SELECT datname FROM pg_catalog.pg_database WHERE datname NOT IN ('postgres','template1','template0') ORDER BY 1"
+    sql = "SELECT datname FROM pg_catalog.pg_database WHERE datname NOT IN ('postgres','template1','template0','whadmin','gpadmin') ORDER BY 1"
     return basicSQLExec(conn,sql)
 
 def getDatabaseList(conn):
