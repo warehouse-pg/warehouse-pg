@@ -154,8 +154,9 @@ checkpoint;
 -- the VACUUM. But in reality, it doesn't, and sees 0 rows, because the QE for the 
 -- SELECT below will create more recent local snapshot that does not conflict with
 -- the VACUUM, and sees the result of DELETE+VACUUM.
--- Note: with the help of restore point, we would be able to create local snapshot 
--- precisely corresponding to each distributed snapshot, and do conflict detection accordingly.
+-- Note: an anchored session (whpg_hot_standby_snapshot_mode = anchored) reads
+-- the local snapshot exported at a restore point instead, and such a VACUUM
+-- then cancels or refuses it; see hot_standby/anchor_conflict.
 -1S: select count(*) from hs_qc_ds1;
 -1S: end;
 
