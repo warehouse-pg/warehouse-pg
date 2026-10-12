@@ -16,9 +16,10 @@
  *   whpg_hot_standby_snapshot_mode is anchored (the server default is
  *   unanchored; a read replica's configuration is to set anchored, and any
  *   session may SET it), the server is in recovery and the registry is
- *   enabled (whpg_max_anchor_snapshots > 0), and the session has finished
- *   initialization.  Outside recovery, or with the registry disabled, the
- *   anchored GUCs are inert and the session takes ordinary snapshots.
+ *   enabled (whpg_max_anchor_snapshots > 0 and hot_standby on at server
+ *   start), and the session has finished initialization.  Outside
+ *   recovery, or with the registry disabled, the anchored GUCs are inert
+ *   and the session takes ordinary snapshots.
  *   Utility-mode sessions are never anchored.
  * - Executors are anchored by the dispatch, not by a GUC: the dispatcher
  *   ships the anchor's name in the transaction context of every statement

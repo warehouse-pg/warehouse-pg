@@ -4474,7 +4474,8 @@ struct config_int ConfigureNamesInt_gp[] =
 						 "point and registers it in shared memory; when the registry is full "
 						 "the oldest anchor that is not the published one is evicted to make "
 						 "room, and the export is skipped only when every entry is the "
-						 "published anchor."),
+						 "published anchor. A server started with hot_standby = off "
+						 "allocates no registry."),
 			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE | GUC_GPDB_NO_SYNC
 		},
 		&whpg_max_anchor_snapshots,
@@ -5007,8 +5008,9 @@ struct config_enum ConfigureNamesEnum_gp[] =
 						 "published anchor fails (SQLSTATE 55000). A read replica sets "
 						 "anchored in its configuration file. Only dispatch-role sessions "
 						 "of a server in recovery are affected; utility-mode sessions, "
-						 "servers not in recovery and servers with "
-						 "whpg_max_anchor_snapshots = 0 ignore the setting. The value the "
+						 "servers not in recovery and servers started with "
+						 "hot_standby = off or whpg_max_anchor_snapshots = 0 ignore the "
+						 "setting. The value the "
 						 "startup process reads from the configuration files also decides "
 						 "whether this node exports an anchor snapshot at a replayed restore "
 						 "point: a hot standby whose configuration keeps the default never "

@@ -111,7 +111,7 @@ typedef struct AnchorRegistryEntry
 typedef struct AnchorRegistryData
 {
 	slock_t		lock;
-	int			capacity;		/* whpg_max_anchor_snapshots at postmaster start */
+	int			capacity;		/* registryCapacity() at postmaster start */
 	uint32		next_ordinal;
 	int			nvalid;			/* registered entries; written by the startup
 								 * process under the spinlock, read by it
@@ -246,6 +246,17 @@ nodeExportsAnchors(void)
 		whpg_hot_standby_snapshot_mode == WHPG_SNAPSHOT_MODE_ANCHORED;
 }
 
+/*
+ * Entries the registry has room for.  Only a hot standby registers anchors,
+ * so a server started without hot standby (a primary, a mirror) sizes the
+ * registry to none; both settings are fixed at postmaster start.
+ */
+static int
+registryCapacity(void)
+{
+	return EnableHotStandby ? Max(whpg_max_anchor_snapshots, 0) : 0;
+}
+
 Size
 AnchorRegistryShmemSize(void)
 {
@@ -253,7 +264,7 @@ AnchorRegistryShmemSize(void)
 
 	size = offsetof(AnchorRegistryData, entries);
 	size = add_size(size, mul_size(sizeof(AnchorRegistryEntry),
-								   Max(whpg_max_anchor_snapshots, 0)));
+								   registryCapacity()));
 	return size;
 }
 
@@ -268,7 +279,7 @@ AnchorRegistryShmemInit(void)
 	if (!found)
 	{
 		SpinLockInit(&anchorRegistry->lock);
-		anchorRegistry->capacity = Max(whpg_max_anchor_snapshots, 0);
+		anchorRegistry->capacity = registryCapacity();
 		anchorRegistry->next_ordinal = 1;
 		anchorRegistry->nvalid = 0;
 		if (anchorRegistry->capacity > 0)
@@ -1219,8 +1230,8 @@ AnchorSnapshotStartup(XLogRecPtr redoStart, List *history,
 				ereport(LOG,
 						(errmsg("anchor snapshot file for restore point \"%s\" kept but not registered: %s",
 								name,
-								!registryEnabled() ? "anchor snapshots are disabled (whpg_max_anchor_snapshots = 0)" :
 								!EnableHotStandby ? "hot standby is disabled" :
+								!registryEnabled() ? "anchor snapshots are disabled (whpg_max_anchor_snapshots = 0)" :
 								"anchored mode is off on this node (whpg_hot_standby_snapshot_mode)")));
 			}
 			if (fs.subxip != NULL)
@@ -1433,8 +1444,11 @@ AnchorSnapshotExportOnRestorePoint(XLogReaderState *record)
 	if (!nodeExportsAnchors())
 	{
 		ereport(DEBUG1,
-				(errmsg("anchor snapshot for restore point \"%s\" not exported: anchored mode is off on this node (whpg_hot_standby_snapshot_mode) or hot standby is disabled",
-						printableName(name))));
+				(errmsg("anchor snapshot for restore point \"%s\" not exported: %s",
+						printableName(name),
+						!EnableHotStandby ? "hot standby is disabled" :
+						!registryEnabled() ? "anchor snapshots are disabled (whpg_max_anchor_snapshots = 0)" :
+						"anchored mode is off on this node (whpg_hot_standby_snapshot_mode)")));
 		return;
 	}
 
@@ -2264,7 +2278,7 @@ AnchorSnapshotPrepare(bool pin)
 			ereport(ERROR,
 					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 					 errmsg("anchored dispatch reached a segment that cannot install anchor snapshots"),
-					 errdetail("The coordinator dispatched anchor snapshot \"%s\", but this segment is not in recovery or its anchor registry is disabled (whpg_max_anchor_snapshots = 0).",
+					 errdetail("The coordinator dispatched anchor snapshot \"%s\", but this segment is not in recovery or its anchor registry is disabled (hot_standby = off or whpg_max_anchor_snapshots = 0 at server start).",
 							   printableName(name)),
 					 errhint("Every node of an anchored standby cluster must be a hot standby with the anchor registry enabled.")));
 		if (!AnchorSnapshotLookup(name, &regXmin, &ordinal))
