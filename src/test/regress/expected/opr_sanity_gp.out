@@ -127,7 +127,6 @@ order by 1;
  pg_authid
  pg_backend_memory_contexts
  pg_config
- pg_exttable
  pg_file_settings
  pg_hba_file_rules
  pg_largeobject
@@ -137,5 +136,5 @@ order by 1;
  pg_statistic_ext_data
  pg_subscription
  pg_user_mapping
-(14 rows)
+(13 rows)
 
