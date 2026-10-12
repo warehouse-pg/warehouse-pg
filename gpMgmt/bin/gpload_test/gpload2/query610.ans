@@ -1,0 +1,24 @@
+2026-10-07 22:55:19|INFO|gpload session started 2026-10-07 22:55:19
+2026-10-07 22:55:19|INFO|setting schema 'public' for table 'texttable'
+2026-10-07 22:55:19|INFO|started gpfdist -p 8081 -P 8082 -f "/home/lhl/workspace/warehouse-pg/gpMgmt/bin/gpload_test/gpload2/data_file.txt" -t 30
+2026-10-07 22:55:19|INFO|did not find an external table to reuse. creating ext_gpload_reusable_1d77b546_c25f_11f1_a678_000c292d4300
+2026-10-07 22:55:19|INFO|running time: 0.08 seconds
+2026-10-07 22:55:19|INFO|rows Inserted          = 16
+2026-10-07 22:55:19|INFO|rows Updated           = 0
+2026-10-07 22:55:19|INFO|data formatting errors = 0
+2026-10-07 22:55:19|INFO|gpload succeeded
+2026-10-07 22:55:19|INFO|gpload session started 2026-10-07 22:55:19
+2026-10-07 22:55:19|INFO|setting schema 'public' for table 'texttable'
+2026-10-07 22:55:19|INFO|started gpfdist -p 8081 -P 8082 -f "/home/lhl/workspace/warehouse-pg/gpMgmt/bin/gpload_test/gpload2/data_file.txt" -t 30
+2026-10-07 22:55:19|INFO|reusing external table ext_gpload_reusable_1d77b546_c25f_11f1_a678_000c292d4300
+2026-10-07 22:55:19|INFO|running time: 0.03 seconds
+2026-10-07 22:55:19|INFO|rows Inserted          = 16
+2026-10-07 22:55:19|INFO|rows Updated           = 0
+2026-10-07 22:55:19|INFO|data formatting errors = 0
+2026-10-07 22:55:19|INFO|gpload succeeded
+ count 
+-------
+     1
+(1 row)
+
+DROP ROLE

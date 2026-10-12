@@ -2002,6 +2002,21 @@ class gpload:
             self.log(self.DEBUG,'%s: %s = %s'%(name,typ,mapto))
 
 
+    def get_exttable_relation(self):
+        '''
+        Return the relation to read external table definitions from.
+
+        Before 7.0 pg_exttable is a catalog table. From 7.0 it is a view in
+        the gp_exttable_fdw extension that only its owner can read unless
+        the extension is at version 1.1 or later, so read the
+        pg_exttable() function behind the view instead, which every role
+        can execute.
+        '''
+        if noGpVersion or self.gpdb_version < "7.0.0":
+            return "pg_exttable"
+        return "pg_exttable()"
+
+
     def get_reuse_exttable_query(self, formatType, formatOpts, limitStr, from_cols, schemaName, log_errors, encodingCode):
         '''
         In order to find out whether we have an existing external table in the
@@ -2034,7 +2049,7 @@ class gpload:
                             not attisdropped and %s
                     ) pgattr
                     join
-                    pg_exttable pgext
+                    %s pgext
                     on(pgattr.attrelid = pgext.reloid)
                     """
         joinStr = ""
@@ -2053,11 +2068,12 @@ class gpload:
                          on(pg_class.relnamespace = pgns.oid)
                       """
             conditionStr = "pgns.nspname = '%s'" % self.get_sql_name(schemaName)
+        exttable = self.get_exttable_relation()
         if noGpVersion or self.gpdb_version < "7.0.0":
             relkind='r'
         else:
             relkind='f'
-        sql = sqlFormat % (joinStr, relkind, conditionStr)
+        sql = sqlFormat % (joinStr, relkind, conditionStr, exttable)
 
         if noGpVersion or self.gpdb_version < "6.0.0":
             if log_errors:
@@ -2116,7 +2132,7 @@ class gpload:
         '''
         sqlFormat = """select relname from pg_class
                     join
-                    pg_exttable pgext
+                    %s pgext
                     on(pg_class.oid = pgext.reloid)
                     %s
                     where
@@ -2140,11 +2156,12 @@ class gpload:
                     pg_namespace pgns
                     on(pg_class.relnamespace = pgns.oid)"""
             conditionStr = "pgns.nspname = '%s'" % self.get_sql_name(schemaName)
+        exttable = self.get_exttable_relation()
         if noGpVersion or self.gpdb_version < "7.0.0":
             relkind='r'
         else:
             relkind='f'
-        sql = sqlFormat % (joinStr, relkind, conditionStr)
+        sql = sqlFormat % (exttable, joinStr, relkind, conditionStr)
 
         if noGpVersion or self.gpdb_version < "6.0.0":
             if log_errors:
