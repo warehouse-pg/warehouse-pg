@@ -16,7 +16,9 @@
 -- anchor carried to the segments by a dispatch is anchor_dispatch's subject.
 --
 -- The other cases of the suite read at the replay position, the server
--- default; anchored sessions here SET the mode.  A backend applies a
+-- default; this test sets anchored cluster-wide the way a replica does
+-- (a node exports anchors only under that configuration) and sessions
+-- that want ordinary snapshots SET unanchored.  A backend applies a
 -- pending reload before it runs the next command it reads, so the first
 -- statement a session runs after gpstop -u already sees the new anchor
 -- name; the startup process applies it at its next replayed record, which
@@ -30,6 +32,8 @@
 -- s/\(seg\d+ [0-9.]+:\d+ pid=\d+\)/(segN IP:PORT pid=PID)/
 -- end_matchsubs
 
+!\retcode gpconfig -c whpg_hot_standby_snapshot_mode -v anchored --skipvalidation;
+!\retcode gpstop -u;
 1: create table hs_imp_t(a int) distributed by (a);
 1: insert into hs_imp_t select generate_series(1, 10);
 
@@ -37,6 +41,7 @@
 -- No published anchor: anchored statements fail, unanchored ones work
 ----------------------------------------------------------------
 -1S: show whpg_hot_standby_snapshot_mode;
+-1S: set whpg_hot_standby_snapshot_mode = unanchored;
 -1S: select count(*) from hs_imp_t;
 -1S: set whpg_hot_standby_snapshot_mode = anchored;
 -1S: select count(*) from hs_imp_t;
@@ -358,8 +363,8 @@
 1: reset whpg_hot_standby_snapshot_mode;
 
 -- the GUC is known to a stopped data directory's binary (the capability
--- probe of the tooling); the server default is unanchored
-!\retcode sdir=$(psql -d postgres -Atc "select datadir from gp_segment_configuration where content = -1 and role = 'm'"); test "$(postgres -C whpg_hot_standby_snapshot_mode -D "$sdir")" = unanchored;
+-- probe of the tooling); it reports the configured value
+!\retcode sdir=$(psql -d postgres -Atc "select datadir from gp_segment_configuration where content = -1 and role = 'm'"); test "$(postgres -C whpg_hot_standby_snapshot_mode -D "$sdir")" = anchored;
 
 ----------------------------------------------------------------
 -- With the subsystem off (whpg_max_anchor_snapshots = 0) anchored mode is
@@ -382,6 +387,9 @@
 1: do $$ begin for i in 1..70 loop execute format('drop table hs_imp_sub_%s', i); execute format('drop table hs_imp_sub2_%s', i); end loop; end $$;
 1q:
 -1Sq:
+!\retcode gpconfig -r whpg_hot_standby_snapshot_mode --skipvalidation;
+-- without the line the binary reports the server default
+!\retcode sdir=$(psql -d postgres -Atc "select datadir from gp_segment_configuration where content = -1 and role = 'm'"); test "$(postgres -C whpg_hot_standby_snapshot_mode -D "$sdir")" = unanchored;
 !\retcode gpconfig -r whpg_max_anchor_snapshots --skipvalidation;
 !\retcode gpconfig -r whpg_hot_standby_anchor_name --skipvalidation;
 !\retcode gpstop -ar;

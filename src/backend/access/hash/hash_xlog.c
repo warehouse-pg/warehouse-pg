@@ -18,6 +18,7 @@
 #include "access/hash.h"
 #include "access/hash_xlog.h"
 #include "access/xlogutils.h"
+#include "access/anchorsnapshot.h"
 #include "access/xlog.h"
 #include "access/transam.h"
 #include "storage/procarray.h"
@@ -997,12 +998,14 @@ hash_xlog_vacuum_one_page(XLogReaderState *record)
 	 * just once when that arrives.  After that we know that no conflicts
 	 * exist from individual hash index vacuum records on that index.
 	 */
-	if (InHotStandby)
 	{
 		RelFileNode rnode;
 
 		XLogRecGetBlockTag(record, 0, &rnode, NULL, NULL);
-		ResolveRecoveryConflictWithSnapshot(xldata->latestRemovedXid, rnode);
+		AnchorSnapshotOnCleanupRecord(xldata->latestRemovedXid, rnode,
+									  record->EndRecPtr);
+		if (InHotStandby)
+			ResolveRecoveryConflictWithSnapshot(xldata->latestRemovedXid, rnode);
 	}
 
 	action = XLogReadBufferForRedoExtended(record, 0, RBM_NORMAL, true, &buffer);

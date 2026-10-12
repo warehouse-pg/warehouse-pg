@@ -38,13 +38,12 @@ makeRegistry(int capacity)
 	SpinLockInit(&reg->lock);
 	reg->capacity = capacity;
 	reg->next_ordinal = 1;
+	reg->nvalid = 0;
 	anchorRegistry = reg;
-	/* the name buffer is sized by the first registry that needs it */
+	/* the name buffer AnchorSnapshotStartup sizes to the registry */
 	if (retireNames != NULL)
-	{
 		free(retireNames);
-		retireNames = NULL;
-	}
+	retireNames = (char *) calloc(capacity > 0 ? capacity : 1, MAXFNAMELEN);
 	return reg;
 }
 
@@ -679,6 +678,291 @@ test__oldest_xmin_and_restart_rule(void **state)
 	}
 }
 
+/*
+ * Conflict linkage: a replayed cleanup record invalidates exactly the
+ * anchors whose xmin is at or below its horizon, the published one
+ * included, runs the barrier once for the lot, and runs nothing when no
+ * anchor qualifies, when the horizon is invalid, or when the registry is
+ * off and no kept anchor exists.
+ */
+static void
+test__cleanup_record_invalidates_at_or_below(void **state)
+{
+	AnchorRegistryData *reg = makeRegistry(4);
+	TransactionId xmin;
+	RelFileNode node = {1663, 12345, 16384};
+
+	assert_int_equal(registerAnchor("a", 400), REGISTER_OK);
+	assert_int_equal(registerAnchor("b", 300), REGISTER_OK);
+	assert_int_equal(registerAnchor("c", 450), REGISTER_OK);
+	whpg_hot_standby_anchor_name = "a";
+
+	/* below every xmin: nothing happens, no barrier */
+	AnchorSnapshotOnCleanupRecord(299, node, (XLogRecPtr) 5000);
+	assert_true(AnchorSnapshotLookup("b", &xmin, NULL));
+
+	/* an invalid horizon is not a conflict */
+	AnchorSnapshotOnCleanupRecord(InvalidTransactionId, node, (XLogRecPtr) 5000);
+	assert_true(AnchorSnapshotLookup("b", &xmin, NULL));
+
+	/* at the published anchor's xmin: a (equal) and b (below) go, c stays */
+	expectBarrier(1);
+	AnchorSnapshotOnCleanupRecord(400, node, (XLogRecPtr) 5000);
+	assert_false(AnchorSnapshotLookup("a", &xmin, NULL));
+	assert_false(AnchorSnapshotLookup("b", &xmin, NULL));
+	assert_true(AnchorSnapshotLookup("c", &xmin, NULL));
+	assert_int_equal(AnchorSnapshotOldestXmin(), 450);
+
+	/* the freed slots are reusable */
+	assert_int_equal(registerAnchor("d", 500), REGISTER_OK);
+
+	anchorRegistry = NULL;
+	free(reg);
+	whpg_hot_standby_anchor_name = NULL;
+}
+
+/*
+ * The kept anchor (a file a start could not register) is removed by the
+ * cleanup hook once the record lies past its restore point and the
+ * horizon reaches its xmin; it has no entry, so no barrier runs for it.
+ * The clear at the end of recovery forgets it too.
+ */
+static void
+test__kept_anchor_gate(void **state)
+{
+	AnchorRegistryData *reg = makeRegistry(0);
+	RelFileNode node = {1663, 12345, 16384};
+
+	keptSet = true;
+	strlcpy(keptName, "k", MAXFNAMELEN);
+	keptXmin = 400;
+	keptLSN = (XLogRecPtr) 1000;
+
+	/* the record precedes the restore point: never a conflict */
+	AnchorSnapshotOnCleanupRecord(500, node, (XLogRecPtr) 900);
+	assert_true(keptSet);
+	AnchorSnapshotOnCleanupRecord(500, node, (XLogRecPtr) 1000);
+	assert_true(keptSet);
+	/* past it, below the xmin: kept */
+	AnchorSnapshotOnCleanupRecord(399, node, (XLogRecPtr) 2000);
+	assert_true(keptSet);
+	/* past it, at the xmin: removed */
+	AnchorSnapshotOnCleanupRecord(400, node, (XLogRecPtr) 2000);
+	assert_false(keptSet);
+
+	/* the clear at the end of recovery forgets a kept anchor */
+	keptSet = true;
+	AnchorSnapshotClearAll();
+	assert_false(keptSet);
+
+	anchorRegistry = NULL;
+	free(reg);
+
+	/* the clear runs the barrier only when it invalidates an entry */
+	reg = makeRegistry(2);
+	AnchorSnapshotClearAll();
+	assert_int_equal(registerAnchor("a", 400), REGISTER_OK);
+	expectBarrier(1);
+	AnchorSnapshotClearAll();
+	assert_int_equal(AnchorSnapshotOldestXmin(), InvalidTransactionId);
+	anchorRegistry = NULL;
+	free(reg);
+}
+
+/*
+ * Every path that removes an entry lowers the count, registration raises
+ * it.
+ */
+static void
+test__removal_count(void **state)
+{
+	AnchorRegistryData *reg = makeRegistry(4);
+	RelFileNode node = {1663, 12345, 16384};
+	TransactionId xmin;
+
+	assert_int_equal(registerAnchor("a", 400), REGISTER_OK);
+	assert_int_equal(registerAnchor("b", 300), REGISTER_OK);
+	assert_int_equal(registerAnchor("c", 450), REGISTER_OK);
+	assert_int_equal(reg->nvalid, 3);
+
+	/* a cleanup record: b goes */
+	whpg_hot_standby_anchor_name = "a";
+	expectBarrier(1);
+	AnchorSnapshotOnCleanupRecord(300, node, (XLogRecPtr) 5000);
+	assert_int_equal(reg->nvalid, 2);
+
+	/* eviction of the oldest unpublished: c goes (a is published) */
+	expectBarrier(1);
+	assert_true(evictOldestUnpublished("d"));
+	assert_int_equal(reg->nvalid, 1);
+
+	/* registration again */
+	assert_int_equal(registerAnchor("d", 500), REGISTER_OK);
+	assert_int_equal(reg->nvalid, 2);
+
+	/* publication of d retires a */
+	whpg_hot_standby_anchor_name = "d";
+	expectBarrier(1);
+	assert_true(applyPublication("d"));
+	assert_false(AnchorSnapshotLookup("a", &xmin, NULL));
+	assert_int_equal(reg->nvalid, 1);
+
+	/* removal by name */
+	expectBarrier(1);
+	AnchorSnapshotInvalidate("d");
+	assert_int_equal(reg->nvalid, 0);
+
+	/* the clear at the end of recovery */
+	assert_int_equal(registerAnchor("e", 600), REGISTER_OK);
+	expectBarrier(1);
+	AnchorSnapshotClearAll();
+	assert_int_equal(reg->nvalid, 0);
+
+	anchorRegistry = NULL;
+	free(reg);
+	whpg_hot_standby_anchor_name = NULL;
+}
+
+/*
+ * With nothing registered and no kept file the hook returns before the
+ * scan.  An entry planted as valid while the count says zero survives a
+ * horizon that would invalidate it, which only the early return explains.
+ */
+static void
+test__hook_skips_an_empty_registry(void **state)
+{
+	AnchorRegistryData *reg = makeRegistry(4);
+	RelFileNode node = {1663, 12345, 16384};
+	TransactionId xmin;
+
+	keptSet = false;
+	assert_int_equal(registerAnchor("a", 400), REGISTER_OK);
+	reg->nvalid = 0;			/* the plant: the scan would find "a" */
+
+	AnchorSnapshotOnCleanupRecord(1000, node, (XLogRecPtr) 5000);
+	assert_true(AnchorSnapshotLookup("a", &xmin, NULL));
+
+	anchorRegistry = NULL;
+	free(reg);
+}
+
+/*
+ * The relation check, with the catalog behind the seams.  The fakes model
+ * one relation whose pg_class row the anchor sees at tid (1,1) with file
+ * 5000; the "current" row and the chain walk are scripted per step.
+ */
+static AnchorRelVersion fakeAnchored;
+static int	fakeAnchoredCalls;
+static Oid	fakeCurNode;
+static ItemPointerData fakeCurTid;
+static bool fakeWalkResult;
+static int	fakeWalkCalls;
+
+static bool
+fakeAnchoredRelationVersion(Oid relid, Snapshot snap, AnchorRelVersion *v)
+{
+	fakeAnchoredCalls++;
+	*v = fakeAnchored;
+	return v->exists;
+}
+
+static void
+fakeCurrentRelationVersion(Oid relid, Oid *relfilenode, ItemPointer tid)
+{
+	*relfilenode = fakeCurNode;
+	*tid = fakeCurTid;
+}
+
+static bool
+fakeRelationVersionsKeepFile(Oid relid, Oid relfilenode, ItemPointerData from, ItemPointerData to)
+{
+	fakeWalkCalls++;
+	assert_int_equal(relfilenode, fakeAnchored.relfilenode);
+	assert_true(ItemPointerEquals(&from, &fakeAnchored.tid));
+	assert_true(ItemPointerEquals(&to, &fakeCurTid));
+	return fakeWalkResult;
+}
+
+static void
+test__relation_verdicts(void **state)
+{
+	SnapshotData snapA;
+	SnapshotData snapB;
+
+	anchoredRelationVersionFn = fakeAnchoredRelationVersion;
+	currentRelationVersionFn = fakeCurrentRelationVersion;
+	relationVersionsKeepFileFn = fakeRelationVersionsKeepFile;
+	if (anchorRelCache != NULL)
+	{
+		hash_destroy(anchorRelCache);
+		anchorRelCache = NULL;
+	}
+
+	MemSet(&snapA, 0, sizeof(snapA));
+	snapA.anchorOrdinal = 7;
+	MemSet(&snapB, 0, sizeof(snapB));
+	snapB.anchorOrdinal = 8;
+
+	fakeAnchored.exists = true;
+	fakeAnchored.relfilenode = 5000;
+	ItemPointerSet(&fakeAnchored.tid, 1, 1);
+	fakeAnchoredCalls = fakeWalkCalls = 0;
+
+	/* the anchor's row version is the current one: no walk */
+	fakeCurNode = 5000;
+	ItemPointerSet(&fakeCurTid, 1, 1);
+	assert_int_equal(anchorRelationVerdict(16384, &snapA), ANCHOR_REL_OK);
+	assert_int_equal(anchorRelationVerdict(16384, &snapA), ANCHOR_REL_OK);
+	assert_int_equal(fakeAnchoredCalls, 1);	/* cached per (relation, anchor) */
+	assert_int_equal(fakeWalkCalls, 0);
+
+	/* a rewrite: another file */
+	fakeCurNode = 5001;
+	ItemPointerSet(&fakeCurTid, 1, 2);
+	assert_int_equal(anchorRelationVerdict(16384, &snapA), ANCHOR_REL_REWRITTEN);
+	assert_int_equal(fakeWalkCalls, 0);
+
+	/* the row updated, same file (RENAME): the chain is walked once */
+	fakeCurNode = 5000;
+	ItemPointerSet(&fakeCurTid, 1, 3);
+	fakeWalkResult = true;
+	assert_int_equal(anchorRelationVerdict(16384, &snapA), ANCHOR_REL_OK);
+	assert_int_equal(anchorRelationVerdict(16384, &snapA), ANCHOR_REL_OK);
+	assert_int_equal(fakeWalkCalls, 1);
+
+	/* updated again: walked again, to the new current version */
+	ItemPointerSet(&fakeCurTid, 2, 1);
+	assert_int_equal(anchorRelationVerdict(16384, &snapA), ANCHOR_REL_OK);
+	assert_int_equal(fakeWalkCalls, 2);
+
+	/* same number after a rewrite and back (or the oid reused): the walk says no */
+	ItemPointerSet(&fakeCurTid, 2, 2);
+	fakeWalkResult = false;
+	assert_int_equal(anchorRelationVerdict(16384, &snapA), ANCHOR_REL_REWRITTEN);
+	assert_int_equal(fakeWalkCalls, 3);
+	/* the failed walk is not remembered as verified */
+	assert_int_equal(anchorRelationVerdict(16384, &snapA), ANCHOR_REL_REWRITTEN);
+	assert_int_equal(fakeWalkCalls, 4);
+
+	/* another anchor is another cache entry */
+	assert_int_equal(fakeAnchoredCalls, 1);
+	ItemPointerSet(&fakeAnchored.tid, 2, 2);
+	assert_int_equal(anchorRelationVerdict(16384, &snapB), ANCHOR_REL_OK);
+	assert_int_equal(fakeAnchoredCalls, 2);
+
+	/* a relation the anchor does not see */
+	fakeAnchored.exists = false;
+	assert_int_equal(anchorRelationVerdict(16385, &snapA), ANCHOR_REL_ABSENT);
+	assert_int_equal(anchorRelationVerdict(16385, &snapA), ANCHOR_REL_ABSENT);
+	assert_int_equal(fakeAnchoredCalls, 3);
+
+	hash_destroy(anchorRelCache);
+	anchorRelCache = NULL;
+	anchoredRelationVersionFn = anchoredRelationVersion;
+	currentRelationVersionFn = currentRelationVersion;
+	relationVersionsKeepFileFn = relationVersionsKeepFile;
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -695,6 +979,11 @@ main(int argc, char *argv[])
 		unit_test(test__file_roundtrip_and_validation),
 		unit_test(test__parse_returns_xid_set),
 		unit_test(test__oldest_xmin_and_restart_rule),
+		unit_test(test__cleanup_record_invalidates_at_or_below),
+		unit_test(test__kept_anchor_gate),
+		unit_test(test__removal_count),
+		unit_test(test__hook_skips_an_empty_registry),
+		unit_test(test__relation_verdicts),
 	};
 
 	MemoryContextInit();

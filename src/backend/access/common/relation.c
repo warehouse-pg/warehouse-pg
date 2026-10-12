@@ -20,6 +20,7 @@
 
 #include "postgres.h"
 
+#include "access/anchorsnapshot.h"
 #include "access/relation.h"
 #include "access/xact.h"
 #include "catalog/namespace.h"
@@ -79,6 +80,9 @@ relation_open(Oid relationId, LOCKMODE lockmode)
 #endif
 
 	pgstat_initstats(r);
+
+	/* an anchored read must find the file the anchor describes */
+	AnchorSnapshotCheckRelation(r);
 
 	return r;
 }
@@ -151,6 +155,8 @@ try_relation_open(Oid relationId, LOCKMODE lockmode, bool noWait)
 #endif
 
 	pgstat_initstats(r);
+
+	AnchorSnapshotCheckRelation(r);
 
 	return r;
 }

@@ -56,19 +56,28 @@
 #include <unistd.h>
 
 #include "access/anchorsnapshot.h"
+#include "access/genam.h"
+#include "access/heapam.h"
+#include "access/htup_details.h"
 #include "access/parallel.h"
 #include "access/subtrans.h"
+#include "access/table.h"
 #include "access/timeline.h"
 #include "access/transam.h"
 #include "access/xlog.h"
 #include "access/xlog_internal.h"
+#include "catalog/catalog.h"
+#include "catalog/indexing.h"
+#include "catalog/pg_class.h"
 #include "cdb/cdbdtxcontextinfo.h"
 #include "cdb/cdbtm.h"
 #include "cdb/cdbvars.h"
 #include "common/string.h"
 #include "lib/stringinfo.h"
 #include "miscadmin.h"
+#include "port/atomics.h"
 #include "port/pg_crc32c.h"
+#include "storage/bufmgr.h"
 #include "storage/fd.h"
 #include "storage/lwlock.h"
 #include "storage/proc.h"
@@ -76,10 +85,14 @@
 #include "storage/shmem.h"
 #include "storage/spin.h"
 #include "utils/faultinjector.h"
+#include "utils/fmgroids.h"
 #include "utils/guc.h"
+#include "utils/hsearch.h"
 #include "utils/memutils.h"
+#include "utils/rel.h"
 #include "utils/sharedsnapshot.h"
 #include "utils/snapmgr.h"
+#include "utils/syscache.h"
 
 /* GUC variables; the entries live in guc_gp.c */
 int			whpg_max_anchor_snapshots = 64;
@@ -100,6 +113,9 @@ typedef struct AnchorRegistryData
 	slock_t		lock;
 	int			capacity;		/* whpg_max_anchor_snapshots at postmaster start */
 	uint32		next_ordinal;
+	int			nvalid;			/* registered entries; written by the startup
+								 * process under the spinlock, read by it
+								 * without (its own writes) */
 	AnchorRegistryEntry entries[FLEXIBLE_ARRAY_MEMBER];
 } AnchorRegistryData;
 
@@ -130,7 +146,32 @@ static TimeLineID pendingTLI;
 static XLogRecPtr pendingLSN;
 static TransactionId pendingXmin;
 
-/* Names collected under the spinlock for retirement; sized to capacity. */
+/*
+ * The anchor the GUC named at a start that could not examine it (hot
+ * standby disabled, the registry off, or anchored mode off in the
+ * configuration): its file is kept for the start that will register it,
+ * so the cleanup that replay applies meanwhile must remove the file when
+ * it destroys what the anchor needs, or that later start would register
+ * an anchor whose rows are gone.  The record's end
+ * LSN gates the comparison: records before the restore point cannot
+ * conflict with it (see AnchorSnapshotOnCleanupRecord).  Startup process
+ * only.
+ */
+static bool keptSet = false;
+static char keptName[MAXFNAMELEN];
+static XLogRecPtr keptLSN;
+static TimeLineID keptTLI;
+static TransactionId keptXmin;
+static bool keptAwaitingRecord;	/* its record lies past this start's redo
+								 * start and has not been replayed yet */
+
+/*
+ * Names collected under the spinlock for retirement or invalidation, the
+ * files unlinked outside it; sized to capacity by AnchorSnapshotStartup
+ * before redo, so that no removal can fail for want of memory (a file that
+ * outlived its entry would be re-registered by a later start whose redo
+ * begins past the record that invalidated it).
+ */
 static char *retireNames = NULL;
 
 /* Version of the on-disk grammar; bumped when a field is added. */
@@ -172,6 +213,8 @@ typedef enum RegisterResult
 static RegisterResult registerAnchor(const char *name, TransactionId xmin);
 static bool evictOldestUnpublished(const char *newname);
 static void anchorRemovalBarrier(void);
+static int	invalidateAtOrBelow(TransactionId horizon);
+static bool invalidateKeptAnchor(TransactionId horizon, XLogRecPtr lsn);
 static bool applyPublication(const char *name);
 static AnchorRegistryEntry *findEntryLocked(const char *name);
 
@@ -185,6 +228,22 @@ static inline bool
 registryEnabled(void)
 {
 	return anchorRegistry != NULL && anchorRegistry->capacity > 0;
+}
+
+/*
+ * Does this node export and register anchors?  Only where the configuration
+ * files set whpg_hot_standby_snapshot_mode = anchored, the line a read
+ * replica's configuration is to carry in every data directory; a hot
+ * standby that no replica tooling manages keeps the default and never
+ * registers an anchor, whatever its sessions SET (a session's value never
+ * reaches the startup process).
+ * Registration also needs the registry on and hot standby enabled.
+ */
+static inline bool
+nodeExportsAnchors(void)
+{
+	return registryEnabled() && EnableHotStandby &&
+		whpg_hot_standby_snapshot_mode == WHPG_SNAPSHOT_MODE_ANCHORED;
 }
 
 Size
@@ -211,10 +270,33 @@ AnchorRegistryShmemInit(void)
 		SpinLockInit(&anchorRegistry->lock);
 		anchorRegistry->capacity = Max(whpg_max_anchor_snapshots, 0);
 		anchorRegistry->next_ordinal = 1;
+		anchorRegistry->nvalid = 0;
 		if (anchorRegistry->capacity > 0)
 			memset(anchorRegistry->entries, 0,
 				   sizeof(AnchorRegistryEntry) * anchorRegistry->capacity);
 	}
+}
+
+/* Remove entry e (caller holds the spinlock), keeping nvalid exact. */
+static void
+markInvalidLocked(AnchorRegistryEntry *e)
+{
+	Assert(e->valid);
+	e->valid = false;
+	anchorRegistry->nvalid--;
+}
+
+/*
+ * Does the cleanup hook have anything to examine?  No registered entry and
+ * no kept file means a replayed record costs no registry access, which is
+ * every record on a hot standby that has never exported an anchor.  nvalid
+ * is the startup process's own count, so no lock is needed to read it
+ * there.
+ */
+static inline bool
+anchorsRegisteredOrKept(void)
+{
+	return keptSet || (registryEnabled() && anchorRegistry->nvalid > 0);
 }
 
 /* Caller holds the spinlock. */
@@ -280,6 +362,7 @@ registerAnchor(const char *name, TransactionId xmin)
 	slot->xmin = xmin;
 	slot->ordinal = anchorRegistry->next_ordinal++;
 	slot->valid = true;
+	anchorRegistry->nvalid++;
 	SpinLockRelease(&anchorRegistry->lock);
 	return REGISTER_OK;
 }
@@ -384,15 +467,47 @@ anchorFilePath(char *path, size_t len, const char *name, bool tmp)
  * Durable: a crash after a plain unlink could bring the file back and let
  * the next start re-register an anchor whose tuples a cleanup record the
  * restart never replays again has already removed.
+ *
+ * elevel is the caller's stance on a removal that fails.  A start registers
+ * only the file the GUC names and sweeps every other, so a file that
+ * survives its entry is harmless unless the GUC names it: retirement and
+ * eviction never remove the published anchor and the promotion clear runs
+ * where nothing registers, so they WARN.  (A retired or evicted file that
+ * failed to go is registered only if the name GUC is later set back to it
+ * by hand and the node restarted, which the tooling never does; stopping
+ * the standby over a failed unlink there would cost more.)  The conflict
+ * hooks and the kept-file removal can be removing the published anchor's
+ * file, and a start whose redo begins past the invalidating record would
+ * register it again, so they ERROR: the startup process exits and the
+ * server stops; when the node is started again, that start registers or
+ * keeps the file, replays this record again and retries the removal.
+ * Replay does not pass a record whose effect is not durable.  The error
+ * names the file, which may be deleted by hand: a start that finds no file
+ * registers nothing.
  */
 static void
-anchorRemoveFile(const char *path)
+anchorRemoveFileContext(void *arg)
+{
+	errcontext("removing anchor snapshot file \"%s\"; deleting it by hand before the next start is safe",
+			   (const char *) arg);
+}
+
+static void
+anchorRemoveFile(const char *path, int elevel)
 {
 	struct stat st;
+	ErrorContextCallback errcallback;
 
 	if (stat(path, &st) != 0 && errno == ENOENT)
 		return;
-	(void) durable_unlink(path, WARNING);
+	errcallback.callback = anchorRemoveFileContext;
+	errcallback.arg = (void *) path;
+	errcallback.previous = error_context_stack;
+	if (elevel >= ERROR)
+		error_context_stack = &errcallback;
+	(void) durable_unlink(path, elevel);
+	if (elevel >= ERROR)
+		error_context_stack = errcallback.previous;
 }
 
 /*
@@ -624,9 +739,11 @@ anchorParseUint(const char *val, size_t vlen, int base, unsigned long max,
 }
 
 /*
- * The startup process must never ERROR on our account: an ERROR there is
- * FATAL and would make every start of the standby fail on the same file.
- * Allocate without the out-of-memory ERROR and let the caller WARN.
+ * The startup process must never ERROR over a file's content: an ERROR
+ * there is FATAL and would make every start of the standby fail on the
+ * same file.  Allocate without the out-of-memory ERROR and let the caller
+ * WARN.  (A removal that fails is different, see anchorRemoveFile: there
+ * the start must not proceed to register the file it could not remove.)
  */
 static void *
 startupAlloc(size_t size)
@@ -946,7 +1063,7 @@ sweepAnchorFiles(const char *keep)
 		if (keep != NULL && strcmp(de->d_name, keep) == 0)
 			continue;
 		snprintf(path, sizeof(path), ANCHOR_SNAPSHOT_DIR "/%s", de->d_name);
-		anchorRemoveFile(path);
+		anchorRemoveFile(path, WARNING);
 	}
 	FreeDir(dir);
 }
@@ -1010,6 +1127,18 @@ AnchorSnapshotStartup(XLogRecPtr redoStart, List *history,
 	strlcpy(lastSeenAnchorName, name ? name : "", MAXFNAMELEN);
 	lastSeenAnchorNameSet = true;
 	pendingSet = false;
+	keptSet = false;
+
+	if (registryEnabled() && retireNames == NULL)
+	{
+		retireNames = (char *) malloc(anchorRegistry->capacity * MAXFNAMELEN);
+		if (retireNames == NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_OUT_OF_MEMORY),
+					 errmsg("out of memory"),
+					 errdetail("The anchor snapshot registry needs %d bytes to remove anchors.",
+							   anchorRegistry->capacity * MAXFNAMELEN)));
+	}
 
 	if (stat(ANCHOR_SNAPSHOT_DIR, &st) != 0)
 	{
@@ -1038,17 +1167,67 @@ AnchorSnapshotStartup(XLogRecPtr redoStart, List *history,
 	}
 
 	if (ArchiveRecoveryRequested && name != NULL && name[0] != '\0' &&
-		anchorNameIsValid(name) && !(registryEnabled() && EnableHotStandby))
+		anchorNameIsValid(name) && !nodeExportsAnchors())
 	{
-		/* not examined at this start; kept for the start that will */
-		keep = true;
-		ereport(LOG,
-				(errmsg("anchor snapshot file for restore point \"%s\" kept but not registered: %s",
-						name,
-						registryEnabled() ? "hot standby is disabled" :
-						"anchor snapshots are disabled (whpg_max_anchor_snapshots = 0)")));
+		TimeLineID	tli;
+		XLogRecPtr	lsn;
+		TransactionId xmin;
+		char		path[MAXPGPATH];
+		struct stat fst;
+
+		/*
+		 * Not registered at this start; kept for the start that will
+		 * register it.  Its xmin and restore-point position are remembered
+		 * so that the cleanup replay applies meanwhile can remove the file
+		 * once it destroys what the anchor needs
+		 * (AnchorSnapshotOnCleanupRecord);
+		 * a file that does not parse is swept (the parser has said why), as
+		 * the start that examines it would refuse it anyway.  No file: the
+		 * name has not been exported here yet, nothing to keep.
+		 *
+		 * An overflowed anchor is not kept by a start with hot standby on:
+		 * its readers map subtransactions to their parents through
+		 * pg_subtrans, which this start zeroes from the page of the start
+		 * checkpoint's oldest active xid on and which its restartpoints
+		 * truncate without regard to an anchor the registry does not hold,
+		 * and the start that would register it judges survival by its own
+		 * checkpoint only.  With hot standby off neither happens.
+		 */
+		anchorFilePath(path, sizeof(path), name, false);
+		if (stat(path, &fst) == 0)
+		{
+			AnchorFileSnapshot fs;
+
+			fs.subxip = NULL;
+			if (!parseAnchorFile(name, &tli, &lsn, &xmin, &fs, NULL))
+				ereport(LOG,
+						(errmsg("anchor snapshot file for restore point \"%s\" swept: it could not be read",
+								name)));
+			else if (EnableHotStandby && fs.suboverflowed)
+				ereport(LOG,
+						(errmsg("anchor snapshot file for restore point \"%s\" swept: it is overflowed, and a hot-standby start that does not register it cannot keep the pg_subtrans pages its readers need",
+								name)));
+			else
+			{
+				keptSet = true;
+				strlcpy(keptName, name, MAXFNAMELEN);
+				keptLSN = lsn;
+				keptTLI = tli;
+				keptXmin = xmin;
+				keptAwaitingRecord = !XLogRecPtrIsInvalid(redoStart) && lsn > redoStart;
+				keep = true;
+				ereport(LOG,
+						(errmsg("anchor snapshot file for restore point \"%s\" kept but not registered: %s",
+								name,
+								!registryEnabled() ? "anchor snapshots are disabled (whpg_max_anchor_snapshots = 0)" :
+								!EnableHotStandby ? "hot standby is disabled" :
+								"anchored mode is off on this node (whpg_hot_standby_snapshot_mode)")));
+			}
+			if (fs.subxip != NULL)
+				pfree(fs.subxip);
+		}
 	}
-	else if (registryEnabled() && ArchiveRecoveryRequested && EnableHotStandby &&
+	else if (nodeExportsAnchors() && ArchiveRecoveryRequested &&
 			 name != NULL && name[0] != '\0')
 	{
 		TimeLineID	tli;
@@ -1138,10 +1317,9 @@ AnchorSnapshotExportOnRestorePoint(XLogReaderState *record)
 	TransactionId xmax;
 	bool		suboverflowed;
 	bool		isRestorePoint;
+	bool		keptName_exported;
 	int			nxids;
 
-	if (!registryEnabled())
-		return;
 	/* restore-point records are replayed in crash recovery too */
 	if (!ArchiveRecoveryRequested)
 		return;
@@ -1157,6 +1335,35 @@ AnchorSnapshotExportOnRestorePoint(XLogReaderState *record)
 	}
 
 	/*
+	 * A kept anchor whose record lies past this start's redo start is
+	 * confirmed when replay meets that very record, as a pending anchor is;
+	 * replay passing its LSN without meeting it means the WAL stream
+	 * differs from the one it was exported from, and the file goes before
+	 * a later start can register it.  Ahead of the registry test: a start
+	 * with the registry off keeps files too.
+	 */
+	if (keptSet && keptAwaitingRecord && record->EndRecPtr >= keptLSN)
+	{
+		if (isRestorePoint && strcmp(name, keptName) == 0 &&
+			ThisTimeLineID == keptTLI && record->EndRecPtr == keptLSN)
+			keptAwaitingRecord = false;
+		else
+		{
+			char		path[MAXPGPATH];
+
+			keptSet = false;
+			anchorFilePath(path, sizeof(path), keptName, false);
+			anchorRemoveFile(path, ERROR);
+			ereport(WARNING,
+					(errmsg("kept anchor snapshot file for restore point \"%s\" removed: replay passed %X/%X without meeting its restore-point record",
+							keptName, (uint32) (keptLSN >> 32), (uint32) keptLSN)));
+		}
+	}
+
+	if (!registryEnabled())
+		return;
+
+	/*
 	 * A pending anchor (kept across a restart, not yet confirmed) is
 	 * registered from its file when this is its record: the file was
 	 * written at this very position by an earlier replay with a complete
@@ -1165,7 +1372,9 @@ AnchorSnapshotExportOnRestorePoint(XLogReaderState *record)
 	 * (standbyState may still be below READY here after a restart under a
 	 * subtransaction-heavy load).  Replay passing its LSN without meeting
 	 * the record means the WAL stream differs from the one it was exported
-	 * from, and the file goes.
+	 * from, and the file goes.  The match completes a decision this start
+	 * made when its configuration had anchored mode on; a reload switching
+	 * the mode off afterwards stops new exports, not this registration.
 	 */
 	if (pendingSet)
 	{
@@ -1211,7 +1420,7 @@ AnchorSnapshotExportOnRestorePoint(XLogReaderState *record)
 
 			pendingSet = false;
 			anchorFilePath(path, sizeof(path), pendingName, false);
-			anchorRemoveFile(path);
+			anchorRemoveFile(path, WARNING);
 			ereport(WARNING,
 					(errmsg("pending anchor snapshot for restore point \"%s\" dropped: replay passed %X/%X without meeting its restore-point record",
 							pendingName,
@@ -1221,6 +1430,13 @@ AnchorSnapshotExportOnRestorePoint(XLogReaderState *record)
 
 	if (!isRestorePoint)
 		return;
+	if (!nodeExportsAnchors())
+	{
+		ereport(DEBUG1,
+				(errmsg("anchor snapshot for restore point \"%s\" not exported: anchored mode is off on this node (whpg_hot_standby_snapshot_mode) or hot standby is disabled",
+						printableName(name))));
+		return;
+	}
 
 	/*
 	 * KnownAssignedXids is complete only once the running-xacts snapshot
@@ -1292,11 +1508,31 @@ AnchorSnapshotExportOnRestorePoint(XLogReaderState *record)
 		}
 	}
 
+	/*
+	 * The name of the kept file (the mode was switched on by a reload since
+	 * this start).  While its own record lies ahead, this is an earlier
+	 * restore point of the same name and must not replace the file, as for
+	 * a pending anchor; once the record has been met, the export overwrites
+	 * the file and the registry tracks it from then on.
+	 */
+	keptName_exported = keptSet && strcmp(name, keptName) == 0;
+	if (keptName_exported && keptAwaitingRecord)
+	{
+		ereport(WARNING,
+				(errmsg("anchor snapshot for restore point \"%s\" not exported: a kept snapshot file of that name awaits its record at %X/%X",
+						name,
+						(uint32) (keptLSN >> 32), (uint32) keptLSN),
+				 errdetail("The kept file is left as it is; the record just replayed is an earlier restore point of the same name.")));
+		return;
+	}
+
 	nxids = GetKnownAssignedXidsSnapshot(exportXids, &xmin, &xmax, &suboverflowed);
 
 	if (!writeAnchorFile(name, ThisTimeLineID, record->EndRecPtr,
 						 xmin, xmax, exportXids, nxids, suboverflowed))
 		return;
+	if (keptName_exported)
+		keptSet = false;
 
 	/*
 	 * The file is durable; now take a slot.  A full registry evicts the
@@ -1310,6 +1546,15 @@ AnchorSnapshotExportOnRestorePoint(XLogReaderState *record)
 	res = registerAnchorEvicting(name, xmin);
 	if (res == REGISTER_EXHAUSTED)
 	{
+		/* the new file is the one a later start registers: track it */
+		if (keptName_exported)
+		{
+			keptSet = true;
+			keptLSN = record->EndRecPtr;
+			keptTLI = ThisTimeLineID;
+			keptXmin = xmin;
+			keptAwaitingRecord = false;
+		}
 		ereport(WARNING,
 				(errmsg("anchor snapshot for restore point \"%s\" written but not registered: the anchor registry has handed out all %u registration ordinals",
 						name, PG_UINT32_MAX - 1),
@@ -1321,7 +1566,7 @@ AnchorSnapshotExportOnRestorePoint(XLogReaderState *record)
 		char		path[MAXPGPATH];
 
 		anchorFilePath(path, sizeof(path), name, false);
-		anchorRemoveFile(path);
+		anchorRemoveFile(path, WARNING);
 		ereport(WARNING,
 				(errmsg("anchor snapshot for restore point \"%s\" not exported: registry full (whpg_max_anchor_snapshots = %d) and only the published anchor is registered",
 						name, anchorRegistry->capacity),
@@ -1370,11 +1615,72 @@ anchorRemovalBarrier(void)
 }
 
 /*
+ * Invalidate every registered anchor whose xmin is at or below horizon
+ * (the direction GetConflictingVirtualXIDs uses: a snapshot with xmin X
+ * still treats X as possibly running, so a version removed up to X is one
+ * it may need), collect their names in retireNames and run the removal
+ * barrier when any was invalidated.  Returns the count; the standard
+ * resolution that follows a cleanup record collects the readers holding
+ * such an xmin by itself.  The caller unlinks the files and logs its
+ * reason.  Startup process only.
+ */
+static int
+invalidateAtOrBelow(TransactionId horizon)
+{
+	int			n = 0;
+	int			i;
+
+	if (!registryEnabled() || !TransactionIdIsValid(horizon))
+		return 0;
+	Assert(retireNames != NULL);
+
+	SpinLockAcquire(&anchorRegistry->lock);
+	for (i = 0; i < anchorRegistry->capacity; i++)
+	{
+		AnchorRegistryEntry *e = &anchorRegistry->entries[i];
+
+		if (e->valid && !TransactionIdFollows(e->xmin, horizon))
+		{
+			markInvalidLocked(e);
+			strlcpy(retireNames + n * MAXFNAMELEN, e->rp_name, MAXFNAMELEN);
+			n++;
+		}
+	}
+	SpinLockRelease(&anchorRegistry->lock);
+
+	if (n > 0)
+		anchorRemovalBarrier();
+	return n;
+}
+
+/*
+ * The kept anchor (see keptSet): removed when the record at lsn lies past
+ * its restore point and the horizon reaches its xmin.  Returns true when
+ * the file was removed; the caller logs.  No barrier: the anchor has no
+ * entry, so no backend can have installed it.
+ */
+static bool
+invalidateKeptAnchor(TransactionId horizon, XLogRecPtr lsn)
+{
+	char		path[MAXPGPATH];
+
+	if (!keptSet || lsn <= keptLSN || !TransactionIdIsValid(horizon) ||
+		TransactionIdFollows(keptXmin, horizon))
+		return false;
+
+	anchorFilePath(path, sizeof(path), keptName, false);
+	anchorRemoveFile(path, ERROR);
+	keptSet = false;
+	return true;
+}
+
+/*
  * Make room in a full registry for newname: invalidate the anchor with the
  * smallest ordinal that is not the published one.  Only the anchor the GUC
- * names is ever imported, so an unpublished entry has no reader and giving
- * up its slot destroys nothing anyone can read.  Returns false when every
- * entry is the published anchor.  Startup process only.
+ * names is ever imported by a dispatcher, but a transaction may still be
+ * reading it (see anchorRemovalBarrier), so the removal runs the barrier
+ * like every other.  Returns false when every entry is the published
+ * anchor.  Startup process only.
  */
 static bool
 evictOldestUnpublished(const char *newname)
@@ -1398,7 +1704,7 @@ evictOldestUnpublished(const char *newname)
 	if (victim != NULL)
 	{
 		strlcpy(victimName, victim->rp_name, MAXFNAMELEN);
-		victim->valid = false;
+		markInvalidLocked(victim);
 	}
 	SpinLockRelease(&anchorRegistry->lock);
 
@@ -1407,7 +1713,7 @@ evictOldestUnpublished(const char *newname)
 
 	anchorRemovalBarrier();
 	anchorFilePath(path, sizeof(path), victimName, false);
-	anchorRemoveFile(path);
+	anchorRemoveFile(path, WARNING);
 	ereport(LOG,
 			(errmsg("evicted anchor snapshot for restore point \"%s\" to make room for \"%s\": registry full (whpg_max_anchor_snapshots = %d)",
 					victimName, newname, anchorRegistry->capacity)));
@@ -1433,17 +1739,91 @@ AnchorSnapshotInvalidate(const char *rp_name)
 		SpinLockAcquire(&anchorRegistry->lock);
 		e = findEntryLocked(rp_name);
 		if (e != NULL)
-			e->valid = false;
+			markInvalidLocked(e);
 		SpinLockRelease(&anchorRegistry->lock);
 		if (e != NULL)
 			anchorRemovalBarrier();
 	}
 
 	anchorFilePath(path, sizeof(path), rp_name, false);
-	anchorRemoveFile(path);
+	anchorRemoveFile(path, WARNING);
 	if (e != NULL)
 		ereport(LOG,
 				(errmsg("invalidated anchor snapshot for restore point \"%s\"", rp_name)));
+}
+
+/*
+ * Conflict linkage: replay is about to apply a record that
+ * removes or hides row versions up to latestRemovedXid (a heap cleanup,
+ * prune, freeze or all-visible record, or an index vacuum delete or page
+ * reuse).  Every registered anchor whose xmin is at or below that xid may
+ * still need those versions: it is invalidated now, before the standard
+ * conflict resolution of the redo site cancels the readers that hold its
+ * xmin, so that a new import inside the window fails instead of reading a
+ * torn state (the entry is gone and the barrier has run before any reader
+ * is collected).  The registry is not partitioned by database: an anchor is
+ * one node-wide xid set, so the record's database is not consulted; the
+ * standard resolution keeps its database filter.
+ *
+ * Called at each redo site OUTSIDE its InHotStandby test: the registry is
+ * rebuilt before redo starts, so the record may be replayed before hot
+ * standby is active (the window after every restart before the first
+ * running-xacts record, or a start with hot standby or anchored mode
+ * disabled that keeps the published anchor's file), and an anchor that
+ * outlived the purge would be registered later against rows that are
+ * gone.
+ *
+ * A pending anchor (its restore-point record not yet replayed) is not
+ * examined: a cleanup record earlier in the WAL was generated when the
+ * primary's oldest running xid was at or below every xid still running at
+ * the restore point, and each of these sites logs an xid below that oldest
+ * running xid (removed versions are dead to it, the freeze cutoff and the
+ * all-visible cutoff lie below it, a recycled page's xid is below the
+ * global xmin); the anchor's xmin is the oldest xid running at the restore
+ * point, hence above the record's xid.  A diverged stream drops the
+ * pending anchor by LSN instead.  The kept anchor, whose restore point may
+ * already be applied, is gated by the record's position.
+ *
+ * Startup process only.  ERRORs only when a file it must remove cannot be
+ * removed (anchorRemoveFile): the startup process exits, and the next start
+ * of the node replays this record and retries.
+ */
+void
+AnchorSnapshotOnCleanupRecord(TransactionId latestRemovedXid, RelFileNode node,
+							  XLogRecPtr lsn)
+{
+	int			n;
+	int			i;
+	bool		keptRemoved;
+
+	if (!TransactionIdIsValid(latestRemovedXid))
+		return;
+	if (!anchorsRegisteredOrKept())
+		return;
+
+	n = invalidateAtOrBelow(latestRemovedXid);
+	for (i = 0; i < n; i++)
+	{
+		char		path[MAXPGPATH];
+		const char *rp_name = retireNames + i * MAXFNAMELEN;
+
+		anchorFilePath(path, sizeof(path), rp_name, false);
+		anchorRemoveFile(path, ERROR);
+		ereport(LOG,
+				(errmsg("invalidated anchor snapshot for restore point \"%s\": replayed cleanup of relation %u/%u/%u removed row versions through transaction %u",
+						rp_name, node.spcNode, node.dbNode, node.relNode,
+						latestRemovedXid)));
+	}
+
+	keptRemoved = invalidateKeptAnchor(latestRemovedXid, lsn);
+	if (keptRemoved)
+		ereport(WARNING,
+				(errmsg("kept anchor snapshot file for restore point \"%s\" removed: replayed cleanup of relation %u/%u/%u removed row versions through transaction %u; the next start will not register it",
+						keptName, node.spcNode, node.dbNode, node.relNode,
+						latestRemovedXid)));
+
+	if (n > 0 || keptRemoved)
+		SIMPLE_FAULT_INJECTOR("anchor_snapshot_conflict_invalidated");
 }
 
 /*
@@ -1466,18 +1846,7 @@ applyPublication(const char *name)
 		return false;
 
 	/* the names are collected under the spinlock, the files unlinked outside it */
-	if (retireNames == NULL)
-	{
-		retireNames = (char *) malloc(anchorRegistry->capacity * MAXFNAMELEN);
-		if (retireNames == NULL)
-		{
-			ereport(WARNING,
-					(errcode(ERRCODE_OUT_OF_MEMORY),
-					 errmsg("publication of anchor \"%s\" retired nothing: out of memory",
-							name)));
-			return false;
-		}
-	}
+	Assert(retireNames != NULL);
 
 	SpinLockAcquire(&anchorRegistry->lock);
 	e = findEntryLocked(name);
@@ -1490,7 +1859,7 @@ applyPublication(const char *name)
 
 			if (o->valid && o->ordinal < ordinal)
 			{
-				o->valid = false;
+				markInvalidLocked(o);
 				strlcpy(retireNames + nretire * MAXFNAMELEN, o->rp_name, MAXFNAMELEN);
 				nretire++;
 			}
@@ -1508,7 +1877,7 @@ applyPublication(const char *name)
 		char		path[MAXPGPATH];
 
 		anchorFilePath(path, sizeof(path), retireNames + i * MAXFNAMELEN, false);
-		anchorRemoveFile(path);
+		anchorRemoveFile(path, WARNING);
 		ereport(LOG,
 				(errmsg("retired anchor snapshot for restore point \"%s\": superseded by \"%s\"",
 						retireNames + i * MAXFNAMELEN, name)));
@@ -1553,6 +1922,7 @@ AnchorSnapshotClearAll(void)
 	int			cleared = 0;
 
 	pendingSet = false;
+	keptSet = false;
 
 	if (anchorRegistry == NULL)
 		return;
@@ -1564,7 +1934,7 @@ AnchorSnapshotClearAll(void)
 		{
 			if (anchorRegistry->entries[i].valid)
 			{
-				anchorRegistry->entries[i].valid = false;
+				markInvalidLocked(&anchorRegistry->entries[i]);
 				cleared++;
 			}
 		}
@@ -1999,7 +2369,319 @@ AnchorSnapshotInstall(Snapshot snapshot)
 		pinnedAnchor.ordinal = preparedAnchor.ordinal;
 		pinnedAnchor.pinned = true;
 	}
+	if (Gp_role == GP_ROLE_EXECUTE)
+		SIMPLE_FAULT_INJECTOR("anchor_snapshot_installed");
 	return true;
+}
+
+/* ------------------------------------------------------------------
+ * Relation check (backends)
+ *
+ * An anchored statement reads table data as of the anchor and the catalog
+ * as of the replay position, so it finds a relation's file through the
+ * current pg_class row.  A transaction that committed after the restore
+ * point may have given the relation new files (TRUNCATE, CLUSTER, VACUUM
+ * FULL, REINDEX, a rewriting ALTER TABLE, SET TABLESPACE): the anchor's
+ * rows are in the old file, and reading the new one with the anchor's
+ * snapshot would return a torn or empty result without an error.  The
+ * check runs when a relation is opened (relation_open and
+ * try_relation_open, after the lock and the relcache entry): it reads the
+ * relation's pg_class row with the anchor's own snapshot and requires the
+ * current row to describe the same file.
+ *
+ * The anchored read of pg_class is sound because of the cleanup hook
+ * above: a row version is removed only by a prune, vacuum or freeze
+ * record, whose latestRemovedXid is at least the xmax of what it removes,
+ * and the hook invalidates every anchor whose xmin is at or below that
+ * xid first.  Every version from the one the anchor sees to the current
+ * one has such an xmax (its update committed after the anchor's xmin), so
+ * while the anchor is valid the whole chain is still in the heap.  That
+ * is what lets the check compare row identities, not file numbers: a
+ * relation rewritten twice could get its original relfilenode back after
+ * an OID wraparound, so equal numbers prove nothing once the row has been
+ * updated; equal row identity (the anchor's version is still the current
+ * one) does, and so does a walk along the update chain on which every
+ * version names the same file (a RENAME or an ADD COLUMN updates the row
+ * without touching the file).  A chain that cannot be followed fails the
+ * check: the anchor has just been invalidated and the statement is about
+ * to be cancelled anyway.
+ *
+ * Exempt: catalog relations (read at the replay position by design),
+ * relations without storage (nothing to mismatch), statements with no
+ * active snapshot or an unanchored one.  A relation the anchor's snapshot
+ * does not see at all did not exist at the restore point and is refused
+ * too, an index among them (so a statement planned with an index created
+ * after the anchor fails instead of missing rows the index was built
+ * without).
+ *
+ * Cost: a branch per relation_open in every session; in an anchored
+ * session a hash lookup and a syscache lookup per open, and one pg_class
+ * index probe per (relation, anchor) the first time, cached for as long
+ * as the backend lives (the facts are immutable: the anchor's version of
+ * the row never changes, a walked chain never changes).  The cache is
+ * flushed when it grows past anchorRelCacheLimit entries.
+ * ------------------------------------------------------------------
+ */
+
+typedef struct AnchorRelKey
+{
+	Oid			relid;
+	uint32		ordinal;
+} AnchorRelKey;
+
+/* What the anchor's snapshot sees of a relation's pg_class row. */
+typedef struct AnchorRelVersion
+{
+	bool		exists;
+	Oid			relfilenode;
+	ItemPointerData tid;		/* that row version */
+} AnchorRelVersion;
+
+typedef struct AnchorRelEntry
+{
+	AnchorRelKey key;
+	AnchorRelVersion anchored;
+	ItemPointerData verifiedTid;	/* current version the chain was last
+									 * walked to; invalid until a walk */
+} AnchorRelEntry;
+
+static HTAB *anchorRelCache = NULL;
+static const long anchorRelCacheLimit = 4096;
+
+typedef enum AnchorRelVerdict
+{
+	ANCHOR_REL_OK,
+	ANCHOR_REL_ABSENT,			/* not in the catalog as of the anchor */
+	ANCHOR_REL_REWRITTEN		/* the file is not the anchor's */
+} AnchorRelVerdict;
+
+/*
+ * The relation's pg_class row as the anchor's snapshot sees it, through
+ * the oid index.  The snapshot is the statement's own anchored snapshot.
+ */
+static bool
+anchoredRelationVersion(Oid relid, Snapshot snap, AnchorRelVersion *v)
+{
+	Relation	pgclass;
+	ScanKeyData key;
+	SysScanDesc scan;
+	HeapTuple	tup;
+
+	v->exists = false;
+	pgclass = table_open(RelationRelationId, AccessShareLock);
+	ScanKeyInit(&key, Anum_pg_class_oid, BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(relid));
+	scan = systable_beginscan(pgclass, ClassOidIndexId, true, snap, 1, &key);
+	tup = systable_getnext(scan);
+	if (HeapTupleIsValid(tup))
+	{
+		v->exists = true;
+		v->relfilenode = ((Form_pg_class) GETSTRUCT(tup))->relfilenode;
+		v->tid = tup->t_self;
+	}
+	systable_endscan(scan);
+	table_close(pgclass, AccessShareLock);
+	return v->exists;
+}
+
+/* The current pg_class row of the relation: its file and its location. */
+static void
+currentRelationVersion(Oid relid, Oid *relfilenode, ItemPointer tid)
+{
+	HeapTuple	tup = SearchSysCache1(RELOID, ObjectIdGetDatum(relid));
+
+	if (!HeapTupleIsValid(tup))
+		elog(ERROR, "cache lookup failed for relation %u", relid);
+	*relfilenode = ((Form_pg_class) GETSTRUCT(tup))->relfilenode;
+	*tid = tup->t_self;
+	ReleaseSysCache(tup);
+}
+
+/*
+ * Follow the update chain of the relation's pg_class row from the version
+ * at 'from' (the anchor's) to the version at 'to' (the current one), and
+ * report whether every version on the way names relfilenode.  Each hop is
+ * a committed update whose t_ctid points at the next version; the chain
+ * ends at a version that was not updated (xmax invalid, aborted or a lock
+ * only).  Reaching anything else than 'to', a version of another file, a
+ * version of another relation (the oid reused) or a hole (a pruned
+ * version: the anchor is invalid by then) is a failure.
+ */
+static bool
+relationVersionsKeepFile(Oid relid, Oid relfilenode, ItemPointerData from,
+						 ItemPointerData to)
+{
+	Relation	pgclass = table_open(RelationRelationId, AccessShareLock);
+	ItemPointerData tid = from;
+	bool		ok = false;
+	int			hops;
+
+	for (hops = 0; hops < 100000; hops++)
+	{
+		HeapTupleData tup;
+		Buffer		buf;
+		HeapTupleHeader th;
+		ItemPointerData next;
+		TransactionId xmax;
+
+		tup.t_self = tid;
+		if (!heap_fetch(pgclass, SnapshotAny, &tup, &buf))
+			break;
+		th = tup.t_data;
+		if (((Form_pg_class) GETSTRUCT(&tup))->oid != relid ||
+			((Form_pg_class) GETSTRUCT(&tup))->relfilenode != relfilenode)
+		{
+			ReleaseBuffer(buf);
+			break;
+		}
+		if (ItemPointerEquals(&tup.t_self, &to))
+		{
+			ReleaseBuffer(buf);
+			ok = true;
+			break;
+		}
+		if ((th->t_infomask & HEAP_XMAX_INVALID) ||
+			HEAP_XMAX_IS_LOCKED_ONLY(th->t_infomask) ||
+			ItemPointerEquals(&th->t_ctid, &tup.t_self))
+		{
+			ReleaseBuffer(buf);
+			break;
+		}
+		xmax = HeapTupleHeaderGetUpdateXid(th);
+		next = th->t_ctid;
+		ReleaseBuffer(buf);
+		if (!TransactionIdIsValid(xmax) || !TransactionIdDidCommit(xmax))
+			break;
+		tid = next;
+	}
+	table_close(pgclass, AccessShareLock);
+	return ok;
+}
+
+/* Seams for the unit tests; the backend uses the functions above. */
+static bool (*anchoredRelationVersionFn) (Oid relid, Snapshot snap, AnchorRelVersion *v) = anchoredRelationVersion;
+static void (*currentRelationVersionFn) (Oid relid, Oid *relfilenode, ItemPointer tid) = currentRelationVersion;
+static bool (*relationVersionsKeepFileFn) (Oid relid, Oid relfilenode, ItemPointerData from, ItemPointerData to) = relationVersionsKeepFile;
+
+static void
+anchorRelCacheReset(void)
+{
+	HASHCTL		ctl;
+
+	if (anchorRelCache != NULL)
+		hash_destroy(anchorRelCache);
+	MemSet(&ctl, 0, sizeof(ctl));
+	ctl.keysize = sizeof(AnchorRelKey);
+	ctl.entrysize = sizeof(AnchorRelEntry);
+	ctl.hcxt = TopMemoryContext;
+	anchorRelCache = hash_create("anchor relation versions", 64, &ctl,
+								 HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+}
+
+/*
+ * The verdict for relation relid under the anchor of registration ordinal
+ * 'ordinal' installed in snap.
+ */
+static AnchorRelVerdict
+anchorRelationVerdict(Oid relid, Snapshot snap)
+{
+	AnchorRelKey key;
+	AnchorRelEntry *e;
+	bool		found;
+	Oid			curNode;
+	ItemPointerData curTid;
+
+	if (anchorRelCache == NULL ||
+		hash_get_num_entries(anchorRelCache) >= anchorRelCacheLimit)
+		anchorRelCacheReset();
+
+	key.relid = relid;
+	key.ordinal = snap->anchorOrdinal;
+	e = (AnchorRelEntry *) hash_search(anchorRelCache, &key, HASH_FIND, NULL);
+	if (e == NULL)
+	{
+		AnchorRelVersion v;
+
+		/* read first, enter afterwards: an ERROR in the read enters nothing */
+		anchoredRelationVersionFn(relid, snap, &v);
+		e = (AnchorRelEntry *) hash_search(anchorRelCache, &key, HASH_ENTER, &found);
+		e->anchored = v;
+		ItemPointerSetInvalid(&e->verifiedTid);
+	}
+	if (!e->anchored.exists)
+		return ANCHOR_REL_ABSENT;
+
+	currentRelationVersionFn(relid, &curNode, &curTid);
+	if (curNode != e->anchored.relfilenode)
+		return ANCHOR_REL_REWRITTEN;
+	/* the anchor's version is the current one: nothing happened to the row */
+	if (ItemPointerEquals(&curTid, &e->anchored.tid))
+		return ANCHOR_REL_OK;
+	/* updated since, same number: walked before, or walk now */
+	if (ItemPointerIsValid(&e->verifiedTid) &&
+		ItemPointerEquals(&curTid, &e->verifiedTid))
+		return ANCHOR_REL_OK;
+	if (!relationVersionsKeepFileFn(relid, e->anchored.relfilenode,
+									e->anchored.tid, curTid))
+		return ANCHOR_REL_REWRITTEN;
+	e->verifiedTid = curTid;
+	return ANCHOR_REL_OK;
+}
+
+/* The anchor's name for a message, when this backend knows it. */
+static const char *
+anchorNameForMessage(uint32 ordinal)
+{
+	if (cachedAnchor.valid && cachedAnchor.ordinal == ordinal)
+		return printableName(cachedAnchor.name);
+	return "?";
+}
+
+/*
+ * Called by relation_open and try_relation_open once the relation is
+ * locked and its relcache entry open.  Fails (55000) when the active
+ * snapshot carries an anchor under which the relation's file is not the
+ * one about to be read; see the section comment.
+ */
+void
+AnchorSnapshotCheckRelation(Relation rel)
+{
+	Snapshot	snap;
+	Oid			relid;
+
+	if (!ActiveSnapshotSet())
+		return;
+	snap = GetActiveSnapshot();
+	if (snap->anchorOrdinal == 0)
+		return;
+	relid = RelationGetRelid(rel);
+	if (IsCatalogRelationOid(relid) ||
+		!RELKIND_HAS_STORAGE(rel->rd_rel->relkind))
+		return;
+
+	switch (anchorRelationVerdict(relid, snap))
+	{
+		case ANCHOR_REL_OK:
+			return;
+		case ANCHOR_REL_ABSENT:
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("anchor snapshot \"%s\" cannot read relation \"%s\": it did not exist at the anchor",
+							anchorNameForMessage(snap->anchorOrdinal),
+							RelationGetRelationName(rel)),
+					 errdetail("The relation was created by a transaction that committed after the restore point."),
+					 errhint("Retry once a newer anchor has been published; roll back first inside a transaction block.")));
+			break;
+		case ANCHOR_REL_REWRITTEN:
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("anchor snapshot \"%s\" cannot read relation \"%s\": its files changed after the anchor",
+							anchorNameForMessage(snap->anchorOrdinal),
+							RelationGetRelationName(rel)),
+					 errdetail("The relation was rewritten (TRUNCATE, CLUSTER, VACUUM FULL, REINDEX, a rewriting ALTER TABLE or SET TABLESPACE) by a transaction that committed after the restore point."),
+					 errhint("Retry once a newer anchor has been published; roll back first inside a transaction block.")));
+			break;
+	}
 }
 
 /*
