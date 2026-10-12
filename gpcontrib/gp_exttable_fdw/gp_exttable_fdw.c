@@ -551,11 +551,19 @@ ExternalConstraintCheck(TupleTableSlot *slot, FileScanDesc scandesc, EState *est
 			(ExprState **) palloc(ncheck * sizeof(ExprState *));
 		for (int i = 0; i < ncheck; i++)
 		{
-			/* ExecQual wants implicit-AND form */
+			/*
+			 * ExecPrepareCheck wants implicit-AND form, and produces the
+			 * state ExecCheck expects: a NULL result counts as a pass, as
+			 * for any CHECK constraint. (ExecPrepareExpr takes a single
+			 * expression node, not a List; passing it the implicit-AND
+			 * List fails with "unrecognized node type".) Equivalent to
+			 * core's ExecRelCheck, and the same as ExternalPartitionCheck
+			 * below.
+			 */
 			List	   *qual = make_ands_implicit(stringToNode(check[i].ccbin));
 
 			scandesc->fs_constraintExprs[i] =
-				ExecPrepareExpr((Expr *) qual, estate);
+				ExecPrepareCheck(qual, estate);
 		}
 		MemoryContextSwitchTo(oldContext);
 	}
