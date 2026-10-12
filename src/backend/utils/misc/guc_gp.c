@@ -378,6 +378,7 @@ double		optimizer_sort_factor;
 /* Optimizer hints */
 int			optimizer_join_arity_for_associativity_commutativity;
 int         optimizer_array_expansion_threshold;
+int         optimizer_array_interval_threshold;
 int         optimizer_join_order_threshold;
 int			optimizer_join_order;
 int			optimizer_cte_inlining_bound;
@@ -398,6 +399,7 @@ bool		optimizer_remove_order_below_dml;
 bool		optimizer_multilevel_partitioning;
 bool 		optimizer_parallel_union;
 bool		optimizer_array_constraints;
+bool		optimizer_array_constraint_cache;
 bool		optimizer_cte_inlining;
 bool		optimizer_enable_space_pruning;
 bool		optimizer_enable_associativity;
@@ -2785,6 +2787,17 @@ struct config_bool ConfigureNamesBool_gp[] =
 	},
 
 	{
+		{"optimizer_array_constraint_cache", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Cache derived array constraints to avoid repeated computation during planning."),
+			NULL,
+			GUC_NOT_IN_SAMPLE
+		},
+		&optimizer_array_constraint_cache,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"optimizer_use_gpdb_allocators", PGC_POSTMASTER, RESOURCES_MEM,
 			gettext_noop("Enable ORCA to use GPDB Memory Contexts"),
 			NULL,
@@ -4176,6 +4189,21 @@ struct config_int ConfigureNamesInt_gp[] =
 		},
 		&optimizer_array_expansion_threshold,
 		20, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"optimizer_array_interval_threshold", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Sets the maximum number of items in an IN or NOT IN list for which GPORCA derives a constraint."),
+			gettext_noop("For longer lists without NULL constants no constraint is derived: planning is "
+						 "cheaper, but partition elimination, predicate inference and contradiction "
+						 "detection from that predicate are lost. This is independent of "
+						 "optimizer_array_expansion_threshold. The default (no limit) always derives "
+						 "the constraint."),
+			GUC_NOT_IN_SAMPLE
+		},
+		&optimizer_array_interval_threshold,
+		INT_MAX, 0, INT_MAX,
 		NULL, NULL, NULL
 	},
 

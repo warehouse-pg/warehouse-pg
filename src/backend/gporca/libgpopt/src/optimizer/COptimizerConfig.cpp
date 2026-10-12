@@ -197,6 +197,9 @@ COptimizerConfig::Serialize(CMemoryPool *mp, CXMLSerializer *xml_serializer,
 		CDXLTokens::GetDXLTokenStr(EdxltokenArrayExpansionThreshold),
 		m_hint->UlArrayExpansionThreshold());
 	xml_serializer->AddAttribute(
+		CDXLTokens::GetDXLTokenStr(EdxltokenArrayIntervalThreshold),
+		m_hint->UlArrayIntervalThreshold());
+	xml_serializer->AddAttribute(
 		CDXLTokens::GetDXLTokenStr(EdxltokenJoinOrderDPThreshold),
 		m_hint->UlJoinOrderDPLimit());
 	xml_serializer->AddAttribute(

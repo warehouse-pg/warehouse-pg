@@ -2432,6 +2432,20 @@ The parameter can be set for a database system, an individual database, or a ses
 |-----------|-------|-------------------|
 |Integer \> 0|20|coordinator, session, reload|
 
+## <a id="optimizer_array_interval_threshold"></a>optimizer\_array\_interval\_threshold 
+
+When GPORCA is enabled \(the default\) and is processing a query that contains a predicate of the form `column IN (constant, ...)` or `column NOT IN (constant, ...)`, GPORCA derives a constraint for the column by sorting and de-duplicating the constants. The `optimizer_array_interval_threshold` parameter limits this work based on the number of constants in the list. If the list contains more constants than the specified value, and none of the constants is `NULL`, GPORCA does not derive a constraint from the predicate. The predicate is still applied as a filter, so query results are not affected. The limit also applies to lists that GPORCA derives itself, for example an `IN` list it infers for the other side of a join (with any `NULL` constants removed).
+
+The default value is 2147483647, which means there is no limit and GPORCA always derives the constraint.
+
+Lowering the value shortens optimization time for queries with very long `IN` lists, in particular for data types that GPORCA cannot compare itself, such as `varchar` and `text`. The trade-off is that the constraint is not available for those predicates, so GPORCA loses benefits that depend on it, for example partition elimination, the inference of the predicate to the other side of a join, and conflict detection. This parameter is independent of [optimizer\_array\_expansion\_threshold](#optimizer_array_expansion_threshold); that parameter does not act as a fallback for lists above this limit.
+
+The parameter can be set for a database system, an individual database, or a session or query.
+
+|Value Range|Default|Set Classifications|
+|-----------|-------|-------------------|
+|Integer \>= 0|2147483647|coordinator, session, reload|
+
 ## <a id="optimizer_control"></a>optimizer\_control 
 
 Controls whether the server configuration parameter optimizer can be changed with SET, the RESET command, or the Greenplum Database utility gpconfig. If the `optimizer_control` parameter value is `on`, users can set the optimizer parameter. If the `optimizer_control` parameter value is `off`, the optimizer parameter cannot be changed.

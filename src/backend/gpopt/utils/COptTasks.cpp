@@ -380,6 +380,8 @@ COptTasks::CreateOptimizerConfig(CMemoryPool *mp, ICostModel *cost_model,
 		(ULONG) optimizer_join_arity_for_associativity_commutativity;
 	ULONG array_expansion_threshold =
 		(ULONG) optimizer_array_expansion_threshold;
+	ULONG array_interval_threshold =
+		(ULONG) optimizer_array_interval_threshold;
 	ULONG join_order_threshold = (ULONG) optimizer_join_order_threshold;
 	ULONG broadcast_threshold = (ULONG) optimizer_penalize_broadcast_threshold;
 	ULONG push_group_by_below_setop_threshold =
@@ -387,7 +389,7 @@ COptTasks::CreateOptimizerConfig(CMemoryPool *mp, ICostModel *cost_model,
 	ULONG xform_bind_threshold = (ULONG) optimizer_xform_bind_threshold;
 	ULONG skew_factor = (ULONG) optimizer_skew_factor;
 
-	return GPOS_NEW(mp) COptimizerConfig(
+	COptimizerConfig *optimizer_config = GPOS_NEW(mp) COptimizerConfig(
 		GPOS_NEW(mp)
 			CEnumeratorConfig(mp, plan_id, num_samples, cost_threshold),
 		GPOS_NEW(mp)
@@ -396,7 +398,8 @@ COptTasks::CreateOptimizerConfig(CMemoryPool *mp, ICostModel *cost_model,
 		GPOS_NEW(mp) CCTEConfig(cte_inlining_cutoff), cost_model,
 		GPOS_NEW(mp)
 			CHint(join_arity_for_associativity_commutativity,
-				  array_expansion_threshold, join_order_threshold,
+				  array_expansion_threshold, array_interval_threshold,
+				  join_order_threshold,
 				  broadcast_threshold,
 				  false, /* don't create Assert nodes for constraints, we'll
 								      * enforce them ourselves in the executor */
@@ -404,6 +407,8 @@ COptTasks::CreateOptimizerConfig(CMemoryPool *mp, ICostModel *cost_model,
 				  skew_factor),
 		plan_hints,
 		GPOS_NEW(mp) CWindowOids(OID(F_WINDOW_ROW_NUMBER), OID(F_WINDOW_RANK)));
+
+	return optimizer_config;
 }
 
 //---------------------------------------------------------------------------
