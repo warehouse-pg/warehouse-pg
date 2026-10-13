@@ -7,8 +7,8 @@ SELECT plvstr.normalize('x' || chr(1) || chr(2) || chr(3) || ' y' || chr(4)) AS 
 SELECT plvstr.normalize('あ' || chr(7) || 'い  う') AS multibyte;
 
 -- The single-byte path must advance past each visible character too, rather
--- than repeating the first one.  Needs a single-byte (SQL_ASCII) database.
-CREATE DATABASE regression_normalize WITH TEMPLATE = template0 ENCODING='SQL_ASCII' LC_COLLATE='C' LC_CTYPE='C';
+-- than repeating the first one.  Needs a single-byte (LATIN1) database.
+CREATE DATABASE regression_normalize WITH TEMPLATE = template0 ENCODING='LATIN1' LC_COLLATE='C' LC_CTYPE='C';
 
 \c regression_normalize
 SET client_min_messages = error;
