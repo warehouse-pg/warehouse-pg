@@ -49,6 +49,17 @@ typedef struct PlannerConfig
 	 */
 	bool        force_entry;
 	struct Bitmapset *force_entry_rels;
+
+	/*
+	 * False when a second reference to the CTE being planned might fall
+	 * outside the current planning context and be unreachable from here:
+	 * inside a sublink that may be planned as an InitPlan, or at a nested
+	 * CTE level (multiple SharedScans there can deadlock). Only matters
+	 * for a multiply-referenced CTE; a lone reference has no other
+	 * consumer to lose track of. Independent of gp_cte_sharing, which is
+	 * only the user's performance preference.
+	 */
+	bool        cte_sharing_allowed;
 } PlannerConfig;
 
 extern PlannerConfig *DefaultPlannerConfig(void);

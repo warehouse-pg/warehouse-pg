@@ -24,6 +24,113 @@ SELECT count(*) FROM (
      5
 (1 row)
 
+-- Same as above, but with gp_cte_sharing at its default (off): a
+-- multiply-referenced CTE must still be evaluated only once regardless
+-- of the sharing GUC.
+set gp_cte_sharing to off;
+SELECT count(*) FROM (
+  WITH q1(x) AS (SELECT random() FROM generate_series(1, 5))
+    SELECT * FROM q1
+  UNION
+    SELECT * FROM q1
+) ss;
+ count 
+-------
+     5
+(1 row)
+
+set gp_cte_sharing to on;
+-- Forcing the sharing above must not bypass the planner's guards against
+-- placing a ShareInputScan where it cannot work: inside a sublink that may
+-- be planned as an InitPlan, or where the CTE has an outer correlation.
+-- Those cases must still fall back to per-reference evaluation rather than
+-- crash, hang, or error out.
+CREATE TABLE cte_vol_t (a int, b int) DISTRIBUTED BY (a);
+INSERT INTO cte_vol_t SELECT i, i % 10 FROM generate_series(1, 100) i;
+set gp_cte_sharing to off;
+-- EXISTS pulled into an AlternativeSubPlan, referencing the CTE from both
+-- the main query and the EXISTS test.
+WITH q1 AS (SELECT random() r, a FROM generate_series(1,5) a)
+SELECT count(*) >= 0 FROM cte_vol_t t, q1
+WHERE t.b = 1 OR EXISTS (SELECT 1 FROM q1 WHERE q1.r >= 0);
+ ?column? 
+----------
+ t
+(1 row)
+
+-- CTE referenced by the main query and by an EXISTS sublink that may be
+-- planned as an InitPlan.
+WITH q AS (SELECT random() r, a FROM cte_vol_t)
+SELECT count(*) FROM q WHERE EXISTS (SELECT 1 FROM q q2 WHERE q2.r >= 0);
+ count 
+-------
+   100
+(1 row)
+
+WITH q AS (SELECT random() r, a FROM cte_vol_t)
+SELECT count(*) FROM q WHERE q.r <= 1;
+ count 
+-------
+   100
+(1 row)
+
+-- Two InitPlans sharing the same CTE; the main query does not reference it.
+WITH a AS (SELECT i, random() r FROM generate_series(1,100) i)
+SELECT (SELECT max(i) FROM a), (SELECT min(i) FROM a);
+ max | min 
+-----+-----
+ 100 |   1
+(1 row)
+
+-- A distributed-table (general locus) CTE plus an InitPlan reference.
+WITH q AS (SELECT random() AS r FROM generate_series(1,5))
+SELECT count(*) FROM cte_vol_t, q WHERE EXISTS (SELECT 1 FROM q q2 WHERE q2.r >= 0);
+ count 
+-------
+   500
+(1 row)
+
+-- A CTE with an outer correlation must not attempt to share.
+SELECT count(*) FROM cte_vol_t t1
+WHERE t1.a > (WITH q AS (SELECT random() r, t2.b FROM cte_vol_t t2 WHERE t2.a = t1.a)
+              SELECT min(q1.r) FROM q q1, q q2 WHERE q1.b = q2.b);
+ count 
+-------
+   100
+(1 row)
+
+-- AS NOT MATERIALIZED with a volatile function must still be evaluated
+-- exactly once when multiply referenced.
+SELECT count(*) FROM (
+  WITH q1(x) AS NOT MATERIALIZED (SELECT random() FROM generate_series(1, 5))
+    SELECT * FROM q1
+  UNION
+    SELECT * FROM q1
+) ss;
+ count 
+-------
+     5
+(1 row)
+
+-- A data-modifying CTE must also be evaluated exactly once when multiply
+-- referenced.
+CREATE TABLE cte_dml_t (a int) DISTRIBUTED BY (a);
+WITH ins AS (INSERT INTO cte_dml_t VALUES (1), (2) RETURNING a)
+SELECT count(*) FROM (SELECT a FROM ins UNION ALL SELECT a FROM ins) x;
+ count 
+-------
+     4
+(1 row)
+
+SELECT count(*) FROM cte_dml_t;
+ count 
+-------
+     2
+(1 row)
+
+DROP TABLE cte_dml_t;
+set gp_cte_sharing to on;
+DROP TABLE cte_vol_t;
 -- WITH RECURSIVE
 -- sum of 1..100
 WITH RECURSIVE t(n) AS (
