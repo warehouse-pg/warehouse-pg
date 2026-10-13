@@ -96,7 +96,10 @@ def test_610_with_reuse_tables_non_superuser():
         f.write("\\! gpload -f "+mkpath('config/config_file1')+"\n")
         f.write("\\! gpload -f "+mkpath('config/config_file2')+"\n")
         f.write("\\! psql -d reuse_gptest -c \"SELECT count(*) FROM pg_class WHERE relname LIKE 'ext_gpload_reusable%' AND relowner = 'gpload_610_user'::regrole;\"\n")
-        f.write("\\! psql -d reuse_gptest -c \"DROP OWNED BY gpload_610_user; DROP ROLE gpload_610_user;\"\n")
+        # This test loads into the shared texttable twice without truncating, so
+        # empty it again: later tests in other files merge into the same table and
+        # assert exact row counts, and rows left behind here would double them.
+        f.write("\\! psql -d reuse_gptest -c \"TRUNCATE texttable; DROP OWNED BY gpload_610_user; DROP ROLE gpload_610_user;\"\n")
     copy_data('external_file_04.txt','data_file.txt')
     # The reuse lookups run after the BEFORE sql, so they run as the non-superuser.
     write_config_file(mode='insert',config='config/config_file1',reuse_tables=True,fast_match=False,file='data_file.txt',table='texttable',error_limit=1002,sql=True,before='"SET ROLE gpload_610_user"')
