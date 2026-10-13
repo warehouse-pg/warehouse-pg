@@ -168,6 +168,48 @@ test__registry_disabled(void **state)
 	anchorRegistry = NULL;
 }
 
+/*
+ * The GUCs the sizing test changes, restored by its teardown: a failed
+ * assertion longjmps out of the test, past any restore at its end.
+ */
+static bool savedHotStandby;
+static int	savedMaxAnchors;
+
+static void
+saveSizingGUCs(void **state)
+{
+	savedHotStandby = EnableHotStandby;
+	savedMaxAnchors = whpg_max_anchor_snapshots;
+}
+
+static void
+restoreSizingGUCs(void **state)
+{
+	EnableHotStandby = savedHotStandby;
+	whpg_max_anchor_snapshots = savedMaxAnchors;
+}
+
+/* A server started without hot standby sizes the registry to no entries. */
+static void
+test__registry_sized_only_for_hot_standby(void **state)
+{
+	Size		header = offsetof(AnchorRegistryData, entries);
+
+	whpg_max_anchor_snapshots = 64;
+	EnableHotStandby = false;
+	assert_int_equal(registryCapacity(), 0);
+	assert_int_equal(AnchorRegistryShmemSize(), header);
+
+	EnableHotStandby = true;
+	assert_int_equal(registryCapacity(), 64);
+	assert_int_equal(AnchorRegistryShmemSize(),
+					 header + 64 * sizeof(AnchorRegistryEntry));
+
+	whpg_max_anchor_snapshots = 0;
+	assert_int_equal(registryCapacity(), 0);
+	assert_int_equal(AnchorRegistryShmemSize(), header);
+}
+
 static void
 test__list_in_registration_order(void **state)
 {
@@ -973,6 +1015,8 @@ main(int argc, char *argv[])
 		unit_test(test__registry_register_lookup_full_duplicate),
 		unit_test(test__registry_ordinal_exhaustion),
 		unit_test(test__registry_disabled),
+		unit_test_setup_teardown(test__registry_sized_only_for_hot_standby,
+								 saveSizingGUCs, restoreSizingGUCs),
 		unit_test(test__list_in_registration_order),
 		unit_test(test__retire_on_publish),
 		unit_test(test__evict_oldest_unpublished),

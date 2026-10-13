@@ -7224,9 +7224,11 @@ StartupXLOG(void)
 	 * from the checkpoint record, or from the prepared transactions after a
 	 * shutdown checkpoint.  The hot-standby initialization below needs the
 	 * same value (and the prepared xids), so the two-phase state is scanned
-	 * once here; the scan also removes stale two-phase files.
+	 * once here; the scan also removes stale two-phase files.  Only anchors
+	 * of a hot standby need the value, so without hot standby the scan stays
+	 * where it always ran, at the end of recovery.
 	 */
-	if (InRecovery && ArchiveRecoveryRequested)
+	if (InRecovery && ArchiveRecoveryRequested && EnableHotStandby)
 	{
 		if (wasShutdown)
 			oldestActiveXID = PrescanPreparedTransactions(&prescanXids,
