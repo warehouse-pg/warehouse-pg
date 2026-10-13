@@ -8,6 +8,7 @@ SELECT plvstr.normalize('あ' || chr(7) || 'い  う') AS multibyte;
 
 -- The single-byte path must advance past each visible character too, rather
 -- than repeating the first one.  Needs a single-byte (LATIN1) database.
+SELECT current_database() AS orig_db \gset
 CREATE DATABASE regression_normalize WITH TEMPLATE = template0 ENCODING='LATIN1' LC_COLLATE='C' LC_CTYPE='C';
 
 \c regression_normalize
@@ -19,5 +20,5 @@ SELECT plvstr.normalize('xyz') AS single_byte;
 SELECT plvstr.normalize('  hello   world') AS single_byte_spaces;
 SELECT plvstr.normalize('ab' || chr(1) || 'cd  ef') AS single_byte_ctrl;
 
-\c regression
+\c :orig_db
 DROP DATABASE regression_normalize;
