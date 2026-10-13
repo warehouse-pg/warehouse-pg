@@ -387,6 +387,7 @@ plvstr_normalize(PG_FUNCTION_ARGS)
 							write_spc = false;
 						}
 						*aux_cur++ = c;
+						cur += 1;
 						ignore_stsp = false;
 						continue;
 					}

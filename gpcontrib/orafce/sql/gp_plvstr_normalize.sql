@@ -5,3 +5,19 @@ SELECT plvstr.normalize('ab' || chr(1) || 'cd  ef') AS mid;
 SELECT plvstr.normalize(chr(7) || '  x   y') AS leading;
 SELECT plvstr.normalize('x' || chr(1) || chr(2) || chr(3) || ' y' || chr(4)) AS several;
 SELECT plvstr.normalize('あ' || chr(7) || 'い  う') AS multibyte;
+
+-- The single-byte path must advance past each visible character too, rather
+-- than repeating the first one.  Needs a single-byte (SQL_ASCII) database.
+CREATE DATABASE regression_normalize WITH TEMPLATE = template0 ENCODING='SQL_ASCII' LC_COLLATE='C' LC_CTYPE='C';
+
+\c regression_normalize
+SET client_min_messages = error;
+CREATE EXTENSION orafce;
+SET client_min_messages = default;
+
+SELECT plvstr.normalize('xyz') AS single_byte;
+SELECT plvstr.normalize('  hello   world') AS single_byte_spaces;
+SELECT plvstr.normalize('ab' || chr(1) || 'cd  ef') AS single_byte_ctrl;
+
+\c regression
+DROP DATABASE regression_normalize;
