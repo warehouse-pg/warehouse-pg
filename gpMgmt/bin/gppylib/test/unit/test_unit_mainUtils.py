@@ -1,4 +1,8 @@
 import os
+import subprocess
+import sys
+
+from mock import patch
 
 from gppylib.test.unit.gp_unittest import *
 from gppylib.mainUtils import PIDLockFile, PIDLockHeld
@@ -95,6 +99,58 @@ class MainUtilsTestCase(GpTestCase):
             else:
                 os.wait()
 
+    def test_release_is_idempotent(self):
+        self.lock.acquire()
+        self.lock.release()
+        self.assertTrue(self.lock.released)
+        # second release must not touch the filesystem at all
+        with patch('gppylib.mainUtils.PIDLockFile.read_pid') as read_pid, \
+             patch('gppylib.mainUtils.shutil.rmtree') as rmtree:
+            self.lock.release()
+            read_pid.assert_not_called()
+            rmtree.assert_not_called()
+
+    def test_reacquire_after_release_clears_released_flag(self):
+        self.lock.acquire()
+        self.lock.release()
+        self.lock.acquire()
+        self.assertFalse(self.lock.released)
+        self.lock.release()
+        self.assertEqual(False, os.path.exists(self.lockfile))
+
+    def test_del_swallows_exceptions(self):
+        # Simulates interpreter teardown, where builtins like open() are gone
+        # and read_pid() raises NameError (PTT-1953).
+        self.lock.acquire()
+        self.addCleanup(self.lock.release)
+        with patch('gppylib.mainUtils.PIDLockFile.read_pid', side_effect=NameError("name 'open' is not defined")):
+            try:
+                self.lock.__del__()
+            except Exception as e:
+                self.fail("__del__ raised %r" % e)
+
+    def test_del_after_explicit_release_is_noop_at_interpreter_shutdown(self):
+        # End-to-end check of PTT-1953: a PIDLockFile kept alive in a
+        # module-level global of __main__ (as gpmovemirrors does with its
+        # SimpleMainLock) must not emit "Exception ignored in __del__ ...
+        # NameError: name 'open' is not defined" when the interpreter exits.
+        script = (
+            "import sys\n"
+            "from gppylib.mainUtils import PIDLockFile\n"
+            "lock = PIDLockFile(sys.argv[1])\n"
+            "lock.acquire()\n"
+            "lock.release()\n"
+        )
+        env = dict(os.environ)
+        env['PYTHONPATH'] = os.pathsep.join(filter(None, [
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+            env.get('PYTHONPATH', '')]))
+        proc = subprocess.run([sys.executable, '-c', script, self.lockfile + "-shutdown"],
+                              env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        self.assertNotIn("Exception ignored", proc.stderr)
+        self.assertNotIn("NameError", proc.stderr)
+        self.assertFalse(os.path.exists(self.lockfile + "-shutdown"))
 
 
 

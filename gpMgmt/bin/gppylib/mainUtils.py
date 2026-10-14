@@ -59,12 +59,17 @@ class PIDLockFile:
         self.path = path
         self.PIDfile = os.path.join(path, "PID")
         self.PID = os.getpid()
+        # Set once release() has run, so that a later release() (typically the
+        # implicit one from __del__ at interpreter shutdown) is a no-op and does
+        # not touch the filesystem again.
+        self.released = False
 
     def acquire(self):
         try:
             os.makedirs(self.path)
             with open(self.PIDfile, mode='w') as p:
                 p.write(str(self.PID))
+            self.released = False
         except EnvironmentError as e:
             if e.errno == errno.EEXIST:
                 raise PIDLockHeld("PIDLock already held at %s" % self.path, self.path)
@@ -78,6 +83,8 @@ class PIDLockFile:
         If the PIDfile or directory have been removed, the lock no longer
         exists, so pass
         """
+        if self.released:
+            return
         try:
             # only delete the lock if we created the lock
             if self.PID == self.read_pid():
@@ -96,6 +103,7 @@ class PIDLockFile:
                 raise
         except:
             raise
+        self.released = True
 
     def read_pid(self):
         """
@@ -124,7 +132,17 @@ class PIDLockFile:
         return None
 
     def __del__(self):
-        self.release()
+        # __del__ may run during interpreter teardown (e.g. when the lock is
+        # held by a module-level global, as in gpmovemirrors). At that point
+        # builtins such as open() may already be gone, which surfaces as
+        # "Exception ignored in ... NameError: name 'open' is not defined".
+        # The lock has normally been released explicitly by then (see the
+        # released flag); if not, there is nothing useful we can do about a
+        # failure here, so never let an exception escape the deallocator.
+        try:
+            self.release()
+        except Exception:
+            pass
 
 
 class SimpleMainLock:
