@@ -4095,6 +4095,172 @@ DROP TABLE skip_correlated_t1;
 DROP TABLE skip_correlated_t2;
 DROP TABLE skip_correlated_t3;
 DROP TABLE skip_correlated_t4;
+--------------------------------------------------------------------------------
+-- A correlated qual on a partitioned relation is held in the parent rel's
+-- upperrestrictinfo and applied by bring_to_outer_query() above the parent's
+-- Append. Such a relation must not be joined or aggregated partitionwise: the
+-- child joins and aggregates are built from the children's paths, below that
+-- Result, and would lose the qual. Each query must give the same answer with
+-- partitionwise planning on and off.
+--------------------------------------------------------------------------------
+create table pwj_outer (id int, k int) distributed by (id);
+create table pwj_a (k int, v int) partition by range (k) distributed by (k);
+create table pwj_a_1 partition of pwj_a for values from (0) to (10);
+NOTICE:  table has parent, setting distribution columns to match parent table
+create table pwj_a_2 partition of pwj_a for values from (10) to (20);
+NOTICE:  table has parent, setting distribution columns to match parent table
+create table pwj_b (k int, w int) partition by range (k) distributed by (k);
+create table pwj_b_1 partition of pwj_b for values from (0) to (10);
+NOTICE:  table has parent, setting distribution columns to match parent table
+create table pwj_b_2 partition of pwj_b for values from (10) to (20);
+NOTICE:  table has parent, setting distribution columns to match parent table
+create index on pwj_b (k);
+insert into pwj_outer select i, i % 20 from generate_series(1, 20) i;
+insert into pwj_a select i % 20, i from generate_series(1, 200) i;
+insert into pwj_b select i % 20, i from generate_series(1, 200) i;
+analyze pwj_outer;
+analyze pwj_a;
+analyze pwj_b;
+-- reference: not partitionwise, the qual is applied in a Result above the join
+set enable_partitionwise_join = off;
+set enable_nestloop = on;
+set enable_hashjoin = off;
+set enable_mergejoin = off;
+select o.id, o.k, (select count(*) from pwj_a a join pwj_b b on a.k = b.k and b.w > o.k) as cnt
+from pwj_outer o where o.id <= 3 order by 1;
+ id | k | cnt  
+----+---+------
+  1 | 1 | 1990
+  2 | 2 | 1980
+  3 | 3 | 1970
+(3 rows)
+
+-- partitionwise join: same query, must give the same counts
+set enable_partitionwise_join = on;
+explain (costs off)
+select (select count(*) from pwj_a a join pwj_b b on a.k = b.k and b.w > o.k)
+from pwj_outer o where o.id = 1;
+                                           QUERY PLAN                                           
+------------------------------------------------------------------------------------------------
+ Result
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Seq Scan on pwj_outer o
+               Filter: (id = 1)
+   SubPlan 1
+     ->  Aggregate
+           ->  Result
+                 Filter: (b.w > o.k)
+                 ->  Materialize
+                       ->  Gather Motion 3:1  (slice2; segments: 3)
+                             ->  Hash Join
+                                   Hash Cond: (b.k = a.k)
+                                   ->  Dynamic Seq Scan on pwj_b b
+                                         Number of partitions to scan: 2 (out of 2)
+                                   ->  Hash
+                                         ->  Partition Selector (selector id: $1)
+                                               ->  Dynamic Seq Scan on pwj_a a
+                                                     Number of partitions to scan: 2 (out of 2)
+ Optimizer: GPORCA
+(19 rows)
+
+select o.id, o.k, (select count(*) from pwj_a a join pwj_b b on a.k = b.k and b.w > o.k) as cnt
+from pwj_outer o where o.id <= 3 order by 1;
+ id | k | cnt  
+----+---+------
+  1 | 1 | 1990
+  2 | 2 | 1980
+  3 | 3 | 1970
+(3 rows)
+
+-- partitionwise aggregate: count(*) must not count the unfiltered rows, and
+-- GROUP BY the partition key must not fail with "ORDER/GROUP BY expression
+-- not found in targetlist"
+set enable_partitionwise_aggregate = off;
+select o.id, o.k, (select count(*) from pwj_b b where b.w > o.k) as cnt
+from pwj_outer o where o.id <= 3 order by 1;
+ id | k | cnt 
+----+---+-----
+  1 | 1 | 199
+  2 | 2 | 198
+  3 | 3 | 197
+(3 rows)
+
+select o.id, o.k, (select sum(c) from (select b.k, count(*) as c from pwj_b b where b.w > o.k group by b.k) s) as cnt
+from pwj_outer o where o.id <= 3 order by 1;
+ id | k | cnt 
+----+---+-----
+  1 | 1 | 199
+  2 | 2 | 198
+  3 | 3 | 197
+(3 rows)
+
+set enable_partitionwise_aggregate = on;
+explain (costs off)
+select (select count(*) from pwj_b b where b.w > o.k)
+from pwj_outer o where o.id = 1;
+                                     QUERY PLAN                                     
+------------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Seq Scan on pwj_outer o
+         Filter: (id = 1)
+         SubPlan 1
+           ->  Aggregate
+                 ->  Result
+                       Filter: (b.w > o.k)
+                       ->  Materialize
+                             ->  Broadcast Motion 3:3  (slice2; segments: 3)
+                                   ->  Dynamic Seq Scan on pwj_b b
+                                         Number of partitions to scan: 2 (out of 2)
+ Optimizer: GPORCA
+(12 rows)
+
+select o.id, o.k, (select count(*) from pwj_b b where b.w > o.k) as cnt
+from pwj_outer o where o.id <= 3 order by 1;
+ id | k | cnt 
+----+---+-----
+  1 | 1 | 199
+  2 | 2 | 198
+  3 | 3 | 197
+(3 rows)
+
+explain (costs off)
+select (select sum(c) from (select b.k, count(*) as c from pwj_b b where b.w > o.k group by b.k) s)
+from pwj_outer o where o.id = 1;
+                                        QUERY PLAN                                        
+------------------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Seq Scan on pwj_outer o
+         Filter: (id = 1)
+         SubPlan 1
+           ->  Aggregate
+                 ->  HashAggregate
+                       Group Key: b.k
+                       ->  Result
+                             Filter: (b.w > o.k)
+                             ->  Materialize
+                                   ->  Broadcast Motion 3:3  (slice2; segments: 3)
+                                         ->  Dynamic Seq Scan on pwj_b b
+                                               Number of partitions to scan: 2 (out of 2)
+ Optimizer: GPORCA
+(14 rows)
+
+select o.id, o.k, (select sum(c) from (select b.k, count(*) as c from pwj_b b where b.w > o.k group by b.k) s) as cnt
+from pwj_outer o where o.id <= 3 order by 1;
+ id | k | cnt 
+----+---+-----
+  1 | 1 | 199
+  2 | 2 | 198
+  3 | 3 | 197
+(3 rows)
+
+reset enable_partitionwise_aggregate;
+reset enable_partitionwise_join;
+reset enable_nestloop;
+reset enable_hashjoin;
+reset enable_mergejoin;
+drop table pwj_outer;
+drop table pwj_a;
+drop table pwj_b;
 -- ----------------------------------------------------------------------
 -- Test: teardown.sql
 -- ----------------------------------------------------------------------

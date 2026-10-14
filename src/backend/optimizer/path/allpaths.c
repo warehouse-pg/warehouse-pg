@@ -1372,11 +1372,18 @@ set_append_rel_size(PlannerInfo *root, RelOptInfo *rel,
 	 * If this is a partitioned baserel, set the consider_partitionwise_join
 	 * flag; currently, we only consider partitionwise joins with the baserel
 	 * if its targetlist doesn't contain a whole-row Var.
+	 *
+	 * WHPG: nor when the rel holds correlated quals in upperrestrictinfo.
+	 * bring_to_outer_query() or bring_to_entry() applies those above the
+	 * parent rel's paths only.  A partitionwise child join is built from the
+	 * children's paths, below that, so the quals would be missing from the
+	 * join.
 	 */
 	if (enable_partitionwise_join &&
 		rel->reloptkind == RELOPT_BASEREL &&
 		rte->relkind == RELKIND_PARTITIONED_TABLE &&
-		rel->attr_needed[InvalidAttrNumber - rel->min_attr] == NULL)
+		rel->attr_needed[InvalidAttrNumber - rel->min_attr] == NULL &&
+		!rel->upperrestrictinfo)
 		rel->consider_partitionwise_join = true;
 
 	/*
