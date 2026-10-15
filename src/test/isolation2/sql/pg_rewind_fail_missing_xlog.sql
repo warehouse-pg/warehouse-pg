@@ -9,6 +9,9 @@ include: helpers/server_helpers.sql;
 -- being promoted" until the promotion finishes, so gp_segment_configuration
 -- can already say role = 'p' while gp_inject_fault against that dbid still
 -- fails. Poll the segment in utility mode until it accepts a connection.
+-- psql inherits the server's environment: an installed build has no rpath
+-- and finds libpq only through the LD_LIBRARY_PATH that greenplum_path.sh
+-- exports, so the environment must not be replaced by PATH alone.
 CREATE OR REPLACE LANGUAGE plpythonu;
 CREATE OR REPLACE FUNCTION connectSeg(n int, port int, hostname text) RETURNS bool AS $$
 import os
@@ -17,7 +20,7 @@ import time
 for i in range(n):
     try:
         subprocess.check_call(["psql", "-h", str(hostname), "-p", str(port), "postgres", "-Xc", "select 1;"],
-                              env={"PGOPTIONS": "-c gp_session_role=utility", "PATH": os.getenv("PATH")})
+                              env=dict(os.environ, PGOPTIONS="-c gp_session_role=utility"))
         return True
     except Exception as e:
         time.sleep(1)
