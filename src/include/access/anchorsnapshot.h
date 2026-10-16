@@ -231,9 +231,15 @@ extern bool AnchorSnapshotNameIsValid(const char *name);
  * ignored).  AnchorSnapshotValidatePinned re-checks a pinned anchor for the
  * next statement of the transaction; AnchorSnapshotSessionAnchored says
  * whether anchored reads apply to this session right now.
+ * AnchorSnapshotOrdinal returns the registration a snapshot's anchor was
+ * installed from, or 0.  It ignores a value above the highest ordinal this
+ * backend has installed (any value, before its first install), so that a
+ * SnapshotData built by hand without zeroing it does not look anchored;
+ * a leftover value within that range is not caught.
  */
 extern void AnchorSnapshotPrepare(bool pin);
 extern bool AnchorSnapshotInstall(Snapshot snapshot);
+extern uint32 AnchorSnapshotOrdinal(Snapshot snapshot);
 extern void AnchorSnapshotValidatePinned(void);
 extern bool AnchorSnapshotTransactionPinned(void);
 extern bool AnchorSnapshotSessionAnchored(void);

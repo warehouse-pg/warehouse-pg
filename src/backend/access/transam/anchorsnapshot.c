@@ -2142,6 +2142,17 @@ static struct
 }			preparedAnchor;
 
 /*
+ * The highest registration ordinal this backend has installed, 0 before
+ * its first install.  Ordinals only grow, so no snapshot of this backend
+ * carries a higher one: AnchorSnapshotOrdinal ignores the field outside
+ * 1..anchorHighestInstalled, so that a SnapshotData an extension builds
+ * by hand, without zeroing it, does not look anchored.  Inside that range
+ * a leftover value still passes; nothing in a snapshot tells the two
+ * apart.
+ */
+static uint32 anchorHighestInstalled = 0;
+
+/*
  * The part of a preparation common to the dispatcher and the executors:
  * the registered anchor (name, xmin, ordinal) is read into the cache, its
  * size checked, and its xmin published under ProcArrayLock after
@@ -2312,6 +2323,18 @@ AnchorSnapshotPrepare(bool pin)
 }
 
 /*
+ * The registration the snapshot's anchor was installed from, or 0 when it
+ * carries none.  Read SnapshotData.anchorOrdinal only through this.
+ */
+uint32
+AnchorSnapshotOrdinal(Snapshot snapshot)
+{
+	uint32		ordinal = snapshot->anchorOrdinal;
+
+	return ordinal <= anchorHighestInstalled ? ordinal : 0;
+}
+
+/*
  * After GetSnapshotData(): lay the prepared anchor's xid set over the
  * snapshot's local half.  Returns false, leaving the snapshot alone, when
  * AnchorSnapshotPrepare found no anchor for it.
@@ -2347,6 +2370,8 @@ AnchorSnapshotInstall(Snapshot snapshot)
 
 	/* the snapshot remembers which registration it carries (dispatch) */
 	snapshot->anchorOrdinal = preparedAnchor.ordinal;
+	if (preparedAnchor.ordinal > anchorHighestInstalled)
+		anchorHighestInstalled = preparedAnchor.ordinal;
 
 	if (Gp_role == GP_ROLE_EXECUTE)
 	{
@@ -2597,7 +2622,7 @@ anchorRelCacheReset(void)
  * 'ordinal' installed in snap.
  */
 static AnchorRelVerdict
-anchorRelationVerdict(Oid relid, Snapshot snap)
+anchorRelationVerdict(Oid relid, Snapshot snap, uint32 ordinal)
 {
 	AnchorRelKey key;
 	AnchorRelEntry *e;
@@ -2610,7 +2635,7 @@ anchorRelationVerdict(Oid relid, Snapshot snap)
 		anchorRelCacheReset();
 
 	key.relid = relid;
-	key.ordinal = snap->anchorOrdinal;
+	key.ordinal = ordinal;
 	e = (AnchorRelEntry *) hash_search(anchorRelCache, &key, HASH_FIND, NULL);
 	if (e == NULL)
 	{
@@ -2661,19 +2686,21 @@ void
 AnchorSnapshotCheckRelation(Relation rel)
 {
 	Snapshot	snap;
+	uint32		ordinal;
 	Oid			relid;
 
 	if (!ActiveSnapshotSet())
 		return;
 	snap = GetActiveSnapshot();
-	if (snap->anchorOrdinal == 0)
+	ordinal = AnchorSnapshotOrdinal(snap);
+	if (ordinal == 0)
 		return;
 	relid = RelationGetRelid(rel);
 	if (IsCatalogRelationOid(relid) ||
 		!RELKIND_HAS_STORAGE(rel->rd_rel->relkind))
 		return;
 
-	switch (anchorRelationVerdict(relid, snap))
+	switch (anchorRelationVerdict(relid, snap, ordinal))
 	{
 		case ANCHOR_REL_OK:
 			return;
@@ -2681,7 +2708,7 @@ AnchorSnapshotCheckRelation(Relation rel)
 			ereport(ERROR,
 					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 					 errmsg("anchor snapshot \"%s\" cannot read relation \"%s\": it did not exist at the anchor",
-							anchorNameForMessage(snap->anchorOrdinal),
+							anchorNameForMessage(ordinal),
 							RelationGetRelationName(rel)),
 					 errdetail("The relation was created by a transaction that committed after the restore point."),
 					 errhint("Retry once a newer anchor has been published; roll back first inside a transaction block.")));
@@ -2690,7 +2717,7 @@ AnchorSnapshotCheckRelation(Relation rel)
 			ereport(ERROR,
 					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 					 errmsg("anchor snapshot \"%s\" cannot read relation \"%s\": its files changed after the anchor",
-							anchorNameForMessage(snap->anchorOrdinal),
+							anchorNameForMessage(ordinal),
 							RelationGetRelationName(rel)),
 					 errdetail("The relation was rewritten (TRUNCATE, CLUSTER, VACUUM FULL, REINDEX, a rewriting ALTER TABLE or SET TABLESPACE) by a transaction that committed after the restore point."),
 					 errhint("Retry once a newer anchor has been published; roll back first inside a transaction block.")));

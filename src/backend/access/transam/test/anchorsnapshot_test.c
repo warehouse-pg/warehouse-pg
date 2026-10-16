@@ -953,49 +953,49 @@ test__relation_verdicts(void **state)
 	/* the anchor's row version is the current one: no walk */
 	fakeCurNode = 5000;
 	ItemPointerSet(&fakeCurTid, 1, 1);
-	assert_int_equal(anchorRelationVerdict(16384, &snapA), ANCHOR_REL_OK);
-	assert_int_equal(anchorRelationVerdict(16384, &snapA), ANCHOR_REL_OK);
+	assert_int_equal(anchorRelationVerdict(16384, &snapA, snapA.anchorOrdinal), ANCHOR_REL_OK);
+	assert_int_equal(anchorRelationVerdict(16384, &snapA, snapA.anchorOrdinal), ANCHOR_REL_OK);
 	assert_int_equal(fakeAnchoredCalls, 1);	/* cached per (relation, anchor) */
 	assert_int_equal(fakeWalkCalls, 0);
 
 	/* a rewrite: another file */
 	fakeCurNode = 5001;
 	ItemPointerSet(&fakeCurTid, 1, 2);
-	assert_int_equal(anchorRelationVerdict(16384, &snapA), ANCHOR_REL_REWRITTEN);
+	assert_int_equal(anchorRelationVerdict(16384, &snapA, snapA.anchorOrdinal), ANCHOR_REL_REWRITTEN);
 	assert_int_equal(fakeWalkCalls, 0);
 
 	/* the row updated, same file (RENAME): the chain is walked once */
 	fakeCurNode = 5000;
 	ItemPointerSet(&fakeCurTid, 1, 3);
 	fakeWalkResult = true;
-	assert_int_equal(anchorRelationVerdict(16384, &snapA), ANCHOR_REL_OK);
-	assert_int_equal(anchorRelationVerdict(16384, &snapA), ANCHOR_REL_OK);
+	assert_int_equal(anchorRelationVerdict(16384, &snapA, snapA.anchorOrdinal), ANCHOR_REL_OK);
+	assert_int_equal(anchorRelationVerdict(16384, &snapA, snapA.anchorOrdinal), ANCHOR_REL_OK);
 	assert_int_equal(fakeWalkCalls, 1);
 
 	/* updated again: walked again, to the new current version */
 	ItemPointerSet(&fakeCurTid, 2, 1);
-	assert_int_equal(anchorRelationVerdict(16384, &snapA), ANCHOR_REL_OK);
+	assert_int_equal(anchorRelationVerdict(16384, &snapA, snapA.anchorOrdinal), ANCHOR_REL_OK);
 	assert_int_equal(fakeWalkCalls, 2);
 
 	/* same number after a rewrite and back (or the oid reused): the walk says no */
 	ItemPointerSet(&fakeCurTid, 2, 2);
 	fakeWalkResult = false;
-	assert_int_equal(anchorRelationVerdict(16384, &snapA), ANCHOR_REL_REWRITTEN);
+	assert_int_equal(anchorRelationVerdict(16384, &snapA, snapA.anchorOrdinal), ANCHOR_REL_REWRITTEN);
 	assert_int_equal(fakeWalkCalls, 3);
 	/* the failed walk is not remembered as verified */
-	assert_int_equal(anchorRelationVerdict(16384, &snapA), ANCHOR_REL_REWRITTEN);
+	assert_int_equal(anchorRelationVerdict(16384, &snapA, snapA.anchorOrdinal), ANCHOR_REL_REWRITTEN);
 	assert_int_equal(fakeWalkCalls, 4);
 
 	/* another anchor is another cache entry */
 	assert_int_equal(fakeAnchoredCalls, 1);
 	ItemPointerSet(&fakeAnchored.tid, 2, 2);
-	assert_int_equal(anchorRelationVerdict(16384, &snapB), ANCHOR_REL_OK);
+	assert_int_equal(anchorRelationVerdict(16384, &snapB, snapB.anchorOrdinal), ANCHOR_REL_OK);
 	assert_int_equal(fakeAnchoredCalls, 2);
 
 	/* a relation the anchor does not see */
 	fakeAnchored.exists = false;
-	assert_int_equal(anchorRelationVerdict(16385, &snapA), ANCHOR_REL_ABSENT);
-	assert_int_equal(anchorRelationVerdict(16385, &snapA), ANCHOR_REL_ABSENT);
+	assert_int_equal(anchorRelationVerdict(16385, &snapA, snapA.anchorOrdinal), ANCHOR_REL_ABSENT);
+	assert_int_equal(anchorRelationVerdict(16385, &snapA, snapA.anchorOrdinal), ANCHOR_REL_ABSENT);
 	assert_int_equal(fakeAnchoredCalls, 3);
 
 	hash_destroy(anchorRelCache);
@@ -1003,6 +1003,67 @@ test__relation_verdicts(void **state)
 	anchoredRelationVersionFn = anchoredRelationVersion;
 	currentRelationVersionFn = currentRelationVersion;
 	relationVersionsKeepFileFn = relationVersionsKeepFile;
+}
+
+/*
+ * A snapshot's anchorOrdinal counts only up to the highest ordinal this
+ * backend has installed: a SnapshotData built by hand, its field never
+ * zeroed, must not look anchored to the dispatch, export and relation-open
+ * checks.
+ */
+static void
+test__ordinal_needs_an_install(void **state)
+{
+	GpRoleValue savedRole = Gp_role;
+	TransactionId savedXmins[4] = {TransactionXmin, RecentXmin,
+	RecentGlobalXmin, RecentGlobalDataXmin};
+	SnapshotData garbage;
+	SnapshotData snap;
+
+	anchorHighestInstalled = 0;
+	MemSet(&garbage, 0x7f, sizeof(garbage));
+	assert_int_equal(AnchorSnapshotOrdinal(&garbage), 0);
+
+	/* nothing prepared: no install, the field still does not count */
+	MemSet(&snap, 0, sizeof(snap));
+	preparedAnchor.pending = false;
+	assert_false(AnchorSnapshotInstall(&snap));
+	assert_int_equal(AnchorSnapshotOrdinal(&garbage), 0);
+
+	/* an install makes ordinals up to its own count */
+	Gp_role = GP_ROLE_DISPATCH;
+	MemSet(&cachedAnchor, 0, sizeof(cachedAnchor));
+	cachedAnchor.valid = true;
+	cachedAnchor.ordinal = 7;
+	cachedAnchor.snap.xmin = 100;
+	cachedAnchor.snap.xmax = 110;
+	MemSet(&preparedAnchor, 0, sizeof(preparedAnchor));
+	preparedAnchor.pending = true;
+	preparedAnchor.ordinal = 7;
+	preparedAnchor.xmin = 100;
+	assert_true(AnchorSnapshotInstall(&snap));
+	assert_int_equal(snap.anchorOrdinal, 7);
+	assert_int_equal(AnchorSnapshotOrdinal(&snap), 7);
+
+	/* above the highest install: ignored */
+	snap.anchorOrdinal = 8;
+	assert_int_equal(AnchorSnapshotOrdinal(&snap), 0);
+	assert_int_equal(AnchorSnapshotOrdinal(&garbage), 0);
+
+	/* an older anchor of this backend still counts, and so would garbage in range */
+	snap.anchorOrdinal = 5;
+	assert_int_equal(AnchorSnapshotOrdinal(&snap), 5);
+	snap.anchorOrdinal = 0;
+	assert_int_equal(AnchorSnapshotOrdinal(&snap), 0);
+
+	MemSet(&cachedAnchor, 0, sizeof(cachedAnchor));
+	MemSet(&preparedAnchor, 0, sizeof(preparedAnchor));
+	anchorHighestInstalled = 0;
+	Gp_role = savedRole;
+	TransactionXmin = savedXmins[0];
+	RecentXmin = savedXmins[1];
+	RecentGlobalXmin = savedXmins[2];
+	RecentGlobalDataXmin = savedXmins[3];
 }
 
 int
@@ -1028,6 +1089,7 @@ main(int argc, char *argv[])
 		unit_test(test__removal_count),
 		unit_test(test__hook_skips_an_empty_registry),
 		unit_test(test__relation_verdicts),
+		unit_test(test__ordinal_needs_an_install),
 	};
 
 	MemoryContextInit();

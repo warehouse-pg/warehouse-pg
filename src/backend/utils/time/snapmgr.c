@@ -1434,7 +1434,7 @@ ExportSnapshot(Snapshot snapshot)
 	 * anchored mode; a parallel pg_dump of an anchored standby is therefore
 	 * not supported.
 	 */
-	if (snapshot->anchorOrdinal != 0)
+	if (AnchorSnapshotOrdinal(snapshot) != 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cannot export an anchored snapshot"),
