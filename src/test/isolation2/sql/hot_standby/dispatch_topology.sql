@@ -75,6 +75,10 @@ insert into hs_topo_t select generate_series(1, 100);
 !\retcode cp "$COORDINATOR_DATA_DIRECTORY/../../standby/topo_hs_good" "$COORDINATOR_DATA_DIRECTORY/../../standby/whpg_dr_topology_test";
 !\retcode echo "whpg_dispatch_topology_file = 'whpg_dr_topology_test'" >> "$COORDINATOR_DATA_DIRECTORY/../../standby/postgresql.conf";
 !\retcode pg_ctl reload -D "$COORDINATOR_DATA_DIRECTORY/../../standby";
+-- pg_ctl reload only signals the postmaster, which re-reads the file and
+-- then signals the backends; a new session showing the value proves the
+-- postmaster is done, so -1S applies the reload before its next command
+!\retcode sport=$(psql -X -d postgres -Atc "select port from gp_segment_configuration where content = -1 and role = 'm'"); for i in $(seq 1 100); do [ "$(PGOPTIONS='-c gp_role=utility' psql -X -p "$sport" -d postgres -Atc 'show whpg_dispatch_topology_file')" = "whpg_dr_topology_test" ] && exit 0; sleep 0.1; done; exit 1;
 
 -- Happy path: standby dispatch works from the file; state agrees from
 -- both the dispatch and the utility view.
@@ -183,6 +187,7 @@ insert into hs_topo_t select generate_series(1, 100);
 -- Disable and clean up.
 !\retcode sed -i '/whpg_dispatch_topology_file/d' "$COORDINATOR_DATA_DIRECTORY/../../standby/postgresql.conf";
 !\retcode pg_ctl reload -D "$COORDINATOR_DATA_DIRECTORY/../../standby";
+!\retcode sport=$(psql -X -d postgres -Atc "select port from gp_segment_configuration where content = -1 and role = 'm'"); for i in $(seq 1 100); do [ "$(PGOPTIONS='-c gp_role=utility' psql -X -p "$sport" -d postgres -Atc 'show whpg_dispatch_topology_file')" = "" ] && exit 0; sleep 0.1; done; exit 1;
 -1S: select count(*) from hs_topo_t;
 -1S: show whpg_dispatch_topology_state;
 drop table hs_topo_t;
