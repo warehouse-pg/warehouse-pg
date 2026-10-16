@@ -53,3 +53,16 @@ SELECT gp_hyperloglog_get_estimate('8gYCAP////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 
 -- b) Test convert an invalid hloglog counter.
 SELECT gp_hyperloglog_get_estimate('blah');
+
+-- c) gp_hyperloglog_in() must reject input that is not valid base64, or that
+-- decodes to fewer bytes than the counter header. Invalid base64 used to
+-- produce a value whose length word claimed 3 bytes; copying it truncated
+-- that length word, so constant folding returned adjacent memory, and
+-- forming a tuple from it shifted the following columns (an UPDATE read a
+-- (0,0) ctid).
+SELECT gp_hyperloglog_in(numerictypmodout(1::int4)::cstring);
+SELECT gp_hyperloglog_get_estimate('');
+CREATE TABLE hll_bad_input (id int, h gp_hyperloglog_estimator) DISTRIBUTED BY (id);
+INSERT INTO hll_bad_input SELECT i, NULL FROM generate_series(1, 3) i;
+UPDATE hll_bad_input SET h = gp_hyperloglog_in(numerictypmodout(id)::cstring);
+DROP TABLE hll_bad_input;
