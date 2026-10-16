@@ -41,6 +41,7 @@ DtxContextInfo_CreateOnCoordinator(DtxContextInfo *dtxContextInfo, bool inCursor
 {
 	int			i;
 	CommandId	curcid = 0;
+	uint32		anchorOrdinal = 0;
 
 	if (snapshot)
 		curcid = snapshot->curcid;
@@ -90,14 +91,16 @@ DtxContextInfo_CreateOnCoordinator(DtxContextInfo *dtxContextInfo, bool inCursor
 	 * own node's anchor of that name and the whole cluster reads the cut
 	 * this very snapshot describes.  The snapshot records the registration
 	 * it was installed from; an anchor retired since is refused here,
-	 * before anything is dispatched.  Only a dispatcher in recovery ever
-	 * installs anchors, so the field is not consulted elsewhere.
+	 * before anything is dispatched.  Only a dispatcher on a hot standby
+	 * installs anchors; a snapshot it installed before a promotion still
+	 * carries its anchor, and is refused here as retired.
 	 */
 	dtxContextInfo->anchorName[0] = '\0';
-	if (snapshot != NULL && Gp_role == GP_ROLE_DISPATCH &&
-		snapshot->anchorOrdinal != 0)
+	if (snapshot != NULL && Gp_role == GP_ROLE_DISPATCH)
+		anchorOrdinal = AnchorSnapshotOrdinal(snapshot);
+	if (anchorOrdinal != 0)
 	{
-		AnchorSnapshotNameForDispatch(snapshot->anchorOrdinal,
+		AnchorSnapshotNameForDispatch(anchorOrdinal,
 									  dtxContextInfo->anchorName);
 		dtxContextInfo->distributedTxnOptions =
 			mppTxOptions_SetAnchored(dtxContextInfo->distributedTxnOptions);
