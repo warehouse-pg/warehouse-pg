@@ -1,0 +1,42 @@
+-- This file contains test cases from gp_hyperloglog.
+-- 1. Test estimating the cardinality of an given stream.
+SELECT gp_hyperloglog_get_estimate(gp_hyperloglog_accum(i))
+  FROM generate_series(1, 10000)i;
+ gp_hyperloglog_get_estimate 
+-----------------------------
+            9998.40103485189
+(1 row)
+
+-- 2. Test convert a base64 string to hloglog counter.
+-- a) Test convert a valid (compressed) hloglog counter, as printed for
+-- gp_hyperloglog_accum(i) over generate_series(1, 100).
+SELECT gp_hyperloglog_get_estimate('8gYCAP////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAB0wBAAAB6AA8BZAYPIA0PAf8PAf8PAQIB2w8gDQ8BCAMPIA0PARQCDyANDwE17w/nKA8Beh8tVQ8BGAQPIA0PAfgfu3/3DwEWGOMFxAUPLggPAf8PAQRPjwX/T6ZZD2s0bwQ0DwHGH89ZDwEPH6pFD+N6/w8BGm+5/w8BVS8wEn8rfC/iYR8BM1+bdPcfzEYvJGYPeGUHD/FnDwH/DwEuT1Ap/z/TdA8BQV9kYQYBz80TD6EWP6ZhHzwf/4/7yDogL1RqDwERD5+NDwEWD8e1DwH/3w8BUm/Pxw8BPT9kfx+5iAcPIA0PAf//KWIvaDQvrn8PAR0PwFKvJ0MfeZsPrZv/DwFqz58BHzxHH5XID9rIDwH/DwH/DwGJ/69JOn9UQw8B/x9zS89YiH+SDQ8BGW2Kfw/0lA8BPH+OJx8t4g8BJ4/0/w8BHQT/DyANDwFDH7X/DwG2L04dLwgeLzj/DwHM/x/vgw+Vgw8BcW9JII/o1t+08T81/w8Bpf8/s38vWUIvrWAPcgUCFw+OOw/bYFwGv28mAC9Tfw8B/w8Bty/+Bz8XEgN/yAD/P05pDwGxHz4UH2R2r98gDwH/DwEHYwMfH+ocLxh2DwFVQnx/K1sAAAAA');
+ gp_hyperloglog_get_estimate 
+-----------------------------
+             100.30560977271
+(1 row)
+
+-- b) A counter printed by gp_hyperloglog_out() must read back.
+SELECT gp_hyperloglog_get_estimate(gp_hyperloglog_accum(i)::text::gp_hyperloglog_estimator)
+  FROM generate_series(1, 100)i;
+ gp_hyperloglog_get_estimate 
+-----------------------------
+             100.30560977271
+(1 row)
+
+-- c) Test convert an invalid hloglog counter.
+SELECT gp_hyperloglog_get_estimate('blah');
+ERROR:  invalid input syntax for type gp_hyperloglog_estimator
+LINE 1: SELECT gp_hyperloglog_get_estimate('blah');
+                                           ^
+DETAIL:  Decoded length 3 is shorter than the gp_hyperloglog_estimator header (72 bytes).
+-- d) gp_hyperloglog_in() must reject input that is not valid base64, or that
+-- decodes to fewer bytes than the counter header. A too-short value used to
+-- be accepted and its missing header fields read from adjacent memory.
+SELECT gp_hyperloglog_in(numerictypmodout(1::int4)::cstring);
+ERROR:  invalid symbol
+SELECT gp_hyperloglog_get_estimate('');
+ERROR:  invalid input syntax for type gp_hyperloglog_estimator
+LINE 1: SELECT gp_hyperloglog_get_estimate('');
+                                           ^
+DETAIL:  Decoded length 0 is shorter than the gp_hyperloglog_estimator header (72 bytes).

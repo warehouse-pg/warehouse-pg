@@ -1236,6 +1236,28 @@ gp_hyperloglog_in(PG_FUNCTION_ARGS)
 	if (res > resultlen)
 		elog(FATAL, "overflow - decode estimate too small");
 
+	/*
+	 * The decoded bytes are handed back as-is and later cast to
+	 * GpHLLCounter, whose header fields are read at fixed offsets.
+	 * gp_hll_b64_decode() already raises an ERROR on invalid base64, but
+	 * valid base64 that decodes to fewer bytes than the fixed GpHLLData
+	 * header would be accepted and its missing fields read from whatever
+	 * memory follows.  Reject it.  The bytea's own length word doubles as
+	 * GpHLLData.vl_len_, so only the fields after it have to come from the
+	 * decoded bytes.
+	 *
+	 * Deliberately NOT checking ->version here: pg_check_hll_version()'s
+	 * message ("use upgrade function to upgrade the counter") says a value
+	 * with an old, unrecognized version is a legitimate value with its own
+	 * upgrade path, not malformed input.
+	 */
+	if (VARHDRSZ + res < (int) offsetof(GpHLLData, data))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+				 errmsg("invalid input syntax for type %s", "gp_hyperloglog_estimator"),
+				 errdetail("Decoded length %d is shorter than the gp_hyperloglog_estimator header (%d bytes).",
+						   res, (int) (offsetof(GpHLLData, data) - VARHDRSZ))));
+
 	SET_VARSIZE(result, VARHDRSZ + res);
 
 	PG_RETURN_BYTEA_P(result);
