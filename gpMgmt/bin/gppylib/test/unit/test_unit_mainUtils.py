@@ -1,6 +1,12 @@
 import os
+import shutil
+import subprocess
+import sys
+
+from mock import patch
 
 from gppylib.test.unit.gp_unittest import *
+from gppylib import mainUtils
 from gppylib.mainUtils import PIDLockFile, PIDLockHeld
 from gppylib.mainUtils import parseStatusLine
 
@@ -95,6 +101,72 @@ class MainUtilsTestCase(GpTestCase):
             else:
                 os.wait()
 
+    def test_release_is_idempotent(self):
+        self.lock.acquire()
+        self.addCleanup(self.lock.release)
+        self.lock.release()
+        self.assertTrue(self.lock.released)
+        # second release must not touch the filesystem at all
+        with patch('gppylib.mainUtils.PIDLockFile.read_pid') as read_pid, \
+             patch('gppylib.mainUtils.shutil.rmtree') as rmtree:
+            self.lock.release()
+            read_pid.assert_not_called()
+            rmtree.assert_not_called()
+
+    def test_reacquire_after_release_clears_released_flag(self):
+        self.lock.acquire()
+        self.addCleanup(self.lock.release)
+        self.lock.release()
+        self.lock.acquire()
+        self.assertFalse(self.lock.released)
+        self.lock.release()
+        self.assertEqual(False, os.path.exists(self.lockfile))
+
+    def test_del_swallows_exceptions(self):
+        # Simulates interpreter teardown, where builtins like open() are gone
+        # and read_pid() raises NameError.
+        self.lock.acquire()
+        self.addCleanup(self.lock.release)
+        with patch('gppylib.mainUtils.PIDLockFile.read_pid', side_effect=NameError("name 'open' is not defined")):
+            try:
+                self.lock.__del__()
+            except Exception as e:
+                self.fail("__del__ raised %r" % e)
+
+    def test_del_after_explicit_release_is_noop_at_interpreter_shutdown(self):
+        # End-to-end check: a PIDLockFile whose __main__ dict is
+        # kept alive past module teardown must not emit "Exception ignored in
+        # __del__ ... NameError: name 'open' is not defined" when the
+        # interpreter exits.
+        #
+        # A bare global in __main__ is NOT enough to trigger the bug: the
+        # __main__ dict is dropped as soon as sys.modules['__main__'] is
+        # cleared, while builtins are still intact. gpmovemirrors reproduces
+        # because it defines functions at module level; each function's
+        # __globals__ points back at __main__.__dict__, forming a cycle that
+        # is only broken by the final GC pass, after module dicts and
+        # builtins are gone. The _hold() function below recreates that cycle.
+        lockdir = self.lockfile + "-shutdown"
+        self.addCleanup(lambda: os.path.isdir(lockdir) and shutil.rmtree(lockdir))
+        script = (
+            "import sys\n"
+            "from gppylib.mainUtils import PIDLockFile\n"
+            "def _hold():\n"
+            "    return lock\n"
+            "lock = PIDLockFile(sys.argv[1])\n"
+            "lock.acquire()\n"
+            "lock.release()\n"
+        )
+        pylib = os.path.dirname(os.path.dirname(os.path.abspath(mainUtils.__file__)))
+        env = dict(os.environ)
+        env['PYTHONPATH'] = os.pathsep.join([pylib] + [p for p in sys.path if p])
+        proc = subprocess.run([sys.executable, '-c', script, lockdir],
+                              env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              universal_newlines=True, timeout=60)
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        self.assertNotIn("Exception ignored", proc.stderr)
+        self.assertNotIn("NameError", proc.stderr)
+        self.assertFalse(os.path.exists(lockdir))
 
 
 
