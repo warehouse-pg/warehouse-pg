@@ -170,6 +170,16 @@ public:
 		CColRefSet *outer_refs, BOOL is_semi_or_anti_join,
 		CStatsPred **unsupported_pred_stats);
 
+	// helper function to extract array of statistics join filter from an
+	// array of conjuncts of join predicates; does not assume ownership of
+	// the conjunct array
+	static CStatsPredJoinArray *ExtractJoinStatsFromJoinPredConjuncts(
+		CMemoryPool *mp, CExpressionArray *expr_conjuncts,
+		CColRefSetArray *
+			output_col_refset,	// array of output columns of join's relational inputs
+		CColRefSet *outer_refs, BOOL is_semi_or_anti_join,
+		CStatsPred **unsupported_pred_stats);
+
 	// helper function to extract array of statistics join filter from an expression handle
 	static CStatsPredJoinArray *ExtractJoinStatsFromExprHandle(
 		CMemoryPool *mp, CExpressionHandle &expr_handle,
