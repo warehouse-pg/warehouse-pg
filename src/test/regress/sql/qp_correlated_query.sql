@@ -874,6 +874,74 @@ DROP TABLE skip_correlated_t2;
 DROP TABLE skip_correlated_t3;
 DROP TABLE skip_correlated_t4;
 
+--------------------------------------------------------------------------------
+-- A correlated qual on a partitioned relation is held in the parent rel's
+-- upperrestrictinfo and applied by bring_to_outer_query() above the parent's
+-- Append. Such a relation must not be joined or aggregated partitionwise: the
+-- child joins and aggregates are built from the children's paths, below that
+-- Result, and would lose the qual. Each query must give the same answer with
+-- partitionwise planning on and off.
+--------------------------------------------------------------------------------
+create table pwj_outer (id int, k int) distributed by (id);
+create table pwj_a (k int, v int) partition by range (k) distributed by (k);
+create table pwj_a_1 partition of pwj_a for values from (0) to (10);
+create table pwj_a_2 partition of pwj_a for values from (10) to (20);
+create table pwj_b (k int, w int) partition by range (k) distributed by (k);
+create table pwj_b_1 partition of pwj_b for values from (0) to (10);
+create table pwj_b_2 partition of pwj_b for values from (10) to (20);
+create index on pwj_b (k);
+insert into pwj_outer select i, i % 20 from generate_series(1, 20) i;
+insert into pwj_a select i % 20, i from generate_series(1, 200) i;
+insert into pwj_b select i % 20, i from generate_series(1, 200) i;
+analyze pwj_outer;
+analyze pwj_a;
+analyze pwj_b;
+
+-- reference: not partitionwise, the qual is applied in a Result above the join
+set enable_partitionwise_join = off;
+set enable_nestloop = on;
+set enable_hashjoin = off;
+set enable_mergejoin = off;
+select o.id, o.k, (select count(*) from pwj_a a join pwj_b b on a.k = b.k and b.w > o.k) as cnt
+from pwj_outer o where o.id <= 3 order by 1;
+
+-- partitionwise join: same query, must give the same counts
+set enable_partitionwise_join = on;
+explain (costs off)
+select (select count(*) from pwj_a a join pwj_b b on a.k = b.k and b.w > o.k)
+from pwj_outer o where o.id = 1;
+select o.id, o.k, (select count(*) from pwj_a a join pwj_b b on a.k = b.k and b.w > o.k) as cnt
+from pwj_outer o where o.id <= 3 order by 1;
+
+-- partitionwise aggregate: count(*) must not count the unfiltered rows, and
+-- GROUP BY the partition key must not fail with "ORDER/GROUP BY expression
+-- not found in targetlist"
+set enable_partitionwise_aggregate = off;
+select o.id, o.k, (select count(*) from pwj_b b where b.w > o.k) as cnt
+from pwj_outer o where o.id <= 3 order by 1;
+select o.id, o.k, (select sum(c) from (select b.k, count(*) as c from pwj_b b where b.w > o.k group by b.k) s) as cnt
+from pwj_outer o where o.id <= 3 order by 1;
+set enable_partitionwise_aggregate = on;
+explain (costs off)
+select (select count(*) from pwj_b b where b.w > o.k)
+from pwj_outer o where o.id = 1;
+select o.id, o.k, (select count(*) from pwj_b b where b.w > o.k) as cnt
+from pwj_outer o where o.id <= 3 order by 1;
+explain (costs off)
+select (select sum(c) from (select b.k, count(*) as c from pwj_b b where b.w > o.k group by b.k) s)
+from pwj_outer o where o.id = 1;
+select o.id, o.k, (select sum(c) from (select b.k, count(*) as c from pwj_b b where b.w > o.k group by b.k) s) as cnt
+from pwj_outer o where o.id <= 3 order by 1;
+
+reset enable_partitionwise_aggregate;
+reset enable_partitionwise_join;
+reset enable_nestloop;
+reset enable_hashjoin;
+reset enable_mergejoin;
+drop table pwj_outer;
+drop table pwj_a;
+drop table pwj_b;
+
 -- ----------------------------------------------------------------------
 -- Test: teardown.sql
 -- ----------------------------------------------------------------------

@@ -4781,9 +4781,15 @@ create_ordinary_grouping_paths(PlannerInfo *root, RelOptInfo *input_rel,
 	 * doing some form of partitionwise aggregation, then we may be able to do
 	 * it at this level also.  However, if the input relation is not
 	 * partitioned, partitionwise aggregate is impossible.
+	 *
+	 * WHPG: nor when the input relation holds correlated quals in
+	 * upperrestrictinfo.  The partitionwise paths would aggregate the
+	 * partitions' own paths, below the Result that applies those quals, so
+	 * the quals would never be applied.
 	 */
 	if (extra->patype != PARTITIONWISE_AGGREGATE_NONE &&
-		IS_PARTITIONED_REL(input_rel))
+		IS_PARTITIONED_REL(input_rel) &&
+		!input_rel->upperrestrictinfo)
 	{
 		/*
 		 * If this is the topmost relation or if the parent relation is doing
