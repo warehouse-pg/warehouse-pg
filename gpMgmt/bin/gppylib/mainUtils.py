@@ -132,9 +132,11 @@ class PIDLockFile:
         return None
 
     def __del__(self):
-        # __del__ may run during interpreter teardown (e.g. when the lock is
-        # held by a module-level global, as in gpmovemirrors). At that point
-        # builtins such as open() may already be gone, which surfaces as
+        # __del__ may run very late during interpreter teardown when the
+        # __main__ dict that references the lock is kept alive past module
+        # cleanup, e.g. by module-level functions whose __globals__ point back
+        # at it (as in gpmovemirrors), signal handlers, and so on. At that
+        # point builtins such as open() are already gone, which surfaces as
         # "Exception ignored in ... NameError: name 'open' is not defined".
         # The lock has normally been released explicitly by then (see the
         # released flag); if not, there is nothing useful we can do about a
