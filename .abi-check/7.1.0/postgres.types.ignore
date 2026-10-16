@@ -17,3 +17,7 @@ struct MotionConn
 struct CdbCopy
 struct StdRdOptions
 struct AlteredTableInfo
+struct SeqScan
+SeqScan
+struct DynamicSeqScan
+SeqScan*

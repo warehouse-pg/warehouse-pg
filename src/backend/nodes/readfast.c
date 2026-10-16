@@ -958,7 +958,7 @@ _readDynamicSeqScan(void)
 {
 	READ_LOCALS(DynamicSeqScan);
 
-	ReadCommonScan(&local_node->seqscan);
+	ReadCommonScan(&local_node->seqscan.scan);
 	READ_NODE_FIELD(partOids);
 	READ_NODE_FIELD(part_prune_info);
 	READ_NODE_FIELD(join_prune_paramids);
