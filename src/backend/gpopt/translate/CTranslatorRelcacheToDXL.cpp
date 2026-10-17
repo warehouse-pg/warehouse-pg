@@ -1856,7 +1856,13 @@ CTranslatorRelcacheToDXL::RetrieveRelStats(CMemoryPool *mp, IMDId *mdid)
 	// CMDName ctor created a copy of the string
 	GPOS_DELETE(relname_str);
 
-	num_rows = gpdb::CdbEstimatePartitionedNumTuples(rel.get());
+	// one call for an extension's table: its size can be costly to find
+	PageEstimate pages;
+	if (!gpdb::ExtensionRelationSize(rel.get(), &num_rows, &pages))
+	{
+		num_rows = gpdb::CdbEstimatePartitionedNumTuples(rel.get());
+		pages = gpdb::CdbEstimatePartitionedNumPages(rel.get());
+	}
 
 	m_rel_stats_mdid->AddRef();
 
@@ -1869,8 +1875,6 @@ CTranslatorRelcacheToDXL::RetrieveRelStats(CMemoryPool *mp, IMDId *mdid)
 	{
 		relation_empty = true;
 	}
-
-	PageEstimate pages = gpdb::CdbEstimatePartitionedNumPages(rel.get());
 
 	ULONG relpages = pages.totalpages;
 	ULONG relallvisible = pages.totalallvisiblepages;

@@ -18,6 +18,8 @@
 #define ORCA_H
 
 #include "pg_config.h"
+#include "access/htup.h"
+#include "storage/block.h"
 
 #ifdef USE_ORCA
 
@@ -106,6 +108,30 @@ typedef const OrcaPlanRegions *(*orca_plan_regions_hook_type) (const char *plan_
 															   int nops,
 															   const char *const *opnames);
 extern PGDLLIMPORT orca_plan_regions_hook_type orca_plan_regions_hook;
+
+/*
+ * Statistics hooks for ORCA's metadata translation, the counterparts of the
+ * PG planner's get_relation_info_hook and get_relation_stats_hook for tables
+ * whose data and statistics live outside PG (such as tables an extension
+ * stores itself).
+ *
+ * orca_relation_size_hook: the relation's row and page counts. Returns false
+ * to use pg_class.
+ *
+ * orca_att_stats_hook: a pg_statistic tuple for the column, palloc'd (the
+ * caller frees it), or NULL to read pg_statistic.
+ *
+ * Both run with the optimizer GUC off, as Orca isn't reentrant: queries they
+ * run (through SPI) are planned by PG's planner. The size hook is called for
+ * the relation's statistics and again for each column's, so it should cache
+ * an answer that is costly to find.
+ */
+typedef bool (*orca_relation_size_hook_type) (Oid relid, double *tuples,
+											  BlockNumber *pages);
+extern PGDLLIMPORT orca_relation_size_hook_type orca_relation_size_hook;
+
+typedef HeapTuple (*orca_att_stats_hook_type) (Oid relid, AttrNumber attnum);
+extern PGDLLIMPORT orca_att_stats_hook_type orca_att_stats_hook;
 
 #endif
 
