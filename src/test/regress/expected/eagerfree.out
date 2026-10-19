@@ -73,6 +73,8 @@ select d, count(*) from smallt group by d;
 where stats_name = 'executor_mem_lines'
 or stats_name = 'workmem_wanted_lines'
 order by stats_name;
+WARNING:  WITH query "query_plan" containing volatile functions will be evaluated once per reference
+DETAIL:  Its result cannot be shared at one of its references, so the references may see different results.
       stats_name      | stats_value 
 ----------------------+-------------
  executor_mem_lines   |           0
@@ -233,6 +235,8 @@ where t1.d = t2.d;
 where stats_name = 'executor_mem_lines'
 or stats_name = 'workmem_wanted_lines'
 order by stats_name;
+WARNING:  WITH query "query_plan" containing volatile functions will be evaluated once per reference
+DETAIL:  Its result cannot be shared at one of its references, so the references may see different results.
       stats_name      | stats_value 
 ----------------------+-------------
  executor_mem_lines   |           0
@@ -299,6 +303,8 @@ where t1.i = t2.i;
 where stats_name = 'executor_mem_lines'
 or stats_name = 'workmem_wanted_lines'
 order by stats_name;
+WARNING:  WITH query "query_plan" containing volatile functions will be evaluated once per reference
+DETAIL:  Its result cannot be shared at one of its references, so the references may see different results.
       stats_name      | stats_value 
 ----------------------+-------------
  executor_mem_lines   |           0
@@ -348,6 +354,8 @@ select d, count(*) from smallt group by d limit 5;
 where stats_name = 'executor_mem_lines'
 or stats_name = 'workmem_wanted_lines'
 order by stats_name;
+WARNING:  WITH query "query_plan" containing volatile functions will be evaluated once per reference
+DETAIL:  Its result cannot be shared at one of its references, so the references may see different results.
       stats_name      | stats_value 
 ----------------------+-------------
  executor_mem_lines   |           1

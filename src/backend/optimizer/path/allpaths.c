@@ -3122,7 +3122,7 @@ set_cte_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 	 * second reference might live outside the current InitPlan/nesting;
 	 * the producer would then wait forever for a consumer dispatched on a
 	 * different schedule (or deadlock against another nested SharedScan).
-	 * Per-reference evaluation is what pre-PR234 already did here.
+	 * Such a reference gets its own copy of the CTE plan instead, see below.
 	 */
 	if (cte->cterefcount > 1 && !root->config->cte_sharing_allowed)
 		is_shared = false;
@@ -3138,6 +3138,33 @@ set_cte_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 		contain_outer_selfref(cte->ctequery) ||
 		contain_vars_of_level_or_above((Node *) cte->ctequery, 1))
 		is_shared = false;
+
+	/*
+	 * If a CTE that must be evaluated exactly once could not be shared, this
+	 * reference gets its own copy of the CTE plan. For a data-modifying CTE
+	 * that would repeat its writes, so refuse the query. For a volatile CTE,
+	 * warn that each reference may see different results.
+	 */
+	if (!is_shared && cte->cterefcount > 1)
+	{
+		if (subquery->commandType != CMD_SELECT)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("data-modifying WITH query \"%s\" cannot be referenced more than once here",
+							cte->ctename),
+					 errdetail("Its result cannot be shared at this reference, so the data modification would be executed once per reference.")));
+
+		if (contain_volatile_function &&
+			Gp_role != GP_ROLE_EXECUTE &&
+			!cteplaninfo->unshared_warned)
+		{
+			ereport(WARNING,
+					(errmsg("WITH query \"%s\" containing volatile functions will be evaluated once per reference",
+							cte->ctename),
+					 errdetail("Its result cannot be shared at one of its references, so the references may see different results.")));
+			cteplaninfo->unshared_warned = true;
+		}
+	}
 
 	if (!is_shared)
 	{

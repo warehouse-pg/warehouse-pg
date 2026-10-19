@@ -63,6 +63,8 @@ SELECT
   (SELECT COUNT(*) FROM query_plan WHERE et like '%Vmem reserved: %') as vmem_reserved_lines,
   (SELECT COUNT(*) FROM query_plan WHERE et like '%Executor Memory: %') as executor_memory_lines
 ;
+WARNING:  WITH query "query_plan" containing volatile functions will be evaluated once per reference
+DETAIL:  Its result cannot be shared at one of its references, so the references may see different results.
  vmem_reserved_lines | executor_memory_lines 
 ---------------------+-----------------------
                    2 |                     0
@@ -80,6 +82,8 @@ SELECT
   (SELECT COUNT(*) FROM query_plan WHERE et like '%Vmem reserved: %') as vmem_reserved_lines,
   (SELECT COUNT(*) FROM query_plan WHERE et like '%Executor Memory: %') as executor_memory_lines
 ;
+WARNING:  WITH query "query_plan" containing volatile functions will be evaluated once per reference
+DETAIL:  Its result cannot be shared at one of its references, so the references may see different results.
  vmem_reserved_lines | executor_memory_lines 
 ---------------------+-----------------------
                    2 |                     2
@@ -142,6 +146,8 @@ LIMIT 1;
 where stats_name = 'executor_mem_lines'
 or stats_name = 'workmem_wanted_lines'
 order by stats_name;
+WARNING:  WITH query "query_plan" containing volatile functions will be evaluated once per reference
+DETAIL:  Its result cannot be shared at one of its references, so the references may see different results.
       stats_name      | stats_value 
 ----------------------+-------------
  executor_mem_lines   |           1
