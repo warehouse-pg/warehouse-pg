@@ -24,6 +24,8 @@ DROP ROLE IF EXISTS regress_priv_user3;
 DROP ROLE IF EXISTS regress_priv_user4;
 DROP ROLE IF EXISTS regress_priv_user5;
 DROP ROLE IF EXISTS regress_priv_user6;
+DROP FUNCTION IF EXISTS priv_set_role_func();
+DROP ROLE IF EXISTS regress_priv_user11;
 
 -- start_ignore
 SELECT lo_unlink(oid) FROM pg_largeobject_metadata WHERE oid >= 1000 AND oid < 3000 ORDER BY oid;
@@ -79,6 +81,17 @@ RESET force_parallel_mode;
 DROP USER regress_priv_user10;
 DROP USER regress_priv_user9;
 DROP USER regress_priv_user8;
+
+-- A role installed on the segments by a function's SET clause must be
+-- released again once the coordinator runs without it; DROP ROLE used to
+-- fail on the segments with "current user cannot be dropped".
+CREATE ROLE regress_priv_user11;
+CREATE FUNCTION priv_set_role_func() RETURNS bool LANGUAGE sql
+	SET ROLE = regress_priv_user11
+	AS $$ SELECT count(*) > 0 FROM gp_dist_random('gp_id') $$;
+SELECT priv_set_role_func();
+DROP FUNCTION priv_set_role_func();
+DROP ROLE regress_priv_user11;
 
 CREATE GROUP regress_priv_group1;
 CREATE GROUP regress_priv_group2 WITH USER regress_priv_user1, regress_priv_user2;
