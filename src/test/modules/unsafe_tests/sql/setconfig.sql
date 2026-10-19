@@ -2,6 +2,9 @@
 -- during the test run.  Under installcheck, a too-permissive pg_hba.conf
 -- might allow unwanted logins as regress_authenticated_user_ssa.
 
+-- Remember the invoking superuser, to drop the roles created for this test.
+SELECT current_user AS regress_superuser \gset
+
 ALTER USER regress_authenticated_user_ssa superuser;
 CREATE ROLE regress_session_user;
 CREATE ROLE regress_current_user;
@@ -22,3 +25,6 @@ SELECT current_user, session_user;
 RESET SESSION AUTHORIZATION;
 DROP USER regress_session_user;
 DROP USER regress_current_user;
+\c - :regress_superuser
+DROP OWNED BY regress_authenticated_user_sr, regress_authenticated_user_ssa;
+DROP ROLE regress_authenticated_user_sr, regress_authenticated_user_ssa;
