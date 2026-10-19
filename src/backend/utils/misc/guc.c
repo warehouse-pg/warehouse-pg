@@ -6401,6 +6401,8 @@ set_config_option(const char *name, const char *value,
 		case PGC_STRING:
 			{
 				struct config_string *conf = (struct config_string *) record;
+				GucContext	orig_context = context;
+				GucSource	orig_source = source;
 
 #define newval (newval_union.stringval)
 
@@ -6470,6 +6472,38 @@ set_config_option(const char *name, const char *value,
 									newextra);
 					conf->gen.source = source;
 					conf->gen.scontext = context;
+
+					/*
+					 * Ugly hack: during SET session_authorization, forcibly
+					 * do SET ROLE NONE with the same context/source/etc, so
+					 * that the effects will have identical lifespan.  This is
+					 * required by the SQL spec, and it's not possible to do
+					 * it within the variable's check hook or assign hook
+					 * because our APIs for those don't pass enough info.
+					 *
+					 * Also, for the call from InitializeSessionUserId with
+					 * source == PGC_S_OVERRIDE, use PGC_S_DYNAMIC_DEFAULT for
+					 * "role"'s source, so that it's still possible to set
+					 * "role" from pg_db_role_setting entries.  (See notes in
+					 * InitializeSessionUserId before changing this.)
+					 *
+					 * A fine point: for RESET session_authorization, we do
+					 * "RESET role" not "SET ROLE NONE" (by passing down NULL
+					 * rather than "none" for the value).  This would have the
+					 * same effects in typical cases, but if the reset value
+					 * of "role" is not "none" it seems better to revert to
+					 * that.
+					 */
+					if (strcmp(conf->gen.name, "session_authorization") == 0)
+						(void) set_config_option("role",
+												 value ? "none" : NULL,
+												 orig_context,
+												 (orig_source == PGC_S_OVERRIDE)
+												 ? PGC_S_DYNAMIC_DEFAULT
+												 : orig_source,
+												 action,
+												 true,
+												 elevel);
 				}
 
 				if (makeDefault)

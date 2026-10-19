@@ -21,6 +21,9 @@ DROP ROLE IF EXISTS regressuser3;
 DROP ROLE IF EXISTS regressuser4;
 DROP ROLE IF EXISTS regressuser5;
 DROP ROLE IF EXISTS regressuser6;
+DROP ROLE IF EXISTS regressuser8;
+DROP ROLE IF EXISTS regressuser9;
+DROP ROLE IF EXISTS regressuser10;
 DROP ROLE IF EXISTS non_superuser_schema;
 
 -- start_ignore
@@ -37,6 +40,31 @@ CREATE USER regressuser3;
 CREATE USER regressuser4;
 CREATE USER regressuser5;
 CREATE USER regressuser5;	-- duplicate
+
+CREATE USER regressuser8;
+CREATE USER regressuser9;
+CREATE USER regressuser10;
+
+-- test interaction of SET SESSION AUTHORIZATION and SET ROLE
+GRANT regressuser9 TO regressuser8;
+
+SET SESSION AUTHORIZATION regressuser8;
+SET ROLE regressuser9;
+SELECT session_user, current_role, current_user, current_setting('role') as role;
+
+BEGIN;
+SET SESSION AUTHORIZATION regressuser10;
+SELECT session_user, current_role, current_user, current_setting('role') as role;
+ROLLBACK;
+SELECT session_user, current_role, current_user, current_setting('role') as role;
+
+RESET SESSION AUTHORIZATION;
+-- session_user at this point is installation-dependent
+SELECT session_user = current_role as c_r_ok, session_user = current_user as c_u_ok, current_setting('role') as role;
+
+DROP USER regressuser10;
+DROP USER regressuser9;
+DROP USER regressuser8;
 
 CREATE GROUP regressgroup1;
 CREATE GROUP regressgroup2 WITH USER regressuser1, regressuser2;

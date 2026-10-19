@@ -5513,8 +5513,23 @@ PostgresMain(int argc, char *argv[],
 					if (suid > 0)
 						SetSessionUserId(suid, false); /* Set the session UserId */
 
+					/*
+					 * SetSessionUserId() no longer touches the outer user or
+					 * the SET ROLE state, so mirror the QD's state explicitly:
+					 * adopt its outer user when a role other than the session
+					 * user is active, else revert to the session user (as SET
+					 * ROLE NONE would).  Skip the call when this QE already
+					 * matches, since SetCurrentRoleId() reports is_superuser
+					 * back to the QD each time it runs.
+					 */
 					if (ouid > 0 && ouid != GetSessionUserId())
-						SetCurrentRoleId(ouid, false); /* Set the outer UserId */
+					{
+						if (GetCurrentRoleId() != ouid)
+							SetCurrentRoleId(ouid, false); /* Set the outer UserId */
+					}
+					else if (OidIsValid(GetCurrentRoleId()) ||
+							 GetOuterUserId() != GetSessionUserId())
+						SetCurrentRoleId(InvalidOid, false); /* SET ROLE NONE */
 
 					setupQEDtxContext(&TempDtxContextInfo);
 
