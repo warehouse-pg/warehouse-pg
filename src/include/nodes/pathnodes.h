@@ -490,6 +490,12 @@ typedef struct CtePlanInfo
 	 * The subroot corresponding to the subplan.
 	 */
 	PlannerInfo *subroot;
+
+	/*
+	 * True once a WARNING has been raised for a volatile CTE that had to be
+	 * planned once per reference, so it is raised only once per CTE.
+	 */
+	bool		unshared_warned;
 } CtePlanInfo;
 
 /*
