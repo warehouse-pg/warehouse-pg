@@ -1,0 +1,72 @@
+# Dockerfile for a ready-to-run WarehousePG image (trials and benchmarks).
+#
+# Stage 1 compiles WarehousePG inside the CI build image; stage 2 copies the
+# install prefix into a slim Rocky Linux 9 image that starts a demo cluster.
+#
+# Build from the repository root (the context must include .git so that
+# getversion can resolve the version):
+#   docker build -f dockerfiles/Dockerfile.runtime -t whpg:dev .
+
+ARG BUILD_IMAGE=ghcr.io/warehouse-pg/whpg-rocky9-build:latest
+
+FROM ${BUILD_IMAGE} AS build-stage
+
+# Set to "--without-llvm" only for local builds under emulation (e.g. amd64 on
+# Apple silicon), where clang crashes while emitting JIT bitcode.
+ARG LLVM_CONFIGURE_FLAG=--with-llvm
+
+COPY . /src
+WORKDIR /src
+
+# Release flags: no assertions, no TAP tests, no debug extensions, no -g3, so
+# that benchmark numbers are representative.
+RUN CC='ccache gcc -m64' CFLAGS='-O2' \
+    LDFLAGS='-Wl,--enable-new-dtags -Wl,--export-dynamic' \
+    ./configure --disable-gpperfmon --with-gssapi --enable-orafce --enable-ic-proxy \
+                --enable-orca --with-libxml --with-uuid=e2fs --with-pgport=5432 \
+                ${LLVM_CONFIGURE_FLAG} --with-perl --with-python --with-openssl --with-pam \
+                --with-ldap --disable-rpath \
+                --prefix=/usr/local/greenplum-db-devel \
+                --mandir=/usr/local/greenplum-db-devel/man \
+    && make -j"$(nproc)" \
+    && make install -j"$(nproc)"
+
+FROM rockylinux:9
+
+LABEL org.opencontainers.image.title="WarehousePG Database (single-node demo cluster)"
+LABEL org.opencontainers.image.description="WarehousePG 7 with an entrypoint that initialises a demo cluster. For trials and benchmarks, not production."
+LABEL org.opencontainers.image.source="https://github.com/warehouse-pg/warehouse-pg"
+
+ENV LANG=en_US.UTF-8 \
+    LC_ALL=en_US.UTF-8 \
+    GPHOME=/usr/local/greenplum-db-devel
+
+RUN dnf install -y epel-release \
+    && dnf config-manager --set-enabled crb \
+    && dnf install -y \
+        apr bzip2 ed glibc-langpack-en hostname iproute iputils krb5-libs \
+        less libevent libuuid libuv libxml2 libyaml libzstd lz4 \
+        llvm-libs nc net-tools openldap openssh-clients openssh-server \
+        openssl-libs pam perl-libs procps-ng python3 python3-lxml \
+        python3-psutil python3-psycopg2 python3-pyyaml readline rsync sudo \
+        which xerces-c zlib \
+    && dnf clean all
+
+COPY --from=build-stage /usr/local/greenplum-db-devel /usr/local/greenplum-db-devel
+COPY gpAux/gpdemo/ /opt/whpg/gpdemo/
+COPY dockerfiles/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY dockerfiles/smoke-test.sh /usr/local/bin/whpg-smoke-test
+
+# gpadmin owns the cluster. SSH keys are generated at container start, never
+# baked into the image.
+RUN groupadd supergroup \
+    && useradd -m -G supergroup,tty -s /bin/bash gpadmin \
+    && echo "gpadmin ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/gpadmin \
+    && printf 'gpadmin soft nofile 65536\ngpadmin soft nproc 131072\n' > /etc/security/limits.d/gpadmin-limits.conf \
+    && mkdir -p /data \
+    && chown -R gpadmin:gpadmin /data /opt/whpg /usr/local/greenplum-db-devel \
+    && chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/whpg-smoke-test
+
+VOLUME /data
+EXPOSE 5432
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

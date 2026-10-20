@@ -1,0 +1,125 @@
+name: Publish Runtime Image
+
+# =============================================================================
+# Builds the ready-to-run WarehousePG image (dockerfiles/Dockerfile.runtime),
+# smoke-tests it, and pushes it to GHCR.
+#
+#   push to main      : tags `main`, `sha-<short>` and `latest`
+#   workflow_dispatch : tags `sha-<short>` and `dev-<ref>`; never `latest`,
+#                       so a feature-branch test image cannot replace the
+#                       image customers pull. Pick the branch/commit with the
+#                       `ref` input (or the "Use workflow from" selector).
+#
+# The image is a single-node demo cluster for trials and benchmarks, not a
+# production deployment.
+# =============================================================================
+
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch'
+      && format('[Image] Manual: {0}', inputs.ref || github.ref_name)
+      || format('[Image] Push {0}: {1}', github.ref_name, github.event.head_commit.message) }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag or commit SHA to build (default: the selected branch)'
+        required: false
+        type: string
+      push:
+        description: 'Push the image to GHCR (off = build and smoke test only)'
+        required: true
+        default: true
+        type: boolean
+  push:
+    branches:
+      - main
+
+# Never cancel a main build; a newer manual run of the same ref replaces an older one.
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' }}
+
+env:
+  IMAGE_NAME: ghcr.io/warehouse-pg/whpg
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          # getversion needs tags and enough history for `git describe`.
+          fetch-depth: 1024
+          fetch-tags: true
+
+      - name: Compute tags
+        id: tags
+        run: |
+          short=$(git rev-parse --short=12 HEAD)
+          tags="${IMAGE_NAME}:sha-${short}"
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            tags="${tags},${IMAGE_NAME}:main,${IMAGE_NAME}:latest"
+          else
+            ref="${{ inputs.ref || github.ref_name }}"
+            safe=$(echo "${ref}" | tr '/_' '--' | tr -cd 'A-Za-z0-9.-' | cut -c1-60)
+            tags="${tags},${IMAGE_NAME}:dev-${safe}"
+          fi
+          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+          echo "short=${short}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: dockerfiles/Dockerfile.runtime
+          platforms: linux/amd64
+          load: true
+          tags: whpg-smoke:${{ steps.tags.outputs.short }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test
+        run: |
+          docker run -d --name whpg-smoke --hostname whpg whpg-smoke:${{ steps.tags.outputs.short }}
+          docker exec whpg-smoke whpg-smoke-test || { docker logs whpg-smoke; exit 1; }
+
+      - name: Login to GitHub Container Registry
+        if: ${{ github.event_name == 'push' || inputs.push }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push image
+        if: ${{ github.event_name == 'push' || inputs.push }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: dockerfiles/Dockerfile.runtime
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Runtime image"
+            echo "Tags: \`${{ steps.tags.outputs.tags }}\`"
+            echo "Pushed: ${{ (github.event_name == 'push' || inputs.push) && 'yes' || 'no (build and smoke test only)' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
