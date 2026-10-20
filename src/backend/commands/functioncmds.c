@@ -1033,11 +1033,24 @@ validate_describe_callback(List *describeQualName,
 	Oid					 describeFuncOid;
 	bool				 describeReturnsSet;
 	FuncDetailCode		 fdResult;
-	AclResult			 aclresult;
 	int					 i;
 
 	if (describeQualName == NIL)
 		return InvalidOid;
+
+	/*
+	 * The parser calls the describe callback with a pointer to the FuncExpr
+	 * and uses what it returns as a TupleDesc, so the callback has to be
+	 * written for that contract.  The checks below only establish the
+	 * (internal) -> internal signature, which many built-in functions that
+	 * every role may execute also have.  As with "internal" transition types
+	 * of aggregates, only a superuser may connect such functions together,
+	 * so privilege on the describe function is moot.
+	 */
+	if (!superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser to specify a DESCRIBE callback")));
 
 	/* 
 	 * describe callbacks only supported for functions that return either
@@ -1130,11 +1143,6 @@ validate_describe_callback(List *describeQualName,
 		ereport(ERROR,
 				(errcode(ERRCODE_DATATYPE_MISMATCH),
 				 errmsg("describe function cannot be variadic")));
-
-	/* Check that the creator has permission to call the function */
-	aclresult = pg_proc_aclcheck(describeFuncOid, GetUserId(), ACL_EXECUTE);
-	if (aclresult != ACLCHECK_OK)
-		aclcheck_error(aclresult, ACL_KIND_PROC, get_func_name(describeFuncOid));
 
 	/* Looks reasonable */
 	return describeFuncOid;
