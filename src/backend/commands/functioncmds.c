@@ -1090,6 +1090,19 @@ validate_describe_callback(List *describeQualName,
 	if (describeQualName == NIL)
 		return InvalidOid;
 
+	/*
+	 * The parser calls the describe callback with a pointer to the FuncExpr
+	 * and uses what it returns as a TupleDesc, so the callback has to be
+	 * written for that contract.  The checks below only establish the
+	 * (internal) -> internal signature, which many built-in functions that
+	 * every role may execute also have.  As with "internal" transition types
+	 * of aggregates, only a superuser may connect such functions together.
+	 */
+	if (!superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser to specify a DESCRIBE callback")));
+
 	/* 
 	 * describe callbacks only supported for functions that return either
 	 * a pseudotype or a generic record.
