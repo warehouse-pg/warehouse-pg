@@ -22,6 +22,7 @@ extern SeqScanState *ExecInitSeqScanForPartition(SeqScan *node, EState *estate,
 							Relation currentRelation);
 extern void ExecEndSeqScan(SeqScanState *node);
 extern void ExecReScanSeqScan(SeqScanState *node);
+extern void ExecEagerFreeSeqScan(SeqScanState *node);
 
 /* parallel scan support */
 extern void ExecSeqScanEstimate(SeqScanState *node, ParallelContext *pcxt);

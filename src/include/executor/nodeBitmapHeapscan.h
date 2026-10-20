@@ -21,6 +21,7 @@ extern BitmapHeapScanState *ExecInitBitmapHeapScan(BitmapHeapScan *node, EState 
 extern BitmapHeapScanState *ExecInitBitmapHeapScanForPartition(BitmapHeapScan *node, EState *estate, int eflags, Relation currentRelation);
 extern void ExecEndBitmapHeapScan(BitmapHeapScanState *node);
 extern void ExecReScanBitmapHeapScan(BitmapHeapScanState *node);
+extern void ExecEagerFreeBitmapHeapScanDesc(BitmapHeapScanState *node);
 extern void ExecBitmapHeapEstimate(BitmapHeapScanState *node,
 								   ParallelContext *pcxt);
 extern void ExecBitmapHeapInitializeDSM(BitmapHeapScanState *node,
