@@ -1337,6 +1337,7 @@ struct AppendState
 	struct PartitionPruneState *as_prune_state;
 	Bitmapset  *as_valid_subplans;
 	bool		(*choose_next_subplan) (AppendState *);
+	bool		as_eager_free;	/* GPDB: release finished subplans' scans */
 };
 
 /*
