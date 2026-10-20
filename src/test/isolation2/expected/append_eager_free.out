@@ -1,0 +1,293 @@
+-- A planner Append over AO/AOCO partitions releases each partition's scan
+-- once it has moved on to the next one.  AO/AOCO scans keep private read
+-- buffers (one per column for AOCO), so otherwise an Append over many such
+-- partitions holds all of them until the end of the query.
+--
+-- The Append must still be able to reopen a released scan when it is
+-- rescanned.  Rescans of the Append itself, with no Motion in between, are
+-- only reachable in utility mode, hence this isolation2 test.
+
+CREATE TABLE ef_part (a int, b int, c1 int, c2 int, c3 int, c4 int, c5 int, c6 int, c7 int, c8 int, c9 int, c10 int, c11 int, c12 int, c13 int, c14 int, c15 int, c16 int, c17 int, c18 int, c19 int, c20 int) USING ao_column DISTRIBUTED BY (a) PARTITION BY RANGE (b);
+CREATE TABLE
+
+-- Two levels: 15 mid-level partitions, each with an AOCO and an AO leaf.
+DO $$ DECLARE i int; /* in func */ BEGIN /* in func */ FOR i IN 0..14 LOOP /* in func */ EXECUTE format('CREATE TABLE ef_part_%s PARTITION OF ef_part FOR VALUES FROM (%s) TO (%s) PARTITION BY RANGE (b)', i, i * 2, i * 2 + 2); /* in func */ EXECUTE format('CREATE TABLE ef_part_%s_co PARTITION OF ef_part_%s FOR VALUES FROM (%s) TO (%s) USING ao_column', i, i, i * 2, i * 2 + 1); /* in func */ EXECUTE format('CREATE TABLE ef_part_%s_ao PARTITION OF ef_part_%s FOR VALUES FROM (%s) TO (%s) USING ao_row', i, i, i * 2 + 1, i * 2 + 2); /* in func */ END LOOP; /* in func */ END $$;
+DO
+
+INSERT INTO ef_part SELECT i, i % 30, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i FROM generate_series(1, 30000) i;
+INSERT 0 30000
+
+-- Peak executor memory of the QE slice, from EXPLAIN ANALYZE.
+CREATE FUNCTION ef_executor_kb(query text) RETURNS int AS $$ DECLARE /* in func */ l text; /* in func */ kb int; /* in func */ BEGIN /* in func */ FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || query LOOP /* in func */ IF l ~ '\(slice1\)\s+Executor memory' THEN /* in func */ kb := substring(l FROM '([0-9]+)K bytes max'); /* in func */ END IF; /* in func */ END LOOP; /* in func */ RETURN kb; /* in func */ END; /* in func */ $$ LANGUAGE plpgsql;
+CREATE FUNCTION
+
+1: SET optimizer = off;
+SET
+
+-- Scanning all 30 leaves needs about as much memory as scanning just one.
+-- Without the early release it needs roughly 30 times as much.
+1: SELECT ef_executor_kb('SELECT sum(c1+c2+c3+c4+c5+c6+c7+c8+c9+c10+c11+c12+c13+c14+c15+c16+c17+c18+c19+c20) FROM ef_part') < 3 * ef_executor_kb('SELECT sum(c1+c2+c3+c4+c5+c6+c7+c8+c9+c10+c11+c12+c13+c14+c15+c16+c17+c18+c19+c20) FROM ef_part WHERE b = 0') AS one_partition_at_a_time;
+ one_partition_at_a_time 
+-------------------------
+ t                       
+(1 row)
+
+1: SELECT b, count(*), sum(c1), sum(c20) FROM ef_part GROUP BY b ORDER BY b;
+ b  | count | sum      | sum      
+----+-------+----------+----------
+ 0  | 1000  | 15015000 | 15015000 
+ 1  | 1000  | 14986000 | 14986000 
+ 2  | 1000  | 14987000 | 14987000 
+ 3  | 1000  | 14988000 | 14988000 
+ 4  | 1000  | 14989000 | 14989000 
+ 5  | 1000  | 14990000 | 14990000 
+ 6  | 1000  | 14991000 | 14991000 
+ 7  | 1000  | 14992000 | 14992000 
+ 8  | 1000  | 14993000 | 14993000 
+ 9  | 1000  | 14994000 | 14994000 
+ 10 | 1000  | 14995000 | 14995000 
+ 11 | 1000  | 14996000 | 14996000 
+ 12 | 1000  | 14997000 | 14997000 
+ 13 | 1000  | 14998000 | 14998000 
+ 14 | 1000  | 14999000 | 14999000 
+ 15 | 1000  | 15000000 | 15000000 
+ 16 | 1000  | 15001000 | 15001000 
+ 17 | 1000  | 15002000 | 15002000 
+ 18 | 1000  | 15003000 | 15003000 
+ 19 | 1000  | 15004000 | 15004000 
+ 20 | 1000  | 15005000 | 15005000 
+ 21 | 1000  | 15006000 | 15006000 
+ 22 | 1000  | 15007000 | 15007000 
+ 23 | 1000  | 15008000 | 15008000 
+ 24 | 1000  | 15009000 | 15009000 
+ 25 | 1000  | 15010000 | 15010000 
+ 26 | 1000  | 15011000 | 15011000 
+ 27 | 1000  | 15012000 | 15012000 
+ 28 | 1000  | 15013000 | 15013000 
+ 29 | 1000  | 15014000 | 15014000 
+(30 rows)
+
+-- Rescans: the inner Append is rescanned once per outer row.  Its first pass
+-- releases each leaf's scan; the rescans must reopen them.
+0U: SET optimizer = off;
+SET
+0U: SELECT o.k, s.cnt, s.total FROM generate_series(0, 29, 4) o(k), LATERAL (SELECT count(*) cnt, sum(c1 + c20) total FROM ef_part WHERE b >= o.k) s ORDER BY o.k;
+ k  | cnt  | total     
+----+------+-----------
+ 0  | 9970 | 299282268 
+ 4  | 8670 | 260503442 
+ 8  | 7352 | 220884670 
+ 12 | 5991 | 180386182 
+ 16 | 4694 | 141198906 
+ 20 | 3390 | 101753564 
+ 24 | 2042 | 62090096  
+ 28 | 662  | 19893258  
+(8 rows)
+-- Same answers from a single pass over the Append (a join under a
+-- Materialize), with no rescan of it.
+0U: SELECT o.k, count(*), sum(c1 + c20) FROM generate_series(0, 29, 4) o(k) JOIN ef_part ON b >= o.k GROUP BY o.k ORDER BY o.k;
+ k  | count | sum       
+----+-------+-----------
+ 0  | 9970  | 299282268 
+ 4  | 8670  | 260503442 
+ 8  | 7352  | 220884670 
+ 12 | 5991  | 180386182 
+ 16 | 4694  | 141198906 
+ 20 | 3390  | 101753564 
+ 24 | 2042  | 62090096  
+ 28 | 662   | 19893258  
+(8 rows)
+
+-- A cursor fetched in small chunks moves on to the next leaf, and releases
+-- the previous one, in a later FETCH than the one that read that leaf.  Every
+-- row must still come back exactly once, in leaf order.
+0U: BEGIN;
+BEGIN
+0U: DECLARE c_fwd CURSOR FOR SELECT b, a FROM ef_part WHERE a < 40;
+DECLARE CURSOR
+0U: FETCH 4 FROM c_fwd;
+ b | a  
+---+----
+ 2 | 2  
+ 3 | 3  
+ 4 | 4  
+ 4 | 34 
+(4 rows)
+0U: FETCH 4 FROM c_fwd;
+ b | a  
+---+----
+ 7 | 7  
+ 7 | 37 
+ 8 | 8  
+ 9 | 39 
+(4 rows)
+0U: FETCH 4 FROM c_fwd;
+ b  | a  
+----+----
+ 16 | 16 
+ 18 | 18 
+ 19 | 19 
+ 22 | 22 
+(4 rows)
+0U: FETCH 4 FROM c_fwd;
+ b  | a  
+----+----
+ 24 | 24 
+ 27 | 27 
+ 29 | 29 
+(3 rows)
+0U: CLOSE c_fwd;
+CLOSE CURSOR
+0U: COMMIT;
+COMMIT
+0Uq: ... <quitting>
+
+-- The same for index and bitmap scans of the leaves.  Their scans keep the
+-- AO/AOCO fetch descriptors, with the same kind of read buffers.
+CREATE INDEX ON ef_part (a);
+CREATE INDEX
+ANALYZE ef_part;
+ANALYZE
+
+1: SET enable_seqscan = off;
+SET
+1: SET enable_bitmapscan = off;
+SET
+1: SELECT ef_executor_kb('SELECT sum(c1+c2+c3+c4+c5+c6+c7+c8+c9+c10+c11+c12+c13+c14+c15+c16+c17+c18+c19+c20) FROM ef_part WHERE a < 30000') < 3 * ef_executor_kb('SELECT sum(c1+c2+c3+c4+c5+c6+c7+c8+c9+c10+c11+c12+c13+c14+c15+c16+c17+c18+c19+c20) FROM ef_part WHERE a < 30000 AND b = 0') AS index_one_partition_at_a_time;
+ index_one_partition_at_a_time 
+-------------------------------
+ t                             
+(1 row)
+1: SET enable_indexscan = off;
+SET
+1: SET enable_bitmapscan = on;
+SET
+1: SELECT ef_executor_kb('SELECT sum(c1+c2+c3+c4+c5+c6+c7+c8+c9+c10+c11+c12+c13+c14+c15+c16+c17+c18+c19+c20) FROM ef_part WHERE a < 30000') < 3 * ef_executor_kb('SELECT sum(c1+c2+c3+c4+c5+c6+c7+c8+c9+c10+c11+c12+c13+c14+c15+c16+c17+c18+c19+c20) FROM ef_part WHERE a < 30000 AND b = 0') AS bitmap_one_partition_at_a_time;
+ bitmap_one_partition_at_a_time 
+--------------------------------
+ t                              
+(1 row)
+1q: ... <quitting>
+
+-- Rescans of released index and bitmap scans, checked against a single pass
+-- over a sequential scan.
+0U: SET optimizer = off;
+SET
+0U: SET enable_seqscan = off;
+SET
+0U: SET enable_bitmapscan = off;
+SET
+0U: SELECT o.k, s.cnt, s.total FROM generate_series(0, 29, 4) o(k), LATERAL (SELECT count(*) cnt, sum(c1 + c20) total FROM ef_part WHERE a < 20000 AND b >= o.k) s ORDER BY o.k;
+ k  | cnt  | total     
+----+------+-----------
+ 0  | 6639 | 132308752 
+ 4  | 5755 | 114500408 
+ 8  | 4888 | 97476492  
+ 12 | 3973 | 79358704  
+ 16 | 3105 | 61764758  
+ 20 | 2246 | 44557030  
+ 24 | 1336 | 26791692  
+ 28 | 443  | 8944634   
+(8 rows)
+0U: SET enable_indexscan = off;
+SET
+0U: SET enable_bitmapscan = on;
+SET
+0U: SELECT o.k, s.cnt, s.total FROM generate_series(0, 29, 4) o(k), LATERAL (SELECT count(*) cnt, sum(c1 + c20) total FROM ef_part WHERE a < 20000 AND b >= o.k) s ORDER BY o.k;
+ k  | cnt  | total     
+----+------+-----------
+ 0  | 6639 | 132308752 
+ 4  | 5755 | 114500408 
+ 8  | 4888 | 97476492  
+ 12 | 3973 | 79358704  
+ 16 | 3105 | 61764758  
+ 20 | 2246 | 44557030  
+ 24 | 1336 | 26791692  
+ 28 | 443  | 8944634   
+(8 rows)
+-- Here the Append is under a parameterized NestLoop, and the bitmap index
+-- scans take o.k as a run-time key.
+0U: SET enable_hashjoin = off;
+SET
+0U: SET enable_mergejoin = off;
+SET
+0U: SET enable_material = off;
+SET
+0U: SELECT count(*), sum(o.k), sum(c1 + c20) FROM generate_series(1, 200, 7) o(k) JOIN ef_part ON a = o.k;
+ count | sum  | sum  
+-------+------+------
+ 11    | 1180 | 2360 
+(1 row)
+0U: RESET enable_hashjoin;
+RESET
+0U: RESET enable_mergejoin;
+RESET
+0U: RESET enable_material;
+RESET
+-- A bitmap scan can't go backwards, so the cursor still releases leaves.
+0U: BEGIN;
+BEGIN
+0U: DECLARE c_bm CURSOR FOR SELECT b, a FROM ef_part WHERE a < 40;
+DECLARE CURSOR
+0U: FETCH 4 FROM c_bm;
+ b | a  
+---+----
+ 2 | 2  
+ 3 | 3  
+ 4 | 4  
+ 4 | 34 
+(4 rows)
+0U: FETCH 4 FROM c_bm;
+ b | a  
+---+----
+ 7 | 7  
+ 7 | 37 
+ 8 | 8  
+ 9 | 39 
+(4 rows)
+0U: FETCH 4 FROM c_bm;
+ b  | a  
+----+----
+ 16 | 16 
+ 18 | 18 
+ 19 | 19 
+ 22 | 22 
+(4 rows)
+0U: FETCH 4 FROM c_bm;
+ b  | a  
+----+----
+ 24 | 24 
+ 27 | 27 
+ 29 | 29 
+(3 rows)
+0U: CLOSE c_bm;
+CLOSE CURSOR
+0U: COMMIT;
+COMMIT
+0U: SET enable_seqscan = on;
+SET
+0U: SET enable_bitmapscan = off;
+SET
+0U: SELECT o.k, count(*), sum(c1 + c20) FROM generate_series(0, 29, 4) o(k) JOIN ef_part ON a < 20000 AND b >= o.k GROUP BY o.k ORDER BY o.k;
+ k  | count | sum       
+----+-------+-----------
+ 0  | 6639  | 132308752 
+ 4  | 5755  | 114500408 
+ 8  | 4888  | 97476492  
+ 12 | 3973  | 79358704  
+ 16 | 3105  | 61764758  
+ 20 | 2246  | 44557030  
+ 24 | 1336  | 26791692  
+ 28 | 443   | 8944634   
+(8 rows)
+0U: SELECT count(*), sum(o.k), sum(c1 + c20) FROM generate_series(1, 200, 7) o(k) JOIN ef_part ON a = o.k;
+ count | sum  | sum  
+-------+------+------
+ 11    | 1180 | 2360 
+(1 row)
+0Uq: ... <quitting>
+
+DROP TABLE ef_part;
+DROP TABLE
+DROP FUNCTION ef_executor_kb(text);
+DROP FUNCTION

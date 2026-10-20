@@ -421,6 +421,36 @@ ExecEndIndexOnlyScan(IndexOnlyScanState *node)
 }
 
 /* ----------------------------------------------------------------
+ *		ExecEagerFreeIndexOnlyScan
+ *
+ *		WHPG: release the index scan descriptor early, for a finished
+ *		Append child.  For an AO/AOCS table it holds the block directory
+ *		and fetch descriptors.  IndexOnlyNext() opens a fresh scan if the
+ *		node is rescanned.  See ExecEagerFreeSeqScan() for why only
+ *		Append calls this, and why heap is left alone.
+ * ----------------------------------------------------------------
+ */
+void
+ExecEagerFreeIndexOnlyScan(IndexOnlyScanState *node)
+{
+	IndexScanDesc scanDesc = node->ioss_ScanDesc;
+
+	if (scanDesc == NULL ||
+		!RelationIsAppendOptimized(node->ss.ss_currentRelation))
+		return;
+
+	/* A parallel scan descriptor can't be recreated lazily; keep it. */
+	if (scanDesc->parallel_scan != NULL)
+		return;
+
+	/* The scan slot may point into the scan's buffers; clear it first. */
+	ExecClearTuple(node->ss.ss_ScanTupleSlot);
+
+	index_endscan(scanDesc);
+	node->ioss_ScanDesc = NULL;
+}
+
+/* ----------------------------------------------------------------
  *		ExecIndexOnlyMarkPos
  *
  * Note: we assume that no caller attempts to set a mark before having read

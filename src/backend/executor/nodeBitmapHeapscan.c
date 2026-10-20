@@ -71,6 +71,7 @@ static inline void BitmapPrefetch(BitmapHeapScanState *node,
 								  TableScanDesc scan);
 static bool BitmapShouldInitializeSharedState(ParallelBitmapHeapState *pstate);
 static void ExecEagerFreeBitmapHeapScan(BitmapHeapScanState *node);
+static TableScanDesc BitmapHeapBeginScan(BitmapHeapScanState *node);
 
 
 /*
@@ -123,6 +124,9 @@ BitmapHeapNext(BitmapHeapScanState *node)
 	econtext = node->ss.ps.ps_ExprContext;
 	slot = node->ss.ss_ScanTupleSlot;
 	scan = node->ss.ss_currentScanDesc;
+	/* WHPG: reopen a scan released by ExecEagerFreeBitmapHeapScanDesc() */
+	if (scan == NULL)
+		scan = node->ss.ss_currentScanDesc = BitmapHeapBeginScan(node);
 	tbm = node->tbm;
 	if (pstate == NULL)
 		tbmiterator = node->tbmiterator;
@@ -646,7 +650,8 @@ ExecReScanBitmapHeapScan(BitmapHeapScanState *node)
 	PlanState  *outerPlan = outerPlanState(node);
 
 	/* rescan to release any page pin */
-	table_rescan(node->ss.ss_currentScanDesc, NULL);
+	if (node->ss.ss_currentScanDesc)
+		table_rescan(node->ss.ss_currentScanDesc, NULL);
 
 	/* release bitmaps and buffers if any */
 	if (node->tbmiterator)
@@ -735,7 +740,8 @@ ExecEndBitmapHeapScan(BitmapHeapScanState *node)
 	/*
 	 * close heap scan
 	 */
-	table_endscan(scanDesc);
+	if (scanDesc)
+		table_endscan(scanDesc);
 }
 
 /* ----------------------------------------------------------------
@@ -879,21 +885,64 @@ ExecInitBitmapHeapScanForPartition(BitmapHeapScan *node, EState *estate, int efl
 
 	scanstate->ss.ss_currentRelation = currentRelation;
 
-	/*
-	 * GPDB: This call is equivalent to upstream's table_beginscan_bm() in
-	 * all other cases. We call it here in order to also initialize the
-	 * scan state with the column info needed for AOCO relations.
-	 */
-	scanstate->ss.ss_currentScanDesc = table_beginscan_bm_ecs(currentRelation,
-															  estate->es_snapshot,
-															  node->scan.plan.targetlist,
-															  node->scan.plan.qual,
-															  node->bitmapqualorig);
+	scanstate->ss.ss_currentScanDesc = BitmapHeapBeginScan(scanstate);
 
 	/*
 	 * all done.
 	 */
 	return scanstate;
+}
+
+static TableScanDesc
+BitmapHeapBeginScan(BitmapHeapScanState *node)
+{
+	BitmapHeapScan *plan = (BitmapHeapScan *) node->ss.ps.plan;
+
+	/*
+	 * GPDB: This call is equivalent to upstream's table_beginscan_bm() in
+	 * all other cases. We call it here in order to also initialize the
+	 * scan state with the column info needed for AOCO relations.
+	 */
+	return table_beginscan_bm_ecs(node->ss.ss_currentRelation,
+								  node->ss.ps.state->es_snapshot,
+								  plan->scan.plan.targetlist,
+								  plan->scan.plan.qual,
+								  plan->bitmapqualorig);
+}
+
+/* ----------------------------------------------------------------
+ *		ExecEagerFreeBitmapHeapScanDesc
+ *
+ *		WHPG: release the scan descriptor early, for a finished Append
+ *		child.  For an AO/AOCS table it holds the fetch descriptors (one
+ *		per column for AOCS) with their private read buffers; the bitmap
+ *		itself is already gone by then.  BitmapHeapNext() opens a fresh
+ *		scan if the node is rescanned.  See ExecEagerFreeSeqScan() for
+ *		why only Append calls this, and why heap is left alone.
+ * ----------------------------------------------------------------
+ */
+void
+ExecEagerFreeBitmapHeapScanDesc(BitmapHeapScanState *node)
+{
+	TableScanDesc scanDesc = node->ss.ss_currentScanDesc;
+
+	if (scanDesc == NULL ||
+		!RelationIsAppendOptimized(node->ss.ss_currentRelation))
+		return;
+
+	/* A parallel scan's descriptor carries the shared snapshot; keep it. */
+	if (node->pstate != NULL)
+		return;
+
+	/* The scan slot may point into the scan's buffers; clear it first. */
+	ExecClearTuple(node->ss.ss_ScanTupleSlot);
+
+	/* The bitmap, if any is left, would be read through the old scan. */
+	freeBitmapState(node);
+	node->initialized = false;
+
+	table_endscan(scanDesc);
+	node->ss.ss_currentScanDesc = NULL;
 }
 
 static void
