@@ -991,6 +991,28 @@ CREATE FUNCTION x(OUT id integer, OUT "time" timestamp, OUT sessionnum integer)
   LANGUAGE C READS SQL DATA
   WITH (describe = sessionize_describe);
 
+-- only a superuser may attach a describe callback, whether it names one
+-- written for the contract or any other (internal) -> internal function
+CREATE ROLE regress_tf_nonsuper;
+GRANT USAGE, CREATE ON SCHEMA table_function TO regress_tf_nonsuper;
+SET ROLE regress_tf_nonsuper;
+CREATE FUNCTION nonsuper_project(integer) RETURNS setof RECORD
+  AS $$ SELECT $1, 'x'::text $$
+  LANGUAGE sql
+  WITH (describe = ud_describe);
+CREATE FUNCTION nonsuper_builtin(integer) RETURNS setof RECORD
+  AS $$ SELECT $1, 'x'::text $$
+  LANGUAGE sql
+  WITH (describe = pg_catalog.varchar_support);
+-- the same function without the callback is allowed
+CREATE FUNCTION nonsuper_project(integer) RETURNS setof RECORD
+  AS $$ SELECT $1, 'x'::text $$
+  LANGUAGE sql;
+DROP FUNCTION nonsuper_project(integer);
+RESET ROLE;
+REVOKE ALL ON SCHEMA table_function FROM regress_tf_nonsuper;
+DROP ROLE regress_tf_nonsuper;
+
 -- ========================
 -- Interaction with PREPARE
 -- ========================
