@@ -19,6 +19,14 @@ WITH noSessionCTE AS (
 )
 SELECT gp_log_backend_memory_contexts(no_sess_id) FROM noSessionCTE;
 
+-- show 0 successful responses to logging a session ID beyond int4, which
+-- must not be cut to its low 32 bits: those are this session's. The
+-- warnings name the session ID, so they are hidden.
+SET client_min_messages = error;
+SELECT gp_log_backend_memory_contexts(current_setting('gp_session_id')::bigint + 4294967296);
+SELECT gp_log_backend_memory_contexts(current_setting('gp_session_id')::bigint + 4294967296, 0);
+RESET client_min_messages;
+
 -- show expected number of successful responses to logging a
 -- known-good session with a target contentID
 WITH sessionCTE AS (

@@ -234,8 +234,8 @@ pg_log_backend_memory_contexts(PG_FUNCTION_ARGS)
 Datum
 gp_log_backend_memory_contexts(PG_FUNCTION_ARGS)
 {
-	int			targetContentId;
-	int			targetSessionId;
+	int64		targetContentId;
+	int64		targetSessionId;
 	ListCell		*dispSeg;
 	ListCell		*retSeg;
 	MemoryContext	per_func_ctx;
@@ -270,7 +270,7 @@ gp_log_backend_memory_contexts(PG_FUNCTION_ARGS)
 	{
 		ereport(ERROR,
 				(errmsg("this function does not work in utility mode")));
-		PG_RETURN_INT32(0);
+		PG_RETURN_INT64(0);
 	}
 
 	per_func_ctx = AllocSetContextCreate(CurrentMemoryContext,
@@ -280,11 +280,11 @@ gp_log_backend_memory_contexts(PG_FUNCTION_ARGS)
 
 	if (PG_NARGS() == 2)
 	{
-		targetSessionId = PG_GETARG_INT32(0);
-		targetContentId = PG_GETARG_INT32(1);
+		targetSessionId = PG_GETARG_INT64(0);
+		targetContentId = PG_GETARG_INT64(1);
 	}
 	else {
-		targetSessionId = PG_GETARG_INT32(0);
+		targetSessionId = PG_GETARG_INT64(0);
 	}
 
 	if (Gp_role == GP_ROLE_DISPATCH)
@@ -296,18 +296,20 @@ gp_log_backend_memory_contexts(PG_FUNCTION_ARGS)
 			if (targetContentId < 0 || targetContentId >= cdbs->total_segments)
 			{
 				ereport(WARNING,
-						(errmsg("\"%i\" is not a valid content ID",
+						(errmsg("\"" INT64_FORMAT "\" is not a valid content ID",
 								targetContentId)));
-				PG_RETURN_INT16(resultCount);
+				MemoryContextSwitchTo(oldcontext);
+				MemoryContextDelete(per_func_ctx);
+				PG_RETURN_INT64(resultCount);
 			}
 
-			sprintf(cmd, "select gp_log_backend_memory_contexts(%d,%d)",
+			sprintf(cmd, "select gp_log_backend_memory_contexts(" INT64_FORMAT "," INT64_FORMAT ")",
 					targetSessionId, targetContentId);
-			dispatchedSegments = list_make1_int(targetContentId);
+			dispatchedSegments = list_make1_int((int) targetContentId);
 		}
 		else
 		{
-			sprintf(cmd, "select gp_log_backend_memory_contexts(%d)", targetSessionId);
+			sprintf(cmd, "select gp_log_backend_memory_contexts(" INT64_FORMAT ")", targetSessionId);
 			dispatchedSegments = cdbcomponent_getCdbComponentsList();
 		}
 		CdbDispatchCommandToSegments(cmd, DF_NONE, dispatchedSegments, &cdb_pgresults);
@@ -345,7 +347,7 @@ gp_log_backend_memory_contexts(PG_FUNCTION_ARGS)
 
 			if (!foundResponse)
 				ereport(WARNING,
-					(errmsg("unable to log memory contexts for session: \"%i\", on contentID: \"%i\"",
+					(errmsg("unable to log memory contexts for session: \"" INT64_FORMAT "\", on contentID: \"%i\"",
 							targetSessionId, dispSegNo)));
 			else
 				resultCount++;
@@ -353,7 +355,8 @@ gp_log_backend_memory_contexts(PG_FUNCTION_ARGS)
 
 		cdbdisp_clearCdbPgResults(&cdb_pgresults);
 		MemoryContextSwitchTo(oldcontext);
-		PG_RETURN_INT16(resultCount);
+		MemoryContextDelete(per_func_ctx);
+		PG_RETURN_INT64(resultCount);
 	}
 	else	/* Gp_role == EXECUTE */
 	{
@@ -376,9 +379,10 @@ gp_log_backend_memory_contexts(PG_FUNCTION_ARGS)
 			}
 		}
 		MemoryContextSwitchTo(oldcontext);
+		MemoryContextDelete(per_func_ctx);
 		if (errorDetected || logsSignalled == 0)
-			PG_RETURN_INT16(ERROR_DISPATCHING_LOG_MEMORY_CONTEXT);
+			PG_RETURN_INT64(ERROR_DISPATCHING_LOG_MEMORY_CONTEXT);
 		else
-			PG_RETURN_INT16(GpIdentity.segindex);
+			PG_RETURN_INT64(GpIdentity.segindex);
 	}
 }
