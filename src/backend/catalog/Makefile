@@ -148,7 +148,10 @@ $(GP_SYSVIEW_SQL): $(GP_SYSVIEW_IN) Makefile
 	SELECT gp_execution_segment() as gp_segment_id, * \
 	FROM gp_dist_random('pg_&') \
 	UNION ALL \
-	SELECT -1 as gp_segment_id, * from pg_&;/g" >> $@
+	SELECT -1 as gp_segment_id, * from pg_&; \
+	UPDATE pg_class SET relacl = \
+	(SELECT relacl FROM pg_class WHERE oid = 'pg_&'::regclass) \
+	WHERE oid = 'gp_&'::regclass;/g" >> $@
 
 # Note: installation of generated headers is handled elsewhere
 .PHONY: install-data

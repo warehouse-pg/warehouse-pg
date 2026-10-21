@@ -62,3 +62,15 @@ where c.relnamespace = 'pg_catalog'::regnamespace
   and c.relkind in ('r', 'v', 'm', 'S')
   and not has_table_privilege('public', c.oid, 'SELECT')
 order by 1;
+
+-- Each gp_ view generated from system_views_gp.in has the privileges of the
+-- pg_ view it is built on.
+select g.relname, g.relacl, p.relacl as source_relacl
+from pg_class g
+join pg_class p on p.relname = 'pg_' || substr(g.relname, 4)
+  and p.relnamespace = g.relnamespace
+where g.relnamespace = 'pg_catalog'::regnamespace
+  and g.relname like 'gp\_%'
+  and g.relkind = 'v' and p.relkind = 'v'
+  and g.relacl is distinct from p.relacl
+order by 1;

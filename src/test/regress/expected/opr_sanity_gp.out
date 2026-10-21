@@ -124,6 +124,9 @@ order by 1;
            relname            
 ------------------------------
  gp_backend_memory_contexts
+ gp_config
+ gp_file_settings
+ gp_replication_origin_status
  pg_authid
  pg_backend_memory_contexts
  pg_config
@@ -136,5 +139,20 @@ order by 1;
  pg_statistic_ext_data
  pg_subscription
  pg_user_mapping
-(13 rows)
+(16 rows)
+
+-- Each gp_ view generated from system_views_gp.in has the privileges of the
+-- pg_ view it is built on.
+select g.relname, g.relacl, p.relacl as source_relacl
+from pg_class g
+join pg_class p on p.relname = 'pg_' || substr(g.relname, 4)
+  and p.relnamespace = g.relnamespace
+where g.relnamespace = 'pg_catalog'::regnamespace
+  and g.relname like 'gp\_%'
+  and g.relkind = 'v' and p.relkind = 'v'
+  and g.relacl is distinct from p.relacl
+order by 1;
+ relname | relacl | source_relacl 
+---------+--------+---------------
+(0 rows)
 
