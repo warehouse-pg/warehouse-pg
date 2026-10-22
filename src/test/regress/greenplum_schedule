@@ -362,6 +362,7 @@ test: resource_queue_with_rule
 test: bb_memory_quota
 test: qp_resource_queue
 test: resource_queue_function
+test: resource_queue_portal_id
 test: resource_manager_restore_to_none
 
 # test dispatch and result handling of gp_log_memory_backend_contexts
