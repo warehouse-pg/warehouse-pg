@@ -171,6 +171,7 @@
 #include "naucrates/dxl/parser/CParseHandlerSearchStrategy.h"
 #include "naucrates/dxl/parser/CParseHandlerSequence.h"
 #include "naucrates/dxl/parser/CParseHandlerSort.h"
+#include "naucrates/dxl/parser/CParseHandlerWindowTopN.h"
 #include "naucrates/dxl/parser/CParseHandlerSortCol.h"
 #include "naucrates/dxl/parser/CParseHandlerSortColList.h"
 #include "naucrates/dxl/parser/CParseHandlerStacktrace.h"

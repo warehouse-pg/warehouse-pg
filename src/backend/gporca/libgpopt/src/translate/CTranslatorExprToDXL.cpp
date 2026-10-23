@@ -58,6 +58,7 @@
 #include "gpopt/operators/CPhysicalPartitionSelector.h"
 #include "gpopt/operators/CPhysicalScalarAgg.h"
 #include "gpopt/operators/CPhysicalSequenceProject.h"
+#include "gpopt/operators/CPhysicalWindowTopN.h"
 #include "gpopt/operators/CPhysicalSort.h"
 #include "gpopt/operators/CPhysicalSplit.h"
 #include "gpopt/operators/CPhysicalSpool.h"
@@ -129,6 +130,7 @@
 #include "naucrates/dxl/operators/CDXLPhysicalTVF.h"
 #include "naucrates/dxl/operators/CDXLPhysicalTableScan.h"
 #include "naucrates/dxl/operators/CDXLPhysicalWindow.h"
+#include "naucrates/dxl/operators/CDXLPhysicalWindowTopN.h"
 #include "naucrates/dxl/operators/CDXLScalarAggref.h"
 #include "naucrates/dxl/operators/CDXLScalarArray.h"
 #include "naucrates/dxl/operators/CDXLScalarArrayCoerceExpr.h"
@@ -401,6 +403,11 @@ CTranslatorExprToDXL::CreateDXLNode(CExpression *pexpr,
 			break;
 		case COperator::EopPhysicalSort:
 			dxlnode = CTranslatorExprToDXL::PdxlnSort(
+				pexpr, colref_array, pdrgpdsBaseTables, pulNonGatherMotions,
+				pfDML);
+			break;
+		case COperator::EopPhysicalWindowTopN:
+			dxlnode = CTranslatorExprToDXL::PdxlnWindowTopN(
 				pexpr, colref_array, pdrgpdsBaseTables, pulNonGatherMotions,
 				pfDML);
 			break;
@@ -3097,6 +3104,82 @@ CTranslatorExprToDXL::PdxlnAggregate(CExpression *pexprAgg,
 	return pdxlnAgg;
 }
 
+
+//---------------------------------------------------------------------------
+//	@function:
+//		CTranslatorExprToDXL::PdxlnWindowTopN
+//
+//	@doc:
+//		Create a DXL WindowTopN node from an optimizer WindowTopN expression
+//
+//---------------------------------------------------------------------------
+CDXLNode *
+CTranslatorExprToDXL::PdxlnWindowTopN(CExpression *pexprTopN,
+									  CColRefArray *colref_array,
+									  CDistributionSpecArray *pdrgpdsBaseTables,
+									  ULONG *pulNonGatherMotions, BOOL *pfDML)
+{
+	GPOS_ASSERT(nullptr != pexprTopN);
+	GPOS_ASSERT(1 == pexprTopN->Arity());
+
+	// extract components
+	CPhysicalWindowTopN *popTopN =
+		CPhysicalWindowTopN::PopConvert(pexprTopN->Pop());
+	CExpression *pexprChild = (*pexprTopN)[0];
+
+	// translate relational child expression
+	CDXLNode *child_dxlnode = CreateDXLNode(
+		pexprChild, colref_array, pdrgpdsBaseTables, pulNonGatherMotions, pfDML,
+		false /*fRemap*/, false /*fRoot*/);
+
+	// partition by columns
+	ULongPtrArray *colids = GPOS_NEW(m_mp) ULongPtrArray(m_mp);
+	CDistributionSpec *pds = popTopN->Pds();
+	if (CDistributionSpec::EdtHashed == pds->Edt())
+	{
+		CExpressionArray *pdrgpexprPartCol =
+			CDistributionSpecHashed::PdsConvert(pds)->Pdrgpexpr();
+		const ULONG size = pdrgpexprPartCol->Size();
+		for (ULONG ul = 0; ul < size; ul++)
+		{
+			CExpression *pexpr = (*pdrgpexprPartCol)[ul];
+			CScalarIdent *popScId = CScalarIdent::PopConvert(pexpr->Pop());
+			colids->Append(GPOS_NEW(m_mp) ULONG(popScId->Pcr()->Id()));
+		}
+	}
+
+	// translate order spec
+	CDXLNode *sort_col_list_dxlnode = GetSortColListDXL(popTopN->Pos());
+
+	// construct project list from child project list
+	GPOS_ASSERT(nullptr != child_dxlnode && 1 <= child_dxlnode->Arity());
+	CDXLNode *pdxlnProjListChild = (*child_dxlnode)[0];
+	CDXLNode *proj_list_dxlnode =
+		CTranslatorExprToDXLUtils::PdxlnProjListFromChildProjList(
+			m_mp, m_pcf, m_phmcrdxln, pdxlnProjListChild);
+
+	// create an empty filter
+	CDXLNode *filter_dxlnode = PdxlnFilter(nullptr);
+
+	CDXLPhysicalWindowTopN *pdxlopTopN = GPOS_NEW(m_mp) CDXLPhysicalWindowTopN(
+		m_mp, colids, (ULONG) popTopN->Kind(), popTopN->Limit());
+
+	CDXLNode *pdxlnTopN = GPOS_NEW(m_mp) CDXLNode(m_mp, pdxlopTopN);
+	CDXLPhysicalProperties *dxl_properties = GetProperties(pexprTopN);
+	pdxlnTopN->SetProperties(dxl_properties);
+
+	// add children
+	pdxlnTopN->AddChild(proj_list_dxlnode);
+	pdxlnTopN->AddChild(filter_dxlnode);
+	pdxlnTopN->AddChild(sort_col_list_dxlnode);
+	pdxlnTopN->AddChild(child_dxlnode);
+
+#ifdef GPOS_DEBUG
+	pdxlopTopN->AssertValid(pdxlnTopN, false /* validate_children */);
+#endif
+
+	return pdxlnTopN;
+}
 
 //---------------------------------------------------------------------------
 //	@function:

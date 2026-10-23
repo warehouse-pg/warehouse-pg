@@ -802,6 +802,10 @@ CDXLTokens::Init(CMemoryPool *mp)
 		{EdxltokenAdd, GPOS_WSZ_LIT("Add")},
 		{EdxltokenSubtract, GPOS_WSZ_LIT("Sub")},
 		{EdxltokenMultiply, GPOS_WSZ_LIT("Multi")},
+
+		{EdxltokenPhysicalWindowTopN, GPOS_WSZ_LIT("WindowTopN")},
+		{EdxltokenWindowTopNKind, GPOS_WSZ_LIT("WindowTopNKind")},
+		{EdxltokenWindowTopNLimit, GPOS_WSZ_LIT("WindowTopNLimit")},
 	};
 
 	m_pstrmap = GPOS_NEW_ARRAY(m_mp, SStrMapElem, EdxltokenSentinel);

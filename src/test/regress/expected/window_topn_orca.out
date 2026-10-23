@@ -1,0 +1,562 @@
+--
+-- Window top-N pre-filter with the ORCA optimizer: a "rank() <= N" style
+-- filter of the outer query becomes a WindowTopN node below the window's
+-- Motion (see window_topn for the planner).
+--
+set optimizer = on;
+set optimizer_trace_fallback = on;
+create schema window_topn_orca;
+set search_path = window_topn_orca;
+create table wto_t (p int, k int, v int) distributed by (v);
+insert into wto_t select i % 5, (i * 7919) % 2000, i from generate_series(1, 20000) i;
+analyze wto_t;
+-- baselines without the optimization
+set whpg_enable_window_topn = off;
+create table wto_base_rank as
+  select * from (select p, k, v, rank() over (partition by p order by k) rk from wto_t) s
+  where rk <= 3;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause. Creating a NULL policy entry.
+create table wto_base_drank as
+  select * from (select p, k, v, dense_rank() over (partition by p order by k desc) dr from wto_t) s
+  where dr < 3;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause. Creating a NULL policy entry.
+reset whpg_enable_window_topn;
+--
+-- rank() <= N
+--
+explain (costs off)
+select * from (select p, k, v, rank() over (partition by p order by k) rk from wto_t) s
+where rk <= 3;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Result
+         Filter: ((rank() OVER (?)) <= 3)
+         ->  WindowAgg
+               Partition By: p
+               Order By: k
+               ->  Sort
+                     Sort Key: p, k
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                           Hash Key: p
+                           ->  WindowTopN
+                                 Partition By: p
+                                 Order By: k
+                                 Top N: rank() <= 3
+                                 ->  Seq Scan on wto_t
+ Optimizer: GPORCA
+(16 rows)
+
+select count(*), (select count(*) from wto_base_rank) as expected from (
+  (select * from (select p, k, v, rank() over (partition by p order by k) rk from wto_t) s where rk <= 3)
+  intersect all
+  (select * from wto_base_rank)
+) d;
+ count | expected 
+-------+----------
+    50 |       50
+(1 row)
+
+--
+-- dense_rank() < N, constant on the left, equality
+--
+explain (costs off)
+select * from (select p, k, v, dense_rank() over (partition by p order by k desc) dr from wto_t) s
+where 3 > dr;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Result
+         Filter: ((dense_rank() OVER (?)) < 3)
+         ->  WindowAgg
+               Partition By: p
+               Order By: k
+               ->  Sort
+                     Sort Key: p, k DESC
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                           Hash Key: p
+                           ->  WindowTopN
+                                 Partition By: p
+                                 Order By: k DESC
+                                 Top N: dense_rank() <= 2
+                                 ->  Seq Scan on wto_t
+ Optimizer: GPORCA
+(16 rows)
+
+select count(*), (select count(*) from wto_base_drank) as expected from (
+  (select * from (select p, k, v, dense_rank() over (partition by p order by k desc) dr from wto_t) s where 3 > dr)
+  intersect all
+  (select * from wto_base_drank)
+) d;
+ count | expected 
+-------+----------
+   100 |      100
+(1 row)
+
+explain (costs off)
+select * from (select p, k, v, rank() over (partition by p order by k) rk from wto_t) s
+where rk = 1;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Result
+         Filter: ((rank() OVER (?)) = 1)
+         ->  WindowAgg
+               Partition By: p
+               Order By: k
+               ->  Sort
+                     Sort Key: p, k
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                           Hash Key: p
+                           ->  WindowTopN
+                                 Partition By: p
+                                 Order By: k
+                                 Top N: rank() <= 1
+                                 ->  Seq Scan on wto_t
+ Optimizer: GPORCA
+(16 rows)
+
+select p, k, count(*) from (select p, k, v, rank() over (partition by p order by k) rk from wto_t) s
+where rk = 1 group by p, k order by p;
+ p | k | count 
+---+---+-------
+ 0 | 0 |    10
+ 1 | 4 |    10
+ 2 | 3 |    10
+ 3 | 2 |    10
+ 4 | 1 |    10
+(5 rows)
+
+--
+-- row_number() with a unique ordering
+--
+explain (costs off)
+select * from (select p, k, v, row_number() over (partition by p order by k, v) rn from wto_t) s
+where rn <= 2 order by p, rn;
+                                  QUERY PLAN                                  
+------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   Merge Key: p, (row_number() OVER (?))
+   ->  Sort
+         Sort Key: p, (row_number() OVER (?))
+         ->  Result
+               Filter: ((row_number() OVER (?)) <= 2)
+               ->  WindowAgg
+                     Partition By: p
+                     Order By: k, v
+                     ->  Sort
+                           Sort Key: p, k, v
+                           ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                                 Hash Key: p
+                                 ->  WindowTopN
+                                       Partition By: p
+                                       Order By: k, v
+                                       Top N: row_number() <= 2
+                                       ->  Seq Scan on wto_t
+ Optimizer: GPORCA
+(19 rows)
+
+select * from (select p, k, v, row_number() over (partition by p order by k, v) rn from wto_t) s
+where rn <= 2 order by p, rn;
+ p | k |  v   | rn 
+---+---+------+----
+ 0 | 0 | 2000 |  1
+ 0 | 0 | 4000 |  2
+ 1 | 4 |  716 |  1
+ 1 | 4 | 2716 |  2
+ 2 | 3 | 1037 |  1
+ 2 | 3 | 3037 |  2
+ 3 | 2 | 1358 |  1
+ 3 | 2 | 3358 |  2
+ 4 | 1 | 1679 |  1
+ 4 | 1 | 3679 |  2
+(10 rows)
+
+--
+-- no PARTITION BY: the final window gathers to one segment
+--
+explain (costs off)
+select * from (select k, v, rank() over (order by k) rk from wto_t) s
+where rk <= 3 order by k, v;
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Sort
+   Sort Key: k, v
+   ->  Result
+         Filter: ((rank() OVER (?)) <= 3)
+         ->  WindowAgg
+               Order By: k
+               ->  Gather Motion 3:1  (slice1; segments: 3)
+                     Merge Key: k
+                     ->  Sort
+                           Sort Key: k
+                           ->  WindowTopN
+                                 Order By: k
+                                 Top N: rank() <= 3
+                                 ->  Seq Scan on wto_t
+ Optimizer: GPORCA
+(15 rows)
+
+select * from (select k, v, rank() over (order by k) rk from wto_t) s
+where rk <= 3 order by k, v;
+ k |   v   | rk 
+---+-------+----
+ 0 |  2000 |  1
+ 0 |  4000 |  1
+ 0 |  6000 |  1
+ 0 |  8000 |  1
+ 0 | 10000 |  1
+ 0 | 12000 |  1
+ 0 | 14000 |  1
+ 0 | 16000 |  1
+ 0 | 18000 |  1
+ 0 | 20000 |  1
+(10 rows)
+
+--
+-- not eligible: ">" filter, a function of the same window that looks past
+-- the current row, distribution key equal to the partition column
+--
+explain (costs off)
+select * from (select p, k, v, rank() over (partition by p order by k) rk from wto_t) s
+where rk > 3;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Result
+         Filter: ((rank() OVER (?)) > 3)
+         ->  WindowAgg
+               Partition By: p
+               Order By: k
+               ->  Sort
+                     Sort Key: p, k
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                           Hash Key: p
+                           ->  Seq Scan on wto_t
+ Optimizer: GPORCA
+(12 rows)
+
+explain (costs off)
+select * from (
+  select p, k, v, rank() over w as rk, lead(v) over w as nxt
+  from wto_t window w as (partition by p order by k)
+) s where rk <= 2;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Result
+         Filter: ((rank() OVER (?)) <= 2)
+         ->  WindowAgg
+               Partition By: p
+               Order By: k
+               ->  Sort
+                     Sort Key: p, k
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                           Hash Key: p
+                           ->  Seq Scan on wto_t
+ Optimizer: GPORCA
+(12 rows)
+
+-- an aggregate of the same window is fine while its frame ends at the
+-- current row (in ROWS mode for row_number(), which may cut a peer group)
+explain (costs off)
+select * from (
+  select p, k, v, rank() over w as rk, sum(v) over w as running
+  from wto_t window w as (partition by p order by k)
+) s where rk <= 2 order by p, k, v;
+                                  QUERY PLAN                                  
+------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   Merge Key: p, k, v
+   ->  Sort
+         Sort Key: p, k, v
+         ->  Result
+               Filter: ((rank() OVER (?)) <= 2)
+               ->  WindowAgg
+                     Partition By: p
+                     Order By: k
+                     ->  Sort
+                           Sort Key: p, k
+                           ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                                 Hash Key: p
+                                 ->  WindowTopN
+                                       Partition By: p
+                                       Order By: k
+                                       Top N: rank() <= 2
+                                       ->  Seq Scan on wto_t
+ Optimizer: GPORCA
+(19 rows)
+
+select * from (
+  select p, k, v, rank() over w as rk, sum(v) over w as running
+  from wto_t window w as (partition by p order by k)
+) s where rk <= 2 order by p, k, v;
+ p | k |   v   | rk | running 
+---+---+-------+----+---------
+ 0 | 0 |  2000 |  1 |  110000
+ 0 | 0 |  4000 |  1 |  110000
+ 0 | 0 |  6000 |  1 |  110000
+ 0 | 0 |  8000 |  1 |  110000
+ 0 | 0 | 10000 |  1 |  110000
+ 0 | 0 | 12000 |  1 |  110000
+ 0 | 0 | 14000 |  1 |  110000
+ 0 | 0 | 16000 |  1 |  110000
+ 0 | 0 | 18000 |  1 |  110000
+ 0 | 0 | 20000 |  1 |  110000
+ 1 | 4 |   716 |  1 |   97160
+ 1 | 4 |  2716 |  1 |   97160
+ 1 | 4 |  4716 |  1 |   97160
+ 1 | 4 |  6716 |  1 |   97160
+ 1 | 4 |  8716 |  1 |   97160
+ 1 | 4 | 10716 |  1 |   97160
+ 1 | 4 | 12716 |  1 |   97160
+ 1 | 4 | 14716 |  1 |   97160
+ 1 | 4 | 16716 |  1 |   97160
+ 1 | 4 | 18716 |  1 |   97160
+ 2 | 3 |  1037 |  1 |  100370
+ 2 | 3 |  3037 |  1 |  100370
+ 2 | 3 |  5037 |  1 |  100370
+ 2 | 3 |  7037 |  1 |  100370
+ 2 | 3 |  9037 |  1 |  100370
+ 2 | 3 | 11037 |  1 |  100370
+ 2 | 3 | 13037 |  1 |  100370
+ 2 | 3 | 15037 |  1 |  100370
+ 2 | 3 | 17037 |  1 |  100370
+ 2 | 3 | 19037 |  1 |  100370
+ 3 | 2 |  1358 |  1 |  103580
+ 3 | 2 |  3358 |  1 |  103580
+ 3 | 2 |  5358 |  1 |  103580
+ 3 | 2 |  7358 |  1 |  103580
+ 3 | 2 |  9358 |  1 |  103580
+ 3 | 2 | 11358 |  1 |  103580
+ 3 | 2 | 13358 |  1 |  103580
+ 3 | 2 | 15358 |  1 |  103580
+ 3 | 2 | 17358 |  1 |  103580
+ 3 | 2 | 19358 |  1 |  103580
+ 4 | 1 |  1679 |  1 |  106790
+ 4 | 1 |  3679 |  1 |  106790
+ 4 | 1 |  5679 |  1 |  106790
+ 4 | 1 |  7679 |  1 |  106790
+ 4 | 1 |  9679 |  1 |  106790
+ 4 | 1 | 11679 |  1 |  106790
+ 4 | 1 | 13679 |  1 |  106790
+ 4 | 1 | 15679 |  1 |  106790
+ 4 | 1 | 17679 |  1 |  106790
+ 4 | 1 | 19679 |  1 |  106790
+(50 rows)
+
+explain (costs off)
+select * from (
+  select p, k, v, rank() over w as rk, sum(v) over w as total
+  from wto_t window w as (partition by p order by k
+                          rows between unbounded preceding and unbounded following)
+) s where rk <= 2;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Result
+         Filter: ((rank() OVER (?)) <= 2)
+         ->  WindowAgg
+               Partition By: p
+               Order By: k
+               ->  Sort
+                     Sort Key: p, k
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                           Hash Key: p
+                           ->  Seq Scan on wto_t
+ Optimizer: GPORCA
+(12 rows)
+
+explain (costs off)
+select * from (
+  select p, k, v, row_number() over w as rn, sum(v) over w as running
+  from wto_t window w as (partition by p order by k, v)
+) s where rn <= 2;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Result
+         Filter: ((row_number() OVER (?)) <= 2)
+         ->  WindowAgg
+               Partition By: p
+               Order By: k, v
+               ->  Sort
+                     Sort Key: p, k, v
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                           Hash Key: p
+                           ->  Seq Scan on wto_t
+ Optimizer: GPORCA
+(12 rows)
+
+explain (costs off)
+select * from (
+  select p, k, v, row_number() over w as rn, sum(v) over w as running
+  from wto_t window w as (partition by p order by k, v
+                          rows between unbounded preceding and current row)
+) s where rn <= 2 order by p, k, v;
+                                  QUERY PLAN                                  
+------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   Merge Key: p, k, v
+   ->  Sort
+         Sort Key: p, k, v
+         ->  Result
+               Filter: ((row_number() OVER (?)) <= 2)
+               ->  WindowAgg
+                     Partition By: p
+                     Order By: k, v
+                     ->  Sort
+                           Sort Key: p, k, v
+                           ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                                 Hash Key: p
+                                 ->  WindowTopN
+                                       Partition By: p
+                                       Order By: k, v
+                                       Top N: row_number() <= 2
+                                       ->  Seq Scan on wto_t
+ Optimizer: GPORCA
+(19 rows)
+
+select * from (
+  select p, k, v, row_number() over w as rn, sum(v) over w as running
+  from wto_t window w as (partition by p order by k, v
+                          rows between unbounded preceding and current row)
+) s where rn <= 2 order by p, k, v;
+ p | k |  v   | rn | running 
+---+---+------+----+---------
+ 0 | 0 | 2000 |  1 |    2000
+ 0 | 0 | 4000 |  2 |    6000
+ 1 | 4 |  716 |  1 |     716
+ 1 | 4 | 2716 |  2 |    3432
+ 2 | 3 | 1037 |  1 |    1037
+ 2 | 3 | 3037 |  2 |    4074
+ 3 | 2 | 1358 |  1 |    1358
+ 3 | 2 | 3358 |  2 |    4716
+ 4 | 1 | 1679 |  1 |    1679
+ 4 | 1 | 3679 |  2 |    5358
+(10 rows)
+
+create table wto_d (p int, k int, v int) distributed by (p);
+insert into wto_d select * from wto_t;
+analyze wto_d;
+explain (costs off)
+select * from (select p, k, v, rank() over (partition by p order by k) rk from wto_d) s
+where rk <= 3;
+                QUERY PLAN                 
+-------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Result
+         Filter: ((rank() OVER (?)) <= 3)
+         ->  WindowAgg
+               Partition By: p
+               Order By: k
+               ->  Sort
+                     Sort Key: p, k
+                     ->  Seq Scan on wto_d
+ Optimizer: GPORCA
+(10 rows)
+
+--
+-- the input of the first stage may hold Share Input Scans, as a ROLLUP does
+-- with this optimizer: they run in the slice of the WindowTopN
+--
+explain (costs off)
+select * from (
+  select p, k, sum(v) as s, rank() over (partition by p order by sum(v) desc) rk
+  from wto_t group by rollup (p, k)
+) s where rk <= 2 order by p, k;
+                                                      QUERY PLAN                                                      
+----------------------------------------------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   Merge Key: share0_ref2.p, share0_ref2.k
+   ->  Sort
+         Sort Key: share0_ref2.p, share0_ref2.k
+         ->  Result
+               Filter: ((rank() OVER (?)) <= 2)
+               ->  WindowAgg
+                     Partition By: share0_ref2.p
+                     Order By: (sum(share0_ref2.v))
+                     ->  Sort
+                           Sort Key: share0_ref2.p, (sum(share0_ref2.v)) DESC
+                           ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                                 Hash Key: share0_ref2.p
+                                 ->  WindowTopN
+                                       Partition By: share0_ref2.p
+                                       Order By: (sum(share0_ref2.v)) DESC
+                                       Top N: rank() <= 2
+                                       ->  Sequence
+                                             ->  Shared Scan (share slice:id 2:0)
+                                                   ->  Seq Scan on wto_t
+                                             ->  Append
+                                                   ->  HashAggregate
+                                                         Group Key: share0_ref2.p, share0_ref2.k
+                                                         ->  Redistribute Motion 3:3  (slice3; segments: 3)
+                                                               Hash Key: share0_ref2.p, share0_ref2.k
+                                                               ->  Shared Scan (share slice:id 3:0)
+                                                   ->  Finalize GroupAggregate
+                                                         Group Key: share0_ref3.p
+                                                         ->  Sort
+                                                               Sort Key: share0_ref3.p
+                                                               ->  Redistribute Motion 3:3  (slice4; segments: 3)
+                                                                     Hash Key: share0_ref3.p
+                                                                     ->  Streaming Partial HashAggregate
+                                                                           Group Key: share0_ref3.p
+                                                                           ->  Shared Scan (share slice:id 4:0)
+                                                   ->  Result
+                                                         ->  Redistribute Motion 1:3  (slice5)
+                                                               ->  Finalize Aggregate
+                                                                     ->  Gather Motion 3:1  (slice6; segments: 3)
+                                                                           ->  Partial Aggregate
+                                                                                 ->  Shared Scan (share slice:id 6:0)
+ Optimizer: GPORCA
+(42 rows)
+
+select * from (
+  select p, k, sum(v) as s, rank() over (partition by p order by sum(v) desc) rk
+  from wto_t group by rollup (p, k)
+) s where rk <= 2 order by p, k;
+ p |  k  |     s     | rk 
+---+-----+-----------+----
+ 0 |   0 |    110000 |  2
+ 0 |     |  40010000 |  1
+ 1 | 324 |    109960 |  2
+ 1 |     |  39994000 |  1
+ 2 | 243 |    109970 |  2
+ 2 |     |  39998000 |  1
+ 3 | 162 |    109980 |  2
+ 3 |     |  40002000 |  1
+ 4 |  81 |    109990 |  2
+ 4 |     |  40006000 |  1
+   |     | 200010000 |  1
+(11 rows)
+
+--
+-- GUC off
+--
+set whpg_enable_window_topn = off;
+explain (costs off)
+select * from (select p, k, v, rank() over (partition by p order by k) rk from wto_t) s
+where rk <= 3;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Result
+         Filter: ((rank() OVER (?)) <= 3)
+         ->  WindowAgg
+               Partition By: p
+               Order By: k
+               ->  Sort
+                     Sort Key: p, k
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                           Hash Key: p
+                           ->  Seq Scan on wto_t
+ Optimizer: GPORCA
+(12 rows)
+
+reset whpg_enable_window_topn;
+drop schema window_topn_orca cascade;
+NOTICE:  drop cascades to 4 other objects
+DETAIL:  drop cascades to table wto_t
+drop cascades to table wto_base_rank
+drop cascades to table wto_base_drank
+drop cascades to table wto_d

@@ -82,6 +82,7 @@ OBJS        = CDXLColDescr.o \
               CDXLPhysicalRoutedDistributeMotion.o \
               CDXLPhysicalSequence.o \
               CDXLPhysicalSort.o \
+              CDXLPhysicalWindowTopN.o \
               CDXLPhysicalSplit.o \
               CDXLPhysicalTVF.o \
               CDXLPhysicalTableScan.o \

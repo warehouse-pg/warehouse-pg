@@ -406,7 +406,8 @@ COptTasks::CreateOptimizerConfig(CMemoryPool *mp, ICostModel *cost_model,
 				  push_group_by_below_setop_threshold, xform_bind_threshold,
 				  skew_factor),
 		plan_hints,
-		GPOS_NEW(mp) CWindowOids(OID(F_WINDOW_ROW_NUMBER), OID(F_WINDOW_RANK)));
+		GPOS_NEW(mp) CWindowOids(OID(F_WINDOW_ROW_NUMBER), OID(F_WINDOW_RANK),
+								 OID(F_WINDOW_DENSE_RANK)));
 
 	return optimizer_config;
 }
