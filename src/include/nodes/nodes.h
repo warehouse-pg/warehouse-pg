@@ -640,6 +640,15 @@ typedef enum NodeTag
 	T_GpPolicy,					/* in catalog/gp_distribution_policy.h */
 	T_RetrieveStmt,
 
+	/*
+	 * WHPG: tags added after a release go here, at the end, so the values of
+	 * the existing tags stay the same and extensions built against the
+	 * release keep working.  is_plan_node() knows about the Plan tags here.
+	 */
+	T_WindowTopN,				/* in nodes/plannodes.h */
+	T_WindowTopNState,			/* in nodes/execnodes.h */
+	T_WindowTopNPath,			/* in nodes/pathnodes.h */
+
 } NodeTag;
 
 /*

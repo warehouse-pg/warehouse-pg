@@ -1852,6 +1852,9 @@ readNodeBinary(void)
 			case T_WindowAgg:
 				return_value = _readWindowAgg();
 				break;
+			case T_WindowTopN:
+				return_value = _readWindowTopN();
+				break;
 			case T_TableFunctionScan:
 				return_value = _readTableFunctionScan();
 				break;

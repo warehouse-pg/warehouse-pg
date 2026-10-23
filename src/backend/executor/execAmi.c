@@ -57,6 +57,7 @@
 #include "executor/nodeUnique.h"
 #include "executor/nodeValuesscan.h"
 #include "executor/nodeWindowAgg.h"
+#include "executor/nodeWindowTopN.h"
 #include "executor/nodeWorktablescan.h"
 #include "executor/nodeAssertOp.h"
 #include "executor/nodeDynamicSeqscan.h"
@@ -327,6 +328,10 @@ ExecReScan(PlanState *node)
 
 		case T_WindowAggState:
 			ExecReScanWindowAgg((WindowAggState *) node);
+			break;
+
+		case T_WindowTopNState:
+			ExecReScanWindowTopN((WindowTopNState *) node);
 			break;
 
 		case T_UniqueState:
@@ -843,6 +848,10 @@ ExecSquelchNode(PlanState *node)
 
 		case T_WindowAggState:
 			ExecSquelchWindowAgg((WindowAggState *) node);
+			break;
+
+		case T_WindowTopNState:
+			ExecSquelchWindowTopN((WindowTopNState *) node);
 			break;
 
 		case T_ShareInputScanState:

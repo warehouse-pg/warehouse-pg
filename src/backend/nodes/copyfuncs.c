@@ -1381,6 +1381,32 @@ _copyWindowAgg(const WindowAgg *from)
 }
 
 /*
+ * _copyWindowTopN
+ */
+static WindowTopN *
+_copyWindowTopN(const WindowTopN *from)
+{
+	WindowTopN *newnode = makeNode(WindowTopN);
+
+	CopyPlanFields((const Plan *) from, (Plan *) newnode);
+
+	COPY_SCALAR_FIELD(partNumCols);
+	COPY_POINTER_FIELD(partColIdx, from->partNumCols * sizeof(AttrNumber));
+	COPY_POINTER_FIELD(partOperators, from->partNumCols * sizeof(Oid));
+	COPY_POINTER_FIELD(partCollations, from->partNumCols * sizeof(Oid));
+	COPY_SCALAR_FIELD(ordNumCols);
+	COPY_POINTER_FIELD(ordColIdx, from->ordNumCols * sizeof(AttrNumber));
+	COPY_POINTER_FIELD(sortOperators, from->ordNumCols * sizeof(Oid));
+	COPY_POINTER_FIELD(ordCollations, from->ordNumCols * sizeof(Oid));
+	COPY_POINTER_FIELD(nullsFirst, from->ordNumCols * sizeof(bool));
+	COPY_SCALAR_FIELD(kind);
+	COPY_NODE_FIELD(limitExpr);
+	COPY_SCALAR_FIELD(limitInclusive);
+
+	return newnode;
+}
+
+/*
  * _copyUnique
  */
 static Unique *
@@ -6012,6 +6038,9 @@ copyObjectImpl(const void *from)
 			break;
 		case T_WindowAgg:
 			retval = _copyWindowAgg(from);
+			break;
+		case T_WindowTopN:
+			retval = _copyWindowTopN(from);
 			break;
 		case T_TableFunctionScan:
 			retval = _copyTableFunctionScan(from);
