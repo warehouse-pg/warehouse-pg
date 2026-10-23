@@ -61,6 +61,7 @@ OBJS        = CExpression.o \
               CLogicalLeftSemiCorrelatedApplyIn.o \
               CLogicalLeftSemiJoin.o \
               CLogicalLimit.o \
+              CLogicalWindowTopN.o \
               CLogicalMaxOneRow.o \
               CLogicalDynamicForeignGet.o \
               CLogicalNAryJoin.o \
@@ -115,6 +116,7 @@ OBJS        = CExpression.o \
               CPhysicalLeftSemiNLJoin.o \
               CPhysicalFullHashJoin.o \
               CPhysicalLimit.o \
+              CPhysicalWindowTopN.o \
               CPhysicalMotion.o \
               CPhysicalMotionBroadcast.o \
               CPhysicalMotionGather.o \

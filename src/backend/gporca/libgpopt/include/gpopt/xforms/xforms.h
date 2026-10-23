@@ -166,6 +166,8 @@
 #include "gpopt/xforms/CXformUnnestTVF.h"
 #include "gpopt/xforms/CXformUpdate2DML.h"
 #include "gpopt/xforms/CXformUtils.h"
+#include "gpopt/xforms/CXformSelect2WindowTopN.h"
+#include "gpopt/xforms/CXformImplementWindowTopN.h"
 
 #endif	// !GPOPT_xforms_H
 

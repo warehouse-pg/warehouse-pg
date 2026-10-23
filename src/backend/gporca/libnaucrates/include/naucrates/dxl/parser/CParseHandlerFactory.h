@@ -331,6 +331,11 @@ private:
 		CMemoryPool *mp, CParseHandlerManager *parse_handler_mgr,
 		CParseHandlerBase *parse_handler_root);
 
+	// construct a WindowTopN parse handler
+	static CParseHandlerBase *CreateWindowTopNParseHandler(
+		CMemoryPool *mp, CParseHandlerManager *parse_handler_mgr,
+		CParseHandlerBase *parse_handler_root);
+
 	// construct an append parse handler
 	static CParseHandlerBase *CreateAppendParseHandler(
 		CMemoryPool *mp, CParseHandlerManager *parse_handler_mgr,

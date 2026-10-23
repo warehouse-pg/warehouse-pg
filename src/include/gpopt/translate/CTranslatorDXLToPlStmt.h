@@ -304,6 +304,13 @@ private:
 			ctxt_translation_prev_siblings	// translation contexts of previous siblings
 	);
 
+	// translate DXL WindowTopN node into a WindowTopN plan node
+	Plan *TranslateDXLWindowTopN(
+		const CDXLNode *topn_dxlnode, CDXLTranslateContext *output_context,
+		CDXLTranslationContextArray *
+			ctxt_translation_prev_siblings	// translation contexts of previous siblings
+	);
+
 	// translate a DXL node into a Hash node
 	Plan *TranslateDXLHash(
 		const CDXLNode *dxlnode, CDXLTranslateContext *output_context,
