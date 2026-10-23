@@ -65,6 +65,7 @@
 #include "optimizer/paths.h"
 #include "optimizer/tlist.h"
 #include "optimizer/planner.h"
+#include "optimizer/restrictinfo.h"
 #include "parser/parse_clause.h"
 #include "parser/parse_oper.h"
 #include "utils/lsyscache.h"
@@ -3341,4 +3342,152 @@ cdb_prepare_path_for_hashed_agg(PlannerInfo *root,
 											 locus);
 
 	return subpath;
+}
+
+/*
+ * cdb_create_window_prefilter_path
+ *
+ * Build the top-N pre-filter for a window clause whose output is filtered
+ * by the parent query with a monotonic window function qual such as
+ * "rank() OVER (...) <= N" (see find_window_prefilters() in allpaths.c).
+ * It keeps, on every segment, only the rows that can pass that qual:
+ *
+ *     [Sort on the window pathkeys, if not already sorted]
+ *     -> WindowAgg computing only 'prefilter_wfuncs'
+ *     -> Result projecting back to the input target
+ *        Filter: 'prefilter_quals'
+ *
+ * This runs on every segment over the segment's own rows, *before* the
+ * Motion that cdb_prepare_path_for_sorted_agg() will add for the final
+ * WindowAgg.  Because a row's rank over a subset of its partition is never
+ * larger than its rank over the whole partition, every row dropped here
+ * would also have been dropped by the parent query's qual on the final
+ * result; the parent query still applies that qual, so the final WindowAgg
+ * is left completely unchanged.
+ *
+ * Returns NULL when the pre-filter cannot help: the input is already on a
+ * single segment, or it is already distributed by the PARTITION BY columns,
+ * so no Motion is needed for the final WindowAgg and the pre-filter would
+ * only add work.
+ *
+ * 'bound_rows' is the estimated number of rows the quals keep per
+ * partition, or a negative value when the bound is not a plain constant.
+ *
+ * *keep_sorted_p tells the caller how to feed the result to
+ * cdb_prepare_path_for_sorted_agg(): true when the final WindowAgg will
+ * gather everything to a single segment, so the segment-local sort order
+ * can be preserved through an order-preserving Motion; false when the
+ * final WindowAgg redistributes by the PARTITION BY columns, where the
+ * Motion destroys the order anyway and the (now much smaller) input is
+ * re-sorted in parallel on the receiving segments.
+ */
+Path *
+cdb_create_window_prefilter_path(PlannerInfo *root,
+								 RelOptInfo *rel,
+								 Path *subpath,
+								 bool is_sorted,
+								 List *window_pathkeys,
+								 WindowClause *wc,
+								 List *prefilter_wfuncs,
+								 List *prefilter_quals,
+								 double bound_rows,
+								 bool *keep_sorted_p)
+{
+	CdbPathLocus locus;
+	bool		need_redistribute;
+	List	   *group_tles;
+	PathTarget *input_target = subpath->pathtarget;
+	PathTarget *pre_target;
+	Path	   *path;
+	ProjectionPath *ppath;
+	List	   *rinfos = NIL;
+	QualCost	qual_cost;
+	double		rows;
+	ListCell   *lc;
+
+	/* Mirror the decision cdb_prepare_path_for_sorted_agg() will make. */
+	if (CdbPathLocus_IsBottleneck(subpath->locus))
+		return NULL;
+
+	group_tles = get_common_group_tles(input_target, wc->partitionClause, NIL);
+	locus = choose_grouping_locus(root, subpath, group_tles, &need_redistribute);
+	if (!need_redistribute)
+		return NULL;
+
+	path = subpath;
+	if (!is_sorted && window_pathkeys)
+		path = (Path *) create_sort_path(root, rel, path, window_pathkeys, -1.0);
+
+	/*
+	 * The first-stage WindowAgg computes only the filtered window functions;
+	 * everything else of this window clause is computed once, by the final
+	 * WindowAgg.
+	 */
+	pre_target = copy_pathtarget(input_target);
+	foreach(lc, prefilter_wfuncs)
+	{
+		WindowFunc *wfunc = lfirst_node(WindowFunc, lc);
+
+		add_column_to_pathtarget(pre_target, (Expr *) wfunc, 0);
+		pre_target->width += get_typavgwidth(wfunc->wintype, -1);
+	}
+
+	path = (Path *) create_windowagg_path(root, rel, path, pre_target,
+										  prefilter_wfuncs, wc);
+
+	foreach(lc, prefilter_quals)
+		rinfos = lappend(rinfos, make_simple_restrictinfo((Expr *) lfirst(lc)));
+
+	/*
+	 * Filter, and project the pre-computed window function columns away
+	 * again so that the rest of the plan sees exactly the input target it
+	 * would have seen without the pre-filter.
+	 */
+	ppath = create_projection_path_with_quals(root, rel, path, input_target,
+											  rinfos, false);
+
+	/*
+	 * Estimate the surviving rows.  With a constant bound, each partition
+	 * present on a segment keeps at most 'bound_rows' rows (more only for
+	 * ties, which we ignore); the number of partitions per segment follows
+	 * from the PARTITION BY expressions.  Otherwise fall back to the generic
+	 * inequality selectivity.  Path rows are per segment here.
+	 */
+	if (bound_rows >= 0)
+	{
+		double		partitions_per_segment = 1.0;
+
+		if (wc->partitionClause != NIL)
+		{
+			List	   *part_exprs;
+			double		total_rows;
+			double		total_partitions;
+
+			part_exprs = get_sortgrouplist_exprs(wc->partitionClause,
+												 root->processed_tlist);
+			total_rows = subpath->rows;
+			if (CdbPathLocus_IsPartitioned(subpath->locus))
+				total_rows *= CdbPathLocus_NumSegments(subpath->locus);
+			total_partitions = estimate_num_groups(root, part_exprs,
+												   total_rows, NULL);
+			partitions_per_segment =
+				estimate_num_groups_on_segment(total_partitions,
+											   subpath->rows,
+											   subpath->locus);
+		}
+		rows = Min(path->rows, partitions_per_segment * bound_rows);
+	}
+	else
+		rows = path->rows * DEFAULT_INEQ_SEL;
+	ppath->path.rows = clamp_row_est(rows);
+
+	/* create_projection_path_with_quals() does not charge for the quals */
+	cost_qual_eval(&qual_cost, prefilter_quals, root);
+	ppath->path.startup_cost += qual_cost.startup;
+	ppath->path.total_cost += qual_cost.startup +
+		qual_cost.per_tuple * path->rows;
+
+	*keep_sorted_p = !CdbPathLocus_IsPartitioned(locus);
+
+	return (Path *) ppath;
 }

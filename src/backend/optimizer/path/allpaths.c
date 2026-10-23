@@ -25,6 +25,8 @@
 #include "catalog/pg_class.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_proc.h"
+#include "access/stratnum.h"
+#include "utils/fmgroids.h"
 #include "foreign/fdwapi.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
@@ -158,6 +160,9 @@ static void subquery_push_qual(Query *subquery,
 static void recurse_push_qual(Node *setOp, Query *topquery,
 							  RangeTblEntry *rte, Index rti, Node *qual);
 static void remove_unused_subquery_outputs(Query *subquery, RelOptInfo *rel);
+static List *find_window_prefilters(PlannerInfo *root, RelOptInfo *rel,
+									 RangeTblEntry *rte, Index rti,
+									 Query *subquery);
 
 static void bring_to_outer_query(PlannerInfo *root, RelOptInfo *rel, List *outer_quals);
 static void bring_to_singleQE(PlannerInfo *root, RelOptInfo *rel);
@@ -2634,6 +2639,17 @@ set_subquery_pathlist(PlannerInfo *root, RelOptInfo *rel,
 		subquery = push_down_restrict(root, rel, rte, rti, subquery);
 
 		/*
+		 * WHPG: quals on a window function output cannot be pushed into the
+		 * subquery, but "rank() <= N" style quals can still be applied on
+		 * each segment before the window's Motion.  Hand them over to the
+		 * subquery's planner; the slot is cleared again right below.
+		 */
+		Assert(root->subquery_window_prefilters == NIL);
+		if (whpg_enable_window_topn)
+			root->subquery_window_prefilters =
+				find_window_prefilters(root, rel, rte, rti, subquery);
+
+		/*
 		 * The upper query might not use all the subquery's output columns; if
 		 * not, we can simplify.
 		 */
@@ -2685,6 +2701,7 @@ set_subquery_pathlist(PlannerInfo *root, RelOptInfo *rel,
 									root,
 									false, tuple_fraction,
 									config);
+		root->subquery_window_prefilters = NIL;
 	}
 	else
 	{
@@ -4315,6 +4332,190 @@ recurse_push_qual(Node *setOp, Query *topquery,
 /*****************************************************************************
  *			SIMPLIFYING SUBQUERY TARGETLISTS
  *****************************************************************************/
+
+/*
+ * find_window_prefilters
+ *	  Look for restriction clauses of the parent query that compare a
+ *	  monotonic window function output of 'subquery' against a constant,
+ *	  such as "rk <= 10" over "rank() OVER (...) AS rk".
+ *
+ * Such a qual cannot be pushed into the subquery (it would change the
+ * window's input), but it can be evaluated once more *before* the Motion
+ * that brings each window partition to one segment: the rank of a row
+ * computed over the rows of a single segment is never larger than its rank
+ * over the whole partition, so a row whose segment-local rank already fails
+ * "<= N" can be dropped early.  The parent query keeps the original qual
+ * and applies it to the final result as usual.
+ *
+ * The returned WindowPrefilter list is consumed by create_one_window_path()
+ * when it plans the subquery's window clauses.  Each clause is normalized
+ * to "<wfunc> <op> <bound>" with <op> being < or <= of the operator's btree
+ * family; "<wfunc> = N" becomes "<wfunc> <= N".
+ */
+static List *
+find_window_prefilters(PlannerInfo *root, RelOptInfo *rel,
+					   RangeTblEntry *rte, Index rti, Query *subquery)
+{
+	List	   *result = NIL;
+	ListCell   *lc;
+
+	if (!subquery->hasWindowFuncs || rel->baserestrictinfo == NIL)
+		return NIL;
+
+	/*
+	 * The pre-filter removes rows before anything the subquery does above
+	 * its window functions, so it must be a pure filter from the subquery's
+	 * point of view.  Mirror the checks subquery_is_pushdown_safe() makes
+	 * for ordinary qual pushdown: LIMIT/OFFSET and DISTINCT ON do not
+	 * commute with a filter, set-returning functions in the target list
+	 * would be evaluated for fewer rows, and a security barrier view must
+	 * not see quals of the outer query.  Set operations never have
+	 * hasWindowFuncs set at the top level, so they are excluded already.
+	 */
+	if (subquery->limitOffset != NULL || subquery->limitCount != NULL ||
+		subquery->hasDistinctOn ||
+		subquery->hasTargetSRFs ||
+		rte->security_barrier)
+		return NIL;
+
+	foreach(lc, rel->baserestrictinfo)
+	{
+		RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
+		OpExpr	   *op;
+		Node	   *leftop;
+		Node	   *rightop;
+		Var		   *var;
+		Node	   *bound;
+		bool		wfunc_left;
+		TargetEntry *tle;
+		WindowFunc *wfunc;
+		List	   *interpretations;
+		ListCell   *lc2;
+		Oid			normalized_opno = InvalidOid;
+		int			normalized_strategy = 0;
+		WindowPrefilter *prefilter;
+
+		if (rinfo->pseudoconstant)
+			continue;
+		if (!IsA(rinfo->clause, OpExpr))
+			continue;
+		op = (OpExpr *) rinfo->clause;
+		if (list_length(op->args) != 2)
+			continue;
+		/* a non-strict operator could accept NULL bounds; keep it simple */
+		if (!func_strict(op->opfuncid))
+			continue;
+
+		leftop = (Node *) linitial(op->args);
+		rightop = (Node *) lsecond(op->args);
+
+		if (IsA(leftop, Var) && ((Var *) leftop)->varno == rti &&
+			((Var *) leftop)->varlevelsup == 0)
+		{
+			var = (Var *) leftop;
+			bound = rightop;
+			wfunc_left = true;
+		}
+		else if (IsA(rightop, Var) && ((Var *) rightop)->varno == rti &&
+				 ((Var *) rightop)->varlevelsup == 0)
+		{
+			var = (Var *) rightop;
+			bound = leftop;
+			wfunc_left = false;
+		}
+		else
+			continue;
+
+		if (var->varattno <= 0)
+			continue;
+
+		/*
+		 * The bound must be computable on every segment before the Motion:
+		 * no Vars, no volatile functions, and no PARAM_EXEC Params (a
+		 * correlated subplan's parameters are not available below a Motion).
+		 */
+		if (!is_pseudo_constant_clause(bound) ||
+			contain_exec_param(bound, NIL) ||
+			contain_subplans(bound))
+			continue;
+
+		tle = get_tle_by_resno(subquery->targetList, var->varattno);
+		if (tle == NULL || tle->resjunk || !IsA(tle->expr, WindowFunc))
+			continue;
+		wfunc = (WindowFunc *) tle->expr;
+
+		/*
+		 * Only functions whose value never decreases as the partition is
+		 * walked in window order qualify: a row's value over a subset of the
+		 * partition is then a lower bound of its value over the whole
+		 * partition.
+		 */
+		if (wfunc->winfnoid != F_WINDOW_RANK &&
+			wfunc->winfnoid != F_WINDOW_DENSE_RANK &&
+			wfunc->winfnoid != F_WINDOW_ROW_NUMBER)
+			continue;
+
+		/*
+		 * Classify the operator through its btree family: we accept
+		 * "wfunc < bound", "wfunc <= bound", their commuted forms, and
+		 * "wfunc = bound", which we weaken to "wfunc <= bound".
+		 */
+		interpretations = get_op_btree_interpretation(op->opno);
+		foreach(lc2, interpretations)
+		{
+			OpBtreeInterpretation *interp = (OpBtreeInterpretation *) lfirst(lc2);
+			int			strategy = interp->strategy;
+
+			if (!wfunc_left)
+			{
+				/* commute "bound op wfunc" into "wfunc op' bound" */
+				if (strategy == BTGreaterStrategyNumber)
+					strategy = BTLessStrategyNumber;
+				else if (strategy == BTGreaterEqualStrategyNumber)
+					strategy = BTLessEqualStrategyNumber;
+				else if (strategy != BTEqualStrategyNumber)
+					continue;
+			}
+
+			if (strategy == BTLessStrategyNumber ||
+				strategy == BTLessEqualStrategyNumber)
+			{
+				normalized_opno = wfunc_left ? op->opno : get_commutator(op->opno);
+				normalized_strategy = strategy;
+			}
+			else if (strategy == BTEqualStrategyNumber)
+			{
+				normalized_opno = get_opfamily_member(interp->opfamily_id,
+													  exprType((Node *) wfunc),
+													  exprType(bound),
+													  BTLessEqualStrategyNumber);
+				normalized_strategy = BTLessEqualStrategyNumber;
+			}
+			else
+				continue;
+
+			if (OidIsValid(normalized_opno))
+				break;
+		}
+		list_free_deep(interpretations);
+
+		if (!OidIsValid(normalized_opno))
+			continue;
+
+		prefilter = (WindowPrefilter *) palloc(sizeof(WindowPrefilter));
+		prefilter->winref = wfunc->winref;
+		prefilter->strategy = normalized_strategy;
+		prefilter->wfunc = copyObject(wfunc);
+		prefilter->clause = (OpExpr *)
+			make_opclause(normalized_opno, BOOLOID, false,
+						  (Expr *) copyObject(wfunc),
+						  (Expr *) copyObject(bound),
+						  InvalidOid, op->inputcollid);
+		result = lappend(result, prefilter);
+	}
+
+	return result;
+}
 
 /*
  * remove_unused_subquery_outputs

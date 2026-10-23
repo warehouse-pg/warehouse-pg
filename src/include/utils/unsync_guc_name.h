@@ -570,6 +570,7 @@
 		"wal_writer_flush_after",
 		"whpg_dispatch_topology_file",
 		"whpg_dispatch_topology_state",
+		"whpg_enable_window_topn",
 		"whpg_hot_standby_anchor_name",
 		"whpg_hot_standby_snapshot_mode",
 		"whpg_max_anchor_snapshots",

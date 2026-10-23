@@ -24,6 +24,7 @@
 #include "access/htup_details.h"
 #include "access/parallel.h"
 #include "access/sysattr.h"
+#include "access/stratnum.h"
 #include "access/table.h"
 #include "access/xact.h"
 #include "access/xlog.h"
@@ -227,6 +228,14 @@ static void create_one_window_path(PlannerInfo *root,
 								   PathTarget *output_target,
 								   WindowFuncLists *wflists,
 								   List *activeWindows);
+static Path *create_window_prefilter_path(PlannerInfo *root,
+										  RelOptInfo *window_rel,
+										  Path *path,
+										  bool is_sorted,
+										  List *window_pathkeys,
+										  WindowClause *wc,
+										  List *wfuncs,
+										  bool *keep_sorted_p);
 static RelOptInfo *create_distinct_paths(PlannerInfo *root,
 										 RelOptInfo *input_rel);
 static RelOptInfo *create_ordered_paths(PlannerInfo *root,
@@ -914,6 +923,8 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	root->non_recursive_path = NULL;
 	root->partColsUpdated = false;
 	root->is_correlated_subplan = false;
+	root->window_prefilters = parent_root ? parent_root->subquery_window_prefilters : NIL;
+	root->subquery_window_prefilters = NIL;
 
 	/*
 	 * If there is a WITH list, process each WITH query and either convert it
@@ -5380,10 +5391,31 @@ create_one_window_path(PlannerInfo *root,
 	{
 		WindowClause *wc = lfirst_node(WindowClause, l);
 		List	   *window_pathkeys;
+		bool		is_sorted;
+		Path	   *prepath = NULL;
+		bool		prepath_sorted = false;
 
 		window_pathkeys = make_pathkeys_for_window(root,
 												   wc,
 												   root->processed_tlist);
+		is_sorted = pathkeys_contained_in(window_pathkeys, path->pathkeys);
+
+		/*
+		 * WHPG: if the parent query filters this window's rank-like output
+		 * with "<= N", consider a top-N pre-filter that applies the filter on
+		 * each segment before the Motion.  Only the topmost window clause
+		 * qualifies: a lower WindowAgg feeds further window clauses, whose
+		 * results would change if rows were removed early.  The pre-filter
+		 * path is added as an alternative; add_path() picks by cost.
+		 */
+		if (whpg_enable_window_topn &&
+			root->window_prefilters != NIL &&
+			lnext(l) == NULL)
+			prepath = create_window_prefilter_path(root, window_rel, path,
+												   is_sorted, window_pathkeys,
+												   wc,
+												   wflists->windowFuncs[wc->winref],
+												   &prepath_sorted);
 
 		/*
 		 * Unless the PARTITION BY in the window happens to match the
@@ -5398,7 +5430,7 @@ create_one_window_path(PlannerInfo *root,
 		 * This is the same logic that is used for sorted Aggregates.
 		 */
 		path = cdb_prepare_path_for_sorted_agg(root,
-											   pathkeys_contained_in(window_pathkeys, path->pathkeys),
+											   is_sorted,
 											   window_rel,
 											   path,
 											   path->pathtarget,
@@ -5406,6 +5438,16 @@ create_one_window_path(PlannerInfo *root,
 											   -1.0,
 											   wc->partitionClause,
 											   NIL);
+		if (prepath)
+			prepath = cdb_prepare_path_for_sorted_agg(root,
+													  prepath_sorted,
+													  window_rel,
+													  prepath,
+													  prepath->pathtarget,
+													  window_pathkeys,
+													  -1.0,
+													  wc->partitionClause,
+													  NIL);
 
 		if (lnext(l))
 		{
@@ -5438,9 +5480,114 @@ create_one_window_path(PlannerInfo *root,
 			create_windowagg_path(root, window_rel, path, window_target,
 								  wflists->windowFuncs[wc->winref],
 								  wc);
+
+		if (prepath)
+		{
+			prepath = (Path *)
+				create_windowagg_path(root, window_rel, prepath, window_target,
+									  wflists->windowFuncs[wc->winref],
+									  wc);
+			add_path(window_rel, prepath);
+		}
 	}
 
 	add_path(window_rel, path);
+}
+
+/*
+ * create_window_prefilter_path
+ *
+ * Match the WindowPrefilter entries the parent query handed down (see
+ * find_window_prefilters() in allpaths.c) against the window functions of
+ * window clause 'wc', and build the top-N pre-filter for them.  Returns
+ * NULL if no entry applies or the pre-filter cannot help (see
+ * cdb_create_window_prefilter_path()).
+ */
+static Path *
+create_window_prefilter_path(PlannerInfo *root,
+							 RelOptInfo *window_rel,
+							 Path *path,
+							 bool is_sorted,
+							 List *window_pathkeys,
+							 WindowClause *wc,
+							 List *wfuncs,
+							 bool *keep_sorted_p)
+{
+	List	   *pre_wfuncs = NIL;
+	List	   *pre_quals = NIL;
+	double		bound_rows = -1.0;
+	ListCell   *lc;
+
+	foreach(lc, root->window_prefilters)
+	{
+		WindowPrefilter *prefilter = (WindowPrefilter *) lfirst(lc);
+		WindowFunc *match = NULL;
+		OpExpr	   *clause;
+		Node	   *bound;
+		ListCell   *lc2;
+
+		if (prefilter->winref != wc->winref)
+			continue;
+
+		/*
+		 * Use the planner's own WindowFunc node in the qual, so that
+		 * setrefs matches it against the first-stage WindowAgg's tlist.
+		 */
+		foreach(lc2, wfuncs)
+		{
+			WindowFunc *wfunc = lfirst_node(WindowFunc, lc2);
+
+			if (equal(wfunc, prefilter->wfunc))
+			{
+				match = wfunc;
+				break;
+			}
+		}
+		if (match == NULL)
+			continue;
+
+		clause = copyObject(prefilter->clause);
+		linitial(clause->args) = match;
+		pre_wfuncs = list_append_unique_ptr(pre_wfuncs, match);
+		pre_quals = lappend(pre_quals, clause);
+
+		/* rows kept per partition, when the bound is a plain integer */
+		bound = (Node *) lsecond(clause->args);
+		if (IsA(bound, Const) && !((Const *) bound)->constisnull)
+		{
+			Const	   *c = (Const *) bound;
+			double		n = -1.0;
+
+			switch (c->consttype)
+			{
+				case INT2OID:
+					n = DatumGetInt16(c->constvalue);
+					break;
+				case INT4OID:
+					n = DatumGetInt32(c->constvalue);
+					break;
+				case INT8OID:
+					n = DatumGetInt64(c->constvalue);
+					break;
+			}
+			if (n >= 0)
+			{
+				if (prefilter->strategy == BTLessStrategyNumber)
+					n -= 1.0;
+				n = Max(n, 1.0);
+				if (bound_rows < 0 || n < bound_rows)
+					bound_rows = n;
+			}
+		}
+	}
+
+	if (pre_quals == NIL)
+		return NULL;
+
+	return cdb_create_window_prefilter_path(root, window_rel, path,
+											is_sorted, window_pathkeys, wc,
+											pre_wfuncs, pre_quals,
+											bound_rows, keep_sorted_p);
 }
 
 /*
