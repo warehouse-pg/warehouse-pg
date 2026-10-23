@@ -1,6 +1,9 @@
 import imp
 import os
+import shutil
 import sys
+import tempfile
+import time
 
 from mock import Mock, patch, call
 
@@ -345,6 +348,109 @@ class GpStart(GpTestCase):
         self.assertEqual(return_code, 1)
         messages = [msg[0][0] for msg in self.subject.logger.info.call_args_list]
         self.assertIn("DBID:5  FAILED  host:'sdw1' datadir:'/data/mirror1' with reason:'fictitious reason'", messages)
+
+    def _replica_conf(self, enable_completed):
+        rc = Mock()
+        rc.cluster = 'prod'
+        rc.path = '/tmp/cdd/whpg_replica.conf'
+        rc.topology_path.return_value = '/tmp/cdd/whpg_dr_topology'
+        rc.enable_completed.return_value = enable_completed
+        return rc
+
+    @patch('gpstart.GpStart._wait_for_replica_coordinator')
+    @patch('gpstart.replica_topology.gparray_from_replica')
+    @patch('gpstart.replica_topology.read_replica_conf')
+    def test_replica_start_uses_the_topology_not_the_catalog(self, mock_read_replica_conf, mock_gparray_from_replica, mock_wait):
+        sys.argv = ["gpstart", "-a"]
+        mock_read_replica_conf.return_value = self._replica_conf(True)
+        mock_gparray_from_replica.return_value = self.gparray
+        self.subject.unix.PgPortIsActive.local.return_value = False
+        self.mock_os_path_exists.side_effect = os_exists_check
+
+        gpstart = self.setup_gpstart()
+        return_code = gpstart.run()
+
+        self.assertEqual(return_code, 0)
+        mock_gparray_from_replica.assert_called_once_with(mock_read_replica_conf.return_value)
+        self.subject.GpArray.initFromCatalog.assert_not_called()
+        # the coordinator is not started in admin mode to read the catalog,
+        # nor stopped again before the segments start
+        self.mock_gp.GpStop.assert_not_called()
+        self.mock_start_result.return_value.startSegments.assert_called_once()
+        # the coordinator starts once, in dispatch role, without pg_ctl -w:
+        # a replica coordinator never reports distributed recovery done
+        self.subject.gp.CoordinatorStart.local.assert_not_called()
+        self.assertEqual(self.mock_gp.CoordinatorStart.call_count, 1)
+        self.assertEqual(self.mock_gp.CoordinatorStart.call_args[1]["noWait"], True)
+        self.assertNotIn("utilityMode", self.mock_gp.CoordinatorStart.call_args[1])
+        mock_wait.assert_called_once()
+
+    @patch('gpstart.replica_topology.gparray_from_replica')
+    @patch('gpstart.replica_topology.read_replica_conf')
+    def test_replica_start_refused_without_a_completed_enable(self, mock_read_replica_conf, mock_gparray_from_replica):
+        sys.argv = ["gpstart", "-a"]
+        mock_read_replica_conf.return_value = self._replica_conf(False)
+        self.mock_os_path_exists.side_effect = os_exists_check
+
+        gpstart = self.setup_gpstart()
+        with self.assertRaisesRegex(ExceptionNoStackTraceNeeded, "run 'whpg-dr replica enable prod'"):
+            gpstart.run()
+
+        mock_gparray_from_replica.assert_not_called()
+        self.mock_gp.CoordinatorStart.assert_not_called()
+        self.mock_start_result.return_value.startSegments.assert_not_called()
+
+    @patch('gpstart.time.sleep')
+    def test_wait_for_replica_coordinator(self, mock_sleep):
+        gpstart = self.setup_gpstart()
+        gpstart.timeout = 600
+        datadir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, datadir)
+        gpstart.coordinator_datadir = datadir
+        pidfile = os.path.join(datadir, 'postmaster.pid')
+        launched = time.time()
+        lines = ['123', datadir, str(int(launched)), '5432', '/tmp', '*', '  5432001  8']
+
+        # returns once the status line reads ready
+        statuses = iter(['starting', 'standby ', 'ready   '])
+        def advance(_):
+            with open(pidfile, 'w') as fp:
+                fp.write('\n'.join(lines + [next(statuses)]) + '\n')
+        advance(None)
+        mock_sleep.side_effect = advance
+        gpstart._wait_for_replica_coordinator(launched)
+        self.assertEqual(mock_sleep.call_count, 2)
+
+        # returns when the file disappears after it was seen (the postmaster exited)
+        mock_sleep.reset_mock()
+        with open(pidfile, 'w') as fp:
+            fp.write('\n'.join(lines + ['starting']) + '\n')
+        mock_sleep.side_effect = lambda _: os.remove(pidfile)
+        gpstart._wait_for_replica_coordinator(launched)
+        self.assertEqual(mock_sleep.call_count, 1)
+
+        # a stale postmaster.pid (started before this launch) does not end
+        # the wait, even when it says ready: it counts as no file at all
+        mock_sleep.reset_mock()
+        stale = ['123', datadir, str(int(launched) - 3600)] + lines[3:]
+        with open(pidfile, 'w') as fp:
+            fp.write('\n'.join(stale + ['ready   ']) + '\n')
+        clock = [launched]
+        mock_sleep.side_effect = lambda s: clock.__setitem__(0, clock[0] + s)
+        with patch('gpstart.time.time', side_effect=lambda: clock[0]):
+            gpstart._wait_for_replica_coordinator(launched)
+        self.assertGreater(mock_sleep.call_count, gpstart.REPLICA_PIDFILE_GRACE - 1)
+        self.assertLessEqual(mock_sleep.call_count, gpstart.REPLICA_PIDFILE_GRACE + 1)
+        os.remove(pidfile)
+
+        # returns once the file has not appeared within the grace period
+        # (the postmaster exited before writing it), not after the timeout
+        mock_sleep.reset_mock()
+        clock = [1000.0]
+        mock_sleep.side_effect = lambda s: clock.__setitem__(0, clock[0] + s)
+        with patch('gpstart.time.time', side_effect=lambda: clock[0]):
+            gpstart._wait_for_replica_coordinator(1000.0)
+        self.assertLessEqual(mock_sleep.call_count, gpstart.REPLICA_PIDFILE_GRACE + 1)
 
     def test_standby_startup_skipped(self):
         sys.argv = ["gpstart", "-a", "-y"]

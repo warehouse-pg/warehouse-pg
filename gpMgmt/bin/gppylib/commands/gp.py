@@ -270,7 +270,8 @@ class PgCtlStartArgs(CmdArgs):
      '-o', '"', '-p', '5432', '--silent-mode=true', '"', 'start']
     """
 
-    def __init__(self, datadir, backend, era, wrapper, args, wait, timeout=None, mirrorFastWait=False):
+    def __init__(self, datadir, backend, era, wrapper, args, wait, timeout=None, mirrorFastWait=False,
+                 noWait=False):
         """
         @param datadir: database data directory
         @param backend: backend options string from PgCtlBackendOptions
@@ -279,6 +280,8 @@ class PgCtlStartArgs(CmdArgs):
         @param args: wrapper arguments for pg_ctl
         @param wait: true if pg_ctl should wait until backend starts completely
         @param timeout: number of seconds to wait before giving up
+        @param noWait: true to pass -W: pg_ctl start waits by default, so
+                       wait=False alone does not stop it from waiting
         """
 
         CmdArgs.__init__(self, [
@@ -290,7 +293,10 @@ class PgCtlStartArgs(CmdArgs):
             "-l", "%s/log/startup.log" % datadir,
         ])
         self.set_wrapper(wrapper, args)
-        self.set_wait_timeout(wait, timeout)
+        if noWait:
+            self.append("-W")
+        else:
+            self.set_wait_timeout(wait, timeout)
         self.set_mirror_fast_wait(mirrorFastWait)
         self.extend([
             "-o", "\"", str(backend), "\"",
@@ -328,7 +334,7 @@ class CoordinatorStart(Command):
     def __init__(self, name, dataDir, port, era,
                  wrapper, wrapper_args, specialMode=None, restrictedMode=False, timeout=SEGMENT_TIMEOUT_DEFAULT,
                  max_connections=1, utilityMode=False, ctxt=LOCAL, remoteHost=None,
-                 wait=True
+                 wait=True, noWait=False
                  ):
         self.dataDir=dataDir
         self.port=port
@@ -346,7 +352,7 @@ class CoordinatorStart(Command):
         b.set_restricted(restrictedMode, max_connections)
 
         # build pg_ctl command
-        c = PgCtlStartArgs(dataDir, b, era, wrapper, wrapper_args, wait, timeout)
+        c = PgCtlStartArgs(dataDir, b, era, wrapper, wrapper_args, wait, timeout, noWait=noWait)
         logger.info("CoordinatorStart pg_ctl cmd is %s", c)
         self.cmdStr = str(c)
 

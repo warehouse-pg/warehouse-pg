@@ -27,6 +27,7 @@ try:
     from gppylib.commands import pg
     from gppylib.commands import dca
     from gppylib import pgconf
+    from gppylib import replica_topology
     from gppylib.heapchecksum import HeapChecksum
     from gppylib.commands.pg import PgControlData
     from gppylib.operations.startSegments import *
@@ -76,6 +77,7 @@ class GpStart:
         # Some variables that are set during execution
         #
         self.era = None
+        self.replica_conf = None
         self.gpversion = None
         self.gparray = None
         self.port = None
@@ -105,8 +107,15 @@ class GpStart:
             # Disable Ctrl-C
             signal.signal(signal.SIGINT, signal.SIG_IGN)
 
-            self._startCoordinator()
-            logger.info("Coordinator Started...")
+            if self.replica_conf is not None:
+                self._prepare_replica_start()
+                if self.coordinatoronly:
+                    self._start_coordinator_admin_mode()
+                    logger.info("Coordinator Started...")
+                    return 0
+            else:
+                self._startCoordinator()
+                logger.info("Coordinator Started...")
 
             if self.coordinatoronly:
                 return 0
@@ -133,9 +142,12 @@ class GpStart:
             else:
                 logger.info("Skipping Standby activation status checking.")
 
-            logger.info("Shutting down coordinator")
-            self.shutdown_coordinator_only()
-            # TODO: check results of command.
+            # On a read replica the coordinator was not started: its nodes
+            # came from the topology file, not from the catalog.
+            if self.replica_conf is None:
+                logger.info("Shutting down coordinator")
+                self.shutdown_coordinator_only()
+                # TODO: check results of command.
 
         finally:
             # Reenable Ctrl-C
@@ -187,6 +199,10 @@ class GpStart:
         self.user = unix.getUserName()
         gp.check_permissions(self.user)
         self._read_postgresqlconf()
+        try:
+            self.replica_conf = replica_topology.read_replica_conf(self.coordinator_datadir)
+        except replica_topology.ReplicaTopologyError as e:
+            raise ExceptionNoStackTraceNeeded(str(e))
 
     ######
     def _read_postgresqlconf(self):
@@ -396,7 +412,102 @@ class GpStart:
         return "%-" + str(host_len) + "s  %-" + str(dir_len) + "s  %-" + str(port_len) + "s  %s"
 
     ######
+    def _prepare_replica_start(self):
+        """
+        A whpg-dr read replica: the catalog describes the source cluster, so
+        the nodes come from the replica's dispatch topology file, and the
+        coordinator is not started in admin mode to read it.  The nodes are
+        started only after whpg-dr finished enabling them (paused at the
+        anchor, the anchor published, an anchored query run); otherwise
+        whpg-dr does the start.
+        """
+        rc = self.replica_conf
+        cluster = rc.cluster or '<cluster_name>'
+        if not rc.enable_completed():
+            raise ExceptionNoStackTraceNeeded(
+                "This is a whpg-dr read replica without a completed replica enable (%s carries no completion "
+                "mark for its generation: an enable is in progress or was interrupted, or a restore ran since). "
+                "gpstart starts only a replica whpg-dr has enabled: run 'whpg-dr replica enable %s'."
+                % (rc.path, cluster))
+
+        logger.info("whpg-dr read replica %s: obtaining the nodes from %s" % (cluster, rc.topology_path()))
+        self.gparray = replica_topology.gparray_from_replica(rc)
+        self.dburl = dbconn.DbURL(port=self.port, dbname='template1')
+
+        logger.info("Setting new coordinator era")
+        e = GpEraFile(self.coordinator_datadir, logger=get_logger_if_verbose())
+        e.new_era(self.gparray.coordinator.hostname, self.port, time.strftime('%y%m%d%H%M%S'))
+        self.era = e.era
+
+    def _start_replica_coordinator(self):
+        """
+        pg_ctl -w waits for a dispatching coordinator to finish distributed
+        transaction recovery ("dtmready" in postmaster.pid), which a read
+        replica's coordinator does not do while it stays in recovery.  Start
+        it without -w, then wait until it accepts (read-only) connections.
+        """
+        cmd = gp.CoordinatorStart("Starting Coordinator instance", self.coordinator_datadir, self.port, self.era,
+                                  self.wrapper, self.wrapper_args, specialMode=self.specialMode,
+                                  restrictedMode=self.restricted, timeout=self.timeout,
+                                  max_connections=self.max_connections, noWait=True)
+        launched = time.time()
+        cmd.run(validateAfter=True)
+        self._wait_for_replica_coordinator(launched)
+
+    # pg_ctl -W does not watch the postmaster it starts: a postmaster that
+    # exits before it writes postmaster.pid (a port in use, a bad setting)
+    # shows only as a file that never appears, so stop waiting after this
+    # many seconds without one.
+    REPLICA_PIDFILE_GRACE = 30
+
+    def _wait_for_replica_coordinator(self, launched):
+        """
+        Waits until postmaster.pid reports the coordinator ready for
+        connections, or for self.timeout seconds. Only a postmaster.pid the
+        postmaster started at launched wrote counts (its start time, line 3,
+        with pg_ctl's 2 seconds of slack), so a stale file does not end the
+        wait. Stops early when the postmaster has exited: its file is gone
+        again, or none appeared within REPLICA_PIDFILE_GRACE seconds. The
+        caller's status check then reports the coordinator as not running.
+        """
+        pidfile = os.path.join(self.coordinator_datadir, 'postmaster.pid')
+        seen = False
+        start = time.time()
+        deadline = start + self.timeout
+        while time.time() < deadline:
+            try:
+                with open(pidfile) as fp:
+                    lines = fp.read().splitlines()
+                if len(lines) >= 3 and lines[2].strip().isdigit() and int(lines[2]) >= launched - 2:
+                    seen = True
+                    # line 8 of postmaster.pid is the postmaster status
+                    if len(lines) >= 8 and lines[7].strip() == 'ready':
+                        return
+                elif seen:
+                    return
+            except IOError:
+                if seen:
+                    return
+            if not seen and time.time() - start > self.REPLICA_PIDFILE_GRACE:
+                return
+            time.sleep(1)
+        logger.warning("Coordinator did not accept connections within %d seconds" % self.timeout)
+
     def _startCoordinator(self):
+        self._start_coordinator_admin_mode()
+
+        logger.info("Obtaining Greenplum Coordinator catalog information")
+
+        logger.info("Obtaining Segment details from coordinator...")
+        self.dburl = dbconn.DbURL(port=self.port, dbname='template1')
+        self.gparray = GpArray.initFromCatalog(self.dburl, utility=True)
+
+        logger.info("Setting new coordinator era")
+        e = GpEraFile(self.coordinator_datadir, logger=get_logger_if_verbose())
+        e.new_era(self.gparray.coordinator.hostname, self.port, time.strftime('%y%m%d%H%M%S'))
+        self.era = e.era
+
+    def _start_coordinator_admin_mode(self):
         if self.restricted:
             logger.info("Starting Coordinator instance in admin and RESTRICTED mode")
         else:
@@ -415,17 +526,6 @@ class GpStart:
             else:
                 logger.fatal("Failed to start Coordinator instance in admin mode")
             cmd.validate()
-
-        logger.info("Obtaining Greenplum Coordinator catalog information")
-
-        logger.info("Obtaining Segment details from coordinator...")
-        self.dburl = dbconn.DbURL(port=self.port, dbname='template1')
-        self.gparray = GpArray.initFromCatalog(self.dburl, utility=True)
-
-        logger.info("Setting new coordinator era")
-        e = GpEraFile(self.coordinator_datadir, logger=get_logger_if_verbose())
-        e.new_era(self.gparray.coordinator.hostname, self.port, time.strftime('%y%m%d%H%M%S'))
-        self.era = e.era
 
     ######
     def _start(self, segmentsToStart, invalidSegments):
@@ -683,12 +783,15 @@ class GpStart:
         self.gparray.coordinator.hostname, self.coordinator_datadir, restrict_txt))
 
         # attempt to start coordinator
-        gp.CoordinatorStart.local("Starting Coordinator instance",
-                             self.coordinator_datadir, self.port, self.era,
-                             wrapper=self.wrapper, wrapper_args=self.wrapper_args,
-                             specialMode=self.specialMode, restrictedMode=self.restricted, timeout=self.timeout,
-                             max_connections=self.max_connections
-                             )
+        if self.replica_conf is not None:
+            self._start_replica_coordinator()
+        else:
+            gp.CoordinatorStart.local("Starting Coordinator instance",
+                                 self.coordinator_datadir, self.port, self.era,
+                                 wrapper=self.wrapper, wrapper_args=self.wrapper_args,
+                                 specialMode=self.specialMode, restrictedMode=self.restricted, timeout=self.timeout,
+                                 max_connections=self.max_connections
+                                 )
 
         # check that coordinator is running now
         if not pg.DbStatus.local('coordinator instance', self.gparray.coordinator):

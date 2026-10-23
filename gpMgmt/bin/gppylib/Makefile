@@ -24,6 +24,7 @@ DATA= __init__.py \
 	parseutils.py \
 	pgconf.py \
 	recoveryinfo.py \
+	replica_topology.py \
 	userinput.py \
 	utils.py
 

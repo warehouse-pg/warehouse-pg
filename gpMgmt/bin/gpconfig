@@ -17,10 +17,12 @@ import sys
 import re
 import psutil
 import shlex
+from contextlib import closing
 from psycopg2 import DatabaseError
 try:
     from gppylib.gpparseopts import OptParser, OptChecker
     from gppylib.gparray import GpArray
+    from gppylib import replica_topology
     from gppylib.operations.detect_unreachable_hosts import get_unreachable_segment_hosts
     from gppylib.gplog import *
     from gppylib.commands.unix import *
@@ -45,6 +47,8 @@ read_only_gucs = set()  # populated at runtime
 LOGGER = get_default_logger()
 setup_tool_logging(EXECNAME, getLocalHostname(), getUserName())
 gp_array = None
+# the whpg_replica.conf of a whpg-dr read replica coordinator, else None
+replica_conf = None
 
 
 def parseargs():
@@ -263,7 +267,12 @@ def get_gucs_from_database(gucname):
         # we always want to unset search path except when getting the
         # 'search_path' GUC itself
         unsetSearchPath = gucname != 'search_path'
-        conn = dbconn.connect(dburl, False, True, unsetSearchPath=unsetSearchPath)
+        # A read replica answers ordinary sessions from its published anchor
+        # snapshot; the settings query needs none.
+        extraOptions = None
+        if replica_conf is not None:
+            extraOptions = ["-c whpg_hot_standby_snapshot_mode=unanchored"]
+        conn = dbconn.connect(dburl, False, True, unsetSearchPath=unsetSearchPath, extraOptions=extraOptions)
         query = ToolkitQuery(gucname).query
         cursor = dbconn.query(conn, query)
         # we assume that all roles are primary due to the query.
@@ -520,9 +529,33 @@ def get_gucs_from_files(guc):
     return gucs_found
 
 
+def _coordinator_datadir():
+    datadir = os.environ.get('COORDINATOR_DATA_DIRECTORY') or os.environ.get('MASTER_DATA_DIRECTORY')
+    if datadir:
+        return datadir
+    with closing(dbconn.connect(dbconn.DbURL(), True)) as conn:
+        return dbconn.querySingleton(conn, "SHOW data_directory")
+
+
 def _set_gparray():
+    global gp_array, replica_conf
+    # On a whpg-dr read replica the catalog describes the source cluster:
+    # act on the nodes the replica's dispatch topology file lists instead.
     try:
-        global gp_array
+        replica_conf = replica_topology.read_replica_conf(_coordinator_datadir())
+        if replica_conf is not None:
+            gp_array = replica_topology.gparray_from_replica(replica_conf)
+            LOGGER.info("whpg-dr read replica: using the nodes listed in %s" % replica_conf.topology_path())
+            return
+    except replica_topology.ReplicaTopologyError as ex:
+        log_and_raise(str(ex))
+    except DatabaseError as ex:
+        LOGGER.error(ex.__str__())
+        msg = 'Failed to connect to database, exiting without action. ' \
+              'This script can only be run when the database is up.'
+        LOGGER.error(msg)
+        raise Exception(msg)
+    try:
         gp_array = GpArray.initFromCatalog(dbconn.DbURL(), utility=True)
     except DatabaseError as ex:
         LOGGER.error(ex.__str__())
@@ -550,6 +583,14 @@ def do_show(options):
 
     _print_gucs(gucname, gucs, options)
 
+def check_replica_managed(options):
+    if replica_conf is None or options.entry.lower() not in replica_conf.managed_settings():
+        return
+    log_and_raise("cannot change %s on a whpg-dr read replica: whpg-dr sets it in %s, which an entry "
+                  "in postgresql.conf would override; whpg-dr replica enable writes that file"
+                  % (options.entry, replica_conf.path))
+
+
 def check_gpexpand():
     check_result, msg = conflict_with_gpexpand("gpconfig",
                                                refuse_phase1=True,
@@ -570,7 +611,11 @@ def do_main():
     elif options.remove or options.change:
         # gpconfig should check gpexpand running status when
         # it wants to modify configurations
-        check_gpexpand()
+        # A replica is read-only, so gpexpand cannot run there, and the
+        # expansion status it would read is the source's.
+        if replica_conf is None:
+            check_gpexpand()
+        check_replica_managed(options)
 
         do_change(options)
 

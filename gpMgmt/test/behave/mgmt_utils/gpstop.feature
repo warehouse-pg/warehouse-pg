@@ -11,6 +11,18 @@ Feature: gpstop behave tests
          And verify no postgres process is running on all hosts
 
     @demo_cluster
+    Scenario: gpstop and gpstart on a cluster whose postgresql.conf includes a missing file with include_if_exists
+        Given the database is running
+          And the user runs command "echo "include_if_exists = 'whpg_replica.conf'" >> $COORDINATOR_DATA_DIRECTORY/postgresql.conf"
+         When the user runs "gpstop -u"
+         Then gpstop should return a return code of 0
+         When the user runs "gpstop -ar"
+         Then gpstop should return a return code of 0
+          And the user runs command "sed -i "/^include_if_exists = 'whpg_replica.conf'$/d" $COORDINATOR_DATA_DIRECTORY/postgresql.conf"
+         When the user runs "gpstop -a"
+         Then gpstop should return a return code of 0
+
+    @demo_cluster
     Scenario: gpstop runs with given coordinator data directory option
         Given the database is running
           And running postgres processes are saved in context

@@ -103,6 +103,63 @@ class GpConfig(GpTestCase):
             self.subject.do_main()
         self.subject.LOGGER.error.assert_called_once_with("No action specified.  See the --help info.")
 
+    def _make_replica(self):
+        with open(os.path.join(self.temp_dir, "whpg_replica.conf"), "w") as f:
+            f.write("# cluster=prod generation=2 written=2026-10-23T00:00:00Z\n"
+                    "port = 6000\n"
+                    "hot_standby = on\n"
+                    "whpg_dispatch_topology_file = 'whpg_dr_topology'\n")
+        with open(os.path.join(self.temp_dir, "whpg_dr_topology"), "w") as f:
+            f.write("-1 1 cdw-rec cdw-rec 6000 /data/c\n0 2 sdw1-rec sdw1-rec 6002 /data/p0\n")
+
+    def test_replica_uses_the_topology_not_the_catalog(self):
+        self._make_replica()
+        self.subject._set_gparray()
+
+        self.subject.GpArray.initFromCatalog.assert_not_called()
+        self.assertEqual(self.subject.gp_array.coordinator.getSegmentHostName(), "cdw-rec")
+        self.assertEqual([s.getSegmentHostName() for s in self.subject.gp_array.getSegDbList()], ["sdw1-rec"])
+
+    def test_replica_refuses_a_setting_whpg_dr_manages(self):
+        self._make_replica()
+        for verb in (["--change", "hot_standby", "--value", "off"], ["--remove", "port"]):
+            sys.argv = ["gpconfig"] + verb
+            with self.assertRaisesRegex(Exception, "cannot change %s on a whpg-dr read replica" % verb[1]):
+                self.subject.do_main()
+        self.pool.addCommand.assert_not_called()
+
+    def test_replica_allows_other_settings(self):
+        self._make_replica()
+        sys.argv = ["gpconfig", "--change", "statement_mem", "--value", "500MB", "--skipvalidation"]
+        self.subject.do_main()
+        hosts = sorted(c[0][0].remoteHost for c in self.pool.addCommand.call_args_list)
+        self.assertEqual(hosts, ["cdw-rec", "sdw1-rec"])
+
+    def test_replica_skips_the_gpexpand_check(self):
+        self._make_replica()
+        self.subject.check_gpexpand = Mock()
+        sys.argv = ["gpconfig", "--change", "statement_mem", "--value", "500MB", "--skipvalidation"]
+        self.subject.do_main()
+        self.subject.check_gpexpand.assert_not_called()
+
+    def test_not_a_replica_runs_the_gpexpand_check(self):
+        self.subject.check_gpexpand = Mock()
+        sys.argv = ["gpconfig", "--change", "statement_mem", "--value", "500MB", "--skipvalidation"]
+        self.subject.do_main()
+        self.subject.check_gpexpand.assert_called_once()
+
+    def test_replica_reads_settings_in_an_unanchored_session(self):
+        self._make_replica()
+        self.subject._set_gparray()
+        self.subject.get_gucs_from_database("statement_mem")
+        self.assertEqual(self.subject.dbconn.connect.call_args[1]["extraOptions"],
+                         ["-c whpg_hot_standby_snapshot_mode=unanchored"])
+
+    def test_not_a_replica_reads_settings_as_before(self):
+        self.subject._set_gparray()
+        self.subject.get_gucs_from_database("statement_mem")
+        self.assertIsNone(self.subject.dbconn.connect.call_args[1]["extraOptions"])
+
     def test_option_list_parses(self):
         sys.argv = ["gpconfig", "--list"]
         options = self.subject.parseargs()
