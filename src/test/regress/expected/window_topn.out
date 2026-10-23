@@ -601,6 +601,299 @@ select * from (
 
 reset whpg_enable_window_topn;
 --
+-- other functions of the same window clause that look past the current
+-- row would see a smaller partition: no pre-filter for them.  Aggregates
+-- whose frame ends at the current row are fine.
+--
+explain (costs off)
+select * from (
+  select p, k, v, rank() over w as rk, sum(v) over w as total
+  from wtp_t window w as (partition by p order by k
+                          rows between unbounded preceding and unbounded following)
+) s where rk <= 2 order by p, k, v;
+                                  QUERY PLAN                                  
+------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   Merge Key: s.p, s.k, s.v
+   ->  Sort
+         Sort Key: s.p, s.k, s.v
+         ->  Subquery Scan on s
+               Filter: (s.rk <= 2)
+               ->  WindowAgg
+                     Partition By: wtp_t.p
+                     Order By: wtp_t.k
+                     ->  Sort
+                           Sort Key: wtp_t.p, wtp_t.k
+                           ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                                 Hash Key: wtp_t.p
+                                 ->  Seq Scan on wtp_t
+ Optimizer: Postgres-based planner
+(15 rows)
+
+select * from (
+  select p, k, v, rank() over w as rk, sum(v) over w as total
+  from wtp_t window w as (partition by p order by k
+                          rows between unbounded preceding and unbounded following)
+) s where rk <= 2 order by p, k, v;
+ p | k |   v   | rk |  total   
+---+---+-------+----+----------
+ 0 | 0 |  2000 |  1 | 40010000
+ 0 | 0 |  4000 |  1 | 40010000
+ 0 | 0 |  6000 |  1 | 40010000
+ 0 | 0 |  8000 |  1 | 40010000
+ 0 | 0 | 10000 |  1 | 40010000
+ 0 | 0 | 12000 |  1 | 40010000
+ 0 | 0 | 14000 |  1 | 40010000
+ 0 | 0 | 16000 |  1 | 40010000
+ 0 | 0 | 18000 |  1 | 40010000
+ 0 | 0 | 20000 |  1 | 40010000
+ 1 | 4 |   716 |  1 | 39994000
+ 1 | 4 |  2716 |  1 | 39994000
+ 1 | 4 |  4716 |  1 | 39994000
+ 1 | 4 |  6716 |  1 | 39994000
+ 1 | 4 |  8716 |  1 | 39994000
+ 1 | 4 | 10716 |  1 | 39994000
+ 1 | 4 | 12716 |  1 | 39994000
+ 1 | 4 | 14716 |  1 | 39994000
+ 1 | 4 | 16716 |  1 | 39994000
+ 1 | 4 | 18716 |  1 | 39994000
+ 2 | 3 |  1037 |  1 | 39998000
+ 2 | 3 |  3037 |  1 | 39998000
+ 2 | 3 |  5037 |  1 | 39998000
+ 2 | 3 |  7037 |  1 | 39998000
+ 2 | 3 |  9037 |  1 | 39998000
+ 2 | 3 | 11037 |  1 | 39998000
+ 2 | 3 | 13037 |  1 | 39998000
+ 2 | 3 | 15037 |  1 | 39998000
+ 2 | 3 | 17037 |  1 | 39998000
+ 2 | 3 | 19037 |  1 | 39998000
+ 3 | 2 |  1358 |  1 | 40002000
+ 3 | 2 |  3358 |  1 | 40002000
+ 3 | 2 |  5358 |  1 | 40002000
+ 3 | 2 |  7358 |  1 | 40002000
+ 3 | 2 |  9358 |  1 | 40002000
+ 3 | 2 | 11358 |  1 | 40002000
+ 3 | 2 | 13358 |  1 | 40002000
+ 3 | 2 | 15358 |  1 | 40002000
+ 3 | 2 | 17358 |  1 | 40002000
+ 3 | 2 | 19358 |  1 | 40002000
+ 4 | 1 |  1679 |  1 | 40006000
+ 4 | 1 |  3679 |  1 | 40006000
+ 4 | 1 |  5679 |  1 | 40006000
+ 4 | 1 |  7679 |  1 | 40006000
+ 4 | 1 |  9679 |  1 | 40006000
+ 4 | 1 | 11679 |  1 | 40006000
+ 4 | 1 | 13679 |  1 | 40006000
+ 4 | 1 | 15679 |  1 | 40006000
+ 4 | 1 | 17679 |  1 | 40006000
+ 4 | 1 | 19679 |  1 | 40006000
+(50 rows)
+
+explain (costs off)
+select * from (
+  select p, k, v, rank() over w as rk, lead(v) over w as nxt, ntile(4) over w as nt
+  from wtp_t window w as (partition by p order by k, v)
+) s where rk <= 2 order by p, k, v;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   Merge Key: s.p, s.k, s.v
+   ->  Subquery Scan on s
+         Filter: (s.rk <= 2)
+         ->  WindowAgg
+               Partition By: wtp_t.p
+               Order By: wtp_t.k, wtp_t.v
+               ->  Sort
+                     Sort Key: wtp_t.p, wtp_t.k, wtp_t.v
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                           Hash Key: wtp_t.p
+                           ->  Seq Scan on wtp_t
+ Optimizer: Postgres-based planner
+(13 rows)
+
+select * from (
+  select p, k, v, rank() over w as rk, lead(v) over w as nxt, ntile(4) over w as nt
+  from wtp_t window w as (partition by p order by k, v)
+) s where rk <= 2 order by p, k, v;
+ p | k |  v   | rk | nxt  | nt 
+---+---+------+----+------+----
+ 0 | 0 | 2000 |  1 | 4000 |  1
+ 0 | 0 | 4000 |  2 | 6000 |  1
+ 1 | 4 |  716 |  1 | 2716 |  1
+ 1 | 4 | 2716 |  2 | 4716 |  1
+ 2 | 3 | 1037 |  1 | 3037 |  1
+ 2 | 3 | 3037 |  2 | 5037 |  1
+ 3 | 2 | 1358 |  1 | 3358 |  1
+ 3 | 2 | 3358 |  2 | 5358 |  1
+ 4 | 1 | 1679 |  1 | 3679 |  1
+ 4 | 1 | 3679 |  2 | 5679 |  1
+(10 rows)
+
+-- an aggregate whose frame ends at the current row sees the same rows
+-- before and after the pre-filter
+explain (costs off)
+select * from (
+  select p, k, v, rank() over w as rk, sum(v) over w as running
+  from wtp_t window w as (partition by p order by k)
+) s where rk <= 2 order by p, k, v;
+                                  QUERY PLAN                                  
+------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   Merge Key: s.p, s.k, s.v
+   ->  Sort
+         Sort Key: s.p, s.k, s.v
+         ->  Subquery Scan on s
+               Filter: (s.rk <= 2)
+               ->  WindowAgg
+                     Partition By: wtp_t.p
+                     Order By: wtp_t.k
+                     ->  Sort
+                           Sort Key: wtp_t.p, wtp_t.k
+                           ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                                 Hash Key: wtp_t.p
+                                 ->  Result
+                                       Filter: ((rank() OVER (?)) <= 2)
+                                       ->  WindowAgg
+                                             Partition By: wtp_t.p
+                                             Order By: wtp_t.k
+                                             ->  Sort
+                                                   Sort Key: wtp_t.p, wtp_t.k
+                                                   ->  Seq Scan on wtp_t
+ Optimizer: Postgres-based planner
+(22 rows)
+
+select * from (
+  select p, k, v, rank() over w as rk, sum(v) over w as running
+  from wtp_t window w as (partition by p order by k)
+) s where rk <= 2 order by p, k, v;
+ p | k |   v   | rk | running 
+---+---+-------+----+---------
+ 0 | 0 |  2000 |  1 |  110000
+ 0 | 0 |  4000 |  1 |  110000
+ 0 | 0 |  6000 |  1 |  110000
+ 0 | 0 |  8000 |  1 |  110000
+ 0 | 0 | 10000 |  1 |  110000
+ 0 | 0 | 12000 |  1 |  110000
+ 0 | 0 | 14000 |  1 |  110000
+ 0 | 0 | 16000 |  1 |  110000
+ 0 | 0 | 18000 |  1 |  110000
+ 0 | 0 | 20000 |  1 |  110000
+ 1 | 4 |   716 |  1 |   97160
+ 1 | 4 |  2716 |  1 |   97160
+ 1 | 4 |  4716 |  1 |   97160
+ 1 | 4 |  6716 |  1 |   97160
+ 1 | 4 |  8716 |  1 |   97160
+ 1 | 4 | 10716 |  1 |   97160
+ 1 | 4 | 12716 |  1 |   97160
+ 1 | 4 | 14716 |  1 |   97160
+ 1 | 4 | 16716 |  1 |   97160
+ 1 | 4 | 18716 |  1 |   97160
+ 2 | 3 |  1037 |  1 |  100370
+ 2 | 3 |  3037 |  1 |  100370
+ 2 | 3 |  5037 |  1 |  100370
+ 2 | 3 |  7037 |  1 |  100370
+ 2 | 3 |  9037 |  1 |  100370
+ 2 | 3 | 11037 |  1 |  100370
+ 2 | 3 | 13037 |  1 |  100370
+ 2 | 3 | 15037 |  1 |  100370
+ 2 | 3 | 17037 |  1 |  100370
+ 2 | 3 | 19037 |  1 |  100370
+ 3 | 2 |  1358 |  1 |  103580
+ 3 | 2 |  3358 |  1 |  103580
+ 3 | 2 |  5358 |  1 |  103580
+ 3 | 2 |  7358 |  1 |  103580
+ 3 | 2 |  9358 |  1 |  103580
+ 3 | 2 | 11358 |  1 |  103580
+ 3 | 2 | 13358 |  1 |  103580
+ 3 | 2 | 15358 |  1 |  103580
+ 3 | 2 | 17358 |  1 |  103580
+ 3 | 2 | 19358 |  1 |  103580
+ 4 | 1 |  1679 |  1 |  106790
+ 4 | 1 |  3679 |  1 |  106790
+ 4 | 1 |  5679 |  1 |  106790
+ 4 | 1 |  7679 |  1 |  106790
+ 4 | 1 |  9679 |  1 |  106790
+ 4 | 1 | 11679 |  1 |  106790
+ 4 | 1 | 13679 |  1 |  106790
+ 4 | 1 | 15679 |  1 |  106790
+ 4 | 1 | 17679 |  1 |  106790
+ 4 | 1 | 19679 |  1 |  106790
+(50 rows)
+
+-- row_number() may cut a peer group, so a RANGE frame (the default) is not
+-- safe with it, while a ROWS frame is
+explain (costs off)
+select * from (
+  select p, k, v, row_number() over w as rn, sum(v) over w as running
+  from wtp_t window w as (partition by p order by k, v)
+) s where rn <= 2 order by p, k, v;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   Merge Key: s.p, s.k, s.v
+   ->  Subquery Scan on s
+         Filter: (s.rn <= 2)
+         ->  WindowAgg
+               Partition By: wtp_t.p
+               Order By: wtp_t.k, wtp_t.v
+               ->  Sort
+                     Sort Key: wtp_t.p, wtp_t.k, wtp_t.v
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                           Hash Key: wtp_t.p
+                           ->  Seq Scan on wtp_t
+ Optimizer: Postgres-based planner
+(13 rows)
+
+explain (costs off)
+select * from (
+  select p, k, v, row_number() over w as rn, sum(v) over w as running
+  from wtp_t window w as (partition by p order by k, v
+                          rows between unbounded preceding and current row)
+) s where rn <= 2 order by p, k, v;
+                                   QUERY PLAN                                    
+---------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   Merge Key: s.p, s.k, s.v
+   ->  Subquery Scan on s
+         Filter: (s.rn <= 2)
+         ->  WindowAgg
+               Partition By: wtp_t.p
+               Order By: wtp_t.k, wtp_t.v
+               ->  Sort
+                     Sort Key: wtp_t.p, wtp_t.k, wtp_t.v
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                           Hash Key: wtp_t.p
+                           ->  Result
+                                 Filter: ((row_number() OVER (?)) <= 2)
+                                 ->  WindowAgg
+                                       Partition By: wtp_t.p
+                                       Order By: wtp_t.k, wtp_t.v
+                                       ->  Sort
+                                             Sort Key: wtp_t.p, wtp_t.k, wtp_t.v
+                                             ->  Seq Scan on wtp_t
+ Optimizer: Postgres-based planner
+(20 rows)
+
+select * from (
+  select p, k, v, row_number() over w as rn, sum(v) over w as running
+  from wtp_t window w as (partition by p order by k, v
+                          rows between unbounded preceding and current row)
+) s where rn <= 2 order by p, k, v;
+ p | k |  v   | rn | running 
+---+---+------+----+---------
+ 0 | 0 | 2000 |  1 |    2000
+ 0 | 0 | 4000 |  2 |    6000
+ 1 | 4 |  716 |  1 |     716
+ 1 | 4 | 2716 |  2 |    3432
+ 2 | 3 | 1037 |  1 |    1037
+ 2 | 3 | 3037 |  2 |    4074
+ 3 | 2 | 1358 |  1 |    1358
+ 3 | 2 | 3358 |  2 |    4716
+ 4 | 1 | 1679 |  1 |    1679
+ 4 | 1 | 3679 |  2 |    5358
+(10 rows)
+
+--
 -- two filtered window functions of the same window clause: both are
 -- computed by the first stage, the Filter has both conditions
 --

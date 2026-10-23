@@ -163,6 +163,8 @@ static void remove_unused_subquery_outputs(Query *subquery, RelOptInfo *rel);
 static List *find_window_prefilters(PlannerInfo *root, RelOptInfo *rel,
 									 RangeTblEntry *rte, Index rti,
 									 Query *subquery);
+static bool window_clause_prefilter_safe(Query *subquery, Index winref,
+										 bool row_number_filter);
 
 static void bring_to_outer_query(PlannerInfo *root, RelOptInfo *rel, List *outer_quals);
 static void bring_to_singleQE(PlannerInfo *root, RelOptInfo *rel);
@@ -4333,6 +4335,74 @@ recurse_push_qual(Node *setOp, Query *topquery,
  *			SIMPLIFYING SUBQUERY TARGETLISTS
  *****************************************************************************/
 
+typedef struct
+{
+	Index		winref;
+	bool		row_number_filter;
+	int			frameOptions;
+	bool		safe;
+} prefilter_safety_context;
+
+static bool
+window_clause_prefilter_safe_walker(Node *node, prefilter_safety_context *ctx)
+{
+	if (node == NULL)
+		return false;
+	if (IsA(node, WindowFunc))
+	{
+		WindowFunc *wfunc = (WindowFunc *) node;
+
+		if (wfunc->winref == ctx->winref)
+		{
+			if (wfunc->winfnoid == F_WINDOW_RANK ||
+				wfunc->winfnoid == F_WINDOW_DENSE_RANK ||
+				wfunc->winfnoid == F_WINDOW_ROW_NUMBER)
+				 /* fine */ ;
+			else if (wfunc->winagg &&
+					 (ctx->frameOptions & FRAMEOPTION_END_CURRENT_ROW) &&
+					 (!ctx->row_number_filter ||
+					  (ctx->frameOptions & FRAMEOPTION_ROWS)))
+				 /* fine, see window_clause_prefilter_safe() */ ;
+			else
+				ctx->safe = false;
+		}
+		/* window functions cannot nest; no need to look inside */
+		return false;
+	}
+	return expression_tree_walker(node, window_clause_prefilter_safe_walker, ctx);
+}
+
+/*
+ * window_clause_prefilter_safe
+ *	  May the rows of window clause 'winref' that rank beyond the bound be
+ *	  removed before the clause's window functions are evaluated?
+ *
+ * The rows a pre-filter keeps are, within each partition and in window
+ * order, a prefix: for rank() and dense_rank() the prefix ends after a
+ * complete peer group, for row_number() it may cut a peer group.  A window
+ * function is therefore unaffected only if it never looks past the current
+ * row: the three ranking functions themselves, and aggregates whose frame
+ * ends at the current row (in ROWS mode when the prefix can cut through
+ * peers, since RANGE and GROUPS frames extend to the peers).  Anything else,
+ * such as lead(), ntile(), percent_rank(), cume_dist(), last_value() or an
+ * aggregate over the whole partition, would see a smaller partition.
+ */
+static bool
+window_clause_prefilter_safe(Query *subquery, Index winref,
+							 bool row_number_filter)
+{
+	prefilter_safety_context ctx;
+	WindowClause *wc = (WindowClause *) list_nth(subquery->windowClause,
+												 winref - 1);
+
+	ctx.winref = winref;
+	ctx.row_number_filter = row_number_filter;
+	ctx.frameOptions = wc->frameOptions;
+	ctx.safe = true;
+	window_clause_prefilter_safe_walker((Node *) subquery->targetList, &ctx);
+	return ctx.safe;
+}
+
 /*
  * find_window_prefilters
  *	  Look for restriction clauses of the parent query that compare a
@@ -4453,6 +4523,11 @@ find_window_prefilters(PlannerInfo *root, RelOptInfo *rel,
 		if (wfunc->winfnoid != F_WINDOW_RANK &&
 			wfunc->winfnoid != F_WINDOW_DENSE_RANK &&
 			wfunc->winfnoid != F_WINDOW_ROW_NUMBER)
+			continue;
+
+		/* the other functions of the window clause must not mind */
+		if (!window_clause_prefilter_safe(subquery, wfunc->winref,
+										  wfunc->winfnoid == F_WINDOW_ROW_NUMBER))
 			continue;
 
 		/*

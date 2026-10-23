@@ -175,6 +175,64 @@ select * from (
 reset whpg_enable_window_topn;
 
 --
+-- other functions of the same window clause that look past the current
+-- row would see a smaller partition: no pre-filter for them.  Aggregates
+-- whose frame ends at the current row are fine.
+--
+explain (costs off)
+select * from (
+  select p, k, v, rank() over w as rk, sum(v) over w as total
+  from wtp_t window w as (partition by p order by k
+                          rows between unbounded preceding and unbounded following)
+) s where rk <= 2 order by p, k, v;
+select * from (
+  select p, k, v, rank() over w as rk, sum(v) over w as total
+  from wtp_t window w as (partition by p order by k
+                          rows between unbounded preceding and unbounded following)
+) s where rk <= 2 order by p, k, v;
+
+explain (costs off)
+select * from (
+  select p, k, v, rank() over w as rk, lead(v) over w as nxt, ntile(4) over w as nt
+  from wtp_t window w as (partition by p order by k, v)
+) s where rk <= 2 order by p, k, v;
+select * from (
+  select p, k, v, rank() over w as rk, lead(v) over w as nxt, ntile(4) over w as nt
+  from wtp_t window w as (partition by p order by k, v)
+) s where rk <= 2 order by p, k, v;
+
+-- an aggregate whose frame ends at the current row sees the same rows
+-- before and after the pre-filter
+explain (costs off)
+select * from (
+  select p, k, v, rank() over w as rk, sum(v) over w as running
+  from wtp_t window w as (partition by p order by k)
+) s where rk <= 2 order by p, k, v;
+select * from (
+  select p, k, v, rank() over w as rk, sum(v) over w as running
+  from wtp_t window w as (partition by p order by k)
+) s where rk <= 2 order by p, k, v;
+
+-- row_number() may cut a peer group, so a RANGE frame (the default) is not
+-- safe with it, while a ROWS frame is
+explain (costs off)
+select * from (
+  select p, k, v, row_number() over w as rn, sum(v) over w as running
+  from wtp_t window w as (partition by p order by k, v)
+) s where rn <= 2 order by p, k, v;
+explain (costs off)
+select * from (
+  select p, k, v, row_number() over w as rn, sum(v) over w as running
+  from wtp_t window w as (partition by p order by k, v
+                          rows between unbounded preceding and current row)
+) s where rn <= 2 order by p, k, v;
+select * from (
+  select p, k, v, row_number() over w as rn, sum(v) over w as running
+  from wtp_t window w as (partition by p order by k, v
+                          rows between unbounded preceding and current row)
+) s where rn <= 2 order by p, k, v;
+
+--
 -- two filtered window functions of the same window clause: both are
 -- computed by the first stage, the Filter has both conditions
 --
