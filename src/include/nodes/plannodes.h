@@ -1354,6 +1354,44 @@ typedef struct WindowAgg
 } WindowAgg;
 
 /* ----------------
+ *		window top-N node
+ *
+ * WHPG: top-N pre-filter of a window's input.  For each PARTITION BY
+ * group it keeps only the rows whose rank-like window function value,
+ * computed over this node's input alone, satisfies "func <= limit" (or
+ * "func < limit").  Every other row is dropped before the Motion that
+ * brings the partitions together; the final WindowAgg above recomputes the
+ * function over the surviving rows and the outer query's own filter still
+ * applies, so the node may stop keeping rows at any time (it does so when
+ * it runs out of memory) without changing the result.  Output rows are in
+ * no particular order.
+ * ----------------
+ */
+typedef enum WindowTopNKind
+{
+	WINDOWTOPN_ROW_NUMBER,
+	WINDOWTOPN_RANK,
+	WINDOWTOPN_DENSE_RANK
+} WindowTopNKind;
+
+typedef struct WindowTopN
+{
+	Plan		plan;
+	int			partNumCols;	/* number of columns in partition clause */
+	AttrNumber *partColIdx;		/* their indexes in the target list */
+	Oid		   *partOperators;	/* equality operators for partition columns */
+	Oid		   *partCollations; /* collations for partition columns */
+	int			ordNumCols;		/* number of columns in ordering clause */
+	AttrNumber *ordColIdx;		/* their indexes in the target list */
+	Oid		   *sortOperators;	/* ordering operators for ordering columns */
+	Oid		   *ordCollations;	/* collations for ordering columns */
+	bool	   *nullsFirst;		/* NULLS FIRST/LAST directions */
+	WindowTopNKind kind;		/* which window function the limit applies to */
+	Node	   *limitExpr;		/* the bound: an integer Const or Param */
+	bool		limitInclusive; /* "func <= limit" if true, "func < limit" if false */
+} WindowTopN;
+
+/* ----------------
  *		unique node
  * ----------------
  */

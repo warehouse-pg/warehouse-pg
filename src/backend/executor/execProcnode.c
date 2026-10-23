@@ -116,6 +116,7 @@
 #include "executor/nodeUnique.h"
 #include "executor/nodeValuesscan.h"
 #include "executor/nodeWindowAgg.h"
+#include "executor/nodeWindowTopN.h"
 #include "executor/nodeWorktablescan.h"
 #include "nodes/nodeFuncs.h"
 #include "miscadmin.h"
@@ -444,6 +445,11 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 		case T_WindowAgg:
 			result = (PlanState *) ExecInitWindowAgg((WindowAgg *) node,
 													 estate, eflags);
+			break;
+
+		case T_WindowTopN:
+			result = (PlanState *) ExecInitWindowTopN((WindowTopN *) node,
+													  estate, eflags);
 			break;
 
 		case T_Unique:
@@ -980,6 +986,10 @@ ExecEndNode(PlanState *node)
 
 		case T_WindowAggState:
 			ExecEndWindowAgg((WindowAggState *) node);
+			break;
+
+		case T_WindowTopNState:
+			ExecEndWindowTopN((WindowTopNState *) node);
 			break;
 
 		case T_UniqueState:

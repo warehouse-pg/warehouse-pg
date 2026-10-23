@@ -2699,6 +2699,52 @@ typedef struct WindowAggState
 } WindowAggState;
 
 /* ----------------
+ *	 WindowTopNState information
+ *
+ *	 The per-partition heaps and their rows live in private structures of
+ *	 nodeWindowTopN.c, hanging off the hash table entries.
+ * ----------------
+ */
+typedef enum WindowTopNStatus
+{
+	WINDOWTOPN_FILLING,			/* reading the input into the heaps */
+	WINDOWTOPN_DRAINING,		/* returning the kept rows */
+	WINDOWTOPN_PASSTHROUGH,		/* out of memory: returning input rows as is */
+	WINDOWTOPN_DONE
+} WindowTopNStatus;
+
+typedef struct WindowTopNState
+{
+	ScanState	ss;				/* its first field is NodeTag */
+	WindowTopNStatus status;
+	bool		passthrough;	/* switch to pass-through after draining */
+	ExprState  *limitExpr;		/* the plan's limitExpr */
+	int64		limit;			/* N, after applying limitInclusive */
+	bool		limit_valid;	/* has 'limit' been computed for this scan? */
+
+	TupleHashTable hashtable;	/* partitions; NULL if no PARTITION BY */
+	void	   *single_group;	/* the one group when there is no PARTITION BY */
+	FmgrInfo   *hashfunctions;	/* for the partition columns */
+	Oid		   *eqfuncoids;
+	SortSupport sortKeys;		/* one per ordering column */
+	Datum	   *inkeys;			/* ordering columns of the current input row */
+	bool	   *innulls;
+	TupleTableSlot *keyslot;	/* scratch slot for reading a stored row */
+
+	MemoryContext tablecxt;		/* hash table, heaps and stored rows */
+	MemoryContext tempcxt;		/* per-tuple hash lookup workspace */
+	Size		mem_used;		/* bytes of rows and heaps currently held */
+	Size		mem_limit;
+
+	/* draining cursor */
+	TupleHashIterator hashiter;
+	bool		hashiter_valid;
+	void	   *drain_group;
+	int			drain_bucket;
+	void	   *drain_row;
+} WindowTopNState;
+
+/* ----------------
  *	 UniqueState information
  *
  *		Unique nodes are used "on top of" sort nodes to discard

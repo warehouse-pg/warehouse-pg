@@ -1399,6 +1399,9 @@ is_plan_node(Node *node)
 
 	if (nodeTag(node) >= T_Plan_Start && nodeTag(node) < T_Plan_End)
 		return true;
+	/* Plan tags added after a release live at the end of NodeTag */
+	if (nodeTag(node) == T_WindowTopN)
+		return true;
 	return false;
 }
 
@@ -1494,6 +1497,7 @@ motion_sanity_walker(Node *node, sanity_result_t *result)
 	{
 		case T_Result:
 		case T_WindowAgg:
+		case T_WindowTopN:
 		case T_TableFunctionScan:
 		case T_ShareInputScan:
 		case T_Append:

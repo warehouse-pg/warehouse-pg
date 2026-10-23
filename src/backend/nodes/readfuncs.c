@@ -3323,6 +3323,32 @@ _readWindowAgg(void)
 }
 
 /*
+ * _readWindowTopN
+ */
+static WindowTopN *
+_readWindowTopN(void)
+{
+	READ_LOCALS(WindowTopN);
+
+	ReadCommonPlan(&local_node->plan);
+
+	READ_INT_FIELD(partNumCols);
+	READ_ATTRNUMBER_ARRAY(partColIdx, local_node->partNumCols);
+	READ_OID_ARRAY(partOperators, local_node->partNumCols);
+	READ_OID_ARRAY(partCollations, local_node->partNumCols);
+	READ_INT_FIELD(ordNumCols);
+	READ_ATTRNUMBER_ARRAY(ordColIdx, local_node->ordNumCols);
+	READ_OID_ARRAY(sortOperators, local_node->ordNumCols);
+	READ_OID_ARRAY(ordCollations, local_node->ordNumCols);
+	READ_BOOL_ARRAY(nullsFirst, local_node->ordNumCols);
+	READ_ENUM_FIELD(kind, WindowTopNKind);
+	READ_NODE_FIELD(limitExpr);
+	READ_BOOL_FIELD(limitInclusive);
+
+	READ_DONE();
+}
+
+/*
  * _readUnique
  */
 static Unique *
@@ -4710,6 +4736,8 @@ parseNodeString(void)
 		return_value = _readDQAExpr();
 	else if (MATCH("WINDOWAGG", 9))
 		return_value = _readWindowAgg();
+	else if (MATCH("WINDOWTOPN", 10))
+		return_value = _readWindowTopN();
 	else if (MATCH("UNIQUE", 6))
 		return_value = _readUnique();
 	else if (MATCH("GATHER", 6))

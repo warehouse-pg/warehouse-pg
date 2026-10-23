@@ -30,7 +30,7 @@ OBJS = execAmi.o execCurrent.o execExpr.o execExprInterp.o \
        nodeValuesscan.o \
        nodeCtescan.o nodeNamedtuplestorescan.o nodeWorktablescan.o \
        nodeSubplan.o nodeSubqueryscan.o nodeTidscan.o \
-       nodeForeignscan.o nodeWindowAgg.o tstoreReceiver.o tqueue.o spi.o \
+       nodeForeignscan.o nodeWindowAgg.o nodeWindowTopN.o tstoreReceiver.o tqueue.o spi.o \
        nodeTableFuncscan.o
 
 OBJS += nodeMotion.o \

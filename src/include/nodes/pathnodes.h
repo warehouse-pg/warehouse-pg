@@ -2156,6 +2156,20 @@ typedef struct WindowAggPath
 } WindowAggPath;
 
 /*
+ * WindowTopNPath represents a WindowTopN node (see plannodes.h).  The
+ * partition and ordering columns come from 'winclause'.
+ */
+typedef struct WindowTopNPath
+{
+	Path		path;
+	Path	   *subpath;		/* path representing input source */
+	WindowClause *winclause;	/* window clause whose function is bounded */
+	WindowTopNKind kind;
+	Node	   *limitExpr;
+	bool		limitInclusive;
+} WindowTopNPath;
+
+/*
  * TupleSplitPath represents tuple split by DQAs expr
  *
  * In gpdb, we need to split one input tuple to n output tuples for MultiDQA

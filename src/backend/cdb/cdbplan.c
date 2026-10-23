@@ -694,6 +694,27 @@ plan_tree_mutator(Node *node,
 			}
 			break;
 
+		case T_WindowTopN:
+			{
+				WindowTopN *topn = (WindowTopN *) node;
+				WindowTopN *newtopn;
+
+				FLATCOPY(newtopn, topn, WindowTopN);
+				PLANMUTATE(newtopn, topn);
+
+				COPYARRAY(newtopn, topn, partNumCols, partColIdx);
+				COPYARRAY(newtopn, topn, partNumCols, partOperators);
+				COPYARRAY(newtopn, topn, partNumCols, partCollations);
+				COPYARRAY(newtopn, topn, ordNumCols, ordColIdx);
+				COPYARRAY(newtopn, topn, ordNumCols, sortOperators);
+				COPYARRAY(newtopn, topn, ordNumCols, ordCollations);
+				COPYARRAY(newtopn, topn, ordNumCols, nullsFirst);
+				MUTATE(newtopn->limitExpr, topn->limitExpr, Node *);
+
+				return (Node *) newtopn;
+			}
+			break;
+
 		case T_Unique:
 			{
 				Unique	   *uniq = (Unique *) node;

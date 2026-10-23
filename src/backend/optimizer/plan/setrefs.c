@@ -1047,6 +1047,21 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 				}
 			}
 			break;
+		case T_WindowTopN:
+			{
+				WindowTopN *splan = (WindowTopN *) plan;
+
+				/*
+				 * Like Sort, WindowTopN returns its input rows unchanged.
+				 * Its limit expression is a pseudo-constant, so fix_scan_expr
+				 * is enough for it.
+				 */
+				set_dummy_tlist_references(plan, rtoffset);
+				Assert(splan->plan.qual == NIL);
+				splan->limitExpr =
+					fix_scan_expr(root, splan->limitExpr, rtoffset, 1);
+			}
+			break;
 		case T_Limit:
 			{
 				Limit	   *splan = (Limit *) plan;

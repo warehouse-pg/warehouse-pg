@@ -5139,6 +5139,76 @@ create_windowagg_path(PlannerInfo *root,
 }
 
 /*
+ * create_windowtopn_path
+ *	  Creates a pathnode that represents keeping the top-N rows of each
+ *	  window partition (see nodeWindowTopN.c).
+ *
+ * 'subpath' is the path representing the source of data
+ * 'winclause' supplies the PARTITION BY and ORDER BY columns
+ * 'kind', 'limitExpr', 'limitInclusive' describe the bound
+ * 'limit_rows' is the estimated bound, used to cost the heap work
+ * 'output_rows' is the estimated number of rows kept
+ *
+ * The result has the input's locus, no sort order, and the input's target.
+ */
+WindowTopNPath *
+create_windowtopn_path(PlannerInfo *root,
+					   RelOptInfo *rel,
+					   Path *subpath,
+					   WindowClause *winclause,
+					   WindowTopNKind kind,
+					   Node *limitExpr,
+					   bool limitInclusive,
+					   double limit_rows,
+					   double output_rows)
+{
+	WindowTopNPath *pathnode = makeNode(WindowTopNPath);
+	int			numPart = list_length(winclause->partitionClause);
+	int			numOrder = list_length(winclause->orderClause);
+	Cost		startup_cost;
+	Cost		run_cost;
+	double		heap_depth;
+
+	pathnode->path.pathtype = T_WindowTopN;
+	pathnode->path.parent = rel;
+	pathnode->path.pathtarget = subpath->pathtarget;
+	pathnode->path.param_info = NULL;
+	pathnode->path.parallel_aware = false;
+	pathnode->path.parallel_safe = rel->consider_parallel &&
+		subpath->parallel_safe;
+	pathnode->path.parallel_workers = subpath->parallel_workers;
+	/* the kept rows come out in hash table order */
+	pathnode->path.pathkeys = NIL;
+	pathnode->path.locus = subpath->locus;
+	pathnode->path.sameslice_relids = subpath->sameslice_relids;
+
+	pathnode->subpath = subpath;
+	pathnode->winclause = winclause;
+	pathnode->kind = kind;
+	pathnode->limitExpr = limitExpr;
+	pathnode->limitInclusive = limitInclusive;
+
+	/*
+	 * Every input row costs a hash lookup on the partition columns and one
+	 * comparison against the worst kept row.  Rows that are kept also pay
+	 * for the heap, about log2(N) comparisons each.  The node reads its
+	 * whole input before returning anything.
+	 */
+	heap_depth = log(Max(limit_rows, 1.0) + 1.0) / log(2.0);
+	startup_cost = subpath->total_cost;
+	startup_cost += (cpu_operator_cost * (numPart + numOrder) + cpu_tuple_cost) *
+		subpath->rows;
+	startup_cost += cpu_operator_cost * numOrder * heap_depth * output_rows;
+	run_cost = cpu_tuple_cost * output_rows;
+
+	pathnode->path.rows = clamp_row_est(output_rows);
+	pathnode->path.startup_cost = startup_cost;
+	pathnode->path.total_cost = startup_cost + run_cost;
+
+	return pathnode;
+}
+
+/*
  * create_setop_path
  *	  Creates a pathnode that represents computation of INTERSECT or EXCEPT
  *
