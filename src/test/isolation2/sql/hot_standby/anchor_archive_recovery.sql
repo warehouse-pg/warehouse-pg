@@ -28,6 +28,10 @@
 -- cluster's live segments, so the ordinary snapshot after the retirement
 -- is left to whpg-dr's live-promote end-to-end test.
 --
+-- Two more clones of the base backup cover missing WAL: archive recovery
+-- held by gp_pause_on_restore_point_replay waits for it, and without the
+-- setting still ends at the end of the archive.
+--
 -- Every statement against the node runs through psql in a shell line; the
 -- node is not in gp_segment_configuration, so its log is grepped directly.
 
@@ -36,6 +40,7 @@
 1: checkpoint;
 1: select pg_switch_wal() is not null;
 !\retcode T=/tmp/hs_arc_${PGPORT}; pg_basebackup -h localhost -p ${PGPORT} -X stream -D "$T/node" --target-gp-dbid 1;
+!\retcode T=/tmp/hs_arc_${PGPORT}; pg_basebackup -h localhost -p ${PGPORT} -X stream -D "$T/wait" --target-gp-dbid 1 && pg_basebackup -h localhost -p ${PGPORT} -X stream -D "$T/nowait" --target-gp-dbid 1;
 1: create table arc_before(a int) distributed by (a);
 1: select count(*) from gp_create_restore_point('arc_rp1');
 1: create table arc_after(a int) distributed by (a);
@@ -97,8 +102,35 @@
 -- the promoted node holds no anchor, and its anchor directory is empty
 !\retcode T=/tmp/hs_arc_${PGPORT}; N=$((PGPORT + 90)); test "$(PGOPTIONS='-c gp_role=utility' psql -X -p $N -d postgres -Atc 'select pg_is_in_recovery(), count(*) from gp_toolkit.whpg_anchor_snapshots()')" = 'f|0' && test -z "$(ls -A "$T/node/pg_anchor_snapshots")";
 
--- cleanup: stop the node at once, archiving off again
-!\retcode T=/tmp/hs_arc_${PGPORT}; pg_ctl stop -D "$T/node" -m immediate -W > /dev/null; rm -rf "$T";
+----------------------------------------------------------------
+-- Missing WAL does not end an archive recovery held at a restore point.
+-- Two more clones of the same base backup, started in utility role: with
+-- gp_pause_on_restore_point_replay set, a node whose restore_command
+-- cannot deliver the next segment keeps waiting in recovery (a WARNING
+-- names the position) instead of selecting a new timeline; without the
+-- setting, archive recovery still ends at the end of the archive.
+----------------------------------------------------------------
+!\retcode T=/tmp/hs_arc_${PGPORT}; N=$((PGPORT + 91)); printf '%s\n' "port = $N" "hot_standby = on" "restore_command = 'cp $T/arch/%f %p'" "gp_pause_on_restore_point_replay = 'arc_rp1'" "archive_mode = off" "synchronous_standby_names = ''" >> "$T/wait/postgresql.conf"; : > "$T/wait/postgresql.auto.conf"; touch "$T/wait/recovery.signal"; pg_ctl start -D "$T/wait" -l "$T/wait.log" -o "-c gp_role=utility" -W > /dev/null;
+!\retcode N=$((PGPORT + 91)); for i in $(seq 1 200); do [ "$(PGOPTIONS='-c gp_role=utility' psql -X -p $N -d postgres -Atc 'select pg_is_wal_replay_paused()' 2>/dev/null)" = t ] && exit 0; sleep 0.1; done; exit 1;
+-- a pause target the node has already passed: replay runs to the end of
+-- the archive and waits there, in recovery, on the original timeline
+!\retcode T=/tmp/hs_arc_${PGPORT}; N=$((PGPORT + 91)); PGOPTIONS='-c gp_role=utility' psql -X -p $N -d postgres -Atc 'select pg_wal_replay_resume()' > /dev/null; for i in $(seq 1 300); do grep -q 'waiting for WAL at ' "$T"/wait/log/*.csv && break; sleep 0.1; done; sleep 2; test "$(PGOPTIONS='-c gp_role=utility' psql -X -p $N -d postgres -Atc 'select pg_is_in_recovery()')" = t && grep -q 'archive recovery does not end while gp_pause_on_restore_point_replay is set (""arc_rp1"")' "$T"/wait/log/*.csv && ! grep -q 'selected new timeline ID' "$T"/wait/log/*.csv;
+-- a fast shutdown while waiting completes
+!\retcode T=/tmp/hs_arc_${PGPORT}; pg_ctl stop -D "$T/wait" -m fast -w -t 60 > /dev/null;
+-- a pause target not in the archive yet: the node waits, then replays to
+-- it and pauses there once its WAL is archived
+!\retcode T=/tmp/hs_arc_${PGPORT}; sed -i "s/^gp_pause_on_restore_point_replay = 'arc_rp1'$/gp_pause_on_restore_point_replay = 'arc_rp3'/" "$T/wait/postgresql.conf"; N=$((PGPORT + 91)); pg_ctl start -D "$T/wait" -l "$T/wait.log" -o "-c gp_role=utility" -W > /dev/null; for i in $(seq 1 300); do [ "$(PGOPTIONS='-c gp_role=utility' psql -X -p $N -d postgres -Atc "select pg_is_in_recovery(), pg_is_wal_replay_paused(), wait_event from pg_stat_activity where backend_type = 'startup'" 2>/dev/null)" = 't|f|RecoveryWalAll' ] && exit 0; sleep 0.1; done; exit 1;
+1: create table arc_after3(a int) distributed by (a);
+1: select count(*) from gp_create_restore_point('arc_rp3');
+!\retcode T=/tmp/hs_arc_${PGPORT}; w=$(psql -X -d postgres -Atc "select pg_walfile_name(pg_switch_wal())"); for i in $(seq 1 100); do [ -e "$T/arch/$w" ] && exit 0; sleep 0.1; done; exit 1;
+!\retcode T=/tmp/hs_arc_${PGPORT}; N=$((PGPORT + 91)); for i in $(seq 1 300); do [ "$(PGOPTIONS='-c gp_role=utility' psql -X -p $N -d postgres -Atc 'select pg_is_wal_replay_paused()')" = t ] && break; sleep 0.1; done; test "$(PGOPTIONS='-c gp_role=utility' psql -X -p $N -d postgres -Atc 'select pg_is_in_recovery(), pg_is_wal_replay_paused()')" = 't|t' && grep -q 'setting recovery pause at restore point ..arc_rp3..' "$T"/wait/log/*.csv;
+-- a promotion request while waiting ends recovery
+!\retcode T=/tmp/hs_arc_${PGPORT}; N=$((PGPORT + 91)); sed -i "s/^gp_pause_on_restore_point_replay = 'arc_rp3'$/gp_pause_on_restore_point_replay = 'arc_rp4'/" "$T/wait/postgresql.conf"; pg_ctl reload -D "$T/wait" > /dev/null; ok=0; for i in $(seq 1 100); do [ "$(PGOPTIONS='-c gp_role=utility' psql -X -p $N -d postgres -Atc 'show gp_pause_on_restore_point_replay')" = arc_rp4 ] && { ok=1; break; }; sleep 0.1; done; [ $ok = 1 ] || exit 1; PGOPTIONS='-c gp_role=utility' psql -X -p $N -d postgres -Atc 'select pg_wal_replay_resume()' > /dev/null; ok=0; for i in $(seq 1 300); do [ "$(PGOPTIONS='-c gp_role=utility' psql -X -p $N -d postgres -Atc "select pg_is_in_recovery(), wait_event from pg_stat_activity where backend_type = 'startup'" 2>/dev/null)" = 't|RecoveryWalAll' ] && { ok=1; break; }; sleep 0.1; done; [ $ok = 1 ] || exit 1; pg_ctl promote -D "$T/wait" -w -t 60 > /dev/null && test "$(PGOPTIONS='-c gp_role=utility' psql -X -p $N -d postgres -Atc 'select pg_is_in_recovery()')" = f;
+-- without the setting, archive recovery ends at the end of the archive
+!\retcode T=/tmp/hs_arc_${PGPORT}; N=$((PGPORT + 92)); printf '%s\n' "port = $N" "hot_standby = on" "restore_command = 'cp $T/arch/%f %p'" "archive_mode = off" "synchronous_standby_names = ''" >> "$T/nowait/postgresql.conf"; : > "$T/nowait/postgresql.auto.conf"; touch "$T/nowait/recovery.signal"; pg_ctl start -D "$T/nowait" -l "$T/nowait.log" -o "-c gp_role=utility" -W > /dev/null; for i in $(seq 1 300); do [ "$(PGOPTIONS='-c gp_role=utility' psql -X -p $N -d postgres -Atc 'select pg_is_in_recovery()' 2>/dev/null)" = f ] && break; sleep 0.1; done; test "$(PGOPTIONS='-c gp_role=utility' psql -X -p $N -d postgres -Atc 'select pg_is_in_recovery()')" = f && grep -q 'selected new timeline ID' "$T"/nowait/log/*.csv && ! grep -q 'waiting for WAL at' "$T"/nowait/log/*.csv;
+
+-- cleanup: stop the nodes at once, archiving off again
+!\retcode T=/tmp/hs_arc_${PGPORT}; pg_ctl stop -D "$T/node" -m immediate -W > /dev/null; pg_ctl stop -D "$T/wait" -m immediate -W > /dev/null; pg_ctl stop -D "$T/nowait" -m immediate -W > /dev/null; rm -rf "$T";
 1q:
 !\retcode gpconfig -r archive_mode --coordinatoronly --skipvalidation && gpconfig -r archive_command --coordinatoronly --skipvalidation && gpstop -ar;
-1: drop table arc_t, arc_before, arc_after, arc_after2;
+1: drop table arc_t, arc_before, arc_after, arc_after2, arc_after3;
