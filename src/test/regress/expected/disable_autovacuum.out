@@ -17,8 +17,13 @@ begin
 		expected_count := 0;
 	end if;
 	loop
+		/*
+		 * The launcher exits on the config reload, but a worker it already
+		 * started finishes its table first and keeps its locks till then.
+		 */
 		if (select count(*) = expected_count from gp_stat_activity
-			where backend_type = 'autovacuum launcher') then
+			where backend_type = 'autovacuum launcher'
+			   or (not enabled and backend_type = 'autovacuum worker')) then
 			return true;
 		end if;
 		if retries <= 0 then
@@ -31,7 +36,7 @@ end;
 $$
 language plpgsql;
 -- Impose a stronger exit criteria for this test:
--- the AV launcher has shut down (and by extension the workers) following the config change.
+-- the AV launcher and all AV workers have shut down following the config change.
 -- This is done to ensure tests in the suite immediately following this one are run under the right conditions.
 select check_autovacuum(false);
  check_autovacuum 
