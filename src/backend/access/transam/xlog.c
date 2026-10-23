@@ -133,6 +133,8 @@ char *gp_pause_on_restore_point_replay = "";
  */
 static bool reachedContinuousRecoveryTarget = false;
 
+static bool ArchiveRecoveryWaitsForWAL(void);
+
 #ifdef WAL_DEBUG
 bool		XLOG_DEBUG = false;
 #endif
@@ -4394,19 +4396,6 @@ ReadRecord(XLogReaderState *xlogreader, XLogRecPtr RecPtr, int emode,
 		EndRecPtr = xlogreader->EndRecPtr;
 		if (record == NULL)
 		{
-			/*
-			 * When not in standby mode we find that WAL ends in an incomplete
-			 * record, keep track of that record.  After recovery is done,
-			 * we'll write a record to indicate downstream WAL readers that
-			 * that portion is to be ignored.
-			 */
-			if (!StandbyMode &&
-				!XLogRecPtrIsInvalid(xlogreader->abortedRecPtr))
-			{
-				abortedRecPtr = xlogreader->abortedRecPtr;
-				missingContrecPtr = xlogreader->missingContrecPtr;
-			}
-
 			if (readFile >= 0)
 			{
 				close(readFile);
@@ -4522,11 +4511,32 @@ ReadRecord(XLogReaderState *xlogreader, XLogRecPtr RecPtr, int emode,
 				continue;
 			}
 
-			/* In standby mode, loop back to retry. Otherwise, give up. */
-			if (StandbyMode && !CheckForStandbyTrigger())
+			/*
+			 * In standby mode, or in an archive recovery that waits for WAL
+			 * (GPDB), loop back to retry. Otherwise, give up.
+			 */
+			if ((StandbyMode || ArchiveRecoveryWaitsForWAL()) &&
+				!CheckForStandbyTrigger())
 				continue;
-			else
-				return NULL;
+
+			/*
+			 * When not in standby mode we find that WAL ends in an incomplete
+			 * record, keep track of that record.  After recovery is done,
+			 * we'll write a record to indicate downstream WAL readers that
+			 * that portion is to be ignored.
+			 *
+			 * GPDB: only here, where recovery gives up.  An archive recovery
+			 * that waits for WAL retries a failed read above, and a later
+			 * successful read would otherwise leave a stale position that
+			 * the end of recovery rewinds the WAL to.
+			 */
+			if (!StandbyMode &&
+				!XLogRecPtrIsInvalid(xlogreader->abortedRecPtr))
+			{
+				abortedRecPtr = xlogreader->abortedRecPtr;
+				missingContrecPtr = xlogreader->missingContrecPtr;
+			}
+			return NULL;
 		}
 	}
 }
@@ -5906,6 +5916,29 @@ recoveryStopsBefore(XLogReaderState *record)
 	}
 
 	return stopsHere;
+}
+
+/*
+ * GPDB: Does archive recovery wait for missing WAL instead of ending?
+ *
+ * Archive recovery (recovery.signal) normally ends when restore_command can
+ * no longer deliver the next segment: the node selects a new timeline and
+ * becomes a primary.  A node held at a restore point by
+ * gp_pause_on_restore_point_replay must not do that when the archive is
+ * merely unavailable, or when the restore point it waits for is not there
+ * yet: it keeps retrying, as standby mode does, until the WAL arrives or a
+ * promotion is requested.  Standby mode already waits, and crash recovery
+ * before archive recovery has started still falls through to the archive.
+ * Before the consistent point (and while fetching the checkpoint record)
+ * missing WAL never promoted the node: recovery fails there, which keeps a
+ * misconfiguration visible, so it does not wait.
+ */
+static bool
+ArchiveRecoveryWaitsForWAL(void)
+{
+	return InArchiveRecovery && !StandbyMode && reachedConsistency &&
+		gp_pause_on_restore_point_replay != NULL &&
+		gp_pause_on_restore_point_replay[0] != '\0';
 }
 
 /*
@@ -13088,8 +13121,8 @@ next_record_is_invalid:
 	readLen = 0;
 	readSource = 0;
 
-	/* In standby-mode, keep trying */
-	if (StandbyMode)
+	/* In standby-mode, or while archive recovery waits for WAL, keep trying */
+	if (StandbyMode || ArchiveRecoveryWaitsForWAL())
 		goto retry;
 	else
 		return -1;
@@ -13126,6 +13159,7 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 							bool fetching_ckpt, XLogRecPtr tliRecPtr)
 {
 	static TimestampTz last_fail_time = 0;
+	static TimestampTz last_wait_warning_time = 0;
 	TimestampTz now;
 	bool		streaming_reply_sent = false;
 
@@ -13191,6 +13225,82 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 					{
 						ShutdownWalRcv();
 						return false;
+					}
+
+					/*
+					 * GPDB: an archive recovery held at a restore point does
+					 * not end here; it sleeps and retries the archive, unless
+					 * a promotion was requested.
+					 */
+					if (ArchiveRecoveryWaitsForWAL())
+					{
+						if (CheckForStandbyTrigger())
+							return false;
+
+						/*
+						 * As the stream branch below does: with a target of
+						 * 'latest', a timeline the archive has gained since
+						 * startup is followed instead of waiting forever for
+						 * the end of the old one.
+						 */
+						if (recoveryTargetTimeLineGoal == RECOVERY_TARGET_TIMELINE_LATEST &&
+							rescanLatestTimeLine())
+						{
+							currentSource = XLOG_FROM_ARCHIVE;
+							break;
+						}
+
+						now = GetCurrentTimestamp();
+						if (!TimestampDifferenceExceeds(last_fail_time, now,
+														wal_retrieve_retry_interval))
+						{
+							long		wait_time;
+
+							/*
+							 * Logged only when about to sleep, so an archive
+							 * that is only a little behind stays quiet.
+							 */
+							if (TimestampDifferenceExceeds(last_wait_warning_time, now,
+														   60 * 1000))
+							{
+								char		fname[MAXFNAMELEN];
+
+								XLogFileName(fname, tliOfPointInHistory(tliRecPtr, expectedTLEs),
+											 readSegNo, wal_segment_size);
+								ereport(WARNING,
+										(errmsg("waiting for WAL segment %s", fname),
+										 errdetail("No valid WAL could be read at %X/%X from the archive or pg_wal; archive recovery does not end while gp_pause_on_restore_point_replay is set (\"%s\").",
+												   (uint32) (RecPtr >> 32), (uint32) RecPtr,
+												   gp_pause_on_restore_point_replay),
+										 errhint("Make the WAL available to restore_command; replay continues once it can be read.")));
+								last_wait_warning_time = now;
+							}
+
+							wait_time = wal_retrieve_retry_interval -
+								TimestampDifferenceMilliseconds(last_fail_time, now);
+
+							(void) WaitLatch(&XLogCtl->recoveryWakeupLatch,
+											 WL_LATCH_SET | WL_TIMEOUT |
+											 WL_EXIT_ON_PM_DEATH,
+											 wait_time,
+											 WAIT_EVENT_RECOVERY_WAL_ALL);
+							ResetLatch(&XLogCtl->recoveryWakeupLatch);
+							now = GetCurrentTimestamp();
+						}
+						last_fail_time = now;
+
+						/*
+						 * Handle interrupt signals of startup process on
+						 * every pass, slept or not.
+						 */
+						HandleStartupProcInterrupts();
+
+						/* A promotion can arrive while we sleep */
+						if (CheckForStandbyTrigger())
+							return false;
+
+						currentSource = XLOG_FROM_ARCHIVE;
+						break;
 					}
 
 					/*
@@ -13380,7 +13490,11 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 											  currentSource == XLOG_FROM_ARCHIVE ? XLOG_FROM_ANY :
 											  currentSource);
 				if (readFile >= 0)
+				{
+					/* GPDB: a later wait for WAL is reported at once */
+					last_wait_warning_time = 0;
 					return true;	/* success! */
+				}
 
 				/*
 				 * Nope, not found in archive or pg_wal.
