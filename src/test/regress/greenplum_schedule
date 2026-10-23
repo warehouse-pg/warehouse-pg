@@ -20,6 +20,8 @@ test: test_setup
 
 test: pg_dump_binary_upgrade
 
+test: pg_dump_gp_toolkit
+
 test: gp_dispatch_keepalives
 
 # parallel worker startup on the coordinator and the segments

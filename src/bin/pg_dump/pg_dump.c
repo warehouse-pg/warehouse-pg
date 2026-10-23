@@ -1778,14 +1778,13 @@ selectDumpableNamespace(NamespaceInfo *nsinfo, Archive *fout)
 	 * namespaces. If specific namespaces are being dumped, dump just those
 	 * namespaces. Otherwise, dump all non-system namespaces.
 	 *
-	 * GPDB: dump the gp_toolkit schema only in binary upgrade, where the
+	 * WHPG: dump the gp_toolkit schema only in binary upgrade, where the
 	 * new cluster expects the schema of an extension to exist before it
-	 * creates the *empty* extension and copy the objects from old cluster. 
-	 * In non-binary-upgrade cases, gp_toolkit schema should be created when
-	 * creating the extension itself, so no need to dump it; in fact, 
-	 * dumping it could result in error during replaying the script on a new
-	 * database, because new database would inherit the gp_toolkit schema 
-	 * and extension from 'template1' already.
+	 * creates the *empty* extension and copy the objects from old cluster.
+	 * In non-binary-upgrade cases, CREATE EXTENSION gp_toolkit creates the
+	 * schema, as dumpExtension() emits it without WITH SCHEMA; dumping the
+	 * schema could instead fail on a database that inherits gp_toolkit from
+	 * template1.
 	 */
 	if (table_include_oids.head != NULL)
 		nsinfo->dobj.dump_contains = nsinfo->dobj.dump = DUMP_COMPONENT_NONE;
@@ -11029,9 +11028,19 @@ dumpExtension(Archive *fout, const ExtensionInfo *extinfo)
 		 * types; but there are various scenarios in which it's convenient to
 		 * manually create the desired extension before restoring, so we
 		 * prefer to allow it to exist already.
+		 *
+		 * WHPG: no WITH SCHEMA for gp_toolkit, whose schema is not dumped
+		 * (see selectDumpableNamespace()).  WITH SCHEMA requires the schema
+		 * to exist, which it does not in a database created from template0;
+		 * without it, CREATE EXTENSION creates the schema the control file
+		 * fixes.
 		 */
-		appendPQExpBuffer(q, "CREATE EXTENSION IF NOT EXISTS %s WITH SCHEMA %s;\n",
-						  qextname, fmtId(extinfo->namespace));
+		if (strcmp(extinfo->dobj.name, "gp_toolkit") == 0)
+			appendPQExpBuffer(q, "CREATE EXTENSION IF NOT EXISTS %s;\n",
+							  qextname);
+		else
+			appendPQExpBuffer(q, "CREATE EXTENSION IF NOT EXISTS %s WITH SCHEMA %s;\n",
+							  qextname, fmtId(extinfo->namespace));
 	}
 	else
 	{
