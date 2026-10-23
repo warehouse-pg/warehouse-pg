@@ -152,6 +152,11 @@ private:
 						  const CCostModelGPDB *pcmgpdb,
 						  const SCostingInfo *pci);
 
+	// cost of per-partition top-N
+	static CCost CostWindowTopN(CMemoryPool *mp, CExpressionHandle &exprhdl,
+								const CCostModelGPDB *pcmgpdb,
+								const SCostingInfo *pci);
+
 	// cost of TVF
 	static CCost CostTVF(CMemoryPool *mp, CExpressionHandle &exprhdl,
 						 const CCostModelGPDB *pcmgpdb,

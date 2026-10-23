@@ -236,6 +236,8 @@ public:
 		ExfLimit2IndexOnlyGet,
 		ExfFullOuterJoin2HashJoin,
 		ExfFullJoinCommutativity,
+		ExfSelect2WindowTopN,
+		ExfImplementWindowTopN,
 		ExfInvalid,
 		ExfSentinel = ExfInvalid
 	};
