@@ -24,7 +24,6 @@
 #include "access/htup_details.h"
 #include "access/parallel.h"
 #include "access/sysattr.h"
-#include "access/stratnum.h"
 #include "access/table.h"
 #include "access/xact.h"
 #include "access/xlog.h"
@@ -5524,6 +5523,7 @@ create_window_prefilter_path(PlannerInfo *root,
 							 List *wfuncs,
 							 bool *keep_sorted_p)
 {
+	List	   *pre_prefilters = NIL;
 	List	   *pre_wfuncs = NIL;
 	List	   *pre_quals = NIL;
 	double		bound_rows = -1.0;
@@ -5534,7 +5534,7 @@ create_window_prefilter_path(PlannerInfo *root,
 		WindowPrefilter *prefilter = (WindowPrefilter *) lfirst(lc);
 		WindowFunc *match = NULL;
 		OpExpr	   *clause;
-		Node	   *bound;
+		double		n;
 		ListCell   *lc2;
 
 		if (prefilter->winref != wc->winref)
@@ -5559,37 +5559,14 @@ create_window_prefilter_path(PlannerInfo *root,
 
 		clause = copyObject(prefilter->clause);
 		linitial(clause->args) = match;
+		pre_prefilters = lappend(pre_prefilters, prefilter);
 		pre_wfuncs = list_append_unique_ptr(pre_wfuncs, match);
 		pre_quals = lappend(pre_quals, clause);
 
-		/* rows kept per partition, when the bound is a plain integer */
-		bound = (Node *) lsecond(clause->args);
-		if (IsA(bound, Const) && !((Const *) bound)->constisnull)
-		{
-			Const	   *c = (Const *) bound;
-			double		n = -1.0;
-
-			switch (c->consttype)
-			{
-				case INT2OID:
-					n = DatumGetInt16(c->constvalue);
-					break;
-				case INT4OID:
-					n = DatumGetInt32(c->constvalue);
-					break;
-				case INT8OID:
-					n = DatumGetInt64(c->constvalue);
-					break;
-			}
-			if (n >= 0)
-			{
-				if (prefilter->strategy == BTLessStrategyNumber)
-					n -= 1.0;
-				n = Max(n, 1.0);
-				if (bound_rows < 0 || n < bound_rows)
-					bound_rows = n;
-			}
-		}
+		/* smallest constant bound, for the row estimate */
+		n = cdb_window_prefilter_bound(prefilter);
+		if (n >= 0 && (bound_rows < 0 || n < bound_rows))
+			bound_rows = n;
 	}
 
 	if (pre_quals == NIL)
@@ -5597,7 +5574,7 @@ create_window_prefilter_path(PlannerInfo *root,
 
 	return cdb_create_window_prefilter_path(root, window_rel, path,
 											is_sorted, window_pathkeys, wc,
-											pre_wfuncs, pre_quals,
+											pre_prefilters, pre_wfuncs, pre_quals,
 											bound_rows, keep_sorted_p);
 }
 

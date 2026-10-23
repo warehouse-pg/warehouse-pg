@@ -830,63 +830,75 @@ unused_cte2 AS (
 SELECT * FROM used_cte;
 -- Verify view works normally
 EXPLAIN SELECT * FROM v_test;
-                                                   QUERY PLAN                                                   
-----------------------------------------------------------------------------------------------------------------
- Gather Motion 3:1  (slice1; segments: 3)  (cost=2716.92..3562.14 rows=78 width=8)
-   ->  Subquery Scan on x  (cost=2716.92..3560.84 rows=26 width=8)
+                                                   QUERY PLAN                                                    
+-----------------------------------------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)  (cost=765.50..798.05 rows=3 width=8)
+   ->  Subquery Scan on x  (cost=765.50..798.00 rows=1 width=8)
          Filter: (x.rk = 1)
-         ->  WindowAgg  (cost=2716.92..3236.26 rows=25967 width=16)
+         ->  WindowAgg  (cost=765.50..785.50 rows=1000 width=16)
                Partition By: t2.c
                Order By: t2.e
-               ->  Sort  (cost=2716.92..2781.84 rows=25967 width=8)
+               ->  Sort  (cost=765.50..768.00 rows=1000 width=8)
                      Sort Key: t2.c, t2.e DESC
-                     ->  Redistribute Motion 3:3  (slice2; segments: 3)  (cost=0.00..813.00 rows=25967 width=8)
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)  (cost=685.67..715.67 rows=1000 width=8)
                            Hash Key: t2.c
-                           ->  Seq Scan on t2  (cost=0.00..293.67 rows=25967 width=8)
+                           ->  WindowTopN  (cost=685.67..695.67 rows=1000 width=8)
+                                 Partition By: t2.c
+                                 Order By: t2.e DESC
+                                 Top N: rank() <= 1
+                                 ->  Seq Scan on t2  (cost=0.00..293.67 rows=25967 width=8)
  Optimizer: Postgres-based planner
-(12 rows)
+(16 rows)
 
 -- Drop t1.a column (not directly referenced by view, so DROP succeeds)
 ALTER TABLE t1 DROP COLUMN a;
 -- Query view again - ORCA should not fallback to Postgres planner
 -- Original Error: Query-to-DXL Translation: No variable entry found due to incorrect normalization of query
 EXPLAIN SELECT * FROM v_test;
-                                                   QUERY PLAN                                                   
-----------------------------------------------------------------------------------------------------------------
- Gather Motion 3:1  (slice1; segments: 3)  (cost=2716.92..3562.14 rows=78 width=8)
-   ->  Subquery Scan on x  (cost=2716.92..3560.84 rows=26 width=8)
+                                                   QUERY PLAN                                                    
+-----------------------------------------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)  (cost=765.50..798.05 rows=3 width=8)
+   ->  Subquery Scan on x  (cost=765.50..798.00 rows=1 width=8)
          Filter: (x.rk = 1)
-         ->  WindowAgg  (cost=2716.92..3236.26 rows=25967 width=16)
+         ->  WindowAgg  (cost=765.50..785.50 rows=1000 width=16)
                Partition By: t2.c
                Order By: t2.e
-               ->  Sort  (cost=2716.92..2781.84 rows=25967 width=8)
+               ->  Sort  (cost=765.50..768.00 rows=1000 width=8)
                      Sort Key: t2.c, t2.e DESC
-                     ->  Redistribute Motion 3:3  (slice2; segments: 3)  (cost=0.00..813.00 rows=25967 width=8)
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)  (cost=685.67..715.67 rows=1000 width=8)
                            Hash Key: t2.c
-                           ->  Seq Scan on t2  (cost=0.00..293.67 rows=25967 width=8)
+                           ->  WindowTopN  (cost=685.67..695.67 rows=1000 width=8)
+                                 Partition By: t2.c
+                                 Order By: t2.e DESC
+                                 Top N: rank() <= 1
+                                 ->  Seq Scan on t2  (cost=0.00..293.67 rows=25967 width=8)
  Optimizer: Postgres-based planner
-(12 rows)
+(16 rows)
 
 -- Drop t2.d column (not directly referenced by view, so DROP succeeds)
 ALTER TABLE t2 DROP COLUMN d;
 -- Query view again - ORCA should not fallback to Postgres planner
 -- Original Error: Query-to-DXL Translation: No variable entry found due to incorrect normalization of query
 EXPLAIN SELECT * FROM v_test;
-                                                   QUERY PLAN                                                   
-----------------------------------------------------------------------------------------------------------------
- Gather Motion 3:1  (slice1; segments: 3)  (cost=3020.06..3954.24 rows=86 width=8)
-   ->  Subquery Scan on x  (cost=3020.06..3952.81 rows=29 width=8)
+                                                   QUERY PLAN                                                    
+-----------------------------------------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)  (cost=833.83..866.38 rows=3 width=8)
+   ->  Subquery Scan on x  (cost=833.83..866.33 rows=1 width=8)
          Filter: (x.rk = 1)
-         ->  WindowAgg  (cost=3020.06..3594.06 rows=28700 width=16)
+         ->  WindowAgg  (cost=833.83..853.83 rows=1000 width=16)
                Partition By: t2.c
                Order By: t2.e
-               ->  Sort  (cost=3020.06..3091.81 rows=28700 width=8)
+               ->  Sort  (cost=833.83..836.33 rows=1000 width=8)
                      Sort Key: t2.c, t2.e DESC
-                     ->  Redistribute Motion 3:3  (slice2; segments: 3)  (cost=0.00..895.00 rows=28700 width=8)
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)  (cost=754.00..784.00 rows=1000 width=8)
                            Hash Key: t2.c
-                           ->  Seq Scan on t2  (cost=0.00..321.00 rows=28700 width=8)
+                           ->  WindowTopN  (cost=754.00..764.00 rows=1000 width=8)
+                                 Partition By: t2.c
+                                 Order By: t2.e DESC
+                                 Top N: rank() <= 1
+                                 ->  Seq Scan on t2  (cost=0.00..321.00 rows=28700 width=8)
  Optimizer: Postgres-based planner
-(12 rows)
+(16 rows)
 
 -- Cleanup
 DROP VIEW IF EXISTS v_test;

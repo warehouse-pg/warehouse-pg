@@ -1,7 +1,9 @@
 --
 -- Window top-N pre-filter: a "rank() <= N" style filter of the outer query
--- is applied on each segment before the Motion of the window.
--- Planner-only feature (GUC whpg_enable_window_topn).
+-- is applied on each segment before the window's Sort and Motion, by a
+-- WindowTopN node or, where the node does not apply, by Sort + WindowAgg +
+-- Filter (GUC whpg_enable_window_topn).  See window_topn_orca for the ORCA
+-- optimizer.
 --
 set optimizer = off;
 
@@ -25,8 +27,8 @@ create table wtp_base_drank as
 reset whpg_enable_window_topn;
 
 --
--- rank() <= N: two WindowAgg nodes, the lower one with a Filter below the
--- Redistribute Motion
+-- rank() <= N: a first stage below the Redistribute Motion keeps each
+-- segment's candidate rows
 --
 explain (costs off)
 select * from (select p, k, v, rank() over (partition by p order by k) rk from wtp_t) s
@@ -289,6 +291,110 @@ from (select p, k, rank() over (partition by p order by k) rk from wtp_t) a,
      (select p, k, rank() over (partition by p order by k desc) rk from wtp_t) b
 where a.rk <= 1 and a.p = b.p and b.rk <= 1
 group by a.p order by a.p;
+
+--
+-- a shared CTE below the window: its Share Input Scan runs in the slice of
+-- the first stage
+--
+set gp_cte_sharing = on;
+explain (costs off)
+with c as (select p, k, v from wtp_t)
+select p, k, v, rk from (select p, k, v, rank() over (partition by p order by k) rk from c) s
+where rk <= 2
+union all
+select -1, count(*)::int, null, null from c
+order by 1, 2, 3;
+with c as (select p, k, v from wtp_t)
+select p, k, v, rk from (select p, k, v, rank() over (partition by p order by k) rk from c) s
+where rk <= 2
+union all
+select -1, count(*)::int, null, null from c
+order by 1, 2, 3;
+reset gp_cte_sharing;
+
+--
+-- WindowTopN keeps the top rows of each partition with a hash table and
+-- heaps instead of Sort + WindowAgg + Filter.  The node holds the kept rows
+-- in memory, so when they are not expected to fit, the Sort form is used
+-- instead (here on an input that an index already delivers in window
+-- order); results are the same either way.
+--
+create index wtp_t_pk on wtp_t (p, k);
+set work_mem = '64kB';
+explain (costs off)
+select * from (select p, k, v, rank() over (partition by p order by k) rk from wtp_t) s
+where rk <= 200;
+select count(*) from (select p, k, v, rank() over (partition by p order by k) rk from wtp_t) s
+where rk <= 200;
+set whpg_enable_window_topn = off;
+select count(*) from (select p, k, v, rank() over (partition by p order by k) rk from wtp_t) s
+where rk <= 200;
+reset whpg_enable_window_topn;
+-- a bound that fits keeps the node
+explain (costs off)
+select * from (select p, k, v, rank() over (partition by p order by k) rk from wtp_t) s
+where rk <= 3;
+reset work_mem;
+drop index wtp_t_pk;
+
+-- the node hashes its input on the PARTITION BY columns, so a partition key
+-- of a type without a hash opclass gets the Sort form as well
+explain (costs off)
+select * from (select p, k, v, rank() over (partition by row(p) order by k) rk from wtp_t) s
+where rk <= 3;
+select count(*),
+       (select count(*) from wtp_base_rank) as expected
+from (select p, k, v, rank() over (partition by row(p) order by k) rk from wtp_t) s
+where rk <= 3;
+
+-- the bound as a parameter is evaluated once per execution
+prepare wtp_topn(int) as
+select p, count(*) from (select p, k, v, dense_rank() over (partition by p order by k desc) dr from wtp_t) s
+where dr <= $1 group by p order by p;
+execute wtp_topn(2);
+execute wtp_topn(0);
+deallocate wtp_topn;
+
+-- a NULL bound keeps nothing
+select count(*) from (select p, k, v, rank() over (partition by p order by k) rk from wtp_t) s
+where rk <= null::int;
+
+-- the node is rescanned when a parameter of its input changes
+select t.p,
+       (select count(*)
+        from (select k, rank() over (order by k) rk from wtp_t w where w.p = t.p) s
+        where rk <= 3) as top3
+from (values (0), (1), (2)) t(p) order by 1;
+
+-- NULLS FIRST / DESC ordering is honoured by the heaps
+create table wtp_n (p int, k int, v int) distributed by (v);
+insert into wtp_n select i % 3, case when i % 7 = 0 then null else i % 50 end, i from generate_series(1, 3000) i;
+analyze wtp_n;
+set whpg_enable_window_topn = off;
+create table wtp_base_n as
+  select * from (select p, k, v, rank() over (partition by p order by k desc nulls first) rk from wtp_n) s
+  where rk <= 4;
+reset whpg_enable_window_topn;
+explain (costs off)
+select * from (select p, k, v, rank() over (partition by p order by k desc nulls first) rk from wtp_n) s
+where rk <= 4;
+select count(*), (select count(*) from wtp_base_n) as expected from (
+  (select * from (select p, k, v, rank() over (partition by p order by k desc nulls first) rk from wtp_n) s where rk <= 4)
+  intersect all
+  (select * from wtp_base_n)
+) d;
+
+-- when the kept rows do not fit the operator's memory, the node returns
+-- everything it has and passes the rest of its input through; the result
+-- is unchanged
+set statement_mem = '1000kB';
+select count(*), min(k), max(k) from (select p, k, v, rank() over (partition by p order by k) rk from wtp_t) s
+where rk <= 100000;
+set whpg_enable_window_topn = off;
+select count(*), min(k), max(k) from (select p, k, v, rank() over (partition by p order by k) rk from wtp_t) s
+where rk <= 100000;
+reset whpg_enable_window_topn;
+reset statement_mem;
 
 --
 -- GUC off: a single WindowAgg
