@@ -5405,8 +5405,8 @@ create_one_window_path(PlannerInfo *root,
 		 * with "<= N", consider a top-N pre-filter that applies the filter on
 		 * each segment before the Motion.  Only the topmost window clause
 		 * qualifies: a lower WindowAgg feeds further window clauses, whose
-		 * results would change if rows were removed early.  The pre-filter
-		 * path is added as an alternative; add_path() picks by cost.
+		 * results would change if rows were removed early.  Both variants
+		 * are built and the cheaper one is kept, see below.
 		 */
 		if (whpg_enable_window_topn &&
 			root->window_prefilters != NIL &&
@@ -5487,7 +5487,18 @@ create_one_window_path(PlannerInfo *root,
 				create_windowagg_path(root, window_rel, prepath, window_target,
 									  wflists->windowFuncs[wc->winref],
 									  wc);
-			add_path(window_rel, prepath);
+
+			/*
+			 * Keep the cheaper variant, comparing the totals exactly.  We
+			 * cannot leave this to add_path(): the two totals differ only by
+			 * the window stage, which is usually within add_path's fuzzy
+			 * margin of a total dominated by the shared input (an aggregate,
+			 * typically), and the tie would then be broken by startup cost,
+			 * where the pre-filter variant always looks worse because all of
+			 * its first stage counts as startup.
+			 */
+			if (prepath->total_cost < path->total_cost)
+				path = prepath;
 		}
 	}
 

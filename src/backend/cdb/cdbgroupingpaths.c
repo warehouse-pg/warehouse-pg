@@ -68,6 +68,7 @@
 #include "optimizer/restrictinfo.h"
 #include "parser/parse_clause.h"
 #include "parser/parse_oper.h"
+#include "parser/parsetree.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 #include "foreign/fdwapi.h"
@@ -3345,6 +3346,70 @@ cdb_prepare_path_for_hashed_agg(PlannerInfo *root,
 }
 
 /*
+ * estimate_window_partitions
+ *
+ * Estimate the number of distinct PARTITION BY values over 'total_rows'
+ * input rows of the window.
+ *
+ * estimate_num_groups() has no statistics for a column of a grouped
+ * subquery (examine_simple_variable() deliberately punts on GROUP BY, as
+ * the subquery's output no longer follows the base column's distribution)
+ * and falls back to a default that is far too high for a typical top-N
+ * query, where the window input is an aggregate and the partitioning column
+ * one of its grouping columns.  For a plain grouping column we can still
+ * bound the count: the subquery outputs at most one row per group, so it
+ * cannot produce more distinct values than the underlying expression has
+ * in the subquery's own input.  Estimate that expression in the subquery's
+ * planner instead, where the base statistics are visible.  Only an upper
+ * bound is wanted here, so using the base distribution is safe.
+ */
+static double
+estimate_window_partitions(PlannerInfo *root, List *part_exprs,
+						   double total_rows)
+{
+	double		result;
+
+	if (list_length(part_exprs) == 1 && IsA(linitial(part_exprs), Var))
+	{
+		Var		   *var = (Var *) linitial(part_exprs);
+		RangeTblEntry *rte;
+		RelOptInfo *rel;
+
+		if (var->varlevelsup == 0 &&
+			var->varno >= 1 && var->varno < root->simple_rel_array_size &&
+			(rel = root->simple_rel_array[var->varno]) != NULL &&
+			rel->subroot != NULL &&
+			(rte = planner_rt_fetch(var->varno, root))->rtekind == RTE_SUBQUERY)
+		{
+			PlannerInfo *subroot = rel->subroot;
+			Query	   *subquery = subroot->parse;
+			TargetEntry *tle = get_tle_by_resno(subquery->targetList,
+												var->varattno);
+
+			if (tle != NULL &&
+				subquery->groupClause != NIL &&
+				subquery->setOperations == NULL &&
+				tle->ressortgroupref != 0 &&
+				targetIsInSortList(tle, InvalidOid, subquery->groupClause))
+			{
+				double		bound;
+
+				bound = estimate_window_partitions(subroot,
+												   list_make1(tle->expr),
+												   total_rows);
+				/* ROLLUP / GROUPING SETS may add a NULL group */
+				if (subquery->groupingSets != NIL)
+					bound += 1.0;
+				return clamp_row_est(Min(bound, total_rows));
+			}
+		}
+	}
+
+	result = estimate_num_groups(root, part_exprs, total_rows, NULL);
+	return clamp_row_est(result);
+}
+
+/*
  * cdb_create_window_prefilter_path
  *
  * Build the top-N pre-filter for a window clause whose output is filtered
@@ -3468,8 +3533,8 @@ cdb_create_window_prefilter_path(PlannerInfo *root,
 			total_rows = subpath->rows;
 			if (CdbPathLocus_IsPartitioned(subpath->locus))
 				total_rows *= CdbPathLocus_NumSegments(subpath->locus);
-			total_partitions = estimate_num_groups(root, part_exprs,
-												   total_rows, NULL);
+			total_partitions = estimate_window_partitions(root, part_exprs,
+														  total_rows);
 			partitions_per_segment =
 				estimate_num_groups_on_segment(total_partitions,
 											   subpath->rows,
