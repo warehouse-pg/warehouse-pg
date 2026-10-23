@@ -1551,6 +1551,22 @@ IMPORT_COLLATION () {
 		ERROR_CHK $? "ANALYZE 'postgres' database" 1
 		$PSQL -p $GP_PORT -d postgres -A -t -c "VACUUM FREEZE" >> $LOG_FILE 2>&1;
 		ERROR_CHK $? "VACUUM FREEZE 'postgres' database" 1
+
+		# import to whadmin
+		$PSQL -p $GP_PORT -d whadmin -A -t -c "SELECT pg_import_system_collations('pg_catalog')" >> $LOG_FILE 2>&1;
+		ERROR_CHK $? "importing system collations to 'whadmin' database" 1
+		$PSQL -p $GP_PORT -d whadmin -A -t -c "ANALYZE" >> $LOG_FILE 2>&1;
+		ERROR_CHK $? "ANALYZE 'whadmin' database" 1
+		$PSQL -p $GP_PORT -d whadmin -A -t -c "VACUUM FREEZE" >> $LOG_FILE 2>&1;
+		ERROR_CHK $? "VACUUM FREEZE 'whadmin' database" 1
+
+		# import to gpadmin
+		$PSQL -p $GP_PORT -d gpadmin -A -t -c "SELECT pg_import_system_collations('pg_catalog')" >> $LOG_FILE 2>&1;
+		ERROR_CHK $? "importing system collations to 'gpadmin' database" 1
+		$PSQL -p $GP_PORT -d gpadmin -A -t -c "ANALYZE" >> $LOG_FILE 2>&1;
+		ERROR_CHK $? "ANALYZE 'gpadmin' database" 1
+		$PSQL -p $GP_PORT -d gpadmin -A -t -c "VACUUM FREEZE" >> $LOG_FILE 2>&1;
+		ERROR_CHK $? "VACUUM FREEZE 'gpadmin' database" 1
 }
 
 CREATE_DATABASE () {
@@ -1561,15 +1577,18 @@ CREATE_DATABASE () {
 		LOG_MSG "[INFO]:-End Function $FUNCNAME"
 }
 
-# Creating core GPDB extension(s) in 'template1' and 'postgres' databases
+# Creating core GPDB extension(s) in the 'template1', 'postgres', 'whadmin', and 'gpadmin' databases
 CREATE_GPEXTENSIONS() {
 		LOG_MSG "[INFO]:-Start Function $FUNCNAME"
 		LOG_MSG "[INFO]:-Creating core GPDB extensions" 1
 		declare -a extnames=("gp_toolkit")
+		declare -a dbnames=("template1" "postgres" "whadmin" "gpadmin")
 		for ext in ${extnames[@]};
 		do
-			$PSQL -d template1 -X -A -t -c "CREATE EXTENSION $ext" >> $LOG_FILE 2>&1;
-			$PSQL -d postgres -X -A -t -c "CREATE EXTENSION $ext" >> $LOG_FILE 2>&1;
+			for db in ${dbnames[@]};
+			do
+				$PSQL -d $db -X -A -t -c "CREATE EXTENSION $ext" >> $LOG_FILE 2>&1;
+			done
 		done
 }
 
