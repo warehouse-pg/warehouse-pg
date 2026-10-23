@@ -60,6 +60,7 @@
 #include "executor/execdebug.h"
 #include "executor/execPartition.h"
 #include "executor/nodeAppend.h"
+#include "executor/nodeSeqscan.h"
 #include "miscadmin.h"
 
 /* Shared state for parallel-aware Append. */
@@ -84,6 +85,7 @@ static TupleTableSlot *ExecAppend(PlanState *pstate);
 static bool choose_next_subplan_locally(AppendState *node);
 static bool choose_next_subplan_for_leader(AppendState *node);
 static bool choose_next_subplan_for_worker(AppendState *node);
+static void ExecAppendEagerFreeSubplan(PlanState *subnode);
 static void mark_invalid_subplans_as_finished(AppendState *node);
 
 /* ----------------------------------------------------------------
@@ -247,6 +249,14 @@ ExecInitAppend(Append *node, EState *estate, int eflags)
 	/* For parallel query, this will be overridden later. */
 	appendstate->choose_next_subplan = choose_next_subplan_locally;
 
+	/*
+	 * GPDB: unless we've been told to expect rescans or backward scans,
+	 * release each subplan's scan as soon as we move past it.  See
+	 * ExecAppendEagerFreeSubplan().  ExecReScanAppend() turns this off.
+	 */
+	appendstate->as_eager_free =
+		(eflags & (EXEC_FLAG_REWIND | EXEC_FLAG_BACKWARD | EXEC_FLAG_MARK)) == 0;
+
 	return appendstate;
 }
 
@@ -307,6 +317,58 @@ ExecAppend(PlanState *pstate)
 		/* choose new subplan; if none, we're done */
 		if (!node->choose_next_subplan(node))
 			return ExecClearTuple(node->ps.ps_ResultTupleSlot);
+
+		/*
+		 * GPDB: the finished subplan won't be read again unless we're
+		 * rescanned, so let it release its resources now.  We do this only
+		 * after moving on to another subplan: once choose_next_subplan()
+		 * has failed, a further call to ExecAppend() reads the last subplan
+		 * again and must still see end-of-data from it.  (No caller is
+		 * known to do that -- a cursor at its end doesn't even enter the
+		 * executor -- but nothing forbids it either.)
+		 */
+		if (node->as_eager_free && node->as_pstate == NULL)
+			ExecAppendEagerFreeSubplan(subnode);
+	}
+}
+
+/*
+ * ExecAppendEagerFreeSubplan
+ *
+ * Release the resources of a subplan that has returned end-of-data.
+ *
+ * Scans of AO/AOCS tables bypass shared buffers and each keep private read
+ * buffers of several MB.  The executor initializes every unpruned subplan up
+ * front, so an Append over hundreds of AO partitions otherwise holds all of
+ * those buffers until ExecEndAppend().  ORCA's Dynamic Scans only ever open
+ * one partition at a time; this brings the planner's Append to the same level.
+ *
+ * We only handle plain SeqScan children here (ExecEagerFreeSeqScan() in turn
+ * only releases AO/AOCS scans).  Squelching an arbitrary subtree after it has
+ * hit end-of-data could, for instance, send stop messages to a Motion that
+ * has already finished.
+ *
+ * The subplan is marked squelched, so reading it again without a rescan
+ * fails loudly instead of returning rows twice; ExecReScan() clears the flag
+ * and SeqNext() then opens a new scan.
+ *
+ * We set the flag directly rather than calling ExecSquelchNode(), which would
+ * also squelch the SubPlans in the child's quals and targetlist.  Those
+ * SubPlans' plan states are shared by all the leaves of a partitioned table
+ * (there is one per plan_id), so squelching them -- and any Motion under them
+ * -- when the first leaf finishes would break the leaves still to come.  A
+ * later ExecSquelchNode() of the Append skips this child, and so its
+ * SubPlans, but a leaf that hasn't been released yet still reaches the shared
+ * plan states, and Motions that nobody squelched are cleaned up when the
+ * interconnect is torn down anyway.
+ */
+static void
+ExecAppendEagerFreeSubplan(PlanState *subnode)
+{
+	if (IsA(subnode, SeqScanState))
+	{
+		ExecEagerFreeSeqScan((SeqScanState *) subnode);
+		subnode->squelched = true;
 	}
 }
 
@@ -377,6 +439,18 @@ ExecReScanAppend(AppendState *node)
 		if (subnode->chgParam == NULL)
 			ExecReScan(subnode);
 	}
+
+	/*
+	 * GPDB: we're evidently being rescanned, even though EXEC_FLAG_REWIND
+	 * may not have told us so (e.g. Material strips it before initializing
+	 * its child, but still rescans the child on parameter changes).
+	 * Reopening every subplan's scan on each rescan costs far more than
+	 * keeping them, so stop releasing them early from now on.  A "rescan"
+	 * before we've chosen any subplan (e.g. initPlan output params being
+	 * signalled at startup) doesn't count.
+	 */
+	if (node->as_whichplan != INVALID_SUBPLAN_INDEX)
+		node->as_eager_free = false;
 
 	/* Let choose_next_subplan_* function handle setting the first subplan */
 	node->as_whichplan = INVALID_SUBPLAN_INDEX;

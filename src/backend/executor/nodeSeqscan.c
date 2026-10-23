@@ -255,6 +255,46 @@ ExecReScanSeqScan(SeqScanState *node)
 }
 
 /* ----------------------------------------------------------------
+ *		ExecEagerFreeSeqScan
+ *
+ *		GPDB: release the scan descriptor early.  Scans of AO/AOCS
+ *		tables keep sizeable private read buffers, so for an Append
+ *		over many such partitions, ending each scan once it is done
+ *		keeps memory proportional to one partition rather than all of
+ *		them.  SeqNext() opens a fresh scan if the node is rescanned.
+ *
+ *		Only Append calls this, and it stops doing so once it sees a
+ *		rescan.  It is deliberately not part of ExecSquelchNode(): nodes
+ *		that squelch their input (Limit, HashJoin) may be rescanned once
+ *		per outer row of a parameterized NestLoop, and reopening an AO
+ *		scan each time costs much more than table_rescan().
+ *
+ *		Heap scans are left alone: they hold little memory, and a
+ *		reopened heap scan may pick a different synchronized-scan start
+ *		block, where table_rescan() would keep the old one.
+ * ----------------------------------------------------------------
+ */
+void
+ExecEagerFreeSeqScan(SeqScanState *node)
+{
+	TableScanDesc scanDesc = node->ss.ss_currentScanDesc;
+
+	if (scanDesc == NULL ||
+		!RelationIsAppendOptimized(node->ss.ss_currentRelation))
+		return;
+
+	/* A parallel scan descriptor can't be recreated lazily; keep it. */
+	if (scanDesc->rs_parallel != NULL)
+		return;
+
+	/* The scan slot may point into the scan's buffers; clear it first. */
+	ExecClearTuple(node->ss.ss_ScanTupleSlot);
+
+	table_endscan(scanDesc);
+	node->ss.ss_currentScanDesc = NULL;
+}
+
+/* ----------------------------------------------------------------
  *						Parallel Scan Support
  * ----------------------------------------------------------------
  */
