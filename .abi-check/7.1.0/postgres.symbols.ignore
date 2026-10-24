@@ -22,3 +22,5 @@ ResGroupGetHostPrimaryCount
 DistributedLog_InitOldestXmin
 AppendOptimizedCollectDeadSegments
 QEDtxContextInfo
+NextRecordTypmod
+build_tuple_node_list

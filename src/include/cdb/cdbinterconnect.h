@@ -294,11 +294,11 @@ struct MotionConn
 	/*
 	 * used by the sender.
 	 *
-	 * the typmod of last sent record type in current connection,
-	 * if the connection is for broadcasting then we only check
-	 * and update this attribute on connection 0.
+	 * the record cache generation last sent on this connection
+	 * (record_cache_generation()); if the connection is for broadcasting
+	 * then we only check and update this attribute on connection 0.
 	 */
-	int32		 sent_record_typmod;
+	uint64		 sent_record_cache_generation;
 
 	/*
 	 * used by the receiver.

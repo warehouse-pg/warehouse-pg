@@ -165,8 +165,6 @@ typedef struct DomainConstraintRef
 
 typedef struct SharedRecordTypmodRegistry SharedRecordTypmodRegistry;
 
-extern int32 NextRecordTypmod;
-
 extern TypeCacheEntry *lookup_type_cache(Oid type_id, int flags);
 
 extern void InitDomainConstraintRef(Oid type_id, DomainConstraintRef *ref,
@@ -199,7 +197,9 @@ extern void SharedRecordTypmodRegistryInit(SharedRecordTypmodRegistry *,
 
 extern void SharedRecordTypmodRegistryAttach(SharedRecordTypmodRegistry *);
 
-extern List *build_tuple_node_list(int start);
+/* WHPG: record cache exchange between the QD and the QEs (cdb/motion) */
+extern List *build_tuple_node_list(uint64 generation);
+extern uint64 record_cache_generation(void);
 
 /* GPDB: retrieve conn calls this function to clear record cache */
 extern void reset_record_cache(void);
