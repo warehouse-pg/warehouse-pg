@@ -269,7 +269,25 @@ static HTAB *RecordCacheHash = NULL;
 static TupleDesc *RecordCacheArray = NULL;
 static uint64 *RecordIdentifierArray = NULL;
 static int32 RecordCacheArrayLen = 0;	/* allocated length of above arrays */
-int32 NextRecordTypmod = 0;	/* number of entries used */
+static int32 NextRecordTypmod = 0;	/* number of entries used */
+
+/*
+ * WHPG: one past the highest typmod RecordCacheArray holds a descriptor for,
+ * and the identifier (RecordIdentifierArray) of the latest insertion into
+ * the record cache.  Both serve the record cache exchange between the QD and
+ * the QEs (build_tuple_node_list).  RecordCacheHighTypmod follows
+ * NextRecordTypmod while this process assigns typmods itself.  Once the
+ * process is attached to a SharedRecordTypmodRegistry, typmods come from the
+ * registry's counter, which every attached process draws from, and
+ * NextRecordTypmod stops moving; a slot below the mark can be empty (a
+ * typmod another attached process allocated and this one never looked up) or
+ * be filled after higher ones (such a typmod enters this cache when it is
+ * first looked up here).  The exchange therefore ranges over the mark and
+ * selects entries by their insertion identifiers, with RecordCacheGeneration
+ * as the cursor a sender remembers.
+ */
+static int32 RecordCacheHighTypmod = 0;
+static uint64 RecordCacheGeneration = 0;
 
 /*
  * Process-wide counter for generating unique tupledesc identifiers.
@@ -1615,12 +1633,14 @@ lookup_rowtype_tupdesc_internal(Oid type_id, int32 typmod, bool noError)
 					 */
 					RecordCacheArray[typmod] = tupdesc;
 					Assert(tupdesc->tdrefcount == -1);
+					RecordCacheHighTypmod = Max(RecordCacheHighTypmod, typmod + 1);
 
 					/*
 					 * We don't share tupdesc identifiers across processes, so
 					 * assign one locally.
 					 */
 					RecordIdentifierArray[typmod] = ++tupledesc_id_counter;
+					RecordCacheGeneration = RecordIdentifierArray[typmod];
 
 					dshash_release_lock(CurrentSession->shared_typmod_table,
 										entry);
@@ -1761,6 +1781,8 @@ reset_record_cache(void)
 		RecordCacheArray = NULL;
 		RecordIdentifierArray = NULL;
 		RecordCacheArrayLen = 0;
+		RecordCacheHighTypmod = 0;
+		RecordCacheGeneration = 0;
 	}
 }
 
@@ -1861,9 +1883,11 @@ assign_record_type_typmod(TupleDesc tupDesc)
 	}
 
 	RecordCacheArray[entDesc->tdtypmod] = entDesc;
+	RecordCacheHighTypmod = Max(RecordCacheHighTypmod, entDesc->tdtypmod + 1);
 
 	/* Assign a unique tupdesc identifier, too. */
 	RecordIdentifierArray[entDesc->tdtypmod] = ++tupledesc_id_counter;
+	RecordCacheGeneration = RecordIdentifierArray[entDesc->tdtypmod];
 
 	/* Fully initialized; create the hash table entry */
 	recentry = (RecordCacheEntry *) hash_search(RecordCacheHash,
@@ -2264,22 +2288,29 @@ TypeCacheConstrCallback(Datum arg, int cacheid, uint32 hashvalue)
 /*
  * build_tuple_node_list
  *
- * Wrap TupleDesc with TupleDescNode. Return all record type in record cache.
+ * Wrap TupleDesc with TupleDescNode. Return the record types that entered
+ * the record cache after the given generation, for the QD and the QEs to
+ * exchange rows that carry anonymous records.  Generation zero selects every
+ * cached type.  Typmods shared through a SharedRecordTypmodRegistry can enter
+ * this cache out of order, so the entries are selected by their insertion
+ * identifiers rather than by typmod, and the list may have gaps; the receiver
+ * maps each remote typmod to its own (TRHandleTypeLists).
  */
 List *
-build_tuple_node_list(int start)
+build_tuple_node_list(uint64 generation)
 {
 	List *transientTypeList = NIL;
-	int i = start;
+	int i;
 
-	if (NextRecordTypmod == 0)
-		return transientTypeList;
-
-	for (; i < NextRecordTypmod; i++)
+	for (i = 0; i < RecordCacheHighTypmod && i < RecordCacheArrayLen; i++)
 	{
 		TupleDesc tmp = RecordCacheArray[i];
+		TupleDescNode *node;
 
-		TupleDescNode *node = palloc0(sizeof(TupleDescNode));
+		if (tmp == NULL || RecordIdentifierArray[i] <= generation)
+			continue;
+
+		node = palloc0(sizeof(TupleDescNode));
 		node->type = T_TupleDescNode;
 		node->natts = tmp->natts;
 		node->tuple = CreateTupleDescCopy(tmp);
@@ -2287,6 +2318,20 @@ build_tuple_node_list(int start)
 	}
 
 	return transientTypeList;
+}
+
+/*
+ * record_cache_generation
+ *
+ * Identifier of the latest insertion into the record cache.  Unlike the
+ * process-wide tupledesc identifier counter, it advances only when a record
+ * type enters this cache.  A motion sender remembers it when it ships its
+ * record cache and ships what was added after it the next time (cdbmotion.c).
+ */
+uint64
+record_cache_generation(void)
+{
+	return RecordCacheGeneration;
 }
 
 /*

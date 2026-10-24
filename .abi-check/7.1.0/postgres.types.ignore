@@ -13,3 +13,4 @@ struct ProjectionPath
 struct AppendRelInfo
 struct CdbComponentDatabaseInfo
 struct DtxContextInfo
+struct MotionConn

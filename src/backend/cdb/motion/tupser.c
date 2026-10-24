@@ -281,7 +281,7 @@ SerializeRecordCacheIntoChunks(SerTupInfo *pSerInfo,
 	 * the records to its own local cache and remapping the typmod of tuples
 	 * sent by sender.
 	 */
-	typelist = build_tuple_node_list(conn->sent_record_typmod);
+	typelist = build_tuple_node_list(conn->sent_record_cache_generation);
 	buf = serializeNode((Node *) typelist, &size, NULL);
 	list_free_deep(typelist);
 

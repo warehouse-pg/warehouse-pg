@@ -223,18 +223,33 @@ TRHandleTypeLists(TupleRemapper *remapper, List *typelist)
 {
 	int			j;
 	ListCell   *cell;
-	int			mapsize = remapper->typmodmapsize + list_length(typelist);
+	int			mapsize = remapper->typmodmapsize;
+	MemoryContext oldcontext;
+
+	/*
+	 * The map is indexed by remote typmod.  The sender ships every record
+	 * type it holds from where it left off, but the list can have gaps when
+	 * the sender is attached to a SharedRecordTypmodRegistry (typmods that
+	 * other processes of its session allocated), so size the map by the
+	 * highest typmod in the list, not by its length.
+	 */
+	foreach(cell, typelist)
+	{
+		TupleDescNode *descnode = (TupleDescNode *) lfirst(cell);
+
+		mapsize = Max(mapsize, descnode->tuple->tdtypmod + 1);
+	}
 
 	/* alloc typmodmap in remapper->mycontext, usually it's InterconnectContext */
-	MemoryContext oldcontext = MemoryContextSwitchTo(remapper->mycontext);
+	oldcontext = MemoryContextSwitchTo(remapper->mycontext);
 	if (remapper->typmodmap)
 		remapper->typmodmap = repalloc(remapper->typmodmap, mapsize * sizeof(int32));
 	else
 		remapper->typmodmap = palloc(mapsize * sizeof(int32));
 	MemoryContextSwitchTo(oldcontext);
 
-	for (j = 0; j < list_length(typelist); j++)
-		remapper->typmodmap[remapper->typmodmapsize + j] = -1;
+	for (j = remapper->typmodmapsize; j < mapsize; j++)
+		remapper->typmodmap[j] = -1;
 
 	remapper->typmodmapsize = mapsize;
 
@@ -533,11 +548,11 @@ TRRemapRecord(TupleRemapper *remapper, RecordRemapInfo *remapinfo,
 		{
 			Assert(remapper->typmodmap != NULL);
 			Assert(typmod >= 0);
-			if (typmod >= remapper->typmodmapsize)
+			if (typmod >= remapper->typmodmapsize ||
+				remapper->typmodmap[typmod] < 0)
 				elog(ERROR, "received unknown record type with typmod %d", typmod);
 
 			remapinfo->localtypmod = remapper->typmodmap[typmod];
-			Assert(remapinfo->localtypmod >= 0);
 		}
 		else
 			remapinfo->localtypmod = -1;
@@ -568,8 +583,12 @@ TRRemapRecord(TupleRemapper *remapper, RecordRemapInfo *remapinfo,
 		remapinfo->rectypid = typid;
 		remapinfo->rectypmod = typmod;
 
-		/* Release reference count acquired by lookup_rowtype_tupdesc. */
-		DecrTupleDescRefCount(tupledesc);
+		/*
+		 * Release the reference lookup_rowtype_tupdesc() took.  A tupdesc
+		 * that lives in a SharedRecordTypmodRegistry is not reference
+		 * counted, and ReleaseTupleDesc() leaves those alone.
+		 */
+		ReleaseTupleDesc(tupledesc);
 	}
 
 	/* If transient record, replace remote typmod with local typmod. */

@@ -368,8 +368,8 @@ CheckAndSendRecordCache(MotionLayerState *mlStates,
 	getChunkTransportState(transportStates, motNodeID, &pEntry);
 
 	/*
-	 * for broadcast we only mark sent_record_typmod for connection 0 for
-	 * efficiency and convenience
+	 * for broadcast we only mark sent_record_cache_generation for
+	 * connection 0 for efficiency and convenience
 	 */
 	if (targetRoute == BROADCAST_SEGIDX)
 		conn = &pEntry->conns[0];
@@ -1238,21 +1238,21 @@ statRecvTuple(MotionNodeEntry *pMNEntry, ChunkSorterEntry *pCSEntry)
 }
 
 /*
- * Return true if the record cache should be sent to coordinator
+ * Return true if the record cache holds record types this connection has
+ * not sent yet.
  */
 static bool
 ShouldSendRecordCache(MotionConn *conn, SerTupInfo *pSerInfo)
 {
 	return pSerInfo->has_record_types &&
-		NextRecordTypmod > 0 &&
-		NextRecordTypmod > conn->sent_record_typmod;
+		record_cache_generation() > conn->sent_record_cache_generation;
 }
 
 /*
- * Update the number of sent record types.
+ * Remember how far the record cache has been sent on this connection.
  */
 static void
 UpdateSentRecordCache(MotionConn *conn)
 {
-	conn->sent_record_typmod = NextRecordTypmod;
+	conn->sent_record_cache_generation = record_cache_generation();
 }
