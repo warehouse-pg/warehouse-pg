@@ -42,6 +42,7 @@
 #include "utils/relmapper.h"
 #include "utils/snapmgr.h"
 #include "utils/typcache.h"
+#include "cdb/cdblocaldistribxact.h"
 #include "cdb/cdbvars.h"
 #include "cdb/cdbutil.h"
 
@@ -1483,6 +1484,24 @@ ParallelWorkerMain(Datum main_arg)
 			setDistributedTransactionContext(DTX_CONTEXT_QE_ENTRY_DB_SINGLETON);
 		else
 			setDistributedTransactionContext(DTX_CONTEXT_QE_READER);
+
+		/*
+		 * Record the leader's distributed transaction in this process, as
+		 * StartTransaction() does for a writer QE.  The global deadlock
+		 * detector keys lock waits on it (gp_dist_wait_status()) and drops a
+		 * waiter whose xid is invalid, so without it a worker blocked on
+		 * another session's lock would be missing from the wait graph.
+		 * StartTransaction() ran above before the DTX context was known, so
+		 * it could not do this.  Done only together with the reader context,
+		 * since a LOCAL_ONLY transaction must end with the state untouched,
+		 * and only for a valid xid: a hot-standby leader has a distributed
+		 * snapshot but no distributed transaction.
+		 */
+		if (QEDtxContextInfo.distributedXid != InvalidDistributedTransactionId)
+		{
+			MyProc->localDistribXactData.distribXid = QEDtxContextInfo.distributedXid;
+			MyProc->localDistribXactData.state = LOCALDISTRIBXACT_STATE_ACTIVE;
+		}
 	}
 
 	/*
