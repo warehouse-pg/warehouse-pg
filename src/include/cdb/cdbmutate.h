@@ -37,6 +37,8 @@ extern Plan *make_explicit_motion(PlannerInfo *root,
 void 
 cdbmutate_warn_ctid_without_segid(struct PlannerInfo *root, struct RelOptInfo *rel);
 
+extern bool cdbmutate_dml_uses_ctid_without_segid(Query *query);
+
 extern Plan *apply_shareinput_dag_to_tree(PlannerInfo *root, Plan *plan);
 extern void collect_shareinput_producers(PlannerInfo *root, Plan *plan);
 extern Plan *replace_shareinput_targetlists(PlannerInfo *root, Plan *plan);

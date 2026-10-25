@@ -552,6 +552,10 @@ int FindNodes(Node *node, List *nodeTags);
 // look for nodes with non-default collation; returns 1 if any exist, -1 otherwise
 int CheckCollation(Node *node);
 
+// does an UPDATE or DELETE reference some relation's ctid without its
+// gp_segment_id (see cdbmutate_dml_uses_ctid_without_segid())
+bool DMLUsesCtidWithoutSegid(Query *query);
+
 Node *CoerceToCommonType(ParseState *pstate, Node *node, Oid target_type,
 						 const char *context);
 

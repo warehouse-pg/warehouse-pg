@@ -29,6 +29,7 @@
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "nodes/makefuncs.h"
+#include "nodes/nodeFuncs.h"
 
 #include "commands/tablecmds.h"
 #include "commands/tablespace.h"
@@ -327,6 +328,139 @@ cdbmutate_warn_ctid_without_segid(struct PlannerInfo *root, struct RelOptInfo *r
 	}
 	bms_free(relids_to_ignore);
 }								/* cdbmutate_warn_ctid_without_segid */
+
+/* ----------------------------------------------------------------------- *
+ * cdbmutate_dml_uses_ctid_without_segid() tells GPORCA when to leave an
+ * UPDATE or DELETE to the Postgres planner, so that the planner's
+ * cdbmutate_warn_ctid_without_segid() check above rejects it.  GPORCA does
+ * not run that check, and a ctid is unique only within one segment.
+ *
+ * It returns true if, in an UPDATE or DELETE, some relation's ctid is
+ * referenced without that relation's gp_segment_id.  References in the
+ * top-level target list and RETURNING list do not count, as in the planner
+ * check.  It looks at every query level, because the planner pulls
+ * subqueries up into the outer query before it checks; so it can return
+ * true for a statement the planner accepts.  That only costs a planner
+ * plan, never a wrong result.
+ * ----------------------------------------------------------------------- *
+ */
+typedef struct ctid_ref
+{
+	Query	   *query;			/* query whose range table holds the relation */
+	Index		varno;			/* range table index in that query */
+	bool		uses_ctid;
+	bool		uses_segid;
+} ctid_ref;
+
+typedef struct ctid_dml_context
+{
+	List	   *query_stack;	/* enclosing queries, innermost first */
+	List	   *refs;			/* list of ctid_ref */
+} ctid_dml_context;
+
+static void
+ctid_dml_note_ref(ctid_dml_context *cxt, Query *query, Index varno,
+				  AttrNumber attno)
+{
+	ListCell   *lc;
+	ctid_ref   *ref = NULL;
+
+	foreach(lc, cxt->refs)
+	{
+		ctid_ref   *r = (ctid_ref *) lfirst(lc);
+
+		if (r->query == query && r->varno == varno)
+		{
+			ref = r;
+			break;
+		}
+	}
+	if (ref == NULL)
+	{
+		ref = (ctid_ref *) palloc0(sizeof(ctid_ref));
+		ref->query = query;
+		ref->varno = varno;
+		cxt->refs = lappend(cxt->refs, ref);
+	}
+
+	if (attno == SelfItemPointerAttributeNumber)
+		ref->uses_ctid = true;
+	else
+		ref->uses_segid = true;
+}
+
+static bool
+ctid_dml_walker(Node *node, ctid_dml_context *cxt)
+{
+	if (node == NULL)
+		return false;
+
+	if (IsA(node, Var))
+	{
+		Var		   *var = (Var *) node;
+
+		if ((var->varattno == SelfItemPointerAttributeNumber ||
+			 var->varattno == GpSegmentIdAttributeNumber) &&
+			var->varlevelsup < list_length(cxt->query_stack))
+			ctid_dml_note_ref(cxt,
+							  (Query *) list_nth(cxt->query_stack, var->varlevelsup),
+							  var->varno, var->varattno);
+		return false;
+	}
+
+	if (IsA(node, Query))
+	{
+		bool		result;
+
+		cxt->query_stack = lcons(node, cxt->query_stack);
+		result = query_tree_walker((Query *) node, ctid_dml_walker, cxt, 0);
+		cxt->query_stack = list_delete_first(cxt->query_stack);
+		return result;
+	}
+
+	return expression_tree_walker(node, ctid_dml_walker, cxt);
+}
+
+bool
+cdbmutate_dml_uses_ctid_without_segid(Query *query)
+{
+	ctid_dml_context cxt;
+	ListCell   *lc;
+	bool		found = false;
+
+	if (query->commandType != CMD_UPDATE &&
+		query->commandType != CMD_DELETE)
+		return false;
+
+	cxt.query_stack = list_make1(query);
+	cxt.refs = NIL;
+
+	/*
+	 * Walk everything except the target list and RETURNING list of the
+	 * top-level query: the WHERE and join quals, CTEs, and subqueries in the
+	 * range table.  Sublinks are reached through the quals.
+	 */
+	(void) ctid_dml_walker((Node *) query->jointree, &cxt);
+	(void) ctid_dml_walker((Node *) query->cteList, &cxt);
+	(void) range_table_walker(query->rtable, ctid_dml_walker, &cxt, 0);
+
+	foreach(lc, cxt.refs)
+	{
+		ctid_ref   *ref = (ctid_ref *) lfirst(lc);
+
+		if (ref->uses_ctid && !ref->uses_segid &&
+			rt_fetch(ref->varno, ref->query->rtable)->rtekind == RTE_RELATION)
+		{
+			found = true;
+			break;
+		}
+	}
+
+	list_free_deep(cxt.refs);
+	list_free(cxt.query_stack);
+
+	return found;
+}
 
 
 /*

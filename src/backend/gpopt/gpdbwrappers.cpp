@@ -2040,6 +2040,17 @@ gpdb::CheckCollation(Node *node)
 	return -1;
 }
 
+bool
+gpdb::DMLUsesCtidWithoutSegid(Query *query)
+{
+	GP_WRAP_START;
+	{
+		return cdbmutate_dml_uses_ctid_without_segid(query);
+	}
+	GP_WRAP_END;
+	return false;
+}
+
 Node *
 gpdb::CoerceToCommonType(ParseState *pstate, Node *node, Oid target_type,
 						 const char *context)
