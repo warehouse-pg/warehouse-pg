@@ -5402,10 +5402,11 @@ create_one_window_path(PlannerInfo *root,
 		/*
 		 * WHPG: if the parent query filters this window's rank-like output
 		 * with "<= N", consider a top-N pre-filter that applies the filter on
-		 * each segment before the Motion.  Only the topmost window clause
-		 * qualifies: a lower WindowAgg feeds further window clauses, whose
-		 * results would change if rows were removed early.  Both variants
-		 * are built and the cheaper one is kept, see below.
+		 * each segment before the Motion, or, when no Motion is needed,
+		 * before the Sort.  Only the topmost window clause qualifies: a
+		 * lower WindowAgg feeds further window clauses, whose results would
+		 * change if rows were removed early.  Both variants are built and
+		 * the cheaper one is kept, see below.
 		 */
 		if (whpg_enable_window_topn &&
 			root->window_prefilters != NIL &&

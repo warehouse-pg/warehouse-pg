@@ -100,8 +100,10 @@ select * from (select k, v, rank() over (order by k) rk from wtp_t) s
 where rk <= 3 order by k, v;
 
 --
--- distribution key equals the PARTITION BY column: no Motion is needed, so
--- the pre-filter is not used
+-- distribution key equals the PARTITION BY column: no Motion is needed.
+-- The Sort form of the first stage would only repeat the final stage, but
+-- WindowTopN still pays off: the final WindowAgg sorts the kept rows
+-- instead of the whole input
 --
 create table wtp_d (p int, k int, v int) distributed by (p);
 insert into wtp_d select * from wtp_t;
@@ -110,6 +112,29 @@ analyze wtp_d;
 explain (costs off)
 select * from (select p, k, v, rank() over (partition by p order by k) rk from wtp_d) s
 where rk <= 3;
+
+select p, k, rk, count(*) from (select p, k, v, rank() over (partition by p order by k) rk from wtp_d) s
+where rk <= 3 group by p, k, rk order by p, k;
+
+-- without WindowTopN there is no first stage
+set whpg_enable_window_topn = off;
+explain (costs off)
+select * from (select p, k, v, rank() over (partition by p order by k) rk from wtp_d) s
+where rk <= 3;
+reset whpg_enable_window_topn;
+
+-- the same when the input is already on a single segment (the LIMIT
+-- gathers it there)
+explain (costs off)
+select * from (
+  select p, k, v, rank() over (partition by p order by k) rk
+  from (select p, k, v from wtp_t limit 100000) i
+) s where rk <= 3;
+
+select p, k, rk, count(*) from (
+  select p, k, v, rank() over (partition by p order by k) rk
+  from (select p, k, v from wtp_t limit 100000) i
+) s where rk <= 3 group by p, k, rk order by p, k;
 
 --
 -- other window functions in the same window clause are computed only by
@@ -226,8 +251,9 @@ select * from (
 
 --
 -- filtered window functions of two different window clauses: the Motion
--- is added for the first window, so the input of the second one is
--- already distributed by the partitioning column and nothing is gained
+-- is added for the first window; the second one, the topmost, finds its
+-- input already distributed by the partitioning column and still gets a
+-- WindowTopN in front of its WindowAgg
 --
 explain (costs off)
 select * from (
