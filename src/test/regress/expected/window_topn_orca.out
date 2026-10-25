@@ -346,7 +346,7 @@ where rk <= 3 order by k, v;
 
 --
 -- not eligible: ">" filter, a function of the same window that looks past
--- the current row, distribution key equal to the partition column
+-- the current row
 --
 explain (costs off)
 select * from (select p, k, v, rank() over (partition by p order by k) rk from wto_t) s
@@ -567,14 +567,18 @@ select * from (
  4 | 1 | 3679 |  2 |    5358
 (10 rows)
 
+--
+-- distribution key equals the PARTITION BY column: no Motion is needed, but
+-- WindowTopN still spares the Sort of the final window the rows it drops
+--
 create table wto_d (p int, k int, v int) distributed by (p);
 insert into wto_d select * from wto_t;
 analyze wto_d;
 explain (costs off)
 select * from (select p, k, v, rank() over (partition by p order by k) rk from wto_d) s
 where rk <= 3;
-                QUERY PLAN                 
--------------------------------------------
+                   QUERY PLAN                    
+-------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Result
          Filter: ((rank() OVER (?)) <= 3)
@@ -583,9 +587,63 @@ where rk <= 3;
                Order By: k
                ->  Sort
                      Sort Key: p, k
-                     ->  Seq Scan on wto_d
+                     ->  WindowTopN
+                           Partition By: p
+                           Order By: k
+                           Top N: rank() <= 3
+                           ->  Seq Scan on wto_d
  Optimizer: GPORCA
-(10 rows)
+(14 rows)
+
+select p, k, rk, count(*) from (select p, k, v, rank() over (partition by p order by k) rk from wto_d) s
+where rk <= 3 group by p, k, rk order by p, k;
+ p | k | rk | count 
+---+---+----+-------
+ 0 | 0 |  1 |    10
+ 1 | 4 |  1 |    10
+ 2 | 3 |  1 |    10
+ 3 | 2 |  1 |    10
+ 4 | 1 |  1 |    10
+(5 rows)
+
+-- the same when the input is already on a single segment (the LIMIT
+-- gathers it there)
+explain (costs off)
+select * from (
+  select p, k, v, rank() over (partition by p order by k) rk
+  from (select p, k, v from wto_t limit 100000) i
+) s where rk <= 3;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Result
+   Filter: ((rank() OVER (?)) <= 3)
+   ->  WindowAgg
+         Partition By: p
+         Order By: k
+         ->  Sort
+               Sort Key: p, k
+               ->  WindowTopN
+                     Partition By: p
+                     Order By: k
+                     Top N: rank() <= 3
+                     ->  Limit
+                           ->  Gather Motion 3:1  (slice1; segments: 3)
+                                 ->  Seq Scan on wto_t
+ Optimizer: GPORCA
+(15 rows)
+
+select p, k, rk, count(*) from (
+  select p, k, v, rank() over (partition by p order by k) rk
+  from (select p, k, v from wto_t limit 100000) i
+) s where rk <= 3 group by p, k, rk order by p, k;
+ p | k | rk | count 
+---+---+----+-------
+ 0 | 0 |  1 |    10
+ 1 | 4 |  1 |    10
+ 2 | 3 |  1 |    10
+ 3 | 2 |  1 |    10
+ 4 | 1 |  1 |    10
+(5 rows)
 
 --
 -- the input of the first stage may hold Share Input Scans, as a ROLLUP does
