@@ -26,8 +26,9 @@ namespace gpopt
 //	@doc:
 //		Keeps the top-N rows of each window partition of its input, using a
 //		hash table of partitions and a heap per partition.  It accepts any
-//		input distribution and order and produces no order; a Motion and a
-//		Sort are enforced above it for the SequenceProject that follows.
+//		input distribution and order and produces no order; a Sort, and a
+//		Motion unless the input is already distributed by the partition
+//		columns, are enforced above it for the SequenceProject that follows.
 //
 //---------------------------------------------------------------------------
 class CPhysicalWindowTopN : public CPhysical
@@ -171,11 +172,6 @@ public:
 	// return order property enforcing type for this operator
 	CEnfdProp::EPropEnforcingType EpetOrder(
 		CExpressionHandle &exprhdl, const CEnfdOrder *peo) const override;
-
-	// return distribution property enforcing type for this operator
-	CEnfdProp::EPropEnforcingType EpetDistribution(
-		CExpressionHandle &exprhdl,
-		const CEnfdDistribution *ped) const override;
 
 	// return rewindability property enforcing type for this operator
 	CEnfdProp::EPropEnforcingType EpetRewindability(

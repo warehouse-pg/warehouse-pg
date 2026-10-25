@@ -78,7 +78,7 @@ where rk <= 3 order by k, v;
 
 --
 -- not eligible: ">" filter, a function of the same window that looks past
--- the current row, distribution key equal to the partition column
+-- the current row
 --
 explain (costs off)
 select * from (select p, k, v, rank() over (partition by p order by k) rk from wto_t) s
@@ -124,12 +124,39 @@ select * from (
                           rows between unbounded preceding and current row)
 ) s where rn <= 2 order by p, k, v;
 
+--
+-- distribution key equals the PARTITION BY column: no Motion is needed, but
+-- WindowTopN still spares the Sort of the final window the rows it drops
+--
 create table wto_d (p int, k int, v int) distributed by (p);
 insert into wto_d select * from wto_t;
 analyze wto_d;
 explain (costs off)
 select * from (select p, k, v, rank() over (partition by p order by k) rk from wto_d) s
 where rk <= 3;
+
+select count(*), (select count(*) from wto_base_rank) as expected from (
+  (select * from (select p, k, v, rank() over (partition by p order by k) rk from wto_d) s where rk <= 3)
+  intersect all
+  (select * from wto_base_rank)
+) d;
+
+-- the same when the input is already on a single segment (the LIMIT
+-- gathers it there)
+explain (costs off)
+select * from (
+  select p, k, v, rank() over (partition by p order by k) rk
+  from (select p, k, v from wto_t limit 100000) i
+) s where rk <= 3;
+
+select count(*), (select count(*) from wto_base_rank) as expected from (
+  (select * from (
+     select p, k, v, rank() over (partition by p order by k) rk
+     from (select p, k, v from wto_t limit 100000) i
+   ) s where rk <= 3)
+  intersect all
+  (select * from wto_base_rank)
+) d;
 
 --
 -- the input of the first stage may hold Share Input Scans, as a ROLLUP does

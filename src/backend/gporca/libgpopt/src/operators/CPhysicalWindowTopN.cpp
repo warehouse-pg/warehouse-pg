@@ -326,34 +326,6 @@ CPhysicalWindowTopN::EpetOrder(CExpressionHandle &,	 // exprhdl
 
 //---------------------------------------------------------------------------
 //	@function:
-//		CPhysicalWindowTopN::EpetDistribution
-//
-//	@doc:
-//		Return the enforcing type for distribution property based on this
-//		operator.  The node only pays off when a Motion follows it: if the
-//		input already has the distribution the parent asks for, the parent
-//		could have consumed the input directly, so prohibit this plan (the
-//		same device CPhysicalLimit uses for its local stage).
-//
-//---------------------------------------------------------------------------
-CEnfdProp::EPropEnforcingType
-CPhysicalWindowTopN::EpetDistribution(CExpressionHandle &exprhdl,
-									  const CEnfdDistribution *ped) const
-{
-	GPOS_ASSERT(nullptr != ped);
-
-	CDistributionSpec *pds = CDrvdPropPlan::Pdpplan(exprhdl.Pdp())->Pds();
-
-	if (ped->FCompatible(pds))
-	{
-		return CEnfdProp::EpetProhibited;
-	}
-
-	return CEnfdProp::EpetRequired;
-}
-
-//---------------------------------------------------------------------------
-//	@function:
 //		CPhysicalWindowTopN::EpetRewindability
 //
 //	@doc:
