@@ -3661,10 +3661,14 @@ create_prefilter_topn_path(PlannerInfo *root,
  * result; the parent query still applies that qual, so the final WindowAgg
  * is left completely unchanged.
  *
- * Returns NULL when the pre-filter cannot help: the input is already on a
- * single segment, or it is already distributed by the PARTITION BY columns,
- * so no Motion is needed for the final WindowAgg and the pre-filter would
- * only add work.
+ * When no Motion is needed, because the input is already on a single
+ * segment or already distributed by the PARTITION BY columns, the Sort form
+ * would only repeat the final stage and is not built.  WindowTopN still
+ * applies: the final WindowAgg then sorts only the kept rows instead of
+ * the whole input, which is where most of the time of such a plan goes.
+ * The caller compares the costs of the two variants either way.
+ *
+ * Returns NULL when no first stage is built.
  *
  * 'prefilters' are the WindowPrefilter entries that apply to this window
  * clause; 'prefilter_wfuncs' and 'prefilter_quals' are their functions and
@@ -3700,12 +3704,23 @@ cdb_create_window_prefilter_path(PlannerInfo *root,
 
 	/* Mirror the decision cdb_prepare_path_for_sorted_agg() will make. */
 	if (CdbPathLocus_IsBottleneck(subpath->locus))
-		return NULL;
+	{
+		locus = subpath->locus;
+		need_redistribute = false;
+	}
+	else
+	{
+		group_tles = get_common_group_tles(subpath->pathtarget,
+										   wc->partitionClause, NIL);
+		locus = choose_grouping_locus(root, subpath, group_tles,
+									  &need_redistribute);
+	}
 
-	group_tles = get_common_group_tles(subpath->pathtarget, wc->partitionClause, NIL);
-	locus = choose_grouping_locus(root, subpath, group_tles, &need_redistribute);
 	if (!need_redistribute)
-		return NULL;
+	{
+		*keep_sorted_p = false;
+		return create_prefilter_topn_path(root, rel, subpath, wc, prefilters);
+	}
 
 	sortpath = create_prefilter_sort_path(root, rel, subpath, is_sorted,
 										  window_pathkeys, wc,
