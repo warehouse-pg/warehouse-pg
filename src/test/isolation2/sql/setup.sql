@@ -500,7 +500,8 @@ END LOOP; /* in func */
 END; $$ /* in func */
     LANGUAGE PLPGSQL;
 
--- Check if autovacuum is enabled/disabled by inspecting the av launcher.
+-- Check if autovacuum is enabled/disabled by inspecting the av launcher, and
+-- when disabling, the av workers too.
 CREATE or REPLACE FUNCTION check_autovacuum (enabled boolean) RETURNS bool AS
 $$
 declare
@@ -516,13 +517,15 @@ begin
 	end if; /* in func */
 	loop
 		if (select count(*) = expected_count from gp_stat_activity
-			where backend_type = 'autovacuum launcher') then
+			where backend_type = 'autovacuum launcher'
+			   or (not enabled and backend_type = 'autovacuum worker')) then
 			return true; /* in func */
 		end if; /* in func */
 		if retries <= 0 then
 			return false; /* in func */
 		end if; /* in func */
 		perform pg_sleep(0.1); /* in func */
+		perform pg_stat_clear_snapshot(); /* in func */
 		retries := retries - 1; /* in func */
 	end loop; /* in func */
 end; /* in func */
