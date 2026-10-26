@@ -4843,7 +4843,9 @@ struct config_string ConfigureNamesString_gp[] =
 		{"gp_pause_on_restore_point_replay", PGC_SUSET, WAL_RECOVERY_TARGET,
 			gettext_noop("Specifies the restore point to pause replay on."),
 			gettext_noop("Unlike recovery_target_name, this can be used to continuously set/reset "
-						"how much a standby should replay up to."),
+						"how much a standby should replay up to. While it is set, archive recovery "
+						"waits for missing WAL instead of ending; clearing it while the server waits "
+						"ends recovery at the next failed retry."),
 			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
 		},
 		&gp_pause_on_restore_point_replay,
