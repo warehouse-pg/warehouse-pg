@@ -26,6 +26,8 @@ begin
 			return false;
 		end if;
 		perform pg_sleep(0.1);
+		/* the coordinator's gp_stat_activity rows are cached per transaction */
+		perform pg_stat_clear_snapshot();
 		retries := retries - 1;
 	end loop;
 end;
