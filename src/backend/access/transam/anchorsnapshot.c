@@ -69,6 +69,7 @@
 #include "catalog/catalog.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_class.h"
+#include "catalog/pg_inherits.h"
 #include "cdb/cdbdtxcontextinfo.h"
 #include "cdb/cdbtm.h"
 #include "cdb/cdbvars.h"
@@ -79,15 +80,19 @@
 #include "port/pg_crc32c.h"
 #include "storage/bufmgr.h"
 #include "storage/fd.h"
+#include "storage/lmgr.h"
 #include "storage/lwlock.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "storage/shmem.h"
+#include "storage/sinval.h"
 #include "storage/spin.h"
+#include "utils/builtins.h"
 #include "utils/faultinjector.h"
 #include "utils/fmgroids.h"
 #include "utils/guc.h"
 #include "utils/hsearch.h"
+#include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/sharedsnapshot.h"
@@ -2446,19 +2451,47 @@ AnchorSnapshotInstall(Snapshot snapshot)
  * to be cancelled anyway.
  *
  * Exempt: catalog relations (read at the replay position by design),
- * relations without storage (nothing to mismatch), statements with no
- * active snapshot or an unanchored one.  A relation the anchor's snapshot
- * does not see at all did not exist at the restore point and is refused
- * too, an index among them (so a statement planned with an index created
- * after the anchor fails instead of missing rows the index was built
- * without).
+ * relations without storage (no file to mismatch; a partitioned table is
+ * checked for existence at executor start, with its children), statements
+ * with no active snapshot or an unanchored one.  A relation the anchor's
+ * snapshot does not see at all did not exist at the restore point and is
+ * refused too, an index among them (so a statement planned with an index
+ * created after the anchor fails instead of missing rows the index was
+ * built without).
+ *
+ * A parent the query expands into its children is checked at executor start
+ * (AnchorSnapshotCheckPlanParents), not here.  The planners expand a parent
+ * through the current pg_inherits rows and partition bounds, and every
+ * child the expansion reaches passes the file check when its own file is
+ * unchanged, so a partition attached, detached, exchanged or dropped after
+ * the anchor (or a bound changed) would make the parent read rows it did
+ * not have at the anchor, or miss rows it had, without an error.  The check
+ * reads the parent's pg_inherits rows, and each child's bound, with the
+ * anchor's snapshot and requires the current ones to be the same; the read
+ * is sound for the same reason as the pg_class read.  The parents are the
+ * relations the query names without ONLY, taken before planning (and from
+ * the SQL functions the planner inlines), and their sub-partitioned and
+ * inheritance children in turn; not every relation the plan depends on,
+ * which includes relations a regclass constant names and partitions the
+ * planner expanded.  Checking at executor start rather than at an open
+ * covers a plan built before the snapshot carried this anchor (a cached
+ * plan, built unanchored), a sub-partition whose descriptor the planner
+ * reads after opening it, a plan that prunes every partition, and parents
+ * without storage; and it leaves alone the opens that do not expand a
+ * parent (a partition read by name, or with ONLY, opens its parent for its
+ * partition constraint).
  *
  * Cost: a branch per relation_open in every session; in an anchored
  * session a hash lookup and a syscache lookup per open, and one pg_class
  * index probe per (relation, anchor) the first time, cached for as long
  * as the backend lives (the facts are immutable: the anchor's version of
  * the row never changes, a walked chain never changes).  The cache is
- * flushed when it grows past anchorRelCacheLimit entries.
+ * flushed when it grows past anchorRelCacheLimit entries.  At executor
+ * start, per relation the query names without ONLY, a lock and a
+ * syscache lookup; per parent, one pg_inherits index scan and a pg_class
+ * probe per child the first time under an anchor, then a reread of the
+ * current children only after this backend has accepted an invalidation
+ * message.
  * ------------------------------------------------------------------
  */
 
@@ -2474,6 +2507,7 @@ typedef struct AnchorRelVersion
 	bool		exists;
 	Oid			relfilenode;
 	ItemPointerData tid;		/* that row version */
+	bool		hassubclass;	/* relhassubclass in that version */
 } AnchorRelVersion;
 
 typedef struct AnchorRelEntry
@@ -2517,6 +2551,7 @@ anchoredRelationVersion(Oid relid, Snapshot snap, AnchorRelVersion *v)
 		v->exists = true;
 		v->relfilenode = ((Form_pg_class) GETSTRUCT(tup))->relfilenode;
 		v->tid = tup->t_self;
+		v->hassubclass = ((Form_pg_class) GETSTRUCT(tup))->relhassubclass;
 	}
 	systable_endscan(scan);
 	table_close(pgclass, AccessShareLock);
@@ -2667,6 +2702,306 @@ anchorRelationVerdict(Oid relid, Snapshot snap, uint32 ordinal)
 	return ANCHOR_REL_OK;
 }
 
+/*
+ * Whether the anchor's version of relid's pg_class row had children.  The
+ * relation's verdict entry records it: an open under this anchor usually
+ * made one already, else the verdict is taken now (its outcome is the
+ * open's to report).
+ */
+static bool
+anchorRelationHadSubclass(Oid relid, Snapshot snap, uint32 ordinal)
+{
+	AnchorRelKey key;
+	AnchorRelEntry *e = NULL;
+
+	key.relid = relid;
+	key.ordinal = ordinal;
+	if (anchorRelCache != NULL)
+		e = (AnchorRelEntry *) hash_search(anchorRelCache, &key, HASH_FIND, NULL);
+	if (e == NULL)
+	{
+		(void) anchorRelationVerdict(relid, snap, ordinal);
+		e = (AnchorRelEntry *) hash_search(anchorRelCache, &key, HASH_FIND, NULL);
+	}
+	return e != NULL && e->anchored.exists && e->anchored.hassubclass;
+}
+
+/*
+ * One inheritance child of a parent: its oid and its partition bound
+ * (relpartbound's text; NULL for a traditional inheritance child).
+ */
+typedef struct AnchorChild
+{
+	Oid			relid;
+	char	   *bound;
+} AnchorChild;
+
+/* The children a parent has under one anchor, sorted by oid. */
+typedef struct AnchorInhEntry
+{
+	AnchorRelKey key;
+	int			nchildren;
+	AnchorChild *children;		/* in anchorInhContext */
+	bool		verified;		/* the current children matched ... */
+	uint64		verifiedAt;		/* ... at this SharedInvalidMessageCounter */
+} AnchorInhEntry;
+
+static HTAB *anchorInhCache = NULL;
+static MemoryContext anchorInhContext = NULL;
+
+static int
+anchorChildCmp(const void *a, const void *b)
+{
+	Oid			x = ((const AnchorChild *) a)->relid;
+	Oid			y = ((const AnchorChild *) b)->relid;
+
+	return (x > y) - (x < y);
+}
+
+/*
+ * The children of parent as the anchor's snapshot sees them: its
+ * pg_inherits rows through the parent index, and each child's pg_class row
+ * for its bound.  Copied into cxt once the read is complete, so an ERROR
+ * during it leaves nothing there; *n is the count.
+ */
+static AnchorChild *
+anchoredChildren(Oid parent, Snapshot snap, MemoryContext cxt, int *n)
+{
+	Relation	inherits;
+	Relation	pgclass;
+	ScanKeyData key;
+	SysScanDesc scan;
+	HeapTuple	tup;
+	AnchorChild *children = NULL;
+	AnchorChild *result;
+	int			nalloc = 0;
+	int			i;
+
+	*n = 0;
+	inherits = table_open(InheritsRelationId, AccessShareLock);
+	ScanKeyInit(&key, Anum_pg_inherits_inhparent, BTEqualStrategyNumber,
+				F_OIDEQ, ObjectIdGetDatum(parent));
+	scan = systable_beginscan(inherits, InheritsParentIndexId, true, snap,
+							  1, &key);
+	while (HeapTupleIsValid(tup = systable_getnext(scan)))
+	{
+		if (*n == nalloc)
+		{
+			nalloc = nalloc == 0 ? 8 : nalloc * 2;
+			children = children == NULL ?
+				palloc(nalloc * sizeof(AnchorChild)) :
+				repalloc(children, nalloc * sizeof(AnchorChild));
+		}
+		children[*n].relid = ((Form_pg_inherits) GETSTRUCT(tup))->inhrelid;
+		children[*n].bound = NULL;
+		(*n)++;
+	}
+	systable_endscan(scan);
+	table_close(inherits, AccessShareLock);
+
+	pgclass = table_open(RelationRelationId, AccessShareLock);
+	for (i = 0; i < *n; i++)
+	{
+		bool		isnull;
+		Datum		d;
+
+		ScanKeyInit(&key, Anum_pg_class_oid, BTEqualStrategyNumber, F_OIDEQ,
+					ObjectIdGetDatum(children[i].relid));
+		scan = systable_beginscan(pgclass, ClassOidIndexId, true, snap, 1, &key);
+		tup = systable_getnext(scan);
+		if (HeapTupleIsValid(tup))
+		{
+			d = heap_getattr(tup, Anum_pg_class_relpartbound,
+							 RelationGetDescr(pgclass), &isnull);
+			if (!isnull)
+				children[i].bound = TextDatumGetCString(d);
+		}
+		systable_endscan(scan);
+	}
+	table_close(pgclass, AccessShareLock);
+
+	if (*n == 0)
+		return NULL;
+	if (*n > 1)
+		qsort(children, *n, sizeof(AnchorChild), anchorChildCmp);
+	result = MemoryContextAlloc(cxt, *n * sizeof(AnchorChild));
+	for (i = 0; i < *n; i++)
+	{
+		result[i].relid = children[i].relid;
+		result[i].bound = children[i].bound == NULL ? NULL :
+			MemoryContextStrdup(cxt, children[i].bound);
+		if (children[i].bound != NULL)
+			pfree(children[i].bound);
+	}
+	pfree(children);
+	return result;
+}
+
+/*
+ * The children of parent in the current catalog (the rows the planners
+ * expand it from), sorted by oid, palloc'd in the current context; free
+ * with freeChildren.
+ */
+static AnchorChild *
+currentChildren(Oid parent, int *n)
+{
+	List	   *oids = find_inheritance_children(parent, NoLock);
+	AnchorChild *children;
+	ListCell   *lc;
+	int			i = 0;
+
+	*n = list_length(oids);
+	children = palloc0(Max(*n, 1) * sizeof(AnchorChild));
+	foreach(lc, oids)
+	{
+		Oid			child = lfirst_oid(lc);
+		HeapTuple	tup = SearchSysCache1(RELOID, ObjectIdGetDatum(child));
+
+		children[i].relid = child;
+		if (HeapTupleIsValid(tup))
+		{
+			bool		isnull;
+			Datum		d = SysCacheGetAttr(RELOID, tup, Anum_pg_class_relpartbound, &isnull);
+
+			if (!isnull)
+				children[i].bound = TextDatumGetCString(d);
+			ReleaseSysCache(tup);
+		}
+		i++;
+	}
+	list_free(oids);
+	if (*n > 1)
+		qsort(children, *n, sizeof(AnchorChild), anchorChildCmp);
+	return children;
+}
+
+static void
+freeChildren(AnchorChild *children, int n)
+{
+	int			i;
+
+	for (i = 0; i < n; i++)
+		if (children[i].bound != NULL)
+			pfree(children[i].bound);
+	pfree(children);
+}
+
+/* Seams for the unit tests; the backend uses the functions above. */
+static AnchorChild *(*anchoredChildrenFn) (Oid parent, Snapshot snap, MemoryContext cxt, int *n) = anchoredChildren;
+static AnchorChild *(*currentChildrenFn) (Oid parent, int *n) = currentChildren;
+static void (*freeChildrenFn) (AnchorChild *children, int n) = freeChildren;
+
+static void
+anchorInhCacheReset(void)
+{
+	HASHCTL		ctl;
+
+	if (anchorInhCache != NULL)
+		hash_destroy(anchorInhCache);
+	if (anchorInhContext == NULL)
+		anchorInhContext = AllocSetContextCreate(TopMemoryContext,
+												 "anchor inheritance children",
+												 ALLOCSET_SMALL_SIZES);
+	else
+		MemoryContextReset(anchorInhContext);
+	MemSet(&ctl, 0, sizeof(ctl));
+	ctl.keysize = sizeof(AnchorRelKey);
+	ctl.entrysize = sizeof(AnchorInhEntry);
+	ctl.hcxt = TopMemoryContext;
+	anchorInhCache = hash_create("anchor inheritance children", 64, &ctl,
+								 HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+}
+
+static bool
+anchorChildrenEqual(const AnchorChild *a, int na, const AnchorChild *b, int nb)
+{
+	int			i;
+
+	if (na != nb)
+		return false;
+	for (i = 0; i < na; i++)
+	{
+		if (a[i].relid != b[i].relid)
+			return false;
+		if ((a[i].bound == NULL) != (b[i].bound == NULL))
+			return false;
+		if (a[i].bound != NULL && strcmp(a[i].bound, b[i].bound) != 0)
+			return false;
+	}
+	return true;
+}
+
+/*
+ * Whether parent has, in the current catalog, the children (and the
+ * partition bounds) it had under the anchor of registration ordinal
+ * 'ordinal' installed in snap.  The anchor's side is cached per (parent,
+ * anchor).  The current side moves with replay, which sends invalidation
+ * messages for every catalog change it applies: a match stays valid until
+ * this backend has accepted another one.
+ */
+static bool
+anchorInheritanceUnchanged(Oid parent, Snapshot snap, uint32 ordinal)
+{
+	AnchorRelKey key;
+	AnchorInhEntry *e;
+	bool		found;
+	AnchorChild *cur;
+	int			ncur;
+	bool		same;
+
+	if (anchorInhCache == NULL ||
+		hash_get_num_entries(anchorInhCache) >= anchorRelCacheLimit)
+		anchorInhCacheReset();
+
+	key.relid = parent;
+	key.ordinal = ordinal;
+	e = (AnchorInhEntry *) hash_search(anchorInhCache, &key, HASH_FIND, NULL);
+	if (e == NULL)
+	{
+		AnchorChild *children;
+		int			n;
+
+		/* read first, enter afterwards: an ERROR in the read enters nothing */
+		children = anchoredChildrenFn(parent, snap, anchorInhContext, &n);
+		e = (AnchorInhEntry *) hash_search(anchorInhCache, &key, HASH_ENTER, &found);
+		e->nchildren = n;
+		e->children = children;
+		e->verified = false;
+	}
+	if (e->verified && e->verifiedAt == SharedInvalidMessageCounter)
+		return true;
+
+	cur = currentChildrenFn(parent, &ncur);
+	same = anchorChildrenEqual(e->children, e->nchildren, cur, ncur);
+	freeChildrenFn(cur, ncur);
+	e->verified = same;
+	e->verifiedAt = SharedInvalidMessageCounter;
+	return same;
+}
+
+/*
+ * The children parent had under the anchor of registration ordinal
+ * 'ordinal', from the entry anchorInheritanceUnchanged just made; valid
+ * until its next call.
+ */
+static AnchorChild *
+anchorInheritanceChildren(Oid parent, uint32 ordinal, int *n)
+{
+	AnchorRelKey key;
+	AnchorInhEntry *e;
+
+	*n = 0;
+	if (anchorInhCache == NULL)
+		return NULL;
+	key.relid = parent;
+	key.ordinal = ordinal;
+	e = (AnchorInhEntry *) hash_search(anchorInhCache, &key, HASH_FIND, NULL);
+	if (e == NULL)
+		return NULL;
+	*n = e->nchildren;
+	return e->children;
+}
+
 /* The anchor's name for a message, when this backend knows it. */
 static const char *
 anchorNameForMessage(uint32 ordinal)
@@ -2703,7 +3038,7 @@ AnchorSnapshotCheckRelation(Relation rel)
 	switch (anchorRelationVerdict(relid, snap, ordinal))
 	{
 		case ANCHOR_REL_OK:
-			return;
+			break;
 		case ANCHOR_REL_ABSENT:
 			ereport(ERROR,
 					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
@@ -2723,6 +3058,122 @@ AnchorSnapshotCheckRelation(Relation rel)
 					 errhint("Retry once a newer anchor has been published; roll back first inside a transaction block.")));
 			break;
 	}
+}
+
+static void
+anchorReportAbsent(uint32 ordinal, Oid relid)
+{
+	char	   *relname = get_rel_name(relid);
+
+	ereport(ERROR,
+			(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+			 errmsg("anchor snapshot \"%s\" cannot read relation \"%s\": it did not exist at the anchor",
+					anchorNameForMessage(ordinal), relname ? relname : "?"),
+			 errdetail("The relation was created by a transaction that committed after the restore point."),
+			 errhint("Retry once a newer anchor has been published; roll back first inside a transaction block.")));
+}
+
+/*
+ * Called by InitPlan, on the dispatcher and on every executor, with the
+ * relations the query names without ONLY (PlannedStmt.inhRelationOids,
+ * taken from the query before planning, so a plan that prunes every
+ * partition still names its parent) and the snapshot it runs with.  Fails
+ * (55000) when the snapshot carries an anchor and a parent among them, or
+ * a partitioned or inheritance child of one, does not have the children
+ * and partition bounds it had at the anchor, or is a partitioned table the
+ * anchor did not see; see the section comment of the relation check.
+ * Executors repeat the check against their own catalog: during a step each
+ * node's catalog is at its own replay position, so a segment can have
+ * replayed a partition change the coordinator has not, and run-time
+ * partition pruning on the segment reads the segment's bounds.
+ *
+ * Each parent is locked (AccessShareLock, as the executor locks it) before
+ * it is checked.  An executor holds no lock until ExecInitNode, and a
+ * DETACH replayed between an unlocked check and that lock would build the
+ * pruning from the new descriptor; with the lock held the replay waits for
+ * this statement (a recovery conflict) or was applied before the lock, and
+ * taking the lock accepts its invalidations, so the check sees it.  An
+ * ATTACH takes a lock the standby does not replay, but a partition
+ * attached after planning is not in the plan and the executor ignores it.
+ */
+void
+AnchorSnapshotCheckPlanParents(List *relids, Snapshot snap)
+{
+	uint32		ordinal;
+	List	   *work;
+	ListCell   *lc;
+
+	if (snap == NULL || relids == NIL)
+		return;
+	ordinal = AnchorSnapshotOrdinal(snap);
+	if (ordinal == 0)
+		return;
+	work = list_copy(relids);
+	/* children are appended to the list as their parents pass */
+	for (lc = list_head(work); lc != NULL; lc = lnext(lc))
+	{
+		Oid			relid = lfirst_oid(lc);
+		HeapTuple	tup;
+		char		relkind;
+		bool		hassubclass;
+		AnchorChild *children;
+		int			nchildren;
+		int			i;
+
+		if (IsCatalogRelationOid(relid))
+			continue;
+		LockRelationOid(relid, AccessShareLock);
+		tup = SearchSysCache1(RELOID, ObjectIdGetDatum(relid));
+		if (!HeapTupleIsValid(tup))
+			continue;			/* dropped since: the open reports it */
+		relkind = ((Form_pg_class) GETSTRUCT(tup))->relkind;
+		hassubclass = ((Form_pg_class) GETSTRUCT(tup))->relhassubclass;
+		ReleaseSysCache(tup);
+
+		/*
+		 * A partition named here is checked like any table: it can have
+		 * been an inheritance parent at the anchor (NO INHERIT, then ATTACH
+		 * PARTITION), and the planners would read it alone.
+		 */
+		if (relkind == RELKIND_PARTITIONED_TABLE)
+		{
+			/* no file for the open to check: existence is checked here */
+			if (anchorRelationVerdict(relid, snap, ordinal) == ANCHOR_REL_ABSENT)
+				anchorReportAbsent(ordinal, relid);
+		}
+		else if (!hassubclass &&
+				 !anchorRelationHadSubclass(relid, snap, ordinal))
+			continue;			/* no children now or at the anchor */
+
+		if (!anchorInheritanceUnchanged(relid, snap, ordinal))
+		{
+			char	   *relname = get_rel_name(relid);
+
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("anchor snapshot \"%s\" cannot read relation \"%s\": its partitions changed after the anchor",
+							anchorNameForMessage(ordinal),
+							relname ? relname : "?"),
+					 errdetail("A partition or inheritance child was attached, detached, exchanged or dropped, or a partition bound changed, by a transaction that committed after the restore point."),
+					 errhint("Retry once a newer anchor has been published; roll back first inside a transaction block.")));
+		}
+
+		/*
+		 * The children matched the anchor's.  A sub-partitioned child, or an
+		 * inheritance child that is a parent itself, is checked in turn.
+		 */
+		children = anchorInheritanceChildren(relid, ordinal, &nchildren);
+		for (i = 0; i < nchildren; i++)
+		{
+			Oid			child = children[i].relid;
+
+			if (children[i].bound != NULL &&
+				get_rel_relkind(child) != RELKIND_PARTITIONED_TABLE)
+				continue;		/* a leaf partition, at the anchor too: no children */
+			work = list_append_unique_oid(work, child);
+		}
+	}
+	list_free(work);
 }
 
 /*

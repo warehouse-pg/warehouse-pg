@@ -357,6 +357,7 @@ _outPlannedStmt(StringInfo str, const PlannedStmt *node)
 	WRITE_BITMAPSET_FIELD(rewindPlanIDs);
 	WRITE_NODE_FIELD(rowMarks);
 	WRITE_NODE_FIELD(relationOids);
+	WRITE_NODE_FIELD(inhRelationOids);
 	/*
 	 * Don't serialize invalItems when dispatching. The TIDs of the invalidated items wouldn't
 	 * make sense in segments.

@@ -39,6 +39,7 @@
  */
 #include "postgres.h"
 
+#include "access/anchorsnapshot.h"
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/sysattr.h"
@@ -1676,6 +1677,17 @@ InitPlan(QueryDesc *queryDesc, int eflags)
 	{
 		ExecCheckRTPerms(rangeTable, true);
 	}
+
+	/*
+	 * An anchored read of a parent must find the children the anchor saw;
+	 * the plan was expanded through the current catalog, possibly before
+	 * the snapshot carried this anchor.  Executors check too: each node's
+	 * catalog is at its own replay position, and run-time partition pruning
+	 * reads the executor's.  EXPLAIN without ANALYZE reads nothing.
+	 */
+	if (!(eflags & EXEC_FLAG_EXPLAIN_ONLY))
+		AnchorSnapshotCheckPlanParents(plannedstmt->inhRelationOids,
+									   estate->es_snapshot);
 
 	/*
 	 * initialize the node's execution state

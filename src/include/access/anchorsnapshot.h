@@ -81,7 +81,14 @@
  *   record that would remove any version on that chain invalidates the
  *   anchor first.  Relations of other tables, other databases and
  *   sessions that merely share the anchor's xmin are untouched; a relation
- *   or index created after the anchor is refused.
+ *   or index created after the anchor is refused.  At executor start a
+ *   query that expands a parent (names without ONLY a partitioned table,
+ *   or a table with inheritance children now or at the anchor) is refused
+ *   as well unless the parent's pg_inherits rows and its partitions'
+ *   bounds, read with the anchor's snapshot, are the current ones, down
+ *   through its sub-partitions (AnchorSnapshotCheckPlanParents): the
+ *   planners expand it through the current catalog.  A partitioned table
+ *   created after the anchor is refused there too.
  * - Invalidation is per node.  A cleanup replayed on a segment leaves the
  *   coordinator's anchor registered; the next statement is refused by that
  *   segment with the segment suffix.
@@ -256,6 +263,7 @@ extern void AtEOXact_AnchorSnapshot(void);
  * (relation, anchor) the first time.
  */
 extern void AnchorSnapshotCheckRelation(Relation rel);
+extern void AnchorSnapshotCheckPlanParents(List *relids, Snapshot snap);
 
 /*
  * Horizon for pg_subtrans truncation on a standby (xlog.c): the oldest

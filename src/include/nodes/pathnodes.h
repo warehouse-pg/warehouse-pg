@@ -222,6 +222,8 @@ typedef struct PlannerGlobal
 	int			numSlices;
 	struct PlanSlice *slices;
 
+	/* relations inlined SQL functions name without ONLY, in recovery */
+	List	   *inhRelationOids;
 } PlannerGlobal;
 
 /*----------

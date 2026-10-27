@@ -51,6 +51,8 @@ extern RowMarkType select_rowmark_type(RangeTblEntry *rte,
 
 extern bool limit_needed(Query *parse);
 
+extern bool collect_inh_relations_walker(Node *node, List **relids);
+
 extern void mark_partial_aggref(Aggref *agg, AggSplit aggsplit);
 
 extern Path *get_cheapest_fractional_path(RelOptInfo *rel,
