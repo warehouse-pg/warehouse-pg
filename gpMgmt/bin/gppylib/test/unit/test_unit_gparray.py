@@ -235,6 +235,28 @@ class GpArrayTestCase(GpTestCase):
         with self.assertRaisesRegex(Exception, 'Cannot connect to GPDB version 5 from installed version 7'):
             GpArray.initFromCatalog(None)
 
+    @patch('gppylib.db.dbconn.querySingleton', return_value='PostgreSQL 12.12 (Greenplum Database 7.0.0 build dev) on x86_64-pc-linux-gnu')
+    @patch('gppylib.db.dbconn.query')
+    @patch('gppylib.db.dbconn.connect', autospec=True)
+    def test_initFromCatalog_refuses_a_read_replica(self, mock_connect, mock_query, mock_version):
+        # the topology setting names the replica's own nodes: the catalog
+        # rows that follow are the source cluster's
+        mock_query.return_value.fetchone.return_value = ('whpg_dr_topology',)
+        with self.assertRaisesRegex(Exception, "This is a whpg-dr read replica .*would act on the source cluster's hosts"):
+            GpArray.initFromCatalog(None)
+        self.assertEqual(mock_query.call_count, 1, "nothing is read from gp_segment_configuration")
+
+        # unset (or unknown to the server: NULL) is not a replica
+        for value in ('', None):
+            mock_query.reset_mock()
+            mock_query.return_value.fetchone.return_value = (value,)
+            mock_query.return_value.__iter__ = Mock(return_value=iter([]))
+            try:
+                GpArray.initFromCatalog(None)
+            except Exception as e:
+                self.assertNotIn('read replica', str(e))
+            self.assertGreater(mock_query.call_count, 1, "the catalog is read")
+
     def test_get_min_primary_port_when_cluster_balanced(self):
         self.gpArray = self._createBalancedGpArrayWith2Primary2Mirrors()
         expected = 6000
