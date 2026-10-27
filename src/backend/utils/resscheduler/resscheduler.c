@@ -548,6 +548,14 @@ ResEnsureUniquePortalId(Portal portal)
 {
 	ResPortalTag portalTag;
 	bool		inUse;
+	uint32		oldId;
+
+	/*
+	 * The unnamed portal always gets id 0 (see ResCreatePortalId()), so a new
+	 * id could not differ: nothing to check.
+	 */
+	if (portal->portalId == 0)
+		return;
 
 	/* An id this portal holds a lock under is its own; never move off it. */
 	if (IsResQueueLockedForPortal(portal))
@@ -561,8 +569,13 @@ ResEnsureUniquePortalId(Portal portal)
 	inUse = (ResIncrementFind(&portalTag) != NULL);
 	LWLockRelease(ResQueueLock);
 
-	if (inUse)
-		portal->portalId = ResCreatePortalId(portal->name);
+	if (!inUse)
+		return;
+
+	oldId = portal->portalId;
+	portal->portalId = ResCreatePortalId(portal->name);
+	elog(DEBUG1, "resource queue %u: portal \"%s\" re-picked portal id %u (was %u)",
+		 portal->queueId, portal->name, portal->portalId, oldId);
 }
 
 /*

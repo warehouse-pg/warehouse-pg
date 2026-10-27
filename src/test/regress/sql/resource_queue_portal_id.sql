@@ -11,6 +11,8 @@
 --
 CREATE RESOURCE QUEUE rq_portal_id WITH (ACTIVE_STATEMENTS = 10);
 CREATE ROLE rq_portal_id_role RESOURCE QUEUE rq_portal_id;
+CREATE RESOURCE QUEUE rq_portal_id_one WITH (ACTIVE_STATEMENTS = 1);
+CREATE ROLE rq_portal_id_one_role RESOURCE QUEUE rq_portal_id_one;
 
 CREATE FUNCTION rq_portal_id_open(p_cur OUT refcursor, p_limit int) AS $$
 BEGIN
@@ -42,6 +44,10 @@ BEGIN
 END
 $$;
 
+-- The unnamed portal always has id 0, which a cursor never gets, so there is
+-- no clash.
+SELECT p_cur IS NOT NULL AS opened FROM rq_portal_id_open(0) AS f(p_cur);
+
 -- Control: a volatile function is not evaluated at plan time.
 PREPARE rq_portal_id_volatile(int) AS
 	SELECT p_cur IS NOT NULL AS opened FROM rq_portal_id_open_volatile($1) AS f(p_cur);
@@ -49,13 +55,25 @@ EXECUTE rq_portal_id_volatile(0);
 
 RESET ROLE;
 
+-- With a single slot, the cursor opened while planning takes it, and the
+-- statement, with its new portal id, cannot get a slot of its own: it fails
+-- with a self-deadlock, and the error releases what it took.
+SET ROLE rq_portal_id_one_role;
+PREPARE rq_portal_id_one(int) AS
+	SELECT p_cur IS NOT NULL AS opened FROM rq_portal_id_open($1) AS f(p_cur);
+EXECUTE rq_portal_id_one(0);
+RESET ROLE;
+
 -- No statement may still hold a slot in the queue.
-SELECT rsqcountvalue, rsqholders FROM gp_toolkit.gp_resqueue_status
-	WHERE rsqname = 'rq_portal_id';
+SELECT rsqname, rsqcountvalue, rsqholders FROM gp_toolkit.gp_resqueue_status
+	WHERE rsqname IN ('rq_portal_id', 'rq_portal_id_one') ORDER BY rsqname;
 
 DEALLOCATE rq_portal_id_stable;
 DEALLOCATE rq_portal_id_volatile;
+DEALLOCATE rq_portal_id_one;
 DROP FUNCTION rq_portal_id_open(int);
 DROP FUNCTION rq_portal_id_open_volatile(int);
 DROP ROLE rq_portal_id_role;
 DROP RESOURCE QUEUE rq_portal_id;
+DROP ROLE rq_portal_id_one_role;
+DROP RESOURCE QUEUE rq_portal_id_one;
