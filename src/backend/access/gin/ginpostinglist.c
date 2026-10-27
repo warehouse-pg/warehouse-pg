@@ -337,7 +337,12 @@ ginPostingListDecodeAllSegments(GinPostingList *segment, int len, int *ndecoded_
 		}
 
 		/* copy the first item */
-		Assert(OffsetNumberIsValid(ItemPointerGetOffsetNumber(&segment->first)));
+		/*
+		 * Greenplum: append-only tables use the full 16 bit offset number
+		 * range (see itemptr_to_uint64()), so the upstream check against
+		 * MaxOffsetNumber does not hold; only reject an invalid offset.
+		 */
+		Assert(ItemPointerGetOffsetNumber(&segment->first) != InvalidOffsetNumber);
 		Assert(ndecoded == 0 || ginCompareItemPointers(&segment->first, &result[ndecoded - 1]) > 0);
 		result[ndecoded] = segment->first;
 		ndecoded++;
