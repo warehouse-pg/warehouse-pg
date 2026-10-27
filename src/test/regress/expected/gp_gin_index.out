@@ -707,3 +707,42 @@ DROP TABLE complex_array_table;
 RESET enable_seqscan;
 RESET enable_bitmapscan;
 RESET optimizer_enable_tablescan;
+--
+-- GIN over append-only tables: AO/AOCO TIDs use the full 16 bit offset
+-- number range, so once a segfile holds more than MaxOffsetNumber rows the
+-- posting lists carry offsets above it.  Both the pending-list flush
+-- (fastupdate) and the index build must handle them, and index scans must
+-- still return every row.
+--
+create table t_gin_ao(i int4[]) with (appendonly=true) distributed randomly;
+create index t_gin_ao_idx on t_gin_ao using gin (i)
+  with (fastupdate = on, gin_pending_list_limit = 4096);
+insert into t_gin_ao select array[1, 2, g] from generate_series(1, 400000) g;
+create table t_gin_aoco with (appendonly=true, orientation=column) as
+  select i a, jsonb_build_object('k', i % 1000) c
+  from generate_series(1, 200000) i distributed by (a);
+create index t_gin_aoco_idx on t_gin_aoco using gin (c);
+set optimizer_enable_tablescan = off;
+set enable_seqscan = off;
+select count(*) from t_gin_ao where i @> array[2];
+ count  
+--------
+ 400000
+(1 row)
+
+select count(*) from t_gin_ao where i @> array[1, 300000];
+ count 
+-------
+     1
+(1 row)
+
+select count(*) from t_gin_aoco where c @> '{"k": 7}';
+ count 
+-------
+   200
+(1 row)
+
+reset enable_seqscan;
+reset optimizer_enable_tablescan;
+drop table t_gin_ao;
+drop table t_gin_aoco;
