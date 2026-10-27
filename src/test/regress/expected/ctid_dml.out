@@ -85,6 +85,24 @@ HINT:  To uniquely identify a row within a distributed table, use the "gp_segmen
 DELETE FROM d a WHERE EXISTS (SELECT 1 FROM d b WHERE a.v = b.v AND a.ctid > b.ctid);
 ERROR:  DELETE uses system-defined column "a.ctid" without the necessary companion column "a.gp_segment_id" (cdbmutate.c:327)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
+-- A gp_segment_id that is only projected is not a companion: nothing reads the
+-- output of the EXISTS, and the column of the derived table is unused, so the
+-- planner drops both and rejects the ctid.
+DELETE FROM t a WHERE EXISTS (SELECT b.gp_segment_id FROM t b WHERE b.id = a.id AND b.ctid = '(0,1)');
+ERROR:  DELETE uses system-defined column "b.ctid" without the necessary companion column "b.gp_segment_id" (cdbmutate.c:327)
+HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
+DELETE FROM t a USING (SELECT b.id, b.gp_segment_id AS s FROM t b WHERE b.ctid = '(0,1)') x WHERE a.id = x.id;
+ERROR:  DELETE uses system-defined column "b.ctid" without the necessary companion column "b.gp_segment_id" (cdbmutate.c:327)
+HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
+-- The ctid of t b is read through the derived table while its gp_segment_id
+-- column is not, so rows of a would be paired with another segment's ctid.
+DELETE FROM t a USING (SELECT b.id, b.ctid AS c, b.gp_segment_id AS s FROM t b) x WHERE a.ctid = x.c AND a.gp_segment_id = 1;
+ERROR:  DELETE uses system-defined column "b.ctid" without the necessary companion column "b.gp_segment_id" (cdbmutate.c:327)
+HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
+-- ctid read only inside a subquery in FROM, not in any qual of the DML.
+DELETE FROM t a USING (SELECT b.id FROM t b WHERE b.ctid = '(0,1)') x WHERE a.id = x.id;
+ERROR:  DELETE uses system-defined column "b.ctid" without the necessary companion column "b.gp_segment_id" (cdbmutate.c:327)
+HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE ctid IN (SELECT ctid FROM t WHERE v = 1 LIMIT 2);
 ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:327)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
@@ -138,6 +156,16 @@ ROLLBACK;
 -- The shape REFRESH MATERIALIZED VIEW CONCURRENTLY uses.
 BEGIN;
 DELETE FROM t WHERE ctid = ANY (SELECT s.tid FROM s WHERE s.tid = t.ctid AND s.sid = t.gp_segment_id);
+SELECT count(*) AS left_rows, sum(CASE WHEN id = 7 THEN 1 ELSE 0 END) AS id_7 FROM t;
+ left_rows | id_7 
+-----------+------
+        19 |    0
+(1 row)
+
+ROLLBACK;
+-- Paired in a join qualifier of a subquery, one query level down.
+BEGIN;
+DELETE FROM t WHERE id IN (SELECT b.id FROM t b JOIN s ON b.ctid = s.tid AND b.gp_segment_id = s.sid);
 SELECT count(*) AS left_rows, sum(CASE WHEN id = 7 THEN 1 ELSE 0 END) AS id_7 FROM t;
  left_rows | id_7 
 -----------+------

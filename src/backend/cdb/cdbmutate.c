@@ -342,6 +342,20 @@ cdbmutate_warn_ctid_without_segid(struct PlannerInfo *root, struct RelOptInfo *r
  * subqueries up into the outer query before it checks; so it can return
  * true for a statement the planner accepts.  That only costs a planner
  * plan, never a wrong result.
+ *
+ * The two columns are counted differently on purpose, because the two
+ * directions have different costs.  A ctid reference counts wherever it is
+ * found: counting one too many only hands the statement to the planner.  A
+ * gp_segment_id reference counts only where it pairs the ctid with a
+ * segment, that is in a qualifier -- the quals of a FromExpr or JoinExpr and
+ * the test expression of a sublink; a gp_segment_id in a target list (the
+ * output of an EXISTS subquery, a column of a derived table that nobody
+ * reads) does not count.  The planner counts the columns its own query plan
+ * needs, after subqueries have been pulled up and unused outputs dropped, so
+ * counting one gp_segment_id too many would let GPORCA run a statement the
+ * planner rejects, and change one row per segment.  A statement whose
+ * pairing this function does not recognise is planned by the planner, which
+ * either runs it or raises the error.
  * ----------------------------------------------------------------------- *
  */
 typedef struct ctid_ref
@@ -356,7 +370,24 @@ typedef struct ctid_dml_context
 {
 	List	   *query_stack;	/* enclosing queries, innermost first */
 	List	   *refs;			/* list of ctid_ref */
+	bool		in_qual;		/* inside a qualifier? gp_segment_id counts
+								 * only there */
 } ctid_dml_context;
+
+static bool ctid_dml_walker(Node *node, ctid_dml_context *cxt);
+
+/* walk a qualifier, where a gp_segment_id reference counts */
+static bool
+ctid_dml_walk_qual(Node *qual, ctid_dml_context *cxt)
+{
+	bool		save_in_qual = cxt->in_qual;
+	bool		result;
+
+	cxt->in_qual = true;
+	result = ctid_dml_walker(qual, cxt);
+	cxt->in_qual = save_in_qual;
+	return result;
+}
 
 static void
 ctid_dml_note_ref(ctid_dml_context *cxt, Query *query, Index varno,
@@ -400,7 +431,7 @@ ctid_dml_walker(Node *node, ctid_dml_context *cxt)
 		Var		   *var = (Var *) node;
 
 		if ((var->varattno == SelfItemPointerAttributeNumber ||
-			 var->varattno == GpSegmentIdAttributeNumber) &&
+			 (var->varattno == GpSegmentIdAttributeNumber && cxt->in_qual)) &&
 			var->varlevelsup < list_length(cxt->query_stack))
 			ctid_dml_note_ref(cxt,
 							  (Query *) list_nth(cxt->query_stack, var->varlevelsup),
@@ -408,12 +439,40 @@ ctid_dml_walker(Node *node, ctid_dml_context *cxt)
 		return false;
 	}
 
+	/*
+	 * The quals of the jointree are the qualifiers of this query level; the
+	 * relations under them are not.  A sublink in a qual keeps the flag, so
+	 * its test expression counts too, while the subquery it contains starts
+	 * again at its own query level (see the Query case below).
+	 */
+	if (IsA(node, FromExpr))
+	{
+		FromExpr   *f = (FromExpr *) node;
+
+		if (ctid_dml_walker((Node *) f->fromlist, cxt))
+			return true;
+		return ctid_dml_walk_qual(f->quals, cxt);
+	}
+
+	if (IsA(node, JoinExpr))
+	{
+		JoinExpr   *j = (JoinExpr *) node;
+
+		if (ctid_dml_walker(j->larg, cxt) ||
+			ctid_dml_walker(j->rarg, cxt))
+			return true;
+		return ctid_dml_walk_qual(j->quals, cxt);
+	}
+
 	if (IsA(node, Query))
 	{
+		bool		save_in_qual = cxt->in_qual;
 		bool		result;
 
 		cxt->query_stack = lcons(node, cxt->query_stack);
+		cxt->in_qual = false;
 		result = query_tree_walker((Query *) node, ctid_dml_walker, cxt, 0);
+		cxt->in_qual = save_in_qual;
 		cxt->query_stack = list_delete_first(cxt->query_stack);
 		return result;
 	}
@@ -434,6 +493,7 @@ cdbmutate_dml_uses_ctid_without_segid(Query *query)
 
 	cxt.query_stack = list_make1(query);
 	cxt.refs = NIL;
+	cxt.in_qual = false;
 
 	/*
 	 * Walk everything except the target list and RETURNING list of the

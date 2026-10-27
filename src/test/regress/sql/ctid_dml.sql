@@ -52,6 +52,16 @@ DELETE FROM d WHERE ctid = (SELECT ctid FROM d WHERE v = 0 ORDER BY id LIMIT 1);
 DELETE FROM d WHERE ctid IN (SELECT ctid FROM (SELECT ctid, row_number() OVER (PARTITION BY v ORDER BY id) AS rn FROM d) x WHERE rn > 1);
 DELETE FROM d WHERE ctid NOT IN (SELECT min(ctid) FROM d GROUP BY v);
 DELETE FROM d a WHERE EXISTS (SELECT 1 FROM d b WHERE a.v = b.v AND a.ctid > b.ctid);
+-- A gp_segment_id that is only projected is not a companion: nothing reads the
+-- output of the EXISTS, and the column of the derived table is unused, so the
+-- planner drops both and rejects the ctid.
+DELETE FROM t a WHERE EXISTS (SELECT b.gp_segment_id FROM t b WHERE b.id = a.id AND b.ctid = '(0,1)');
+DELETE FROM t a USING (SELECT b.id, b.gp_segment_id AS s FROM t b WHERE b.ctid = '(0,1)') x WHERE a.id = x.id;
+-- The ctid of t b is read through the derived table while its gp_segment_id
+-- column is not, so rows of a would be paired with another segment's ctid.
+DELETE FROM t a USING (SELECT b.id, b.ctid AS c, b.gp_segment_id AS s FROM t b) x WHERE a.ctid = x.c AND a.gp_segment_id = 1;
+-- ctid read only inside a subquery in FROM, not in any qual of the DML.
+DELETE FROM t a USING (SELECT b.id FROM t b WHERE b.ctid = '(0,1)') x WHERE a.id = x.id;
 DELETE FROM t WHERE ctid IN (SELECT ctid FROM t WHERE v = 1 LIMIT 2);
 DELETE FROM t USING t t2 WHERE t.ctid = t2.ctid AND t2.id = 7;
 DELETE FROM t USING s WHERE t.ctid = s.tid;
@@ -73,6 +83,11 @@ ROLLBACK;
 -- The shape REFRESH MATERIALIZED VIEW CONCURRENTLY uses.
 BEGIN;
 DELETE FROM t WHERE ctid = ANY (SELECT s.tid FROM s WHERE s.tid = t.ctid AND s.sid = t.gp_segment_id);
+SELECT count(*) AS left_rows, sum(CASE WHEN id = 7 THEN 1 ELSE 0 END) AS id_7 FROM t;
+ROLLBACK;
+-- Paired in a join qualifier of a subquery, one query level down.
+BEGIN;
+DELETE FROM t WHERE id IN (SELECT b.id FROM t b JOIN s ON b.ctid = s.tid AND b.gp_segment_id = s.sid);
 SELECT count(*) AS left_rows, sum(CASE WHEN id = 7 THEN 1 ELSE 0 END) AS id_7 FROM t;
 ROLLBACK;
 
