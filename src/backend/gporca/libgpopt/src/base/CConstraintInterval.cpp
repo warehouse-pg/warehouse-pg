@@ -266,9 +266,9 @@ FArrayHasNullConst(CExpression *pexprArray, ULONG ulArity)
 //		CConstraintInterval::PcnstrIntervalFromScalarArrayCmp
 //
 //	@doc:
-//		Create an interval from "col IN (const array)" or "col NOT IN (const
-//		array)". Returns NULL if no interval is derived. Has the side effect
-//		of removing duplicates.
+//		Create an interval from "col IN (const array)" (= ANY) or "col NOT IN
+//		(const array)" (<> ALL). Returns NULL if no interval is derived. Has
+//		the side effect of removing duplicates.
 //
 //		Returns NULL, meaning "no information", also when the array has more
 //		than optimizer_array_interval_threshold items and no NULL constants.
@@ -317,9 +317,18 @@ CConstraintInterval::PcnstrIntervalFromScalarArrayCmp(CMemoryPool *mp,
 	CScalarArrayCmp *popScArrayCmp = CScalarArrayCmp::PopConvert(pexpr->Pop());
 	IMDType::ECmpType cmp_type = CUtils::ParseCmpType(popScArrayCmp->MdIdOp());
 
-	if (IMDType::EcmptEq != cmp_type && IMDType::EcmptNEq != cmp_type)
+	// The ranges built below are IN ranges for "= ANY" and NOT IN ranges for
+	// "<> ALL" only.  "<> ANY" over two or more distinct values holds for
+	// every non-NULL value, and "= ALL" over two or more distinct values
+	// never holds, so neither may be read as NOT IN / IN.  Return NULL and
+	// let CConstraint::PcnstrFromScalarArrayCmp build the disjunction /
+	// conjunction of per-element intervals instead.  Other comparisons (IS
+	// DISTINCT FROM, <, ...) are not handled here either.
+	if (!((IMDType::EcmptEq == cmp_type &&
+		   CScalarArrayCmp::EarrcmpAny == popScArrayCmp->Earrcmpt()) ||
+		  (IMDType::EcmptNEq == cmp_type &&
+		   CScalarArrayCmp::EarrcmpAll == popScArrayCmp->Earrcmpt())))
 	{
-		// does not handle IS DISTINCT FROM or other comparisons
 		return nullptr;
 	}
 
@@ -677,6 +686,20 @@ CConstraintInterval::PciIntervalFromColConstCmp(CMemoryPool *mp,
 												CScalarConst *popScConst,
 												BOOL infer_nulls_as)
 {
+	// A comparison with NULL is NULL for every row, so the interval holds
+	// every value and NULL when NULLs are inferred as true, and nothing
+	// otherwise.  The ranges built below would treat the NULL datum as an
+	// ordinary value.
+	if (IMDType::EcmptOther != cmp_type && popScConst->GetDatum()->IsNull())
+	{
+		if (infer_nulls_as)
+		{
+			return PciUnbounded(mp, colref, true /*fIncludesNull*/);
+		}
+		return GPOS_NEW(mp) CConstraintInterval(
+			mp, colref, GPOS_NEW(mp) CRangeArray(mp), false /*fIncludesNull*/);
+	}
+
 	CConstraintInterval *pcri = nullptr;
 	CRangeArray *pdrngprng = PciRangeFromColConstCmp(mp, cmp_type, popScConst);
 

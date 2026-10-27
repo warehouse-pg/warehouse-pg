@@ -1358,25 +1358,23 @@ explain (costs off) select * from coercepart where a = all ('{ab}');
  Optimizer: Pivotal Optimizer (GPORCA)
 (5 rows)
 
+-- WHPG: ORCA derives "= ALL" over two distinct values, or
+-- with a NULL element, as a contradiction, as the planner does.
 explain (costs off) select * from coercepart where a = all ('{ab,bc}');
-                      QUERY PLAN                       
--------------------------------------------------------
- Gather Motion 3:1  (slice1; segments: 3)
-   ->  Dynamic Seq Scan on coercepart
-         Number of partitions to scan: 2 (out of 3)
-         Filter: ((a)::text = ALL ('{ab,bc}'::text[]))
+              QUERY PLAN               
+---------------------------------------
+ Result
+   One-Time Filter: false
  Optimizer: Pivotal Optimizer (GPORCA)
-(5 rows)
+(3 rows)
 
 explain (costs off) select * from coercepart where a = all ('{ab,null}');
-                       QUERY PLAN                        
----------------------------------------------------------
- Gather Motion 1:1  (slice1; segments: 1)
-   ->  Dynamic Seq Scan on coercepart
-         Number of partitions to scan: 1 (out of 3)
-         Filter: ((a)::text = ALL ('{ab,NULL}'::text[]))
+              QUERY PLAN               
+---------------------------------------
+ Result
+   One-Time Filter: false
  Optimizer: Pivotal Optimizer (GPORCA)
-(5 rows)
+(3 rows)
 
 explain (costs off) select * from coercepart where a = all (null::text[]);
                      QUERY PLAN                     
