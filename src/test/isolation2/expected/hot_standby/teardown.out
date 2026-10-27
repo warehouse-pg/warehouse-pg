@@ -39,6 +39,12 @@
 
 -- end_ignore
 (exited with code 0)
+!\retcode gpconfig -r vacuum_defer_cleanup_age --skipvalidation;
+-- start_ignore
+20261027:13:17:18:180006 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-r vacuum_defer_cleanup_age --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
 !\retcode sed -i '/^hot_standby = off$/d; /^whpg_hot_standby_snapshot_mode = unanchored$/d' "$COORDINATOR_DATA_DIRECTORY/../../standby/postgresql.conf";
 -- start_ignore
 

@@ -1006,6 +1006,156 @@ test__relation_verdicts(void **state)
 }
 
 /*
+ * The membership check of a parent, with the catalog behind the seams: the
+ * anchor's children are fixed per test step, the current ones scripted.
+ */
+static AnchorChild fakeAnchoredKids[4];
+static int	fakeAnchoredKidCount;
+static int	fakeAnchoredKidCalls;
+static AnchorChild fakeCurrentKids[4];
+static int	fakeCurrentKidCount;
+
+static AnchorChild *
+fakeAnchoredChildren(Oid parent, Snapshot snap, MemoryContext cxt, int *n)
+{
+	AnchorChild *kids = MemoryContextAlloc(cxt, sizeof(fakeAnchoredKids));
+
+	fakeAnchoredKidCalls++;
+	memcpy(kids, fakeAnchoredKids, sizeof(fakeAnchoredKids));
+	*n = fakeAnchoredKidCount;
+	return kids;
+}
+
+static AnchorChild *
+fakeCurrentChildren(Oid parent, int *n)
+{
+	AnchorChild *kids = palloc(sizeof(fakeCurrentKids));
+
+	memcpy(kids, fakeCurrentKids, sizeof(fakeCurrentKids));
+	*n = fakeCurrentKidCount;
+	return kids;
+}
+
+/* the fakes' bounds are literals: free only the array */
+static void
+fakeFreeChildren(AnchorChild *children, int n)
+{
+	pfree(children);
+}
+
+static void
+setKids(AnchorChild *kids, int *count, int n, Oid first, const char *bound)
+{
+	int			i;
+
+	*count = n;
+	for (i = 0; i < n; i++)
+	{
+		kids[i].relid = first + i;
+		kids[i].bound = (char *) bound;
+	}
+}
+
+static void
+test__inheritance_verdicts(void **state)
+{
+	SnapshotData snapA;
+	SnapshotData snapB;
+
+	anchoredChildrenFn = fakeAnchoredChildren;
+	currentChildrenFn = fakeCurrentChildren;
+	freeChildrenFn = fakeFreeChildren;
+	if (anchorInhCache != NULL)
+	{
+		hash_destroy(anchorInhCache);
+		anchorInhCache = NULL;
+	}
+	MemSet(&snapA, 0, sizeof(snapA));
+	snapA.anchorOrdinal = 7;
+	MemSet(&snapB, 0, sizeof(snapB));
+	snapB.anchorOrdinal = 8;
+	fakeAnchoredKidCalls = 0;
+
+	/* two partitions at the anchor, the same two now */
+	setKids(fakeAnchoredKids, &fakeAnchoredKidCount, 2, 20000, "FOR VALUES FROM (1) TO (11)");
+	setKids(fakeCurrentKids, &fakeCurrentKidCount, 2, 20000, "FOR VALUES FROM (1) TO (11)");
+	assert_true(anchorInheritanceUnchanged(16384, &snapA, snapA.anchorOrdinal));
+	assert_true(anchorInheritanceUnchanged(16384, &snapA, snapA.anchorOrdinal));
+	assert_int_equal(fakeAnchoredKidCalls, 1);	/* cached per (parent, anchor) */
+
+	/*
+	 * A match holds until another invalidation is accepted: replay sends
+	 * one for every catalog change.  Every change below comes with one.
+	 */
+	fakeCurrentKidCount = 1;
+	assert_true(anchorInheritanceUnchanged(16384, &snapA, snapA.anchorOrdinal));
+
+	/* a partition detached or dropped */
+	SharedInvalidMessageCounter++;
+	assert_false(anchorInheritanceUnchanged(16384, &snapA, snapA.anchorOrdinal));
+
+	/* one attached */
+	SharedInvalidMessageCounter++;
+	setKids(fakeCurrentKids, &fakeCurrentKidCount, 3, 20000, "FOR VALUES FROM (1) TO (11)");
+	assert_false(anchorInheritanceUnchanged(16384, &snapA, snapA.anchorOrdinal));
+
+	/* one exchanged: as many children, another oid */
+	SharedInvalidMessageCounter++;
+	setKids(fakeCurrentKids, &fakeCurrentKidCount, 2, 20000, "FOR VALUES FROM (1) TO (11)");
+	fakeCurrentKids[1].relid = 30000;
+	assert_false(anchorInheritanceUnchanged(16384, &snapA, snapA.anchorOrdinal));
+
+	/* the same children, a bound changed (detached and attached again) */
+	SharedInvalidMessageCounter++;
+	setKids(fakeCurrentKids, &fakeCurrentKidCount, 2, 20000, "FOR VALUES FROM (1) TO (11)");
+	fakeCurrentKids[1].bound = "FOR VALUES FROM (1) TO (21)";
+	assert_false(anchorInheritanceUnchanged(16384, &snapA, snapA.anchorOrdinal));
+
+	/* a partition that became a traditional inheritance child, or back */
+	SharedInvalidMessageCounter++;
+	fakeCurrentKids[1].bound = NULL;
+	assert_false(anchorInheritanceUnchanged(16384, &snapA, snapA.anchorOrdinal));
+
+	/* back to the anchor's shape: unchanged again */
+	SharedInvalidMessageCounter++;
+	fakeCurrentKids[1].bound = "FOR VALUES FROM (1) TO (11)";
+	assert_true(anchorInheritanceUnchanged(16384, &snapA, snapA.anchorOrdinal));
+	assert_int_equal(fakeAnchoredKidCalls, 1);
+
+	/* traditional inheritance: no bounds on either side */
+	setKids(fakeAnchoredKids, &fakeAnchoredKidCount, 1, 21000, NULL);
+	setKids(fakeCurrentKids, &fakeCurrentKidCount, 1, 21000, NULL);
+	assert_true(anchorInheritanceUnchanged(16385, &snapA, snapA.anchorOrdinal));
+	/* the anchor's children, for the check to descend into */
+	{
+		AnchorChild *kids;
+		int			n;
+
+		kids = anchorInheritanceChildren(16385, snapA.anchorOrdinal, &n);
+		assert_int_equal(n, 1);
+		assert_int_equal(kids[0].relid, 21000);
+		kids = anchorInheritanceChildren(16386, snapA.anchorOrdinal, &n);
+		assert_int_equal(n, 0);
+		assert_true(kids == NULL);
+	}
+	/* every child gone (NO INHERIT) */
+	SharedInvalidMessageCounter++;
+	fakeCurrentKidCount = 0;
+	assert_false(anchorInheritanceUnchanged(16385, &snapA, snapA.anchorOrdinal));
+
+	/* another anchor is another cache entry, read afresh */
+	setKids(fakeAnchoredKids, &fakeAnchoredKidCount, 0, 0, NULL);
+	assert_true(anchorInheritanceUnchanged(16385, &snapB, snapB.anchorOrdinal));
+	assert_int_equal(fakeAnchoredKidCalls, 3);
+
+	hash_destroy(anchorInhCache);
+	anchorInhCache = NULL;
+	anchoredChildrenFn = anchoredChildren;
+	currentChildrenFn = currentChildren;
+	freeChildrenFn = freeChildren;
+}
+
+/*
  * A snapshot's anchorOrdinal counts only up to the highest ordinal this
  * backend has installed: a SnapshotData built by hand, its field never
  * zeroed, must not look anchored to the dispatch, export and relation-open
@@ -1089,6 +1239,7 @@ main(int argc, char *argv[])
 		unit_test(test__removal_count),
 		unit_test(test__hook_skips_an_empty_registry),
 		unit_test(test__relation_verdicts),
+		unit_test(test__inheritance_verdicts),
 		unit_test(test__ordinal_needs_an_install),
 	};
 

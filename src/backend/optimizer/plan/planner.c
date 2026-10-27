@@ -26,6 +26,7 @@
 #include "access/sysattr.h"
 #include "access/table.h"
 #include "access/xact.h"
+#include "access/xlog.h"
 #include "catalog/pg_constraint.h"
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_proc.h"
@@ -299,6 +300,30 @@ static split_rollup_data *make_new_rollups_for_hash_grouping_set(PlannerInfo *ro
 
 static void compute_jit_flags(PlannedStmt* pstmt);
 
+/*
+ * The relations a query names without ONLY: RTE_RELATION entries with inh
+ * set, in the query, its subqueries, CTEs and sublinks.
+ */
+bool
+collect_inh_relations_walker(Node *node, List **relids)
+{
+	if (node == NULL)
+		return false;
+	if (IsA(node, RangeTblEntry))
+	{
+		RangeTblEntry *rte = (RangeTblEntry *) node;
+
+		if (rte->rtekind == RTE_RELATION && rte->inh)
+			*relids = list_append_unique_oid(*relids, rte->relid);
+		return false;
+	}
+	if (IsA(node, Query))
+		return query_tree_walker((Query *) node, collect_inh_relations_walker,
+								 (void *) relids, QTW_EXAMINE_RTES_BEFORE);
+	return expression_tree_walker(node, collect_inh_relations_walker,
+								  (void *) relids);
+}
+
 /*****************************************************************************
  *
  *	   Query optimizer entry point
@@ -317,6 +342,18 @@ planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 {
 	PlannedStmt *result;
 	instr_time	starttime, endtime;
+	List	   *inhRelationOids = NIL;
+
+	/*
+	 * An anchored read on a hot standby checks the children of the
+	 * relations the query expands (AnchorSnapshotCheckPlanParents).  Take
+	 * them from the query before planning: the planners clear inh on a
+	 * relation without children, and a plan can prune every child.  The
+	 * queries of SQL functions the planner inlines are added as they are
+	 * inlined (inline_set_returning_functions).
+	 */
+	if (RecoveryInProgress())
+		(void) collect_inh_relations_walker((Node *) parse, &inhRelationOids);
 
 	if (planner_hook)
 	{
@@ -335,6 +372,8 @@ planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	else
 		result = standard_planner(parse, cursorOptions, boundParams);
 
+	result->inhRelationOids = list_concat_unique_oid(inhRelationOids,
+													 result->inhRelationOids);
 	return result;
 }
 
@@ -434,6 +473,7 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	glob->resultRelations = NIL;
 	glob->rootResultRelations = NIL;
 	glob->relationOids = NIL;
+	glob->inhRelationOids = NIL;
 	glob->invalItems = NIL;
 	glob->paramExecTypes = NIL;
 	glob->lastPHId = 0;
@@ -755,6 +795,7 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	result->rewindPlanIDs = glob->rewindPlanIDs;
 	result->rowMarks = glob->finalrowmarks;
 	result->relationOids = glob->relationOids;
+	result->inhRelationOids = glob->inhRelationOids;
 	result->invalItems = glob->invalItems;
 	result->paramExecTypes = glob->paramExecTypes;
 	/* utilityStmt should be null, but we might as well copy it */

@@ -27,12 +27,14 @@
  */
 #include "postgres.h"
 
+#include "access/xlog.h"
 #include "catalog/pg_type.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/placeholder.h"
+#include "optimizer/planner.h"
 #include "optimizer/prep.h"
 #include "optimizer/subselect.h"
 #include "optimizer/tlist.h"
@@ -803,6 +805,16 @@ inline_set_returning_functions(PlannerInfo *root)
 				 * does for the main query.
 				 */
 				funcquery = normalize_query(funcquery);
+
+				/*
+				 * planner() collected the relations the query names without
+				 * ONLY before planning, for an anchored read on a hot
+				 * standby (AnchorSnapshotCheckPlanParents); add the ones
+				 * the function's query names.
+				 */
+				if (RecoveryInProgress())
+					(void) collect_inh_relations_walker((Node *) funcquery,
+														&root->glob->inhRelationOids);
 
 				/* Successful expansion, convert the RTE to a subquery */
 				rte->rtekind = RTE_SUBQUERY;

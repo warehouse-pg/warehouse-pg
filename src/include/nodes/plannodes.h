@@ -156,6 +156,14 @@ typedef struct PlannedStmt
  	 * GPDB: whether a query is a SPI inner query for extension usage 
  	 */
 	int8		metricsQueryType;
+
+	/*
+	 * OIDs of the relations the query names without ONLY, collected while
+	 * planning on a server in recovery (NIL otherwise): an anchored read
+	 * checks them and their children at executor start
+	 * (AnchorSnapshotCheckPlanParents).
+	 */
+	List	   *inhRelationOids;
 } PlannedStmt;
 
 /*
