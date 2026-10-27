@@ -66,3 +66,19 @@ CREATE TABLE hll_bad_input (id int, h gp_hyperloglog_estimator) DISTRIBUTED BY (
 INSERT INTO hll_bad_input SELECT i, NULL FROM generate_series(1, 3) i;
 UPDATE hll_bad_input SET h = gp_hyperloglog_in(numerictypmodout(id)::cstring);
 DROP TABLE hll_bad_input;
+
+-- d) gp_hyperloglog_in() must also reject a well-formed-looking counter whose
+-- fixed header is out of range. The estimate path trusts b/binbits/format and
+-- walks POW2(b) one-byte registers out of ->data (indexing alpham[]/threshold[]
+-- with b), none of it bounds checked, so an out-of-range b -- or an in-range b
+-- over a header-only payload -- used to drive an out-of-bounds read: adjacent
+-- heap for a modest b, a coordinator crash once POW2(b) ran off the allocation.
+-- Each value below is a valid-base64, version 2, format 0, 72-byte (header-only)
+-- counter. b = 25 (above MAX_INDEX_BITS):
+SELECT gp_hyperloglog_get_estimate('GQYCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+-- b = 18 (in range) but no register payload past the header:
+SELECT gp_hyperloglog_get_estimate('EgYCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+-- binbits = 99 (above MAX_BINBITS):
+SELECT gp_hyperloglog_get_estimate('BWMCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+-- format = 42 (unknown):
+SELECT gp_hyperloglog_get_estimate('BQYCKgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
