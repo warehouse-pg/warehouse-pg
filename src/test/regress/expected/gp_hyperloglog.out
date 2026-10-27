@@ -120,3 +120,34 @@ UPDATE hll_bad_input SET h = gp_hyperloglog_in(numerictypmodout(id)::cstring);
 ERROR:  invalid input syntax for type gp_hyperloglog_estimator  (seg0 127.0.0.1:7002 pid=19615)
 DETAIL:  Input is not valid base64 data.
 DROP TABLE hll_bad_input;
+-- d) gp_hyperloglog_in() must also reject a well-formed-looking counter whose
+-- fixed header is out of range. The estimate path trusts b/binbits/format and
+-- walks POW2(b) one-byte registers out of ->data (indexing alpham[]/threshold[]
+-- with b), none of it bounds checked, so an out-of-range b -- or an in-range b
+-- over a header-only payload -- used to drive an out-of-bounds read: adjacent
+-- heap for a modest b, a coordinator crash once POW2(b) ran off the allocation.
+-- Each value below is a valid-base64, version 2, format 0, 72-byte (header-only)
+-- counter. b = 25 (above MAX_INDEX_BITS):
+SELECT gp_hyperloglog_get_estimate('GQYCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+ERROR:  invalid input syntax for type gp_hyperloglog_estimator
+LINE 1: SELECT gp_hyperloglog_get_estimate('GQYCAAAAAAAAAAAAAAAAAAAA...
+                                           ^
+DETAIL:  Number of index bits 25 is outside the valid range 4..18.
+-- b = 18 (in range) but no register payload past the header:
+SELECT gp_hyperloglog_get_estimate('EgYCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+ERROR:  invalid input syntax for type gp_hyperloglog_estimator
+LINE 1: SELECT gp_hyperloglog_get_estimate('EgYCAAAAAAAAAAAAAAAAAAAA...
+                                           ^
+DETAIL:  Decoded length 72 is too short for a 262144-register counter.
+-- binbits = 99 (above MAX_BINBITS):
+SELECT gp_hyperloglog_get_estimate('BWMCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+ERROR:  invalid input syntax for type gp_hyperloglog_estimator
+LINE 1: SELECT gp_hyperloglog_get_estimate('BWMCAAAAAAAAAAAAAAAAAAAA...
+                                           ^
+DETAIL:  Number of bin bits 99 is outside the valid range 4..8.
+-- format = 42 (unknown):
+SELECT gp_hyperloglog_get_estimate('BQYCKgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+ERROR:  invalid input syntax for type gp_hyperloglog_estimator
+LINE 1: SELECT gp_hyperloglog_get_estimate('BQYCKgAAAAAAAAAAAAAAAAAA...
+                                           ^
+DETAIL:  Counter format 42 is not recognized.
