@@ -529,6 +529,56 @@ ResDestroyQueue(Oid queueid)
 }
 
 /*
+ * ResEnsureUniquePortalId -- give the portal a fresh id if another portal of
+ * this backend already holds a resource queue lock under its id.
+ *
+ * A portal gets its id when it is created (see ResCreatePortalId()), but takes
+ * its resource queue lock only later, in PortalStart().  An id counts as free
+ * when no increment exists for it, so a portal created in between can be
+ * handed the same id.  That happens when planning evaluates a function that
+ * opens a cursor: a named portal created by Bind or EXECUTE, or a cursor
+ * opened through SPI, exists before its query is planned, and the planner
+ * evaluates stable functions with constant arguments.  If the cursor opened by
+ * such a function takes its lock first, this portal must not reuse its id:
+ * ResLockAcquire() would fail with "duplicate portal id", and the cursor's
+ * increment would be lost, leaking its slot in the queue.
+ */
+static void
+ResEnsureUniquePortalId(Portal portal)
+{
+	ResPortalTag portalTag;
+	bool		inUse;
+	uint32		oldId;
+
+	/*
+	 * The unnamed portal always gets id 0 (see ResCreatePortalId()), so a new
+	 * id could not differ: nothing to check.
+	 */
+	if (portal->portalId == 0)
+		return;
+
+	/* An id this portal holds a lock under is its own; never move off it. */
+	if (IsResQueueLockedForPortal(portal))
+		return;
+
+	MemSet(&portalTag, 0, sizeof(ResPortalTag));
+	portalTag.pid = MyProc->pid;
+	portalTag.portalId = portal->portalId;
+
+	LWLockAcquire(ResQueueLock, LW_SHARED);
+	inUse = (ResIncrementFind(&portalTag) != NULL);
+	LWLockRelease(ResQueueLock);
+
+	if (!inUse)
+		return;
+
+	oldId = portal->portalId;
+	portal->portalId = ResCreatePortalId(portal->name);
+	elog(DEBUG1, "resource queue %u: portal \"%s\" re-picked portal id %u (was %u)",
+		 portal->queueId, portal->name, portal->portalId, oldId);
+}
+
+/*
  * ResLockPortal -- get a resource lock for Portal execution.
  */
 void
@@ -674,6 +724,9 @@ ResLockPortal(Portal portal, QueryDesc *qDesc)
 		 */
 		if (takeLock)
 		{
+			ResEnsureUniquePortalId(portal);
+			incData.portalId = portal->portalId;
+
 #ifdef RESLOCK_DEBUG
 			elog(DEBUG1, "acquire resource lock for queue %u (portal %u)", 
 					queueid, portal->portalId);
@@ -768,6 +821,8 @@ ResLockUtilityPortal(Portal portal, float4 ignoreCostLimit)
 	 */
 	if (queueid != InvalidOid)
 	{
+		ResEnsureUniquePortalId(portal);
+
 		/*
 		 * Setup the resource portal increments, ready to be added.
 		 */
