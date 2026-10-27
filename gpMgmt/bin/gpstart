@@ -467,8 +467,9 @@ class GpStart:
         postmaster started at launched wrote counts (its start time, line 3,
         with pg_ctl's 2 seconds of slack), so a stale file does not end the
         wait. Stops early when the postmaster has exited: its file is gone
-        again, or none appeared within REPLICA_PIDFILE_GRACE seconds. The
-        caller's status check then reports the coordinator as not running.
+        again, its process (line 1) is gone, or no file appeared within
+        REPLICA_PIDFILE_GRACE seconds. The caller's status check then reports
+        the coordinator as not running.
         """
         pidfile = os.path.join(self.coordinator_datadir, 'postmaster.pid')
         seen = False
@@ -483,6 +484,9 @@ class GpStart:
                     # line 8 of postmaster.pid is the postmaster status
                     if len(lines) >= 8 and lines[7].strip() == 'ready':
                         return
+                    # a postmaster killed outright leaves its file behind
+                    if lines[0].strip().isdigit() and not self._process_alive(int(lines[0])):
+                        return
                 elif seen:
                     return
             except IOError:
@@ -492,6 +496,16 @@ class GpStart:
                 return
             time.sleep(1)
         logger.warning("Coordinator did not accept connections within %d seconds" % self.timeout)
+
+    @staticmethod
+    def _process_alive(pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            pass
+        return True
 
     def _startCoordinator(self):
         self._start_coordinator_admin_mode()
@@ -815,7 +829,7 @@ class GpStart:
             msg = str(e)
             if 'PANIC' in msg:
                 logger.critical(msg)
-                return False
+                return False, msg
             logger.warning(msg)
 
         # set the era we used when starting the segments

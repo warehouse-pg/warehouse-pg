@@ -21,7 +21,7 @@ whpg_dispatch_topology_file = 'whpg_dr_topology'
 
 TOPOLOGY = """# whpg-dr dispatch topology
 # generation 3
--1 1 cdw-rec cdw-rec 6000 /data/coordinator/gpseg-1
+-1 1 cdw-rec cdw-rec 6000 {datadir}
 
 0 2 sdw1-rec sdw1-rec 6002 /data/primary/gpseg0
 1\t3\tsdw2-rec\tsdw2-rec.example\t6003\t/data/primary/gpseg1
@@ -83,12 +83,12 @@ class ReplicaTopologyTestCase(GpTestCase):
 
     def test_gparray_from_replica(self):
         self._write('whpg_replica.conf', REPLICA_CONF)
-        self._write('whpg_dr_topology', TOPOLOGY)
+        self._write('whpg_dr_topology', TOPOLOGY.format(datadir=self.datadir))
         array = replica_topology.gparray_from_replica(replica_topology.read_replica_conf(self.datadir))
 
         self.assertEqual(array.coordinator.getSegmentHostName(), 'cdw-rec')
         self.assertEqual(array.coordinator.getSegmentPort(), 6000)
-        self.assertEqual(array.coordinator.getSegmentDataDirectory(), '/data/coordinator/gpseg-1')
+        self.assertEqual(array.coordinator.getSegmentDataDirectory(), self.datadir)
         self.assertIsNone(array.standbyCoordinator)
         self.assertFalse(array.hasMirrors)
         segs = array.getSegDbList()
@@ -98,6 +98,30 @@ class ReplicaTopologyTestCase(GpTestCase):
                          [(0, 2, 'sdw1-rec', 'sdw1-rec', 6002, '/data/primary/gpseg0'),
                           (1, 3, 'sdw2-rec', 'sdw2-rec.example', 6003, '/data/primary/gpseg1')])
         self.assertTrue(all(s.isSegmentPrimary(current_role=True) and s.isSegmentUp() for s in segs))
+
+    def test_coordinator_row_must_be_this_coordinator(self):
+        self._write('whpg_replica.conf', REPLICA_CONF)
+        rc = replica_topology.read_replica_conf(self.datadir)
+        # another data directory
+        self._write('whpg_dr_topology', TOPOLOGY.format(datadir='/data/elsewhere/gpseg-1'))
+        with self.assertRaisesRegex(ReplicaTopologyError, r'coordinator row .*\(port 6000, /data/elsewhere/gpseg-1\) is not this coordinator'):
+            replica_topology.gparray_from_replica(rc)
+        # another port
+        self._write('whpg_dr_topology', TOPOLOGY.format(datadir=self.datadir).replace(' 6000 ', ' 7000 '))
+        with self.assertRaisesRegex(ReplicaTopologyError, r'\(port 7000, .*\) is not this coordinator \(port 6000, '):
+            replica_topology.gparray_from_replica(rc)
+        # the same directory spelled with a trailing slash still matches
+        self._write('whpg_dr_topology', TOPOLOGY.format(datadir=self.datadir + '/'))
+        self.assertEqual(replica_topology.gparray_from_replica(rc).coordinator.getSegmentPort(), 6000)
+
+    def test_header_with_whitespace_in_the_cluster_name(self):
+        # a cluster name from before whpg-dr's naming rule may hold spaces
+        self._write('whpg_replica.conf', REPLICA_CONF.replace('cluster=prod ', 'cluster=prod east ')
+                    + '# whpg-dr: enable completed generation=3\n')
+        rc = replica_topology.read_replica_conf(self.datadir)
+        self.assertEqual(rc.cluster, 'prod east')
+        self.assertEqual(rc.generation, 3)
+        self.assertTrue(rc.enable_completed())
 
     def test_missing_topology_file(self):
         self._write('whpg_replica.conf', REPLICA_CONF)
@@ -122,6 +146,8 @@ class ReplicaTopologyTestCase(GpTestCase):
             (coordinator + '0 2 h %s 6002 /d/0\n' % ('a' * 65), 'line 2: hostname or address exceeds 64 characters'),
             (coordinator + '0 2 h h 6002 relative/gpseg0\n', 'line 2: datadir must be an absolute path'),
             (coordinator, 'no segment rows'),
+            (coordinator + '0 2 h h 6002 /d/0\n2 3 h h 6003 /d/2\n', 'segment contents must be 0 .. 1 without a gap, found 0, 2'),
+            (coordinator + '1 2 h h 6002 /d/1\n', 'segment contents must be 0 .. 0 without a gap, found 1'),
         ]
         for text, message in cases:
             with self.assertRaisesRegex(ReplicaTopologyError, message):

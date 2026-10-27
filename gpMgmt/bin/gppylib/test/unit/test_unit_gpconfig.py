@@ -110,7 +110,7 @@ class GpConfig(GpTestCase):
                     "hot_standby = on\n"
                     "whpg_dispatch_topology_file = 'whpg_dr_topology'\n")
         with open(os.path.join(self.temp_dir, "whpg_dr_topology"), "w") as f:
-            f.write("-1 1 cdw-rec cdw-rec 6000 /data/c\n0 2 sdw1-rec sdw1-rec 6002 /data/p0\n")
+            f.write("-1 1 cdw-rec cdw-rec 6000 %s\n0 2 sdw1-rec sdw1-rec 6002 /data/p0\n" % self.temp_dir)
 
     def test_replica_uses_the_topology_not_the_catalog(self):
         self._make_replica()

@@ -25,7 +25,7 @@ class GpStart(GpTestCase):
         gpstart_file = os.path.abspath(os.path.dirname(__file__) + "/../../../gpstart")
         self.subject = imp.load_source('gpstart', gpstart_file)
         self.subject.logger = Mock(
-            spec=['log', 'warn', 'info', 'debug', 'error', 'warning', 'fatal', 'warning_to_file_only'])
+            spec=['log', 'warn', 'info', 'debug', 'error', 'warning', 'fatal', 'critical', 'warning_to_file_only'])
 
         self.os_environ = dict(COORDINATOR_DATA_DIRECTORY='/tmp/cdd', GPHOME='/tmp/gphome', GP_MGMT_PROCESS_COUNT=1,
                                LANGUAGE=None)
@@ -409,7 +409,7 @@ class GpStart(GpTestCase):
         gpstart.coordinator_datadir = datadir
         pidfile = os.path.join(datadir, 'postmaster.pid')
         launched = time.time()
-        lines = ['123', datadir, str(int(launched)), '5432', '/tmp', '*', '  5432001  8']
+        lines = [str(os.getpid()), datadir, str(int(launched)), '5432', '/tmp', '*', '  5432001  8']
 
         # returns once the status line reads ready
         statuses = iter(['starting', 'standby ', 'ready   '])
@@ -428,6 +428,17 @@ class GpStart(GpTestCase):
         mock_sleep.side_effect = lambda _: os.remove(pidfile)
         gpstart._wait_for_replica_coordinator(launched)
         self.assertEqual(mock_sleep.call_count, 1)
+
+        # returns once the process the file names is gone (a postmaster
+        # killed outright leaves its file behind), not after the timeout
+        mock_sleep.reset_mock()
+        with open(pidfile, 'w') as fp:
+            fp.write('\n'.join(lines + ['starting']) + '\n')
+        mock_sleep.side_effect = None
+        with patch('gpstart.GpStart._process_alive', return_value=False) as mock_alive:
+            gpstart._wait_for_replica_coordinator(launched)
+        mock_alive.assert_called_with(os.getpid())
+        self.assertEqual(mock_sleep.call_count, 0)
 
         # a stale postmaster.pid (started before this launch) does not end
         # the wait, even when it says ready: it counts as no file at all
@@ -451,6 +462,26 @@ class GpStart(GpTestCase):
         with patch('gpstart.time.time', side_effect=lambda: clock[0]):
             gpstart._wait_for_replica_coordinator(1000.0)
         self.assertLessEqual(mock_sleep.call_count, gpstart.REPLICA_PIDFILE_GRACE + 1)
+
+    def test_start_final_coordinator_panic_returns_a_tuple(self):
+        # the caller unpacks (result, message) from every exit, PANIC included
+        gpstart = self.setup_gpstart()
+        gpstart.gparray = self.gparray
+        gpstart.replica_conf = None
+        gpstart.era = 'era'
+        gpstart.dburl = Mock()
+        self.subject.dbconn.connect.side_effect = Exception('FATAL: PANIC: something broke')
+        result, message = gpstart._start_final_coordinator()
+        self.assertFalse(result)
+        self.assertIn('PANIC', message)
+        self.subject.logger.critical.assert_called_once()
+
+    def test_process_alive(self):
+        self.assertTrue(self.subject.GpStart._process_alive(os.getpid()))
+        with patch('gpstart.os.kill', side_effect=ProcessLookupError):
+            self.assertFalse(self.subject.GpStart._process_alive(12345))
+        with patch('gpstart.os.kill', side_effect=PermissionError):
+            self.assertTrue(self.subject.GpStart._process_alive(1), "another user's process is alive")
 
     def test_standby_startup_skipped(self):
         sys.argv = ["gpstart", "-a", "-y"]

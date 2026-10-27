@@ -29,7 +29,10 @@ _INT16_MAX = 32767
 _MAXHOSTNAMELEN = 64
 
 # whpg-dr's managed header, e.g. "# cluster=prod generation=3 written=...".
-_HEADER_RE = re.compile(r'^# cluster=(\S+) generation=(\d+) written=', re.MULTILINE)
+# The cluster name matches lazily up to " generation=", as whpg-dr's own
+# parser does: a cluster name configured before whpg-dr's naming rule may
+# contain whitespace.
+_HEADER_RE = re.compile(r'^# cluster=(.+?) generation=(\d+) written=', re.MULTILINE)
 
 # Written by whpg-dr at the end of a replica enable, once the nodes are
 # paused at the anchor, the anchor is published and an anchored query has
@@ -95,8 +98,10 @@ def parse_topology(text, path='topology file'):
     -1..32767, dbid 1..32767, port 1..65535, a hostname and an address of at
     most 64 characters and an absolute datadir.  Exactly one row per content
     and per dbid, a coordinator row (content -1) and at least one segment
-    row.  Returns a list of (content, dbid, hostname, address, port, datadir)
-    sorted by content.
+    row, the segment contents numbered 0 .. N-1 without a gap (the
+    coordinator refuses any other numbering when it builds its component
+    list).  Returns a list of (content, dbid, hostname, address, port,
+    datadir) sorted by content.
     """
     rows = []
     contents = set()
@@ -135,6 +140,9 @@ def parse_topology(text, path='topology file'):
         raise ReplicaTopologyError('%s: missing coordinator row (content -1)' % path)
     if len(contents) < 2:
         raise ReplicaTopologyError('%s: no segment rows' % path)
+    if contents != set(range(-1, len(contents) - 1)):
+        raise ReplicaTopologyError('%s: segment contents must be 0 .. %d without a gap, found %s'
+                                   % (path, len(contents) - 2, ', '.join(str(c) for c in sorted(contents) if c >= 0)))
     return sorted(rows)
 
 
@@ -142,7 +150,10 @@ def gparray_from_replica(rc):
     """
     Builds the GpArray of the replica's nodes from the topology file rc
     names: the coordinator and one primary per content, all up, no mirrors
-    and no standby coordinator.
+    and no standby coordinator.  The file's coordinator row must describe
+    the coordinator rc belongs to (its data directory and the port
+    whpg_replica.conf sets): the utilities start, check and stop the
+    coordinator by this row.
     """
     path = rc.topology_path()
     try:
@@ -151,6 +162,12 @@ def gparray_from_replica(rc):
     except IOError as e:
         raise ReplicaTopologyError('cannot read the replica topology file %s named by %s in %s: %s'
                                    % (path, TOPOLOGY_GUC, rc.path, e))
+    _, _, _, _, port, datadir = rows[0]
+    own_datadir = os.path.dirname(rc.path)
+    own_port = rc.settings.int('port') if 'port' in rc.settings else None
+    if os.path.realpath(datadir) != os.path.realpath(own_datadir) or (own_port is not None and port != own_port):
+        raise ReplicaTopologyError('the coordinator row of %s (port %d, %s) is not this coordinator (port %s, %s)'
+                                   % (path, port, datadir, own_port, own_datadir))
     segments = []
     for content, dbid, hostname, address, port, datadir in rows:
         segments.append(gparray.Segment(content, gparray.ROLE_PRIMARY, dbid, gparray.ROLE_PRIMARY,
