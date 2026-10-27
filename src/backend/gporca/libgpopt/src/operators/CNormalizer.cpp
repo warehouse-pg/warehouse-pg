@@ -18,6 +18,7 @@
 #include "gpopt/base/CUtils.h"
 #include "gpopt/operators/CLogical.h"
 #include "gpopt/operators/CLogicalConstTableGet.h"
+#include "gpopt/operators/CLogicalGbAgg.h"
 #include "gpopt/operators/CLogicalInnerJoin.h"
 #include "gpopt/operators/CLogicalLeftOuterCorrelatedApply.h"
 #include "gpopt/operators/CLogicalLeftOuterJoin.h"
@@ -116,16 +117,14 @@ CNormalizer::FPushable(CExpression *pexprLogical, CExpression *pexprPred)
 	GPOS_ASSERT(nullptr != pexprLogical);
 	GPOS_ASSERT(nullptr != pexprPred);
 
-	// do not push through volatile functions below an aggregate
-	// volatile functions can potentially give different results when they
-	// are called so we don't want aggregate to use volatile function result
-	// while it processes each row
-	if (COperator::EopLogicalGbAgg == pexprLogical->Pop()->Eopid() &&
-		(CPredicateUtils::FContainsVolatileFunction(pexprPred)))
-	{
-		return false;
-	}
-
+	// WHPG: a predicate that only references the output of a GbAgg is
+	// pushable *onto* the aggregate like onto any other operator -- at worst
+	// it lands in a Select directly above it.  Whether a conjunct may
+	// continue *through* the aggregate into its input (never for a scalar
+	// aggregate, never for a volatile conjunct) is decided in
+	// PushThruUnaryWithScalarChild.  Refusing it here instead left the
+	// conjunct on a single child of the enclosing NAry join, which the join
+	// orderers either drop or assert on
 
 	CColRefSet *pcrsUsed = pexprPred->DeriveUsedColumns();
 	CColRefSet *pcrsOutput = pexprLogical->DeriveOutputColumns();
@@ -649,8 +648,53 @@ CNormalizer::PushThruUnaryWithScalarChild(CMemoryPool *mp,
 	CExpressionArray *pdrgpexprConjuncts =
 		CPredicateUtils::PdrgpexprConjuncts(mp, pexprConj);
 
-	PushThru(mp, pexprLogicalChild, pdrgpexprConjuncts, &pexprNewLogicalChild,
-			 &pdrgpexprUnpushable);
+	if (COperator::EopLogicalGbAgg == pexprLogical->Pop()->Eopid())
+	{
+		// WHPG: keep in a Select on top of a GbAgg every conjunct that may
+		// not cross it into its input:
+		//
+		// - every conjunct, if the GbAgg has no grouping columns (scalar
+		//   aggregate): it always produces exactly one row, even over an
+		//   empty input, so a column-free conjunct -- e.g. a constant HAVING
+		//   qual -- would filter the input rows instead of suppressing that
+		//   single output row, resurrecting it whenever the input becomes
+		//   empty;
+		// - a conjunct containing a volatile function: below the aggregate
+		//   it would be evaluated once per input row instead of once per
+		//   group, and the aggregate would consume those per-row results
+		const BOOL fScalarAgg = FScalarGbAgg(pexprLogical);
+		CExpressionArray *pdrgpexprThru = GPOS_NEW(mp) CExpressionArray(mp);
+		CExpressionArray *pdrgpexprKept = GPOS_NEW(mp) CExpressionArray(mp);
+		const ULONG size = pdrgpexprConjuncts->Size();
+		for (ULONG ul = 0; ul < size; ul++)
+		{
+			CExpression *pexprPred = (*pdrgpexprConjuncts)[ul];
+			pexprPred->AddRef();
+			if (fScalarAgg ||
+				CPredicateUtils::FContainsVolatileFunction(pexprPred))
+			{
+				pdrgpexprKept->Append(pexprPred);
+			}
+			else
+			{
+				pdrgpexprThru->Append(pexprPred);
+			}
+		}
+		pdrgpexprConjuncts->Release();
+		pdrgpexprConjuncts = pdrgpexprThru;
+
+		CExpressionArray *pdrgpexprRemaining = nullptr;
+		PushThru(mp, pexprLogicalChild, pdrgpexprConjuncts,
+				 &pexprNewLogicalChild, &pdrgpexprRemaining);
+		CUtils::AddRefAppend(pdrgpexprKept, pdrgpexprRemaining);
+		pdrgpexprRemaining->Release();
+		pdrgpexprUnpushable = pdrgpexprKept;
+	}
+	else
+	{
+		PushThru(mp, pexprLogicalChild, pdrgpexprConjuncts,
+				 &pexprNewLogicalChild, &pdrgpexprUnpushable);
+	}
 	pdrgpexprConjuncts->Release();
 
 	// create a new logical expression based on recursion results
@@ -660,6 +704,26 @@ CNormalizer::PushThruUnaryWithScalarChild(CMemoryPool *mp,
 	CExpression *pexprNewLogical = GPOS_NEW(mp)
 		CExpression(mp, pop, pexprNewLogicalChild, pexprScalarChild);
 	*ppexprResult = PexprSelect(mp, pexprNewLogical, pdrgpexprUnpushable);
+}
+
+//---------------------------------------------------------------------------
+//	@function:
+//		CNormalizer::FScalarGbAgg
+//
+//	@doc:
+//		Is the given expression a GbAgg with no grouping columns, i.e. a
+//		scalar aggregate that emits exactly one row even over an empty input
+//
+//---------------------------------------------------------------------------
+BOOL
+CNormalizer::FScalarGbAgg(CExpression *pexprLogical)
+{
+	GPOS_ASSERT(nullptr != pexprLogical);
+
+	return COperator::EopLogicalGbAgg == pexprLogical->Pop()->Eopid() &&
+		   0 == CLogicalGbAgg::PopConvert(pexprLogical->Pop())
+					->Pdrgpcr()
+					->Size();
 }
 
 //---------------------------------------------------------------------------

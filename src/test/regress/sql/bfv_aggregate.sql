@@ -1559,6 +1559,142 @@ commit;
 
 drop table  t1, t2, t3, t4, t5, t6;
 
+-- WHPG: constant-false HAVING on a scalar (groupless) aggregate
+-- must return zero rows, not one row carrying the aggregate's value.
+--
+-- A GbAgg with no grouping columns always emits exactly one row, even over
+-- an empty input, so a HAVING qual sitting above it cannot be relocated
+-- below it: doing so filters the *input* rows instead of suppressing the
+-- aggregate's single *output* row, silently resurrecting that row whenever
+-- the qual doesn't reference the aggregate result -- e.g. a constant qual.
+-- Under GPORCA, CNormalizer::FPushable used to allow exactly this, because
+-- a column-free predicate vacuously satisfies "are its columns a subset of
+-- the grouping columns?" for any operator, GbAgg included.
+create table sagg_having(a int, b int);
+insert into sagg_having values (1,1),(2,2);
+
+select count(*) from sagg_having having false;
+select count(*) from sagg_having having 1 = 0;
+select count(*) from sagg_having having null;
+select sum(b) from sagg_having having false;
+select count(*) from sagg_having group by () having false;
+select count(*) from sagg_having group by grouping sets (()) having false;
+
+-- control: a qual referencing the aggregate's own result is unaffected
+select count(*) from sagg_having having count(*) < 0;
+-- control: a real grouping column is unaffected (empty input -> no groups)
+select count(*) from sagg_having group by a having false;
+-- control: a true HAVING qual must still return the row
+select count(*) from sagg_having having true;
+
+-- plan-shape assertion: the qual must survive above the Aggregate, not be
+-- pushed down into a filter/scan below it
+explain (costs off) select count(*) from sagg_having having false;
+
+drop table sagg_having;
+
+-- WHPG: a predicate on an uncorrelated scalar-aggregate derived table that
+-- is joined to anything must not be lost by the join orderers.
+--
+-- CNormalizer::FPushable decides both whether a conjunct may be pushed
+-- *onto* a join child and whether it may continue *through* a GbAgg into
+-- its input.  Refusing a conjunct against a GbAgg -- a volatile one against
+-- any GbAgg, or any one against a scalar GbAgg as the constant-HAVING case
+-- above requires -- therefore also left it in the NAry join predicate as an
+-- edge covering a single component.  CJoinOrderDPv2 (the
+-- optimizer_join_order = exhaustive2 default) and CJoinOrderDP only turn
+-- edges that connect two components into join predicates, so it was
+-- silently dropped ("Join Filter: true"): with n = 0 the join returned every
+-- row of the other table instead of none, and DELETE ... USING, UPDATE ...
+-- FROM and INSERT ... SELECT wrote the wrong rows (debug builds asserted and
+-- fell back to the planner under exhaustive).  The normalizer now pushes such
+-- a conjunct onto the aggregate and keeps it in a Select above it.
+create table sagg_t(id int) distributed by (id);
+insert into sagg_t select g from generate_series(1, 5) g;
+create table sagg_f(id int, a int, b int) distributed by (id);
+insert into sagg_f select g, g % 20, g % 5 from generate_series(1, 200) g;
+analyze sagg_t;
+analyze sagg_f;
+set optimizer_join_order = exhaustive2;
+
+-- no row has a = 15 and b = 3, so n = 0 and the join must return no rows
+explain (costs off)
+select count(*) from sagg_t, (select count(*) n from sagg_f where a = 15 and b = 3) s where s.n > 0;
+select count(*) from sagg_t, (select count(*) n from sagg_f where a = 15 and b = 3) s where s.n > 0;
+-- control: n = 10 here, so every row of sagg_t qualifies
+select count(*) from sagg_t, (select count(*) n from sagg_f where a = 15 and b = 0) s where s.n > 0;
+-- the predicate on the aggregate must not be lost next to a real join
+-- predicate either (dropping it would match id = 1 against n = 0)
+explain (costs off)
+select count(*) from sagg_t, (select count(*) n from sagg_f where a = 15 and b = 3) s where s.n > 0 and s.n = sagg_t.id - 1;
+select count(*) from sagg_t, (select count(*) n from sagg_f where a = 15 and b = 3) s where s.n > 0 and s.n = sagg_t.id - 1;
+-- two scalar-aggregate derived tables, a predicate on each
+select count(*) from sagg_t,
+  (select count(*) n from sagg_f where a = 15 and b = 3) s,
+  (select count(*) m from sagg_f where a = 16 and b = 3) t
+where s.n > 0 and t.m > 0;
+-- a volatile predicate is pushed onto the aggregate but not through it,
+-- under every join orderer; 0 > random() never holds
+explain (costs off)
+select count(*) from sagg_t, (select count(*) n from sagg_f where a = 15 and b = 3) s where s.n > random();
+select count(*) from sagg_t, (select count(*) n from sagg_f where a = 15 and b = 3) s where s.n > random();
+set optimizer_join_order = exhaustive;
+explain (costs off)
+select count(*) from sagg_t, (select count(*) n from sagg_f where a = 15 and b = 3) s where s.n > random();
+select count(*) from sagg_t, (select count(*) n from sagg_f where a = 15 and b = 3) s where s.n > random();
+set optimizer_join_order = exhaustive2;
+-- same for a grouped aggregate; every group has n = 10, so 10 > random()
+-- holds for all 20 groups and the join yields 5 * 20 rows
+explain (costs off)
+select count(*) from sagg_t, (select a, count(*) n from sagg_f group by a) s where s.n > random();
+select count(*) from sagg_t, (select a, count(*) n from sagg_f group by a) s where s.n > random();
+-- DML through the same join, with the volatile predicate that used to be
+-- dropped (deleting, updating or inserting for every row of sagg_t): nothing
+-- may be deleted, updated or inserted
+explain (costs off)
+delete from sagg_t using (select count(*) n from sagg_f where a = 15 and b = 3) s where s.n > random();
+begin;
+delete from sagg_t using (select count(*) n from sagg_f where a = 15 and b = 3) s where s.n > random();
+select count(*) from sagg_t;
+rollback;
+explain (costs off)
+update sagg_t set id = id + 100 from (select count(*) n from sagg_f where a = 15 and b = 3) s where s.n > random();
+begin;
+update sagg_t set id = id + 100 from (select count(*) n from sagg_f where a = 15 and b = 3) s where s.n > random();
+select count(*) from sagg_t where id > 100;
+rollback;
+explain (costs off)
+insert into sagg_t select 99 from sagg_t, (select count(*) n from sagg_f where a = 15 and b = 3) s where s.n > random();
+begin;
+insert into sagg_t select 99 from sagg_t, (select count(*) n from sagg_f where a = 15 and b = 3) s where s.n > random();
+select count(*) from sagg_t;
+rollback;
+
+reset optimizer_join_order;
+drop table sagg_t, sagg_f;
+
+-- A volatile predicate on a grouping column must not cross a grouped GbAgg
+-- either: below it, it would run once per input row (30) instead of once per
+-- group (3), so the plans must keep the Filter above the aggregate.  The
+-- NOTICE shows the predicate is evaluated at all: the last two queries lost
+-- it when it was refused onto the aggregate child of a join.
+create table agg_vol (a int, b int) distributed by (a);
+insert into agg_vol select g % 3, g from generate_series(1, 30) g;
+analyze agg_vol;
+create function agg_vol_mark(int) returns bool language plpgsql volatile as
+  $$ begin raise notice 'agg_vol_mark'; return true; end $$;
+explain (costs off)
+select a, c from (select a, count(*) c from agg_vol group by a) s where agg_vol_mark(s.a) order by a;
+select a, c from (select a, count(*) c from agg_vol group by a) s where agg_vol_mark(s.a) order by a;
+explain (costs off)
+select count(*) from agg_vol t, (select a, count(*) c from agg_vol group by a) s where t.b = s.c and agg_vol_mark(s.a);
+select count(*) from agg_vol t, (select a, count(*) c from agg_vol group by a) s where t.b = s.c and agg_vol_mark(s.a);
+explain (costs off)
+select count(*) from agg_vol t, (select distinct a from agg_vol) s where t.b = s.a + 10 and agg_vol_mark(s.a);
+select count(*) from agg_vol t, (select distinct a from agg_vol) s where t.b = s.a + 10 and agg_vol_mark(s.a);
+drop function agg_vol_mark(int);
+drop table agg_vol;
+
 -- CLEANUP
 set client_min_messages='warning';
 drop schema bfv_aggregate cascade;
