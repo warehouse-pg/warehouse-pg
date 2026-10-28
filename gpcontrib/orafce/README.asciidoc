@@ -327,6 +327,13 @@ Before using package you have to set table utl_file.utl_file_dir. This contains
 all allowed directories without ending symbol ('/' or '\'). On WinNT platform
 you have to put locality parametr with ending symbol '\' everytime.
 
+Joined paths are canonicalized and checked against the allowed directories.
+Parent-directory (`..`) references left by PostgreSQL's canonicalization are
+rejected. Use paths without parent references for consistent behavior across
+PostgreSQL versions. These checks are lexical, not a filesystem sandbox:
+authorized directories and symlinks within them must be controlled by trusted
+administrators.
+
 == Package dbms_pipe
 
 This package is an emulation of Oracle's package dbms_pipe. It provides 

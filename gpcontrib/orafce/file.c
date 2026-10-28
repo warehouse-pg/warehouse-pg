@@ -862,6 +862,11 @@ get_safe_path(text *location, text *filename)
 
 	/* check locality in canonizalized form of path */
 	canonicalize_path(fullname);
+
+	/* Older PostgreSQL versions leave internal parent references untouched. */
+	if (path_contains_parent_reference(fullname))
+		CUSTOM_EXCEPTION(INVALID_PATH, "Parent directory references are not allowed.");
+
 	check_secure_locality(fullname);
 
 	return fullname;

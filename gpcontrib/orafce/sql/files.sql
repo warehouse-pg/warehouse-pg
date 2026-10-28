@@ -116,3 +116,15 @@ SELECT checkFlushFile(utl_file.tmpdir());
 SELECT utl_file.fremove(utl_file.tmpdir(), 'regressflush_orafce.txt');
 DROP FUNCTION checkFlushFile(text);
 DELETE FROM utl_file.utl_file_dir;
+
+-- parent directory references must not leave the allowed directory
+\set VERBOSITY default
+INSERT INTO utl_file.utl_file_dir(dir) VALUES(utl_file.tmpdir() || '/regress_orafce_dir');
+SELECT utl_file.fopen(utl_file.tmpdir() || '/regress_orafce_dir', '../regress_orafce_outside.txt', 'w');
+-- rejected even when the result would stay inside the allowed directory
+SELECT utl_file.fopen(utl_file.tmpdir() || '/regress_orafce_dir', 'sub/../regress_orafce.txt', 'r');
+-- other functions share the same path check
+SELECT utl_file.fremove(utl_file.tmpdir() || '/regress_orafce_dir', '../regress_orafce_outside.txt');
+SELECT utl_file.frename(utl_file.tmpdir() || '/regress_orafce_dir', 'regress_orafce.txt', utl_file.tmpdir() || '/regress_orafce_dir', '../regress_orafce_outside.txt');
+\set VERBOSITY terse
+DELETE FROM utl_file.utl_file_dir;
