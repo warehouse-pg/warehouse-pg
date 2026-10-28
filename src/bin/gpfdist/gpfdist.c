@@ -398,6 +398,13 @@ static int setup_read(request_t* r);
 static int setup_write(request_t* r);
 static void setup_do_close(request_t* r);
 static int session_attach(request_t* r);
+
+/*
+ * Upper bound for the segment count a request may declare.  Segment content
+ * ids are stored as int16 in gp_segment_configuration, so no cluster has
+ * more segments than this.
+ */
+#define GPFDIST_MAX_SEGMENTS 32767
 static void session_detach(request_t* r);
 static void session_end(session_t* s, int error, const char *errmsg);
 static void session_free(session_t* s);
@@ -1847,6 +1854,22 @@ static int session_attach(request_t* r)
 		return -1;
 	}
 
+	/*
+	 * The segment count and id are taken verbatim from the X-GP-SEGMENT-COUNT
+	 * and X-GP-SEGMENT-ID request headers.  The count sizes the per-segment
+	 * arrays (active_segids, seq_segs) and the id is used as the write index
+	 * into them, so a request whose id does not fit an array of that size
+	 * would write outside the allocation.  Reject such a request before
+	 * anything is allocated or indexed.
+	 */
+	if (r->totalsegs <= 0 || r->totalsegs > GPFDIST_MAX_SEGMENTS ||
+		r->segid < 0 || r->segid >= r->totalsegs)
+	{
+		http_error(r, FDIST_BAD_REQUEST, "bad request, invalid segment id or count");
+		request_end(r, ERROR_CODE_GENERIC, 0);
+		return -1;
+	}
+
 
 	/* check if such session already exists in hashtable */
 	session = apr_hash_get(gcb.session.tab, key, APR_HASH_KEY_STRING);
@@ -2027,6 +2050,19 @@ static int session_attach(request_t* r)
 	{
 		http_error(r, FDIST_BAD_REQUEST, "can\'t write to and read from the same "
 										 "gpfdist server simultaneously");
+		request_end(r, ERROR_CODE_GENERIC, 0);
+		return -1;
+	}
+
+	/*
+	 * The per-segment arrays were sized by the request that created the
+	 * session (session->maxsegs).  A later request joining the session may
+	 * carry a different, larger id, so bound it by the session's size as well
+	 * before using it as an index below.
+	 */
+	if (r->segid >= session->maxsegs)
+	{
+		http_error(r, FDIST_BAD_REQUEST, "bad request, segment id out of range for session");
 		request_end(r, ERROR_CODE_GENERIC, 0);
 		return -1;
 	}
@@ -3845,6 +3881,16 @@ static int request_parse_gp_headers(request_t *r, int opt_g)
 	r->csvopt = "";
 	r->is_final = 0;
 	r->seq = 0;
+
+	/*
+	 * Default to a single-segment session.  A plain download that sends only
+	 * X-GP-PROTO and omits the segment headers is served as one consumer;
+	 * without these defaults the count would stay zero and the bounds check
+	 * in session_attach() would reject such a request.  An explicit value in
+	 * the headers below overrides these, and is still validated there.
+	 */
+	r->totalsegs = 1;
+	r->segid = 0;
 
 	for (i = 0; i < r->in.req->hc; i++)
 	{
