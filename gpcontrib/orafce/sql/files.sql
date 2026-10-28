@@ -136,3 +136,18 @@ DROP FUNCTION gen_file(text);
 DROP FUNCTION read_file(text);
 
 DELETE FROM utl_file.utl_file_dir;
+
+-- parent directory references must not leave the allowed directory
+\set VERBOSITY default
+INSERT INTO utl_file.utl_file_dir(dir, dirname) VALUES(utl_file.tmpdir() || '/regress_orafce_dir', 'REGRESS_DIR');
+-- named location
+SELECT utl_file.fopen('REGRESS_DIR', '../regress_orafce_outside.txt', 'w');
+-- path location
+SELECT utl_file.fopen(utl_file.tmpdir() || '/regress_orafce_dir', '../regress_orafce_outside.txt', 'r');
+-- rejected even when the result would stay inside the allowed directory
+SELECT utl_file.fopen('REGRESS_DIR', 'sub/../regress_orafce.txt', 'r');
+-- other functions share the same path check
+SELECT utl_file.fremove('REGRESS_DIR', '../regress_orafce_outside.txt');
+SELECT utl_file.frename('REGRESS_DIR', 'regress_orafce.txt', 'REGRESS_DIR', '../regress_orafce_outside.txt');
+\set VERBOSITY terse
+DELETE FROM utl_file.utl_file_dir;
