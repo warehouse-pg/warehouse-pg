@@ -5733,6 +5733,8 @@ ATExecCmd(List **wqueue, AlteredTableInfo *tab, Relation rel,
 				{
 					tab->rewrite |= AT_REWRITE_ALTER_RELOPTS;
 					tab->newOptions = newOptions;
+					/* see AT_SetRelOptions below */
+					tab->rewrite &= ~(AT_REWRITE_NEW_COLUMNS_ONLY | AT_REWRITE_REWRITE_COLUMNS_ONLY);
 				}
 			}
 
@@ -5774,6 +5776,19 @@ ATExecCmd(List **wqueue, AlteredTableInfo *tab, Relation rel,
 				{
 					tab->rewrite |= AT_REWRITE_ALTER_RELOPTS;
 					tab->newOptions = newOptions;
+
+					/*
+					 * New storage options apply to every column file, so an
+					 * ADD COLUMN in the same statement cannot take the
+					 * column-file fast path of ao_column tables any more
+					 * (AT_PASS_ADD_COL has already set the bit by now): the
+					 * whole table has to be rewritten, which also installs
+					 * newOptions.  The column-only branch of
+					 * ATRewriteTables() never does, so the SET used to be
+					 * lost.  ALTER COLUMN TYPE already falls back on its own
+					 * through setupColumnOnlyRewrite().
+					 */
+					tab->rewrite &= ~(AT_REWRITE_NEW_COLUMNS_ONLY | AT_REWRITE_REWRITE_COLUMNS_ONLY);
 
 					/*
 					 * For AOCO tables, re-encode the columns that only
