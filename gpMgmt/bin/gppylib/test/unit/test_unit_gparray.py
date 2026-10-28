@@ -241,15 +241,17 @@ class GpArrayTestCase(GpTestCase):
     def test_initFromCatalog_refuses_a_read_replica(self, mock_connect, mock_query, mock_version):
         # the topology setting names the replica's own nodes: the catalog
         # rows that follow are the source cluster's
-        mock_query.return_value.fetchone.return_value = ('whpg_dr_topology',)
+        mock_query.return_value.fetchone.return_value = ('whpg_dr_topology', True)
         with self.assertRaisesRegex(Exception, "This is a whpg-dr read replica .*would act on the source cluster's hosts"):
             GpArray.initFromCatalog(None)
         self.assertEqual(mock_query.call_count, 1, "nothing is read from gp_segment_configuration")
 
-        # unset (or unknown to the server: NULL) is not a replica
-        for value in ('', None):
+        # unset (or unknown to the server: NULL) is not a replica, and
+        # neither is a primary with the setting: a replica coordinator is a
+        # hot standby, and the primary's catalog is its own
+        for value, in_recovery in (('', True), (None, True), ('whpg_dr_topology', False)):
             mock_query.reset_mock()
-            mock_query.return_value.fetchone.return_value = (value,)
+            mock_query.return_value.fetchone.return_value = (value, in_recovery)
             mock_query.return_value.__iter__ = Mock(return_value=iter([]))
             try:
                 GpArray.initFromCatalog(None)
