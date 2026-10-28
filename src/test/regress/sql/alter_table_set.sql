@@ -196,6 +196,41 @@ SELECT count(*) FROM aoco_relopt_part;
 
 DROP TABLE aoco_relopt_part;
 
+-- SET ACCESS METHOD to the AM the table already has, with storage options,
+-- is a plain SET (...) and must re-encode the columns the same way.
+CREATE TABLE aoco_sameam(a int, b int ENCODING (compresstype=zstd, compresslevel=2), c text)
+	USING ao_column DISTRIBUTED BY (a);
+INSERT INTO aoco_sameam SELECT i, i, repeat('x', 100) FROM generate_series(1, 5000) i;
+execute attribute_encoding_check('aoco_sameam%');
+
+ALTER TABLE aoco_sameam SET ACCESS METHOD ao_column WITH (compresstype=zlib, compresslevel=1);
+SELECT reloptions FROM pg_class WHERE relname = 'aoco_sameam';
+execute attribute_encoding_check('aoco_sameam%');
+SELECT count(*), sum(a), sum(b) FROM aoco_sameam;
+
+-- Mixed with an explicit SET ENCODING in the same command.
+ALTER TABLE aoco_sameam
+	ALTER COLUMN c SET ENCODING (compresstype=zstd, compresslevel=3),
+	SET ACCESS METHOD ao_column WITH (compresstype=rle_type, compresslevel=2);
+execute attribute_encoding_check('aoco_sameam%');
+SELECT count(*), sum(a), sum(b) FROM aoco_sameam;
+
+DROP TABLE aoco_sameam;
+
+-- Same for a partitioned table: the root's template and every partition,
+-- including one added after the ALTER, follow the new default.
+CREATE TABLE aoco_sameam_part(i int, j int)
+	USING ao_column WITH (compresstype=zlib, compresslevel=5)
+	DISTRIBUTED BY (i) PARTITION BY RANGE (j) (START (1) END (3) EVERY (1));
+INSERT INTO aoco_sameam_part SELECT i, i % 2 + 1 FROM generate_series(1, 100) i;
+
+ALTER TABLE aoco_sameam_part SET ACCESS METHOD ao_column WITH (compresstype=zlib, compresslevel=8);
+CREATE TABLE aoco_sameam_part_1_prt_3 PARTITION OF aoco_sameam_part FOR VALUES FROM (3) TO (4);
+execute attribute_encoding_check('aoco_sameam_part%');
+SELECT count(*) FROM aoco_sameam_part;
+
+DROP TABLE aoco_sameam_part;
+
 -- Check mixed AMs in the partition hierarchy. Currently we error out.
 CREATE TABLE part_relopt2(a int, b int) PARTITION BY RANGE(a);
 CREATE TABLE part_relopt2_1 partition OF part_relopt2 FOR VALUES FROM (100) to (200);
