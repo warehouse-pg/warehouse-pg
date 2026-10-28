@@ -2159,6 +2159,8 @@ order by 1,2;
 where stats_name = 'executor_mem_lines'
 or stats_name = 'workmem_wanted_lines'
 order by stats_name;
+WARNING:  WITH query "query_plan" containing volatile functions will be evaluated once per reference
+DETAIL:  Its result cannot be shared at one of its references, so the references may see different results.
       stats_name      | stats_value 
 ----------------------+-------------
  executor_mem_lines   |           1

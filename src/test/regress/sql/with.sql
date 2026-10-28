@@ -18,6 +18,108 @@ SELECT count(*) FROM (
     SELECT * FROM q1
 ) ss;
 
+-- Same as above, but with gp_cte_sharing at its default (off): a
+-- multiply-referenced CTE must still be evaluated only once regardless
+-- of the sharing GUC.
+set gp_cte_sharing to off;
+SELECT count(*) FROM (
+  WITH q1(x) AS (SELECT random() FROM generate_series(1, 5))
+    SELECT * FROM q1
+  UNION
+    SELECT * FROM q1
+) ss;
+set gp_cte_sharing to on;
+
+-- Forcing the sharing above must not bypass the planner's guards against
+-- placing a ShareInputScan where it cannot work: inside a sublink that may
+-- be planned as an InitPlan, or where the CTE has an outer correlation.
+-- Those cases must still fall back to per-reference evaluation rather than
+-- crash, hang, or error out.  A volatile CTE is then evaluated once per
+-- reference, which raises a WARNING; the checks on random() values below
+-- show which references saw the same evaluation.
+CREATE TABLE cte_vol_t (a int, b int) DISTRIBUTED BY (a);
+INSERT INTO cte_vol_t SELECT i, i % 10 FROM generate_series(1, 100) i;
+
+set gp_cte_sharing to off;
+
+-- EXISTS pulled into an AlternativeSubPlan, referencing the CTE from both
+-- the main query and the EXISTS test.
+WITH q1 AS (SELECT random() r, a FROM generate_series(1,5) a)
+SELECT count(*) >= 0 FROM cte_vol_t t, q1
+WHERE t.b = 1 OR EXISTS (SELECT 1 FROM q1 WHERE q1.r >= 0);
+
+-- CTE referenced by the main query and by an EXISTS sublink that may be
+-- planned as an InitPlan.
+WITH q AS (SELECT random() r, a FROM cte_vol_t)
+SELECT count(*) FROM q WHERE EXISTS (SELECT 1 FROM q q2 WHERE q2.r >= 0);
+
+WITH q AS (SELECT random() r, a FROM cte_vol_t)
+SELECT count(*) FROM q WHERE q.r <= 1;
+
+-- The Postgres planner gives the InitPlan's reference its own evaluation,
+-- so no row of the main query's evaluation matches its max (0 rows).
+-- GPORCA evaluates the CTE once (1 row).
+WITH q AS (SELECT random() r, a FROM cte_vol_t)
+SELECT count(*) FROM q WHERE q.r = (SELECT max(r) FROM q q2);
+
+-- An IN sublink is planned as a join rather than an InitPlan, so the CTE is
+-- shared and every row finds itself (100 rows, no WARNING).
+WITH q AS (SELECT random() r, a FROM cte_vol_t)
+SELECT count(*) FROM q WHERE q.r IN (SELECT r FROM q q2);
+
+-- Two InitPlans sharing the same CTE; the main query does not reference it.
+-- The Postgres planner gives each InitPlan its own evaluation (false);
+-- GPORCA evaluates the CTE once (true).
+WITH a AS (SELECT i, random() r FROM generate_series(1,100) i)
+SELECT (SELECT max(r) FROM a) = (SELECT max(r) FROM a) AS same;
+
+-- A distributed-table (general locus) CTE plus an InitPlan reference.
+WITH q AS (SELECT random() AS r FROM generate_series(1,5))
+SELECT count(*) FROM cte_vol_t, q WHERE EXISTS (SELECT 1 FROM q q2 WHERE q2.r >= 0);
+
+-- A CTE with an outer correlation must not attempt to share.  Each reference
+-- gets its own evaluation, so no outer row qualifies (0 rows).
+SELECT count(*) FROM cte_vol_t t1
+WHERE (WITH q AS (SELECT random() r, t2.b FROM cte_vol_t t2 WHERE t2.a = t1.a)
+       SELECT bool_and(q1.r = q2.r) FROM q q1, q q2 WHERE q1.b = q2.b);
+
+-- AS NOT MATERIALIZED with a volatile function must still be evaluated
+-- exactly once when multiply referenced.
+SELECT count(*) FROM (
+  WITH q1(x) AS NOT MATERIALIZED (SELECT random() FROM generate_series(1, 5))
+    SELECT * FROM q1
+  UNION
+    SELECT * FROM q1
+) ss;
+
+-- A data-modifying CTE must also be evaluated exactly once when multiply
+-- referenced.
+CREATE TABLE cte_dml_t (a int) DISTRIBUTED BY (a);
+WITH ins AS (INSERT INTO cte_dml_t VALUES (1), (2) RETURNING a)
+SELECT count(*) FROM (SELECT a FROM ins UNION ALL SELECT a FROM ins) x;
+SELECT count(*) FROM cte_dml_t;
+
+-- Where one of its references cannot share it, the query must be refused
+-- rather than repeat the INSERT (the table still has 2 rows).
+WITH ins AS (INSERT INTO cte_dml_t VALUES (1), (2) RETURNING a)
+SELECT count(*) FROM ins WHERE EXISTS (SELECT 1 FROM ins);
+WITH ins AS (INSERT INTO cte_dml_t VALUES (1), (2) RETURNING a)
+SELECT (SELECT count(*) FROM ins), count(*) FROM ins;
+SELECT count(*) FROM cte_dml_t;
+DROP TABLE cte_dml_t;
+
+-- A volatile CTE referenced twice at a nested CTE level, with no InitPlan
+-- involved, must also be evaluated once (all rows equal: true).
+WITH d AS (
+  WITH t AS (SELECT a, random() AS r FROM cte_vol_t)
+  SELECT bool_and(t1.r = t2.r) AS same FROM t t1 JOIN t t2 USING (a)
+)
+SELECT * FROM d;
+
+set gp_cte_sharing to on;
+
+DROP TABLE cte_vol_t;
+
 -- WITH RECURSIVE
 
 -- sum of 1..100
