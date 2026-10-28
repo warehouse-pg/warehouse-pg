@@ -31,7 +31,7 @@ endif
 
 REGRESS_OPTS = --init-file=init_file
 
-installcheck: watchdog ipv4v6_ports
+installcheck: watchdog ipv4v6_ports segment_headers
 ifeq ($(enable_gpfdist),yes)
 ifeq ($(with_openssl),yes)
 	rm -rf data/gpfdist_ssl/certs_server_no_verify
@@ -58,6 +58,9 @@ watchdog:
 
 ipv4v6_ports:
 	./test_ipv4v6_port.sh
+
+segment_headers:
+	./test_segment_headers.sh
 
 clean:
 	rm -rf regression.* sql results expected
