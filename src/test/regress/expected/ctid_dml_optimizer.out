@@ -194,6 +194,8 @@ SELECT count(*) FROM pt;
 -- gp_segment_id together with ctid: allowed, and GPORCA plans it (no fallback)
 BEGIN;
 DELETE FROM t USING s WHERE t.ctid = s.tid AND t.gp_segment_id = s.sid;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without gp_segment_id
 SELECT count(*) AS left_rows, sum(CASE WHEN id = 7 THEN 1 ELSE 0 END) AS id_7 FROM t;
  left_rows | id_7 
 -----------+------
@@ -204,6 +206,8 @@ ROLLBACK;
 -- The shape REFRESH MATERIALIZED VIEW CONCURRENTLY uses.
 BEGIN;
 DELETE FROM t WHERE ctid = ANY (SELECT s.tid FROM s WHERE s.tid = t.ctid AND s.sid = t.gp_segment_id);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without gp_segment_id
 SELECT count(*) AS left_rows, sum(CASE WHEN id = 7 THEN 1 ELSE 0 END) AS id_7 FROM t;
  left_rows | id_7 
 -----------+------
@@ -214,6 +218,8 @@ ROLLBACK;
 -- Paired in a join qualifier of a subquery, one query level down.
 BEGIN;
 DELETE FROM t WHERE id IN (SELECT b.id FROM t b JOIN s ON b.ctid = s.tid AND b.gp_segment_id = s.sid);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without gp_segment_id
 SELECT count(*) AS left_rows, sum(CASE WHEN id = 7 THEN 1 ELSE 0 END) AS id_7 FROM t;
  left_rows | id_7 
 -----------+------
