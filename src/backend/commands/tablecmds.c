@@ -480,6 +480,8 @@ static Datum ATExecSetRelOptions(Relation rel, List *defList,
 								bool *aoopt_changed,
 								Oid newam,
 								LOCKMODE lockmode);
+static void ATSetAoColumnDefaultEncodings(AlteredTableInfo *tab, Relation rel,
+										  Datum newOptions);
 static void ATExecEnableDisableTrigger(Relation rel, const char *trigname,
 									   char fires_when, bool skip_system, bool recurse,
 									   LOCKMODE lockmode);
@@ -5706,6 +5708,20 @@ ATExecCmd(List **wqueue, AlteredTableInfo *tab, Relation rel,
 				AlterTableType op = OidIsValid(tab->newAccessMethod) ? AT_ReplaceRelOptions : AT_SetRelOptions; 
 
 				newOptions = ATExecSetRelOptions(rel, (List *) cmd->def, op, &aoopt_changed, tab->newAccessMethod, lockmode);
+
+				/*
+				 * Same-AM SET ACCESS METHOD ao_column WITH (...) is a plain
+				 * SET (...), so re-encode the columns that only follow the
+				 * table-level default, as that branch does. This must run
+				 * before the CommandCounterIncrement() below: for a
+				 * partitioned table ATExecSetRelOptions() has already updated
+				 * pg_class.reloptions, and the old default is read off the
+				 * relcache entry. A real AM change to ao_column is handled by
+				 * populate_rel_col_encodings() instead.
+				 */
+				if (aoopt_changed && !OidIsValid(tab->newAccessMethod))
+					ATSetAoColumnDefaultEncodings(tab, rel, newOptions);
+
 				CommandCounterIncrement(); /* make reloptions change visiable */
 
 				/* 
@@ -5760,65 +5776,10 @@ ATExecCmd(List **wqueue, AlteredTableInfo *tab, Relation rel,
 					tab->newOptions = newOptions;
 
 					/*
-					 * For AOCO tables, columns without their own explicit
-					 * ENCODING only ever get a codec via the table-level
-					 * default, so make sure the rewrite this triggers
-					 * actually re-encodes them with the new default instead
-					 * of just relabeling pg_class.reloptions. Columns that
-					 * already carry an explicit override are left
-					 * untouched; get_cols_for_new_reloption_defaults() also
-					 * excludes columns given an explicit ENCODING by an
-					 * ALTER COLUMN ... SET ENCODING earlier in this same
-					 * command, by inspecting tab->new_crsds (which
-					 * ATExecSetColumnEncoding has already updated for
-					 * those, in place, by this point).
+					 * For AOCO tables, re-encode the columns that only
+					 * follow the table-level default with the new one.
 					 */
-					if (RelationIsAoCols(rel))
-					{
-						List	   *default_updates =
-							get_cols_for_new_reloption_defaults(rel, newOptions, tab->new_crsds);
-						ListCell   *lc2;
-						List	   *root_updates = NIL;
-
-						foreach(lc2, default_updates)
-						{
-							ColumnReferenceStorageDirective *c = lfirst(lc2);
-							bool		is_updated;
-
-							if (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
-							{
-								/*
-								 * A partitioned table has no storage of its
-								 * own, so it never goes through
-								 * ATRewriteTables/make_new_heap() below and
-								 * tab->new_crsds would just be discarded;
-								 * apply the new default directly instead.
-								 * Otherwise the root's pg_attribute_encoding
-								 * stays on the old default forever, and any
-								 * partition added later inherits that stale
-								 * template. Merge into the root's own
-								 * existing encodings via updateEncodingList()
-								 * (preserving their per-column field order,
-								 * so the root doesn't end up disagreeing
-								 * with its own children on cosmetics) and
-								 * apply once below rather than once per
-								 * column.
-								 */
-								if (!root_updates)
-									root_updates = rel_get_column_encodings(rel);
-								root_updates = updateEncodingList(root_updates, c, &is_updated);
-							}
-							else
-							{
-								if (!tab->new_crsds)
-									tab->new_crsds = rel_get_column_encodings(rel);
-								tab->new_crsds = updateEncodingList(tab->new_crsds, c, &is_updated);
-							}
-						}
-
-						if (root_updates)
-							UpdateAttributeEncodings(RelationGetRelid(rel), root_updates);
-					}
+					ATSetAoColumnDefaultEncodings(tab, rel, newOptions);
 				}
 			}
 			break;
@@ -15410,6 +15371,70 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 						   operation == AT_ResetRelOptions ? "RESET" : "SET"
 				);
 	return newOptions;
+}
+
+/*
+ * Re-encode AOCO columns that follow the table-level default, after an ALTER
+ * TABLE SET/RESET (...) or a same-AM SET ACCESS METHOD ... WITH (...) changed
+ * that default.
+ *
+ * Columns without their own explicit ENCODING only ever get a codec via the
+ * table-level default, so make sure the rewrite this triggers actually
+ * re-encodes them with the new default instead of just relabeling
+ * pg_class.reloptions. Columns that already carry an explicit override are
+ * left untouched; get_cols_for_new_reloption_defaults() also excludes columns
+ * given an explicit ENCODING by an ALTER COLUMN ... SET ENCODING earlier in
+ * this same command, by inspecting tab->new_crsds (which
+ * ATExecSetColumnEncoding has already updated for those, in place, by this
+ * point).
+ *
+ * Must be called while 'rel' still reflects the old reloptions.
+ */
+static void
+ATSetAoColumnDefaultEncodings(AlteredTableInfo *tab, Relation rel, Datum newOptions)
+{
+	List	   *default_updates;
+	List	   *root_updates = NIL;
+	ListCell   *lc;
+
+	if (!RelationIsAoCols(rel))
+		return;
+
+	default_updates = get_cols_for_new_reloption_defaults(rel, newOptions, tab->new_crsds);
+
+	foreach(lc, default_updates)
+	{
+		ColumnReferenceStorageDirective *c = lfirst(lc);
+		bool		is_updated;
+
+		if (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+		{
+			/*
+			 * A partitioned table has no storage of its own, so it never goes
+			 * through ATRewriteTables/make_new_heap() and tab->new_crsds would
+			 * just be discarded; apply the new default directly instead.
+			 * Otherwise the root's pg_attribute_encoding stays on the old
+			 * default forever, and any partition added later inherits that
+			 * stale template. Merge into the root's own existing encodings
+			 * via updateEncodingList() (preserving their per-column field
+			 * order, so the root doesn't end up disagreeing with its own
+			 * children on cosmetics) and apply once below rather than once
+			 * per column.
+			 */
+			if (!root_updates)
+				root_updates = rel_get_column_encodings(rel);
+			root_updates = updateEncodingList(root_updates, c, &is_updated);
+		}
+		else
+		{
+			if (!tab->new_crsds)
+				tab->new_crsds = rel_get_column_encodings(rel);
+			tab->new_crsds = updateEncodingList(tab->new_crsds, c, &is_updated);
+		}
+	}
+
+	if (root_updates)
+		UpdateAttributeEncodings(RelationGetRelid(rel), root_updates);
 }
 
 /*
