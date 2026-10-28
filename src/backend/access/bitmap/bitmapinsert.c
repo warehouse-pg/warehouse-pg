@@ -2349,8 +2349,11 @@ build_inserttuple(Relation rel, uint64 tidnum,
 				{
 					Form_pg_attribute at = tupDesc->attrs[attno];
 
-					entry->attributeValueArr[attno] = datumCopy(entry->attributeValueArr[attno], at->attbyval,
-																at->attlen);
+					if (entry->isNullArr[attno])
+						entry->attributeValueArr[attno] = 0;
+					else
+						entry->attributeValueArr[attno] = datumCopy(entry->attributeValueArr[attno], at->attbyval,
+																	at->attlen);
 				}
 
 				/*

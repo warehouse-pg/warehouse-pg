@@ -198,6 +198,18 @@ select count(1) from bm b1, bm b2 where b1.dist_col = b2.dist_col;
 with bm as (select * from bmcrash where (btree_col1 like 'abcde%') AND bitmap_col in ('999', '888'))
 select count(1) from bm b1, bm b2 where b1.dist_col = b2.dist_col;
 
+-- Multi-column bitmap index build on an AOCO table, with by-reference key
+-- columns NULL in rows whose other key column is not.  The Datum of a NULL
+-- column is undefined (the AOCO scan leaves whatever the slot held) and must
+-- not be copied.  Each segment reads such a row first.
+create table bm_aoco_null (a int, b text, c numeric, d int[])
+  with (appendonly=true, orientation=column) distributed by (a);
+insert into bm_aoco_null select i, null, null, null from generate_series(1, 10) i;
+insert into bm_aoco_null select i, 'b' || i, i, array[i] from generate_series(1, 10) i;
+create index bm_aoco_null_idx on bm_aoco_null using bitmap (a, b, c, d);
+select a, b, c, d from bm_aoco_null where a = 3 order by b nulls first;
+select a, b, c, d from bm_aoco_null where a = 3 and b = 'b3';
+
 -- start_ignore
 drop schema bm_ao cascade;
 -- end_ignore
