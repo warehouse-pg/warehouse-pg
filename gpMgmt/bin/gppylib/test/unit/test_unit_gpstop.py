@@ -436,6 +436,42 @@ class GpStop(GpTestCase):
         self.assertEqual("sdw1", self.mock_workerpool.addCommand.call_args_list[1][0][0].remoteHost)
         self.assertEqual("sdw1", self.mock_workerpool.addCommand.call_args_list[2][0][0].remoteHost)
 
+    @patch('gpstop.replica_topology.gparray_from_replica')
+    @patch('gpstop.replica_topology.read_replica_conf')
+    def test_replica_reload_signals_the_topology_nodes(self, mock_read_replica_conf, mock_gparray_from_replica):
+        self.mock_socket.return_value = 'cdw'
+        sys.argv = ["gpstop", "-u"]
+        parser = self.subject.GpStop.createParser()
+        options, args = parser.parse_args()
+        mock_read_replica_conf.return_value = Mock()
+        mock_gparray_from_replica.return_value = GpArray([self.coordinator, self.primary0, self.primary1])
+        gpstop = self.subject.GpStop.createProgram(options, args)
+        gpstop.coordinator_datadir = '/data/coordinator'
+        gpstop.port = 5432
+
+        gpstop._build_gparray()
+        gpstop._sighup_cluster()
+
+        mock_read_replica_conf.assert_called_once_with('/data/coordinator')
+        self.mock_gparray.assert_not_called()
+        self.assertEqual(3, self.mock_workerpool.addCommand.call_count)
+        self.assertEqual([None, "sdw1", "sdw1"],
+                         [c[0][0].remoteHost for c in self.mock_workerpool.addCommand.call_args_list])
+
+    @patch('gpstop.replica_topology.read_replica_conf', return_value=None)
+    def test_not_a_replica_reads_the_catalog(self, mock_read_replica_conf):
+        sys.argv = ["gpstop", "-u"]
+        parser = self.subject.GpStop.createParser()
+        options, args = parser.parse_args()
+        gpstop = self.subject.GpStop.createProgram(options, args)
+        gpstop.coordinator_datadir = '/data/coordinator'
+        gpstop.port = 5432
+
+        gpstop._build_gparray()
+
+        self.mock_gparray.assert_called_once()
+        self.assertEqual(gpstop.gparray, self.gparray)
+
     def test_host_option_with_request_sighup_option_fails(self):
         sys.argv = ["gpstop", "--host", "sdw1", "-u"]
         parser = self.subject.GpStop.createParser()

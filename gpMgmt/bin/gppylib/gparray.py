@@ -953,6 +953,21 @@ class GpArray:
             if not version.isVersionCurrentRelease():
                 raise Exception("Cannot connect to GPDB version %s from installed version %s"%(version.getVersionRelease(), MAIN_VERSION[0]))
 
+            # A whpg-dr read replica replays the source cluster's catalog, so
+            # its gp_segment_configuration names the SOURCE's hosts, ports and
+            # data directories, and a utility acting on it would act on the
+            # source cluster.  The replica's coordinator dispatches from the
+            # topology file this setting names instead; only gpstart, gpstop
+            # and gpconfig read it (replica_topology).  A replica coordinator
+            # is always a hot standby: a primary with the setting (a test, or
+            # an interrupted promote whose catalog is already its own) is
+            # managed as usual, which is how the setting is removed there.
+            topology = dbconn.query(conn, "SELECT pg_catalog.current_setting('whpg_dispatch_topology_file', true), pg_catalog.pg_is_in_recovery()").fetchone()
+            if topology and topology[0] and topology[1]:
+                raise Exception("This is a whpg-dr read replica (whpg_dispatch_topology_file = '%s'): its gp_segment_configuration is the "
+                                "source cluster's, so this utility would act on the source cluster's hosts. Only gpstart, gpstop and "
+                                "gpconfig support a read replica; manage it with whpg-dr." % topology[0])
+
             config_rows = dbconn.query(conn, '''
             SELECT dbid, content, role, preferred_role, mode, status,
             hostname, address, port, datadir

@@ -81,17 +81,22 @@ class gucdict(dict):
             m = _setpat.match(line)
             if m:
                 name, value, pos = m.group(1), m.group(3), m.start(3)
-                if name == 'include':
+                if name in ('include', 'include_if_exists'):
+                    # Remove the ' from the filename and then convert to abspath if needed.
+                    incfilename = value.strip("'")
+                    if not incfilename.startswith('/') and filename != '':
+                        incfilename = '%s/%s' % (filename[0:filename.rfind('/')], incfilename)
                     try:
-                        # Remove the ' from the filename and then convert to abspath if needed.
-                        incfilename = value.strip("'")
-                        if not incfilename.startswith('/') and filename != '':
-                            incfilename = '%s/%s' % (filename[0:filename.rfind('/')], incfilename)
                         fp = open(incfilename)
-                        self.populate(fp, incfilename, recurLevel+1)
-                        fp.close()
                     except IOError:
+                        # include_if_exists skips a missing file, as the server does
+                        if name == 'include_if_exists':
+                            continue
                         raise Exception('File %s included from %s:%d does not exist' % (incfilename, filename, linenumber))
+                    try:
+                        self.populate(fp, incfilename, recurLevel+1)
+                    finally:
+                        fp.close()
                 else:
                     self[name.lower()] = setting(name, value, filename, linenumber, pos)
 

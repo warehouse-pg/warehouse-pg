@@ -187,7 +187,8 @@ class Connection:
 
 
 def connect(dburl, utility=False, verbose=False,
-            encoding=None, allowSystemTableMods=False, logConn=True, unsetSearchPath=True, cursorFactory=None):
+            encoding=None, allowSystemTableMods=False, logConn=True, unsetSearchPath=True, cursorFactory=None,
+            extraOptions=None):
 
     conninfo = {
         'user': dburl.pguser,
@@ -217,6 +218,10 @@ def connect(dburl, utility=False, verbose=False,
     #by default, libpq will print WARNINGS to stdout
     if not verbose:
         options.append("-c CLIENT_MIN_MESSAGES=ERROR")
+
+    # further "-c name=value" settings for the session
+    if extraOptions:
+        options.extend(extraOptions)
 
     if options:
         conninfo['options'] = " ".join(options)

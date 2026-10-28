@@ -24,6 +24,7 @@ try:
     from gppylib.gparray import *
     from gppylib import userinput
     from gppylib import pgconf
+    from gppylib import replica_topology
     from gppylib.commands import unix
     from gppylib.commands import gp
     from gppylib.commands.gp import SEGMENT_STOP_TIMEOUT_DEFAULT, SegmentStop, GpSegStopCmd
@@ -310,10 +311,21 @@ class GpStop:
 
     ######
     def _build_gparray(self):
+        self.dburl = dbconn.DbURL(port=self.port, dbname='template1')
+        # On a whpg-dr read replica the catalog describes the source cluster:
+        # act on the nodes the replica's dispatch topology file lists instead.
+        try:
+            replica_conf = replica_topology.read_replica_conf(self.coordinator_datadir)
+            if replica_conf is not None:
+                logger.info("whpg-dr read replica: obtaining the nodes from %s" % replica_conf.topology_path())
+                self.gparray = replica_topology.gparray_from_replica(replica_conf)
+                return
+        except replica_topology.ReplicaTopologyError as e:
+            raise ExceptionNoStackTraceNeeded(str(e))
+
         logger.info("Obtaining Greenplum Coordinator catalog information")
 
         logger.info("Obtaining Segment details from coordinator...")
-        self.dburl = dbconn.DbURL(port=self.port, dbname='template1')
         self.gparray = GpArray.initFromCatalog(self.dburl, utility=True)
 
     def _handle_shutdown_state(self):
