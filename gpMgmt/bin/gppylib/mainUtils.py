@@ -65,17 +65,31 @@ class PIDLockFile:
         self.released = False
 
     def acquire(self):
+        # The lock belongs to the process acquiring it, which is not
+        # necessarily the one that constructed this object (fork).
+        self.PID = os.getpid()
+
+        # Build the lock directory with its PID file under a temporary name and
+        # rename it into place, so that the lock directory is never visible
+        # without a PID file. rename() fails if the lock directory already
+        # holds a PID file, and atomically replaces an empty one left behind
+        # by an older run.
+        tmppath = "%s.%d.tmp" % (self.path, self.PID)
         try:
-            os.makedirs(self.path)
-            with open(self.PIDfile, mode='w') as p:
+            shutil.rmtree(tmppath, ignore_errors=True)
+            os.makedirs(tmppath)
+            with open(os.path.join(tmppath, "PID"), mode='w') as p:
                 p.write(str(self.PID))
+            os.rename(tmppath, self.path)
             self.released = False
         except EnvironmentError as e:
-            if e.errno == errno.EEXIST:
+            shutil.rmtree(tmppath, ignore_errors=True)
+            if e.errno in (errno.EEXIST, errno.ENOTEMPTY, errno.ENOTDIR):
                 raise PIDLockHeld("PIDLock already held at %s" % self.path, self.path)
             else:
                 raise
         except:
+            shutil.rmtree(tmppath, ignore_errors=True)
             raise
 
     def release(self):
@@ -86,8 +100,10 @@ class PIDLockFile:
         if self.released:
             return
         try:
-            # only delete the lock if we created the lock
-            if self.PID == self.read_pid():
+            # only delete the lock if we created the lock. Compare against the
+            # current PID: a forked child inherits this object, and must not
+            # remove its parent's lock when it exits.
+            if os.getpid() == self.read_pid():
                 # remove the dir and PID file inside of it
                 shutil.rmtree(self.path)
 
@@ -180,8 +196,9 @@ class SimpleMainLock:
         """
         Attempts to acquire the lock this process needs to proceed.
 
-        Returns None on successful acquisition of the lock or 
-          the pid of the other process which already has the lock.
+        Returns None on successful acquisition of the lock or
+          the pid of the other process which already has the lock
+          ("unknown" if the lock is held but its owner cannot be read).
         """
         # nothing to do if utiliity requires no locking
         if self.pidlockfile is None:
@@ -210,8 +227,20 @@ class SimpleMainLock:
             self.pidlockfile.acquire()
 
         except PIDLockHeld:
-            self.pidfilepid = self.pidlockfile.read_pid()
-            return self.pidfilepid
+            self.pidfilepid = self._read_pid_or_none()
+            if self.pidfilepid is not None:
+                return self.pidfilepid
+
+            # The lock directory exists but has no valid PID file. A live owner
+            # never leaves it in that state (see PIDLockFile.acquire), so it is
+            # debris from a run that died while creating it: remove it and try
+            # once more. Never report such a directory as acquired.
+            shutil.rmtree(self.ppath, ignore_errors=True)
+            try:
+                self.pidlockfile.acquire()
+            except PIDLockHeld:
+                self.pidfilepid = self._read_pid_or_none()
+                return self.pidfilepid if self.pidfilepid is not None else "unknown"
 
         # we have the lock
         # prepare for a later call to release() and take good
@@ -222,6 +251,16 @@ class SimpleMainLock:
             os.environ[self.parentpidvar] = str(self.pidfilepid)
 
         return None
+
+    def _read_pid_or_none(self):
+        """
+        Return the PID in the lock file, or None if there is none or it is
+        not a valid PID.
+        """
+        try:
+            return self.pidlockfile.read_pid()
+        except ValueError:
+            return None
 
     def release(self):
         """
