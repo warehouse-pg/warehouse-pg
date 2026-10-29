@@ -1,0 +1,91 @@
+--
+-- Errors raised on a segment keep the fields that name the database objects
+-- (schema, table, column, datatype, constraint), as errors raised on the
+-- coordinator do.  The coordinator rebuilds a segment's error in
+-- cdbdisp_get_PQerror(); these fields must be carried over.
+--
+-- start_matchsubs
+-- m/^LOCATION:.*:\d+/
+-- s/:\d+/:/
+-- end_matchsubs
+-- start_ignore
+DROP SCHEMA IF EXISTS segment_error_fields CASCADE;
+NOTICE:  schema "segment_error_fields" does not exist, skipping
+-- end_ignore
+CREATE SCHEMA segment_error_fields;
+SET search_path TO segment_error_fields;
+CREATE DOMAIN testdom AS int4 CHECK (value < 10);
+CREATE TABLE testerr (id int NOT NULL, val testdom NOT NULL, c int CHECK (c > 0),
+                      PRIMARY KEY (id)) DISTRIBUTED BY (id);
+INSERT INTO testerr VALUES (1, 1, 1);
+\set VERBOSITY verbose
+-- raised on the coordinator
+SELECT 20::testdom;
+ERROR:  23514: value for domain testdom violates check constraint "testdom_check"
+SCHEMA NAME:  segment_error_fields
+DATATYPE NAME:  testdom
+CONSTRAINT NAME:  testdom_check
+LOCATION:  ExecEvalCoerceToDomain, execQual.c:4610
+-- raised on a segment
+INSERT INTO testerr (id, val) VALUES (2, 20);
+ERROR:  23514: value for domain testdom violates check constraint "testdom_check"  (seg0 127.0.0.1:50000 pid=12345)
+SCHEMA NAME:  segment_error_fields
+DATATYPE NAME:  testdom
+CONSTRAINT NAME:  testdom_check
+LOCATION:  ExecEvalCoerceToDomain, execQual.c:4610
+INSERT INTO testerr (val) VALUES (1);
+ERROR:  23502: null value in column "id" violates not-null constraint  (seg0 127.0.0.1:50000 pid=12345)
+DETAIL:  Failing row contains (null, 1, null).
+SCHEMA NAME:  segment_error_fields
+TABLE NAME:  testerr
+COLUMN NAME:  id
+LOCATION:  ExecConstraints, execMain.c:3385
+INSERT INTO testerr VALUES (3, 1, -1);
+ERROR:  23514: new row for relation "testerr" violates check constraint "testerr_c_check"  (seg0 127.0.0.1:50000 pid=12345)
+DETAIL:  Failing row contains (3, 1, -1).
+SCHEMA NAME:  segment_error_fields
+TABLE NAME:  testerr
+CONSTRAINT NAME:  testerr_c_check
+LOCATION:  ExecConstraints, execMain.c:3410
+INSERT INTO testerr VALUES (1, 1, 1);
+ERROR:  23505: duplicate key value violates unique constraint "testerr_pkey"  (seg1 127.0.0.1:50001 pid=12345)
+DETAIL:  Key (id)=(1) already exists.
+SCHEMA NAME:  segment_error_fields
+TABLE NAME:  testerr
+CONSTRAINT NAME:  testerr_pkey
+LOCATION:  _bt_check_unique, nbtinsert.c:500
+UPDATE testerr SET c = -1 WHERE id = 1;
+ERROR:  23514: new row for relation "testerr" violates check constraint "testerr_c_check"  (seg1 127.0.0.1:50001 pid=12345)
+DETAIL:  Failing row contains (1, 1, -1).
+SCHEMA NAME:  segment_error_fields
+TABLE NAME:  testerr
+CONSTRAINT NAME:  testerr_c_check
+LOCATION:  ExecConstraints, execMain.c:3410
+COPY testerr FROM STDIN;
+ERROR:  23514: new row for relation "testerr" violates check constraint "testerr_c_check"
+DETAIL:  Failing row contains (4, 1, -5).
+CONTEXT:  COPY testerr, line 1: "4	1	-5"
+SCHEMA NAME:  segment_error_fields
+TABLE NAME:  testerr
+CONSTRAINT NAME:  testerr_c_check
+LOCATION:  ExecConstraints, execMain.c:3410
+COPY testerr FROM STDIN;
+ERROR:  23505: duplicate key value violates unique constraint "testerr_pkey"
+DETAIL:  Key (id)=(1) already exists.
+CONTEXT:  COPY testerr, line 1
+SCHEMA NAME:  segment_error_fields
+TABLE NAME:  testerr
+CONSTRAINT NAME:  testerr_pkey
+LOCATION:  _bt_check_unique, nbtinsert.c:500
+-- an error without object names gets none
+SELECT 1 / (c - 1) FROM testerr;
+ERROR:  22012: division by zero  (seg1 slice1 127.0.0.1:50001 pid=12345)
+LOCATION:  int4div, int.c:719
+\set VERBOSITY default
+RESET search_path;
+-- start_ignore
+DROP SCHEMA segment_error_fields CASCADE;
+NOTICE:  drop cascades to 2 other objects
+DETAIL:  drop cascades to type segment_error_fields.testdom
+drop cascades to table segment_error_fields.testerr
+-- end_ignore
