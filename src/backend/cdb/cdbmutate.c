@@ -16,6 +16,7 @@
 #include "postgres.h"
 
 #include "access/relation.h"
+#include "access/stratnum.h"
 #include "access/xact.h"
 #include "parser/parsetree.h"	/* for rt_fetch() */
 #include "optimizer/planmain.h"
@@ -214,6 +215,12 @@ getExprListFromTargetList(List *tlist,
  * cdbmutate_warn_ctid_without_segid() warns the user if the plan refers to a
  * partitioned table's ctid column without also referencing its
  * gp_segment_id column.
+ *
+ * A ctid is unique only within one segment.  The rel counts as having its
+ * segment named when gp_segment_id is referenced, or when its restriction
+ * clauses confine it to one segment through an equality on every
+ * distribution key column (see ctid_rel_on_one_segment()).  A ctid that is
+ * only tested with IS [NOT] NULL does not pick rows and is not counted.
  * ----------------------------------------------------------------------- *
  */
 typedef struct ctid_inventory_context
@@ -247,6 +254,78 @@ ctid_inventory_walker(Node *node, ctid_inventory_context *inv)
 		return false;
 	}
 	return plan_tree_walker(node, ctid_inventory_walker, inv, true);
+}
+
+/*
+ * ctid_rel_on_one_segment() -- do the rel's own restriction clauses confine it
+ * to a single segment?
+ *
+ * True when the rel is hash-distributed and every distribution key column is
+ * equated, with the equality operator of its distribution opclass, to an
+ * expression that contains no Vars and no volatile functions (a constant, a
+ * parameter, a stable function of those).  All rows the statement can reach
+ * then have the same distribution key value, so they are on one segment, and
+ * a ctid identifies at most one row of the rel -- the same as if
+ * gp_segment_id had been given.  An IN list, a range, or an equality to a
+ * column of another rel does not qualify.
+ */
+static bool
+ctid_rel_on_one_segment(RelOptInfo *rel)
+{
+	GpPolicy   *policy = rel->cdbpolicy;
+	int			i;
+
+	if (!GpPolicyIsHashPartitioned(policy) || policy->nattrs == 0)
+		return false;
+
+	for (i = 0; i < policy->nattrs; i++)
+	{
+		AttrNumber	attno = policy->attrs[i];
+		Oid			opfamily = get_opclass_family(policy->opclasses[i]);
+		bool		found = false;
+		ListCell   *lc;
+
+		foreach(lc, rel->baserestrictinfo)
+		{
+			RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
+			OpExpr	   *op;
+			Node	   *left;
+			Node	   *right;
+			Node	   *other = NULL;
+
+			if (!is_opclause(rinfo->clause))
+				continue;
+			op = (OpExpr *) rinfo->clause;
+			if (list_length(op->args) != 2)
+				continue;
+			left = strip_implicit_coercions(linitial(op->args));
+			right = strip_implicit_coercions(lsecond(op->args));
+
+			if (IsA(left, Var) &&
+				((Var *) left)->varno == rel->relid &&
+				((Var *) left)->varattno == attno &&
+				((Var *) left)->varlevelsup == 0)
+				other = right;
+			else if (IsA(right, Var) &&
+					 ((Var *) right)->varno == rel->relid &&
+					 ((Var *) right)->varattno == attno &&
+					 ((Var *) right)->varlevelsup == 0)
+				other = left;
+			if (other == NULL)
+				continue;
+
+			if (get_op_opfamily_strategy(op->opno, opfamily) != HTEqualStrategyNumber)
+				continue;
+			if (contain_var_clause(other) || contain_volatile_functions(other))
+				continue;
+
+			found = true;
+			break;
+		}
+		if (!found)
+			return false;
+	}
+	return true;
 }
 
 void
@@ -292,8 +371,25 @@ cdbmutate_warn_ctid_without_segid(struct PlannerInfo *root, struct RelOptInfo *r
 
 		Assert(IsA(rinfo, RestrictInfo));
 
+		/*
+		 * "ctid IS [NOT] NULL" does not pick rows by position (a ctid is
+		 * never null), so it is not a use of ctid for this check.
+		 */
+		if (IsA(rinfo->clause, NullTest) &&
+			IsA(((NullTest *) rinfo->clause)->arg, Var) &&
+			((Var *) ((NullTest *) rinfo->clause)->arg)->varno == rel->relid &&
+			((Var *) ((NullTest *) rinfo->clause)->arg)->varattno == SelfItemPointerAttributeNumber)
+			continue;
+
 		ctid_inventory_walker((Node *) rinfo->clause, &inv);
 	}
+
+	/*
+	 * An equality on the whole distribution key confines the rel to one
+	 * segment, which pins it as well as gp_segment_id would.
+	 */
+	if (inv.uses_ctid && !inv.uses_segid && ctid_rel_on_one_segment(rel))
+		inv.uses_segid = true;
 
 	/* Notify client if found a reference to ctid only, without gp_segment_id */
 	if (inv.uses_ctid &&

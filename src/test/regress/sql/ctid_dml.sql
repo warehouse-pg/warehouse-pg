@@ -3,8 +3,9 @@
 --
 -- A ctid is unique only within one segment, so a ctid alone matches one row
 -- on every segment.  The Postgres planner rejects an UPDATE or DELETE that
--- uses a relation's ctid without mentioning that relation's gp_segment_id;
--- when gp_segment_id is mentioned, the statement runs as written.  GPORCA
+-- uses a relation's ctid without mentioning that relation's gp_segment_id,
+-- unless an equality on its whole distribution key confines it to one
+-- segment; otherwise the statement runs as written.  GPORCA
 -- leaves every UPDATE or DELETE that reads a ctid to the planner, so both
 -- optimizers give the same answer.  With optimizer_trace_fallback on, the
 -- GPORCA output shows each hand-off.
@@ -24,6 +25,8 @@ CREATE TABLE d (id int, v int) DISTRIBUTED BY (id);
 INSERT INTO d SELECT g, g % 3 FROM generate_series(1, 9) g;
 CREATE TABLE s (tid tid, sid int) DISTRIBUTED RANDOMLY;
 INSERT INTO s SELECT ctid, gp_segment_id FROM t WHERE id = 7;
+CREATE TABLE m (a int, b int, v int) DISTRIBUTED BY (a, b);
+INSERT INTO m SELECT g, g % 3, g FROM generate_series(1, 20) g;
 CREATE TABLE r (id int, v int) DISTRIBUTED RANDOMLY;
 INSERT INTO r SELECT g, g FROM generate_series(1, 10) g;
 CREATE TABLE ao (id int, v int) WITH (appendonly = true) DISTRIBUTED BY (id);
@@ -60,10 +63,20 @@ SELECT del_by_ctid('(0,1)');
 DELETE FROM t WHERE ctid = '(0,1)' AND v = 0;
 -- K3: a list of distribution-key values reaches several segments.
 DELETE FROM t WHERE ctid = '(0,1)' AND id IN (1, 2, 5);
--- K1: an equality on the distribution key reaches one segment, so this names
--- exactly one row; but gp_segment_id is not mentioned, so the planner's rule
--- rejects it.  (Before this change GPORCA ran it.)
-DELETE FROM t WHERE ctid = '(0,1)' AND id = 1;
+-- A distribution key condition that can reach more than one segment: an
+-- OR, a range, only one column of a two-column key, a key joined to another
+-- table, a randomly distributed table.
+DELETE FROM t WHERE ctid = '(0,1)' AND (id = 1 OR id = 2);
+DELETE FROM t WHERE ctid = '(0,1)' AND id BETWEEN 1 AND 2;
+DELETE FROM m WHERE ctid = '(0,1)' AND a = 1;
+DELETE FROM t USING d WHERE t.ctid = '(0,1)' AND t.id = d.id;
+DELETE FROM r WHERE ctid = '(0,1)' AND id = 1;
+-- another column of the same row is not one fixed value
+DELETE FROM t WHERE ctid = '(0,1)' AND id = v;
+-- a volatile expression is not one fixed value
+DELETE FROM t WHERE ctid = '(0,1)' AND id = (random() * 0 + 1)::int;
+-- ctid IS NOT NULL does not pick rows, but a ctid comparison next to it does.
+DELETE FROM t WHERE ctid IS NOT NULL AND ctid = '(0,1)';
 
 --
 -- gp_segment_id that the planner removes before it checks: rejected.
@@ -131,6 +144,48 @@ BEGIN;
 -- J1: paired in a join qualifier, one query level down.
 DELETE FROM t WHERE id IN (SELECT b.id FROM t b JOIN s ON b.ctid = s.tid AND b.gp_segment_id = s.sid);
 SELECT count(*) AS left_rows, sum(CASE WHEN id = 7 THEN 1 ELSE 0 END) AS id_7 FROM t;
+ROLLBACK;
+-- An equality on the whole distribution key confines the table to one
+-- segment, so the ctid names at most one row, as with gp_segment_id.
+BEGIN;
+-- K1
+DELETE FROM t WHERE ctid = '(0,1)' AND id = 1;
+SELECT count(*) AS left_rows, sum(CASE WHEN id = 1 THEN 1 ELSE 0 END) AS id_1 FROM t;
+ROLLBACK;
+BEGIN;
+UPDATE t SET note = 'y' WHERE ctid = '(0,1)' AND 2 = id;
+SELECT id, note FROM t WHERE note <> 'x';
+ROLLBACK;
+BEGIN;
+-- both columns of a two-column key
+DELETE FROM m WHERE ctid = '(0,1)' AND a = 1 AND b = 1;
+SELECT count(*) AS left_rows FROM m;
+ROLLBACK;
+BEGIN;
+-- a parameter, also in a generic plan
+SET LOCAL plan_cache_mode = force_generic_plan;
+PREPARE del_key(tid, int) AS DELETE FROM t WHERE ctid = $1 AND id = $2;
+EXECUTE del_key('(0,1)', 5);
+DEALLOCATE del_key;
+SELECT count(*) AS left_rows, sum(CASE WHEN id = 5 THEN 1 ELSE 0 END) AS id_5 FROM t;
+ROLLBACK;
+BEGIN;
+-- Y33: d's ctid is a join key and d's gp_segment_id is not mentioned, but d
+-- is confined to one segment by its key.
+DELETE FROM t USING d WHERE t.ctid = d.ctid AND t.gp_segment_id = 0 AND d.id = 2;
+SELECT count(*) AS left_rows FROM t;
+ROLLBACK;
+BEGIN;
+-- Y35: one table under two aliases, b confined by its key.
+DELETE FROM t a USING t b WHERE a.ctid = b.ctid AND a.gp_segment_id = 1 AND b.id = 1;
+SELECT count(*) AS left_rows FROM t;
+ROLLBACK;
+BEGIN;
+-- X27: ctid IS [NOT] NULL is not a row lookup.
+DELETE FROM t WHERE ctid IS NOT NULL AND id < 3;
+SELECT count(*) AS left_rows FROM t;
+DELETE FROM t WHERE ctid IS NULL;
+SELECT count(*) AS left_rows FROM t;
 ROLLBACK;
 -- Mentioning gp_segment_id is the user choosing the segments, even when the
 -- condition filters nothing: these delete the row at (0,1) on every segment
