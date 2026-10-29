@@ -3833,6 +3833,19 @@ reset optimizer;
 drop function dep_estimated_rows(text);
 drop table dep_t;
 
+-- disable_xform()/enable_xform() dereferenced the CXformFactory singleton
+-- without a NULL check. InitGPOPT() (and with it CXformFactory::Init()) runs
+-- only in coordinator dispatcher backends, so the singleton never exists on a
+-- segment. The usual select disable_xform('...') runs on the coordinator, but
+-- reading the xform name from a distributed table makes the planner evaluate
+-- the call on the segments, which used to crash every one of them. Found by
+-- sqlsmith.
+create table xform_seg_eval(id int, xname text) distributed by (id);
+insert into xform_seg_eval select i, 'CXformSelect2IndexGet' from generate_series(1, 3) i;
+select disable_xform(xname) from xform_seg_eval order by id;
+select enable_xform(xname) from xform_seg_eval order by id;
+drop table xform_seg_eval;
+
 -- start_ignore
 DROP SCHEMA orca CASCADE;
 -- end_ignore
