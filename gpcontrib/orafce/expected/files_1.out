@@ -276,5 +276,17 @@ DETAIL:  Parent directory references are not allowed.
 SELECT utl_file.frename('REGRESS_DIR', 'regress_orafce.txt', 'REGRESS_DIR', '../regress_orafce_outside.txt');
 ERROR:  UTL_FILE_INVALID_PATH
 DETAIL:  Parent directory references are not allowed.
+-- named locations are checked against the allowed directories too
+SELECT fexists FROM utl_file.fgetattr('REGRESS_DIR', '..');
+ERROR:  UTL_FILE_INVALID_PATH
+DETAIL:  you cannot access locality
+HINT:  locality is not found in utl_file_dir table
+-- overlong paths are rejected, not truncated
+SELECT fexists FROM utl_file.fgetattr('REGRESS_DIR', 'x' || repeat('/', 1100) || 'y');
+ERROR:  UTL_FILE_INVALID_PATH
+DETAIL:  File name too long
+SELECT fexists FROM utl_file.fgetattr(utl_file.tmpdir() || '/regress_orafce_dir', 'x' || repeat('/', 1100) || 'y');
+ERROR:  UTL_FILE_INVALID_PATH
+DETAIL:  File name too long
 \set VERBOSITY terse
 DELETE FROM utl_file.utl_file_dir;
