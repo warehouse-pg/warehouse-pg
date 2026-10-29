@@ -212,6 +212,26 @@ init_internal_proj(AppendOnlyBlockDirectory *blockDirectory, bool *proj, bool us
 }
 
 /*
+ * Raise an error if 'snapshot' cannot use the block directory of 'aoRel'.
+ *
+ * Fetching a row by TID has no way around the block directory, so returning
+ * nothing would silently lose rows.  The planners leave out the indexes of
+ * such a relation, so this is only reached by plans made with a newer
+ * snapshot than the one they run with.
+ */
+static void
+check_blkdir_visible(Relation aoRel, Snapshot snapshot)
+{
+	if (!AORelationBlockDirectoryIsVisible(aoRel, snapshot))
+		ereport(ERROR,
+				(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+				 errmsg("cannot use the block directory of append-optimized relation \"%s\" with this snapshot",
+						RelationGetRelationName(aoRel)),
+				 errdetail("The block directory was built by a transaction that this snapshot does not see."),
+				 errhint("Retry the query in a new transaction.")));
+}
+
+/*
  * AppendOnlyBlockDirectory_Init_forSearch
  *
  * Initialize the block directory to handle the lookup.
@@ -244,6 +264,8 @@ AppendOnlyBlockDirectory_Init_forSearch(
 
 		return;
 	}
+
+	check_blkdir_visible(aoRel, appendOnlyMetaDataSnapshot);
 
 	ereportif(Debug_appendonly_print_blockdirectory, LOG,
 			  (errmsg("Append-only block directory init for search: "
@@ -390,6 +412,8 @@ AppendOnlyBlockDirectory_Init_forIndexOnlyScan(
 
 	if (!OidIsValid(blkdirrelid))
 		elog(ERROR, "Could not find block directory for relation: %u", aoRel->rd_id);
+
+	check_blkdir_visible(aoRel, snapshot);
 
 	blockDirectory->aoRel = aoRel;
 	blockDirectory->isAOCol = RelationIsAoCols(aoRel);

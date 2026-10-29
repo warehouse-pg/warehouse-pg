@@ -59,6 +59,7 @@
 
 #include "cdb/cdbappendonlyam.h"
 #include "cdb/cdbrelsize.h"
+#include "catalog/aocatalog.h"
 #include "catalog/pg_appendonly.h"
 #include "catalog/pg_foreign_server.h"
 #include "catalog/pg_inherits.h"
@@ -186,6 +187,19 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 		hasindex = false;
 	else
 		hasindex = relation->rd_rel->relhasindex;
+
+	/*
+	 * WHPG: an append-optimized relation's indexes find rows through its block
+	 * directory.  If the snapshot predates the block directory, it sees the
+	 * directory as empty, so ignore the indexes, like indcheckxmin does for
+	 * heap; but mark the plan we are generating as transient.
+	 */
+	if (hasindex && ActiveSnapshotSet() &&
+		!AORelationBlockDirectoryIsVisible(relation, GetActiveSnapshot()))
+	{
+		root->glob->transientPlan = true;
+		hasindex = false;
+	}
 
 	if (hasindex)
 	{

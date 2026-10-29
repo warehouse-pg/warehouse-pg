@@ -53,4 +53,50 @@ drop index @amname@_create_index_with_select_idx;
 1: commit;
 
 drop table @amname@_create_index_with_select_tbl;
+
+-- The first CREATE INDEX on an append-optimized table also
+-- builds its block directory, under the CREATE INDEX transaction's xid.  A
+-- repeatable read transaction whose snapshot is older sees an empty block
+-- directory, yet the index is visible to it through the catalog.  Scans that
+-- find rows through the block directory (index, index-only and bitmap scans,
+-- and block sampling) used to return no rows there.  The planners must leave
+-- the index out instead, and sampling must read the segment files.
+create table create_index_old_snapshot_tbl(a int, b int);
+insert into create_index_old_snapshot_tbl select a, a from generate_series(1, 100) a;
+
+1: begin isolation level repeatable read;
+-- take the snapshot without touching the table
+1: select 1;
+2: create index create_index_old_snapshot_idx on create_index_old_snapshot_tbl(a);
+1: set enable_seqscan = off;
+1: set enable_bitmapscan = off;
+1: explain (costs off) select a from create_index_old_snapshot_tbl where a between 1 and 100;
+1: select count(*) from create_index_old_snapshot_tbl where a between 1 and 100;
+1: select count(b) from create_index_old_snapshot_tbl where a between 1 and 100;
+1: set enable_indexscan = off;
+1: set enable_indexonlyscan = off;
+1: set enable_bitmapscan = on;
+1: select count(b) from create_index_old_snapshot_tbl where a between 1 and 100;
+1: set enable_seqscan = on;
+1: select count(*) from create_index_old_snapshot_tbl tablesample system (100);
+1: end;
+1q:
+
+-- The same must hold when an earlier CREATE INDEX built the block directory
+-- and the query would use a later index.
+drop table create_index_old_snapshot_tbl;
+create table create_index_old_snapshot_tbl(a int, b int);
+insert into create_index_old_snapshot_tbl select a, a from generate_series(1, 100) a;
+
+1: begin isolation level repeatable read;
+1: select 1;
+2: create index create_index_old_snapshot_b_idx on create_index_old_snapshot_tbl(b);
+2: create index create_index_old_snapshot_idx on create_index_old_snapshot_tbl(a);
+1: set enable_seqscan = off;
+1: set enable_bitmapscan = off;
+1: select count(*) from create_index_old_snapshot_tbl where a between 1 and 100;
+1: end;
+1q:
+
+drop table create_index_old_snapshot_tbl;
 reset default_table_access_method;

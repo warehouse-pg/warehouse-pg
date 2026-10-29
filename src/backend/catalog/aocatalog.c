@@ -12,7 +12,9 @@
  */
 #include "postgres.h"
 
+#include "access/genam.h"
 #include "access/heapam.h"
+#include "access/table.h"
 #include "access/xact.h"
 #include "catalog/aoblkdir.h"
 #include "catalog/aocatalog.h"
@@ -31,6 +33,8 @@
 #include "miscadmin.h"
 #include "storage/lmgr.h"
 #include "utils/builtins.h"
+#include "utils/fmgroids.h"
+#include "utils/snapmgr.h"
 #include "catalog/gp_fastsequence.h"
 
 /*
@@ -257,4 +261,60 @@ NewRelationCreateAOAuxTables(Oid relOid, bool createBlkDir)
 
 	if (createBlkDir)
 		AlterTableCreateAoBlkdirTable(relOid);
+}
+
+/*
+ * AORelationBlockDirectoryIsVisible
+ *
+ * Can a scan with 'snapshot' find the rows of 'aoRel' through its block
+ * directory?
+ *
+ * The block directory is created by the first CREATE INDEX on the relation,
+ * or by a rewrite, and filled in by that same transaction for the rows already
+ * in the relation.  A snapshot that does not see that transaction sees none of
+ * those entries, so every row looks missing: index and index-only scans return
+ * nothing, and so does a sample scan that locates rows through the directory.
+ * The index itself is visible through the catalog snapshot, so the planners
+ * would use it unless told otherwise.
+ *
+ * The block directory's pg_class row is inserted by the same transaction, so
+ * check whether the snapshot sees that row.  Later transactions add entries
+ * only for the rows they insert themselves, which keeps the directory in step
+ * with the data for any snapshot that sees the directory at all.
+ *
+ * Returns true if the relation has no block directory, and for non-MVCC
+ * snapshots, which do not hide committed entries.  So does a NULL snapshot,
+ * as passed by ANALYZE: the block directory is then read with the catalog
+ * snapshot, which sees it.
+ */
+bool
+AORelationBlockDirectoryIsVisible(Relation aoRel, Snapshot snapshot)
+{
+	Oid			blkdirrelid;
+	Relation	pg_class;
+	ScanKeyData key;
+	SysScanDesc scan;
+	bool		visible;
+
+	if (!RelationStorageIsAO(aoRel) ||
+		snapshot == InvalidSnapshot || !IsMVCCSnapshot(snapshot))
+		return true;
+
+	GetAppendOnlyEntryAuxOids(aoRel, NULL, &blkdirrelid, NULL);
+	if (!OidIsValid(blkdirrelid))
+		return true;
+
+	ScanKeyInit(&key,
+				Anum_pg_class_oid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(blkdirrelid));
+
+	pg_class = table_open(RelationRelationId, AccessShareLock);
+	scan = systable_beginscan(pg_class, ClassOidIndexId, true,
+							  snapshot, 1, &key);
+	visible = HeapTupleIsValid(systable_getnext(scan));
+	systable_endscan(scan);
+	table_close(pg_class, AccessShareLock);
+
+	return visible;
 }
