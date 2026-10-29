@@ -387,6 +387,42 @@ DROP TABLE sub_part;
 DROP TABLE sub_part_1_prt_1_2_prt_one_foreign;
 DROP TABLE sub_part_1_prt_1_2_prt_two_foreign;
 
+-- Dynamic index scan must not fold an indexless foreign leaf into the same
+-- scan node as its indexed heap sibling.
+--
+-- idx_mixed has one heap leaf (indexed) and one foreign leaf (not indexed).
+-- A nestloop join driving an index lookup on idx_mixed used to make ORCA
+-- build a single Dynamic Index Scan counting both leaves, which failed at
+-- execution time with "failed to find index for partition ... in dynamic
+-- index scan" once it reached the foreign leaf. The plan must instead keep
+-- the foreign leaf out of the index scan (e.g. by scanning heap and foreign
+-- leaves separately), and the query must return rows from both leaves.
+CREATE TABLE idx_mixed_heap_remote (id int, a int, b int) DISTRIBUTED BY (id);
+INSERT INTO idx_mixed_heap_remote SELECT g, g, g * 2 FROM generate_series(300, 309) g;
+
+CREATE TABLE idx_mixed (id int, a int, b int) DISTRIBUTED BY (id) PARTITION BY RANGE (id);
+CREATE TABLE idx_mixed_p0 (id int, a int, b int) DISTRIBUTED BY (id);
+ALTER TABLE idx_mixed ATTACH PARTITION idx_mixed_p0 FOR VALUES FROM (0) TO (100);
+INSERT INTO idx_mixed_p0 SELECT g, g, g * 2 FROM generate_series(0, 19) g;
+
+CREATE INDEX idx_mixed_a_idx ON idx_mixed (a);
+
+CREATE FOREIGN TABLE idx_mixed_p3 (id int, a int, b int)
+	SERVER loopback OPTIONS (schema_name 'postgres_fdw_gp', table_name 'idx_mixed_heap_remote');
+ALTER TABLE idx_mixed ATTACH PARTITION idx_mixed_p3 FOR VALUES FROM (300) TO (400);
+
+ANALYZE idx_mixed;
+
+CREATE TABLE idx_mixed_driver (a int);
+INSERT INTO idx_mixed_driver VALUES (0);
+
+SELECT idx_mixed.* FROM idx_mixed, idx_mixed_driver
+WHERE idx_mixed.a > idx_mixed_driver.a ORDER BY idx_mixed.id;
+
+DROP TABLE idx_mixed;
+DROP TABLE idx_mixed_heap_remote;
+DROP TABLE idx_mixed_driver;
+
 -- GPDB #16219: validate scram-sha-256 in postgres_fdw
 alter system set password_encryption = 'scram-sha-256';
 -- add created user to pg_hba.conf
