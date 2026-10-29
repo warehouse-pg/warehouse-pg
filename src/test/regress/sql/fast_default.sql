@@ -560,6 +560,43 @@ SELECT count(*)
   WHERE attrelid = 'ft1'::regclass AND
     (attmissingval IS NOT NULL OR atthasmissing);
 
+-- GPDB: a stable default must be evaluated once, on the QD, and the same
+-- missing value stored on every segment, also when the column is added
+-- through a partitioned table (which itself has no missing value).
+CREATE FUNCTION gp_missingval_versions(tbl regclass, col name)
+RETURNS bigint AS $$
+  SELECT count(DISTINCT attmissingval::text) FROM (
+    SELECT attmissingval FROM pg_attribute
+      WHERE attrelid = $1 AND attname = $2
+    UNION ALL
+    SELECT attmissingval FROM gp_dist_random('pg_attribute')
+      WHERE attrelid = $1 AND attname = $2
+  ) x;
+$$ LANGUAGE sql;
+
+CREATE TABLE gp_fastdef_plain(i int) DISTRIBUTED BY (i);
+INSERT INTO gp_fastdef_plain SELECT g FROM generate_series(1, 20) g;
+ALTER TABLE gp_fastdef_plain ADD COLUMN ts timestamp DEFAULT now();
+SELECT count(DISTINCT ts) FROM gp_fastdef_plain;
+SELECT gp_missingval_versions('gp_fastdef_plain', 'ts');
+
+CREATE TABLE gp_fastdef_part(i int, p int, q int) DISTRIBUTED BY (i)
+  PARTITION BY RANGE (p) SUBPARTITION BY LIST (q)
+  SUBPARTITION TEMPLATE (SUBPARTITION a VALUES (1),
+                         SUBPARTITION b VALUES (2) WITH (appendonly=true))
+  (START (0) END (20) EVERY (10));
+INSERT INTO gp_fastdef_part SELECT g, g % 20, 1 + g % 2 FROM generate_series(1, 40) g;
+ALTER TABLE gp_fastdef_part ADD COLUMN ts timestamp DEFAULT now();
+SELECT count(DISTINCT ts) FROM gp_fastdef_part;
+SELECT c.relname, c.relkind, gp_missingval_versions(c.oid, 'ts')
+  FROM pg_class c
+  WHERE c.oid IN (SELECT relid FROM pg_partition_tree('gp_fastdef_part'))
+  ORDER BY c.relname;
+
+DROP TABLE gp_fastdef_plain;
+DROP TABLE gp_fastdef_part;
+DROP FUNCTION gp_missingval_versions(regclass, name);
+
 -- cleanup
 DROP FOREIGN TABLE ft1;
 DROP SERVER s0;

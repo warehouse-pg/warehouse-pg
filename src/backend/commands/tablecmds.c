@@ -7404,6 +7404,7 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 	ObjectAddress address;
  	List* enc;
 	bool 		missingmode = true;
+	ColumnDef  *origColDef;
 
 	/* At top level, permission check was done in ATPrepCmd, else do it */
 	if (recursing)
@@ -7849,6 +7850,7 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 				 errmsg("column must be added to child tables too")));
 
 	/* Children should see column as singly inherited */
+	origColDef = colDef;
 	if (!recursing)
 	{
 		colDef = copyObject(colDef);
@@ -7889,6 +7891,21 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 						if_not_exists, lockmode);
 
 		table_close(childrel, NoLock);
+	}
+
+	/*
+	 * GPDB: a partitioned table has no storage, so the QD only cooks the
+	 * missing value when recursing into the first leaf, and that lands in the
+	 * children's private copy of colDef.  Copy it back into the original
+	 * colDef, which is what gets dispatched, so that the QEs reuse the value
+	 * computed here instead of evaluating the default again on every segment.
+	 */
+	if (!recursing && Gp_role == GP_ROLE_DISPATCH &&
+		!origColDef->hasCookedMissingVal && colDef->hasCookedMissingVal)
+	{
+		origColDef->hasCookedMissingVal = true;
+		origColDef->missingVal = colDef->missingVal;
+		origColDef->missingIsNull = colDef->missingIsNull;
 	}
 
 	ObjectAddressSubSet(address, RelationRelationId, myrelid, newattnum);
