@@ -2041,11 +2041,11 @@ gpdb::CheckCollation(Node *node)
 }
 
 bool
-gpdb::DMLUsesCtidWithoutSegid(Query *query)
+gpdb::DMLReadsCtid(Query *query)
 {
 	GP_WRAP_START;
 	{
-		return cdbmutate_dml_uses_ctid_without_segid(query);
+		return cdbmutate_dml_reads_ctid(query);
 	}
 	GP_WRAP_END;
 	return false;

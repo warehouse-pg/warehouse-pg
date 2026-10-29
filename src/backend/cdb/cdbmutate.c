@@ -330,95 +330,35 @@ cdbmutate_warn_ctid_without_segid(struct PlannerInfo *root, struct RelOptInfo *r
 }								/* cdbmutate_warn_ctid_without_segid */
 
 /* ----------------------------------------------------------------------- *
- * cdbmutate_dml_uses_ctid_without_segid() tells GPORCA when to leave an
- * UPDATE or DELETE to the Postgres planner, so that the planner's
- * cdbmutate_warn_ctid_without_segid() check above rejects it.  GPORCA does
- * not run that check, and a ctid is unique only within one segment.
+ * cdbmutate_dml_reads_ctid() tells GPORCA when to leave an
+ * UPDATE or DELETE to the Postgres planner.  A ctid is unique only within
+ * one segment, so a statement that picks rows by ctid alone changes one row
+ * on every segment.  The planner rejects such a statement in
+ * cdbmutate_warn_ctid_without_segid() above; GPORCA has no such check, so
+ * without this hand-off the two optimizers disagree and the GPORCA one
+ * silently changes rows the statement never named.
  *
- * It returns true if, in an UPDATE or DELETE, some relation's ctid is
- * referenced without that relation's gp_segment_id.  References in the
- * top-level target list and RETURNING list do not count, as in the planner
- * check.  It looks at every query level, because the planner pulls
- * subqueries up into the outer query before it checks; so it can return
- * true for a statement the planner accepts.  That only costs a planner
- * plan, never a wrong result.
+ * It returns true when an UPDATE or DELETE reads any relation's ctid,
+ * anywhere except the top-level target list and RETURNING list (those are
+ * not row lookups, and the planner check ignores them too).  Whether the
+ * ctid is paired with that relation's gp_segment_id is deliberately NOT
+ * decided here: the planner decides it, after constant folding, qualifier
+ * canonicalization, subquery pull-up, unused-output removal and join
+ * removal, none of which can be predicted from the parse tree.  Earlier
+ * versions of this function tried, and each rule leaked a different family
+ * of statements that the planner rejects and GPORCA ran.
  *
- * The two columns are counted differently on purpose, because the two
- * directions have different costs.  A ctid reference counts wherever it is
- * found: counting one too many only hands the statement to the planner.  A
- * gp_segment_id reference counts only where it pairs the ctid with a
- * segment, that is in a qualifier -- the quals of a FromExpr or JoinExpr and
- * the test expression of a sublink; a gp_segment_id in a target list (the
- * output of an EXISTS subquery, a column of a derived table that nobody
- * reads) does not count.  The planner counts the columns its own query plan
- * needs, after subqueries have been pulled up and unused outputs dropped, so
- * counting one gp_segment_id too many would let GPORCA run a statement the
- * planner rejects, and change one row per segment.  A statement whose
- * pairing this function does not recognise is planned by the planner, which
- * either runs it or raises the error.
+ * The cost of handing off a statement the planner accepts is its plan,
+ * never a wrong result; the cost of keeping one the planner rejects is
+ * changed rows.  So everything that reads a ctid goes to the planner, which
+ * either runs it or raises its error, and the two optimizers cannot
+ * disagree.
  * ----------------------------------------------------------------------- *
  */
-typedef struct ctid_ref
-{
-	Query	   *query;			/* query whose range table holds the relation */
-	Index		varno;			/* range table index in that query */
-	bool		uses_ctid;
-	bool		uses_segid;
-} ctid_ref;
-
 typedef struct ctid_dml_context
 {
-	List	   *query_stack;	/* enclosing queries, innermost first */
-	List	   *refs;			/* list of ctid_ref */
-	bool		in_qual;		/* inside a qualifier? gp_segment_id counts
-								 * only there */
+	int			query_depth;	/* number of enclosing queries */
 } ctid_dml_context;
-
-static bool ctid_dml_walker(Node *node, ctid_dml_context *cxt);
-
-/* walk a qualifier, where a gp_segment_id reference counts */
-static bool
-ctid_dml_walk_qual(Node *qual, ctid_dml_context *cxt)
-{
-	bool		save_in_qual = cxt->in_qual;
-	bool		result;
-
-	cxt->in_qual = true;
-	result = ctid_dml_walker(qual, cxt);
-	cxt->in_qual = save_in_qual;
-	return result;
-}
-
-static void
-ctid_dml_note_ref(ctid_dml_context *cxt, Query *query, Index varno,
-				  AttrNumber attno)
-{
-	ListCell   *lc;
-	ctid_ref   *ref = NULL;
-
-	foreach(lc, cxt->refs)
-	{
-		ctid_ref   *r = (ctid_ref *) lfirst(lc);
-
-		if (r->query == query && r->varno == varno)
-		{
-			ref = r;
-			break;
-		}
-	}
-	if (ref == NULL)
-	{
-		ref = (ctid_ref *) palloc0(sizeof(ctid_ref));
-		ref->query = query;
-		ref->varno = varno;
-		cxt->refs = lappend(cxt->refs, ref);
-	}
-
-	if (attno == SelfItemPointerAttributeNumber)
-		ref->uses_ctid = true;
-	else
-		ref->uses_segid = true;
-}
 
 static bool
 ctid_dml_walker(Node *node, ctid_dml_context *cxt)
@@ -430,50 +370,23 @@ ctid_dml_walker(Node *node, ctid_dml_context *cxt)
 	{
 		Var		   *var = (Var *) node;
 
-		if ((var->varattno == SelfItemPointerAttributeNumber ||
-			 (var->varattno == GpSegmentIdAttributeNumber && cxt->in_qual)) &&
-			var->varlevelsup < list_length(cxt->query_stack))
-			ctid_dml_note_ref(cxt,
-							  (Query *) list_nth(cxt->query_stack, var->varlevelsup),
-							  var->varno, var->varattno);
-		return false;
-	}
-
-	/*
-	 * The quals of the jointree are the qualifiers of this query level; the
-	 * relations under them are not.  A sublink in a qual keeps the flag, so
-	 * its test expression counts too, while the subquery it contains starts
-	 * again at its own query level (see the Query case below).
-	 */
-	if (IsA(node, FromExpr))
-	{
-		FromExpr   *f = (FromExpr *) node;
-
-		if (ctid_dml_walker((Node *) f->fromlist, cxt))
-			return true;
-		return ctid_dml_walk_qual(f->quals, cxt);
-	}
-
-	if (IsA(node, JoinExpr))
-	{
-		JoinExpr   *j = (JoinExpr *) node;
-
-		if (ctid_dml_walker(j->larg, cxt) ||
-			ctid_dml_walker(j->rarg, cxt))
-			return true;
-		return ctid_dml_walk_qual(j->quals, cxt);
+		/*
+		 * A ctid of any relation, at any query level that belongs to this
+		 * statement.  varlevelsup beyond the levels we walked refers to a
+		 * query we are not looking at, which cannot happen for a top-level
+		 * DML, but check it rather than assume it.
+		 */
+		return (var->varattno == SelfItemPointerAttributeNumber &&
+				var->varlevelsup < cxt->query_depth);
 	}
 
 	if (IsA(node, Query))
 	{
-		bool		save_in_qual = cxt->in_qual;
 		bool		result;
 
-		cxt->query_stack = lcons(node, cxt->query_stack);
-		cxt->in_qual = false;
+		cxt->query_depth++;
 		result = query_tree_walker((Query *) node, ctid_dml_walker, cxt, 0);
-		cxt->in_qual = save_in_qual;
-		cxt->query_stack = list_delete_first(cxt->query_stack);
+		cxt->query_depth--;
 		return result;
 	}
 
@@ -481,45 +394,25 @@ ctid_dml_walker(Node *node, ctid_dml_context *cxt)
 }
 
 bool
-cdbmutate_dml_uses_ctid_without_segid(Query *query)
+cdbmutate_dml_reads_ctid(Query *query)
 {
 	ctid_dml_context cxt;
-	ListCell   *lc;
-	bool		found = false;
 
 	if (query->commandType != CMD_UPDATE &&
 		query->commandType != CMD_DELETE)
 		return false;
 
-	cxt.query_stack = list_make1(query);
-	cxt.refs = NIL;
-	cxt.in_qual = false;
+	cxt.query_depth = 1;
 
 	/*
-	 * Walk everything except the target list and RETURNING list of the
-	 * top-level query: the WHERE and join quals, CTEs, and subqueries in the
-	 * range table.  Sublinks are reached through the quals.
+	 * Everything except the target list and the RETURNING list of the
+	 * top-level query: the WHERE and join qualifiers, the CTEs, and the
+	 * subqueries of the range table.  Sublinks are reached through the
+	 * qualifiers.
 	 */
-	(void) ctid_dml_walker((Node *) query->jointree, &cxt);
-	(void) ctid_dml_walker((Node *) query->cteList, &cxt);
-	(void) range_table_walker(query->rtable, ctid_dml_walker, &cxt, 0);
-
-	foreach(lc, cxt.refs)
-	{
-		ctid_ref   *ref = (ctid_ref *) lfirst(lc);
-
-		if (ref->uses_ctid && !ref->uses_segid &&
-			rt_fetch(ref->varno, ref->query->rtable)->rtekind == RTE_RELATION)
-		{
-			found = true;
-			break;
-		}
-	}
-
-	list_free_deep(cxt.refs);
-	list_free(cxt.query_stack);
-
-	return found;
+	return ctid_dml_walker((Node *) query->jointree, &cxt) ||
+		ctid_dml_walker((Node *) query->cteList, &cxt) ||
+		range_table_walker(query->rtable, ctid_dml_walker, &cxt, 0);
 }
 
 
