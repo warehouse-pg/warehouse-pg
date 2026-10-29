@@ -946,6 +946,17 @@ safe_named_location(text *location)
 }
 
 /*
+ * join_path_components() silently truncates its result to MAXPGPATH,
+ * which could resolve to a different file. Reject such paths instead.
+ */
+static void
+check_path_length(const char *location, const char *filename)
+{
+	if (strlen(location) + 1 + strlen(filename) >= MAXPGPATH)
+		CUSTOM_EXCEPTION(INVALID_PATH, "File name too long");
+}
+
+/*
  * get_safe_path - make a fullpath and check security.
  */
 static char *
@@ -963,6 +974,7 @@ get_safe_path(text *location_or_dirname, text *filename)
 
 	if (location)
 	{
+		check_path_length(location, filename_cstr);
 		join_path_components(abs_path, location, filename_cstr);
 
 		pfree(location);
@@ -973,6 +985,7 @@ get_safe_path(text *location_or_dirname, text *filename)
 
 		location_or_dirname_cstr = text_to_cstring(location_or_dirname);
 
+		check_path_length(location_or_dirname_cstr, filename_cstr);
 		join_path_components(abs_path, location_or_dirname_cstr, filename_cstr);
 
 		pfree(location_or_dirname_cstr);

@@ -149,5 +149,10 @@ SELECT utl_file.fopen('REGRESS_DIR', 'sub/../regress_orafce.txt', 'r');
 -- other functions share the same path check
 SELECT utl_file.fremove('REGRESS_DIR', '../regress_orafce_outside.txt');
 SELECT utl_file.frename('REGRESS_DIR', 'regress_orafce.txt', 'REGRESS_DIR', '../regress_orafce_outside.txt');
+-- named locations are checked against the allowed directories too
+SELECT fexists FROM utl_file.fgetattr('REGRESS_DIR', '..');
+-- overlong paths are rejected, not truncated
+SELECT fexists FROM utl_file.fgetattr('REGRESS_DIR', 'x' || repeat('/', 1100) || 'y');
+SELECT fexists FROM utl_file.fgetattr(utl_file.tmpdir() || '/regress_orafce_dir', 'x' || repeat('/', 1100) || 'y');
 \set VERBOSITY terse
 DELETE FROM utl_file.utl_file_dir;
