@@ -1169,6 +1169,21 @@ COptTasks::GPOPTOptimizedPlan(Query *query, SOptContext *gpopt_context)
 bool
 COptTasks::SetXform(char *xform_str, bool should_disable)
 {
+	/*
+	 * GPORCA is initialized only in dispatcher backends (InitGPOPT() is
+	 * called from InitPostgres() when Gp_role is GP_ROLE_DISPATCH), so the
+	 * xform factory singleton never exists in a segment process. Pxff() is a
+	 * bare accessor without a NULL check, and disable_xform()/enable_xform()
+	 * are ordinary functions that the planner evaluates on the segments when
+	 * their argument comes from a distributed table. There is nothing to
+	 * enable or disable without a factory, so treat this like an unknown
+	 * xform instead of dereferencing a NULL pointer.
+	 */
+	if (nullptr == CXformFactory::Pxff())
+	{
+		return false;
+	}
+
 	CXform *xform = CXformFactory::Pxff()->Pxf(xform_str);
 	if (nullptr != xform)
 	{
