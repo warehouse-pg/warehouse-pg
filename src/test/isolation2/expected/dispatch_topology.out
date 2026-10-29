@@ -60,10 +60,10 @@ INSERT 0 2
 -- the feature at transaction start — even SHOW fails here (fail closed).
 1: select 1;
 ERROR:  whpg_dispatch_topology_file is set, but this dispatcher is not a hot standby
-HINT:  The dispatch topology file serves hot-standby dispatchers only. Remove the GUC (whpg-dr promote's retirement does this), or finish the interrupted promote.
+HINT:  If a whpg-dr promote is under way, retry once it has cleared this setting on this coordinator, normally within seconds. Otherwise remove the GUC, or re-run the interrupted promote.
 1: show whpg_dispatch_topology_state;
 ERROR:  whpg_dispatch_topology_file is set, but this dispatcher is not a hot standby
-HINT:  The dispatch topology file serves hot-standby dispatchers only. Remove the GUC (whpg-dr promote's retirement does this), or finish the interrupted promote.
+HINT:  If a whpg-dr promote is under way, retry once it has cleared this setting on this coordinator, normally within seconds. Otherwise remove the GUC, or re-run the interrupted promote.
 
 -- A brand-new dispatch connection is refused at connect time (the build
 -- runs during connection startup); only the exit code is asserted, the
@@ -71,7 +71,7 @@ HINT:  The dispatch topology file serves hot-standby dispatchers only. Remove th
 !\retcode psql -X -d isolation2test -c "select 1";
 -- start_ignore
 psql: error: FATAL:  whpg_dispatch_topology_file is set, but this dispatcher is not a hot standby
-HINT:  The dispatch topology file serves hot-standby dispatchers only. Remove the GUC (whpg-dr promote's retirement does this), or finish the interrupted promote.
+HINT:  If a whpg-dr promote is under way, retry once it has cleared this setting on this coordinator, normally within seconds. Otherwise remove the GUC, or re-run the interrupted promote.
 
 -- end_ignore
 (exited with code 2)

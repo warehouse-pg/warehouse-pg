@@ -371,17 +371,19 @@ applyDispatchTopology(GpSegConfigEntry *catalog_configs, int *total_dbs,
 	 * detection).  Refuse instead of silently ignoring the file: no silent
 	 * fallback is this feature's contract.  (In whpg-dr's cold promote flow
 	 * the GUC is retired before any node reaches normal operation; in the
-	 * live flow it stays set until the catalog has been fixed over a
-	 * utility-mode connection, during which the background workers are
-	 * gated; hitting this error means an interrupted promote or a misplaced
-	 * GUC — both want an operator, not a workaround.)
+	 * live flow it stays set from the coordinator's promotion until the
+	 * catalog has been fixed over a utility-mode connection and the setting
+	 * emptied, seconds during which the background workers are gated and
+	 * new statements get this error.  Hitting it otherwise means an
+	 * interrupted promote or a misplaced GUC — both want an operator, not a
+	 * workaround.)
 	 */
 	if (!IS_HOT_STANDBY_QD())
 		ereport(ERROR,
 				(errcode(ERRCODE_CONFIG_FILE_ERROR),
 				 errmsg("whpg_dispatch_topology_file is set, but this dispatcher is not a hot standby"),
-				 errhint("The dispatch topology file serves hot-standby dispatchers only. "
-						 "Remove the GUC (whpg-dr promote's retirement does this), or finish the interrupted promote.")));
+				 errhint("If a whpg-dr promote is under way, retry once it has cleared this setting on this coordinator, normally within seconds. "
+						 "Otherwise remove the GUC, or re-run the interrupted promote.")));
 
 	topology = dispatch_topology_load();
 
