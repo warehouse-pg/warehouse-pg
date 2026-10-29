@@ -497,6 +497,10 @@ GpPolicy *GetDistributionPolicy(Relation rel);
 // the child partitions is randomly distributed
 gpos::BOOL IsChildPartDistributionMismatched(Relation rel);
 
+// return false if the relation is append-optimized and the active snapshot
+// does not see its block directory
+gpos::BOOL IsAppendOnlyBlockDirectoryVisible(Relation rel);
+
 double CdbEstimatePartitionedNumTuples(Relation rel);
 
 PageEstimate CdbEstimatePartitionedNumPages(Relation rel);

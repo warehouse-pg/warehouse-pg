@@ -607,6 +607,17 @@ CTranslatorRelcacheToDXL::RetrieveRel(CMemoryPool *mp, CMDAccessor *md_accessor,
 	// collect relation indexes
 	md_index_info_array = RetrieveRelIndexInfo(mp, rel.get());
 
+	// An append-optimized relation's indexes find rows through its block
+	// directory, which looks empty to a snapshot older than the directory.
+	// The Postgres planner leaves such indexes out; fall back to it, so that
+	// the metadata cache never holds a relation with its indexes missing.
+	BOOL check_blkdir = (0 < md_index_info_array->Size());
+	if (check_blkdir && !gpdb::IsAppendOnlyBlockDirectoryVisible(rel.get()))
+	{
+		GPOS_RAISE(gpdxl::ExmaMD, gpdxl::ExmiMDObjUnsupported,
+				   GPOS_WSZ_LIT("Block directory not visible to snapshot"));
+	}
+
 	is_partitioned = (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE);
 
 	// get number of leaf partitions
@@ -628,6 +639,12 @@ CTranslatorRelcacheToDXL::RetrieveRel(CMemoryPool *mp, CMDAccessor *md_accessor,
 				// Multi-level partitioned tables are unsupported - fall back
 				GPOS_RAISE(gpdxl::ExmaMD, gpdxl::ExmiMDObjUnsupported,
 						   GPOS_WSZ_LIT("Multi-level partitioned tables"));
+			}
+			if (check_blkdir &&
+				!gpdb::IsAppendOnlyBlockDirectoryVisible(rel_part.get()))
+			{
+				GPOS_RAISE(gpdxl::ExmaMD, gpdxl::ExmiMDObjUnsupported,
+						   GPOS_WSZ_LIT("Block directory not visible to snapshot"));
 			}
 		}
 	}

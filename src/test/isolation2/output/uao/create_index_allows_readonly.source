@@ -90,5 +90,107 @@ COMMIT
 
 drop table @amname@_create_index_with_select_tbl;
 DROP TABLE
+
+-- The first CREATE INDEX on an append-optimized table also
+-- builds its block directory, under the CREATE INDEX transaction's xid.  A
+-- repeatable read transaction whose snapshot is older sees an empty block
+-- directory, yet the index is visible to it through the catalog.  Scans that
+-- find rows through the block directory (index, index-only and bitmap scans,
+-- and block sampling) used to return no rows there.  The planners must leave
+-- the index out instead, and sampling must read the segment files.
+create table create_index_old_snapshot_tbl(a int, b int);
+CREATE TABLE
+insert into create_index_old_snapshot_tbl select a, a from generate_series(1, 100) a;
+INSERT 0 100
+
+1: begin isolation level repeatable read;
+BEGIN
+-- take the snapshot without touching the table
+1: select 1;
+ ?column? 
+----------
+ 1        
+(1 row)
+2: create index create_index_old_snapshot_idx on create_index_old_snapshot_tbl(a);
+CREATE INDEX
+1: set enable_seqscan = off;
+SET
+1: set enable_bitmapscan = off;
+SET
+1: explain (costs off) select a from create_index_old_snapshot_tbl where a between 1 and 100;
+ QUERY PLAN                                      
+-------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)        
+   ->  Seq Scan on create_index_old_snapshot_tbl 
+         Filter: ((a >= 1) AND (a <= 100))       
+ Optimizer: Postgres-based planner               
+(4 rows)
+1: select count(*) from create_index_old_snapshot_tbl where a between 1 and 100;
+ count 
+-------
+ 100   
+(1 row)
+1: select count(b) from create_index_old_snapshot_tbl where a between 1 and 100;
+ count 
+-------
+ 100   
+(1 row)
+1: set enable_indexscan = off;
+SET
+1: set enable_indexonlyscan = off;
+SET
+1: set enable_bitmapscan = on;
+SET
+1: select count(b) from create_index_old_snapshot_tbl where a between 1 and 100;
+ count 
+-------
+ 100   
+(1 row)
+1: set enable_seqscan = on;
+SET
+1: select count(*) from create_index_old_snapshot_tbl tablesample system (100);
+ count 
+-------
+ 100   
+(1 row)
+1: end;
+COMMIT
+1q: ... <quitting>
+
+-- The same must hold when an earlier CREATE INDEX built the block directory
+-- and the query would use a later index.
+drop table create_index_old_snapshot_tbl;
+DROP TABLE
+create table create_index_old_snapshot_tbl(a int, b int);
+CREATE TABLE
+insert into create_index_old_snapshot_tbl select a, a from generate_series(1, 100) a;
+INSERT 0 100
+
+1: begin isolation level repeatable read;
+BEGIN
+1: select 1;
+ ?column? 
+----------
+ 1        
+(1 row)
+2: create index create_index_old_snapshot_b_idx on create_index_old_snapshot_tbl(b);
+CREATE INDEX
+2: create index create_index_old_snapshot_idx on create_index_old_snapshot_tbl(a);
+CREATE INDEX
+1: set enable_seqscan = off;
+SET
+1: set enable_bitmapscan = off;
+SET
+1: select count(*) from create_index_old_snapshot_tbl where a between 1 and 100;
+ count 
+-------
+ 100   
+(1 row)
+1: end;
+COMMIT
+1q: ... <quitting>
+
+drop table create_index_old_snapshot_tbl;
+DROP TABLE
 reset default_table_access_method;
 RESET

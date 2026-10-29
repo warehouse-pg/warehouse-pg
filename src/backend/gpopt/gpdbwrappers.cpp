@@ -36,6 +36,7 @@ extern "C" {
 #include "access/amapi.h"
 #include "access/external.h"
 #include "access/genam.h"
+#include "catalog/aocatalog.h"
 #include "catalog/pg_inherits.h"
 #include "foreign/fdwapi.h"
 #include "nodes/nodeFuncs.h"
@@ -49,6 +50,7 @@ extern "C" {
 #include "utils/fmgroids.h"
 #include "utils/memutils.h"
 #include "utils/partcache.h"
+#include "utils/snapmgr.h"
 }
 #define GP_WRAP_START                                            \
 	sigjmp_buf local_sigjmp_buf;                                 \
@@ -1842,6 +1844,19 @@ gpdb::IsChildPartDistributionMismatched(Relation rel)
 	}
 	GP_WRAP_END;
 	return false;
+}
+
+gpos::BOOL
+gpdb::IsAppendOnlyBlockDirectoryVisible(Relation rel)
+{
+	GP_WRAP_START;
+	{
+		/* catalog tables: pg_class */
+		return !ActiveSnapshotSet() ||
+			   AORelationBlockDirectoryIsVisible(rel, GetActiveSnapshot());
+	}
+	GP_WRAP_END;
+	return true;
 }
 
 double

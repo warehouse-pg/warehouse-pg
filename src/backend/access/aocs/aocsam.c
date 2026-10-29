@@ -24,6 +24,7 @@
 #include "access/hio.h"
 #include "access/reloptions.h"
 #include "access/xact.h"
+#include "catalog/aocatalog.h"
 #include "catalog/catalog.h"
 #include "catalog/gp_fastsequence.h"
 #include "catalog/index.h"
@@ -740,11 +741,13 @@ aocs_beginscan_internal(Relation relation,
 
 		/*
 		 * Initialize a AOBlkdirScan only if we are doing sampling and if we
-		 * have a blkdir relation.
+		 * have a blkdir relation that this snapshot can see; otherwise
+		 * sample by reading through the segment files.
 		 */
 		if ((flags & SO_TYPE_ANALYZE) != 0 || (flags & SO_TYPE_SAMPLESCAN) != 0)
 		{
-			if (OidIsValid(blkdirrelid) && gp_enable_blkdir_sampling)
+			if (OidIsValid(blkdirrelid) && gp_enable_blkdir_sampling &&
+				AORelationBlockDirectoryIsVisible(relation, appendOnlyMetaDataSnapshot))
 				aocs_blkdirscan_init(scan);
 		}
 	}
