@@ -218,8 +218,8 @@ getExprListFromTargetList(List *tlist,
  *
  * A ctid is unique only within one segment.  The rel counts as having its
  * segment named when gp_segment_id is referenced, or when its restriction
- * clauses confine it to one segment through an equality on every
- * distribution key column (see ctid_rel_on_one_segment()).  A ctid that is
+ * clauses fix every distribution key column to values, so that each row's
+ * key names its segment (see ctid_rel_located_by_key()).  A ctid that is
  * only tested with IS [NOT] NULL does not pick rows and is not counted.
  * ----------------------------------------------------------------------- *
  */
@@ -257,20 +257,117 @@ ctid_inventory_walker(Node *node, ctid_inventory_context *inv)
 }
 
 /*
- * ctid_rel_on_one_segment() -- do the rel's own restriction clauses confine it
- * to a single segment?
- *
- * True when the rel is hash-distributed and every distribution key column is
- * equated, with the equality operator of its distribution opclass, to an
- * expression that contains no Vars and no volatile functions (a constant, a
- * parameter, a stable function of those).  All rows the statement can reach
- * then have the same distribution key value, so they are on one segment, and
- * a ctid identifies at most one row of the rel -- the same as if
- * gp_segment_id had been given.  An IN list, a range, or an equality to a
- * column of another rel does not qualify.
+ * Helpers for ctid_rel_located_by_key().
+ */
+
+/* Is node the given column of the rel, at this query level? */
+static bool
+ctid_is_rel_column(Node *node, RelOptInfo *rel, AttrNumber attno)
+{
+	node = strip_implicit_coercions(node);
+	return IsA(node, Var) &&
+		((Var *) node)->varno == rel->relid &&
+		((Var *) node)->varattno == attno &&
+		((Var *) node)->varlevelsup == 0;
+}
+
+/* Does the expression contain a value produced by a sub-select? */
+static bool
+ctid_contains_subselect_walker(Node *node, void *context)
+{
+	if (node == NULL)
+		return false;
+	if (IsA(node, Param) && ((Param *) node)->paramkind == PARAM_EXEC)
+		return true;
+	if (IsA(node, SubPlan) || IsA(node, AlternativeSubPlan) || IsA(node, SubLink))
+		return true;
+	return expression_tree_walker(node, ctid_contains_subselect_walker, context);
+}
+
+/*
+ * A value the statement supplies: no Vars, no volatile functions.  When
+ * 'one_value' is false the expression may yield several values (the array of
+ * an IN list), and then it must not come from a sub-select either: a list
+ * read from a table can cover every key and locates nothing.
  */
 static bool
-ctid_rel_on_one_segment(RelOptInfo *rel)
+ctid_is_key_value(Node *node, bool one_value)
+{
+	if (contain_var_clause(node) || contain_volatile_functions(node))
+		return false;
+	if (!one_value && ctid_contains_subselect_walker(node, NULL))
+		return false;
+	return true;
+}
+
+/*
+ * Does the clause fix the given key column of the rel to values?
+ *   column = value             (equality of the column's distribution opclass)
+ *   column IN (list), column = ANY (array)
+ *   an OR whose every arm is one of these for the same column
+ */
+static bool
+ctid_clause_fixes_key(Node *clause, RelOptInfo *rel, AttrNumber attno, Oid opfamily)
+{
+	if (is_opclause(clause))
+	{
+		OpExpr	   *op = (OpExpr *) clause;
+		Node	   *other;
+
+		if (list_length(op->args) != 2 ||
+			get_op_opfamily_strategy(op->opno, opfamily) != HTEqualStrategyNumber)
+			return false;
+		if (ctid_is_rel_column(linitial(op->args), rel, attno))
+			other = lsecond(op->args);
+		else if (ctid_is_rel_column(lsecond(op->args), rel, attno))
+			other = linitial(op->args);
+		else
+			return false;
+		return ctid_is_key_value(other, true);
+	}
+
+	if (IsA(clause, ScalarArrayOpExpr))
+	{
+		ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) clause;
+
+		return saop->useOr &&
+			list_length(saop->args) == 2 &&
+			get_op_opfamily_strategy(saop->opno, opfamily) == HTEqualStrategyNumber &&
+			ctid_is_rel_column(linitial(saop->args), rel, attno) &&
+			ctid_is_key_value(lsecond(saop->args), false);
+	}
+
+	if (is_orclause(clause))
+	{
+		ListCell   *lc;
+
+		foreach(lc, ((BoolExpr *) clause)->args)
+		{
+			if (!ctid_clause_fixes_key((Node *) lfirst(lc), rel, attno, opfamily))
+				return false;
+		}
+		return true;
+	}
+
+	return false;
+}
+
+/*
+ * ctid_rel_located_by_key() -- do the rel's own restriction clauses fix its
+ * whole distribution key to values?
+ *
+ * True when the rel is hash-distributed and every distribution key column is
+ * fixed, with the equality operator of its distribution opclass, to a value or
+ * a list of values the statement supplies: a constant, a parameter, an
+ * expression of those, a single-valued sub-select, an IN list, = ANY (array),
+ * or an OR of such equalities.  Each row the statement can reach then has a
+ * key that names its segment, so the ctid identifies at most one row per key
+ * -- the row is located, as with gp_segment_id.  A range, a cast of the
+ * column, another column of the same row, a column of another rel, a list read
+ * by a sub-select, or a randomly distributed rel does not qualify.
+ */
+static bool
+ctid_rel_located_by_key(RelOptInfo *rel)
 {
 	GpPolicy   *policy = rel->cdbpolicy;
 	int			i;
@@ -288,39 +385,12 @@ ctid_rel_on_one_segment(RelOptInfo *rel)
 		foreach(lc, rel->baserestrictinfo)
 		{
 			RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
-			OpExpr	   *op;
-			Node	   *left;
-			Node	   *right;
-			Node	   *other = NULL;
 
-			if (!is_opclause(rinfo->clause))
-				continue;
-			op = (OpExpr *) rinfo->clause;
-			if (list_length(op->args) != 2)
-				continue;
-			left = strip_implicit_coercions(linitial(op->args));
-			right = strip_implicit_coercions(lsecond(op->args));
-
-			if (IsA(left, Var) &&
-				((Var *) left)->varno == rel->relid &&
-				((Var *) left)->varattno == attno &&
-				((Var *) left)->varlevelsup == 0)
-				other = right;
-			else if (IsA(right, Var) &&
-					 ((Var *) right)->varno == rel->relid &&
-					 ((Var *) right)->varattno == attno &&
-					 ((Var *) right)->varlevelsup == 0)
-				other = left;
-			if (other == NULL)
-				continue;
-
-			if (get_op_opfamily_strategy(op->opno, opfamily) != HTEqualStrategyNumber)
-				continue;
-			if (contain_var_clause(other) || contain_volatile_functions(other))
-				continue;
-
-			found = true;
-			break;
+			if (ctid_clause_fixes_key((Node *) rinfo->clause, rel, attno, opfamily))
+			{
+				found = true;
+				break;
+			}
 		}
 		if (!found)
 			return false;
@@ -385,10 +455,10 @@ cdbmutate_warn_ctid_without_segid(struct PlannerInfo *root, struct RelOptInfo *r
 	}
 
 	/*
-	 * An equality on the whole distribution key confines the rel to one
-	 * segment, which pins it as well as gp_segment_id would.
+	 * A distribution key fixed to values names each row's segment, which
+	 * locates the row as well as gp_segment_id would.
 	 */
-	if (inv.uses_ctid && !inv.uses_segid && ctid_rel_on_one_segment(rel))
+	if (inv.uses_ctid && !inv.uses_segid && ctid_rel_located_by_key(rel))
 		inv.uses_segid = true;
 
 	/* Notify client if found a reference to ctid only, without gp_segment_id */

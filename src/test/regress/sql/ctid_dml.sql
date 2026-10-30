@@ -61,19 +61,25 @@ CREATE FUNCTION del_by_ctid(tid) RETURNS void LANGUAGE plpgsql AS
 SELECT del_by_ctid('(0,1)');
 -- K2: another column does not choose the segment.
 DELETE FROM t WHERE ctid = '(0,1)' AND v = 0;
--- K3: a list of distribution-key values reaches several segments.
-DELETE FROM t WHERE ctid = '(0,1)' AND id IN (1, 2, 5);
--- A distribution key condition that can reach more than one segment: an
--- OR, a range, only one column of a two-column key, a key joined to another
--- table, a randomly distributed table.
-DELETE FROM t WHERE ctid = '(0,1)' AND (id = 1 OR id = 2);
+-- A distribution key condition that does not fix the key to values: a
+-- range, only one column of a two-column key, a key joined to another table,
+-- a list read by a sub-select, an OR that mixes the key with another column
+-- or a range, a NOT IN list, a randomly distributed table.
 DELETE FROM t WHERE ctid = '(0,1)' AND id BETWEEN 1 AND 2;
 DELETE FROM m WHERE ctid = '(0,1)' AND a = 1;
+DELETE FROM m WHERE ctid = '(0,1)' AND a IN (1, 4);
 DELETE FROM t USING d WHERE t.ctid = '(0,1)' AND t.id = d.id;
+DELETE FROM t WHERE ctid = '(0,1)' AND id IN (SELECT id FROM d);
+DELETE FROM t WHERE ctid = '(0,1)' AND id = ANY (ARRAY(SELECT id FROM d));
+DELETE FROM t WHERE ctid = '(0,1)' AND (id = 1 OR v = 2);
+DELETE FROM t WHERE ctid = '(0,1)' AND (id = 1 OR id > 5);
+DELETE FROM t WHERE ctid = '(0,1)' AND id NOT IN (1, 2);
+DELETE FROM t WHERE ctid = '(0,1)' AND id = ALL ('{1,2}'::int[]);
 DELETE FROM r WHERE ctid = '(0,1)' AND id = 1;
--- another column of the same row is not one fixed value
+-- another column of the same row is not a fixed value
 DELETE FROM t WHERE ctid = '(0,1)' AND id = v;
--- a volatile expression is not one fixed value
+DELETE FROM t WHERE ctid = '(0,1)' AND id IN (1, v);
+-- a volatile expression is not a fixed value
 DELETE FROM t WHERE ctid = '(0,1)' AND id = (random() * 0 + 1)::int;
 -- ctid IS NOT NULL does not pick rows, but a ctid comparison next to it does.
 DELETE FROM t WHERE ctid IS NOT NULL AND ctid = '(0,1)';
@@ -145,8 +151,8 @@ BEGIN;
 DELETE FROM t WHERE id IN (SELECT b.id FROM t b JOIN s ON b.ctid = s.tid AND b.gp_segment_id = s.sid);
 SELECT count(*) AS left_rows, sum(CASE WHEN id = 7 THEN 1 ELSE 0 END) AS id_7 FROM t;
 ROLLBACK;
--- An equality on the whole distribution key confines the table to one
--- segment, so the ctid names at most one row, as with gp_segment_id.
+-- A distribution key fixed to values names each row's segment, so the ctid
+-- locates at most one row per key value, as with gp_segment_id.
 BEGIN;
 -- K1
 DELETE FROM t WHERE ctid = '(0,1)' AND id = 1;
@@ -168,6 +174,28 @@ PREPARE del_key(tid, int) AS DELETE FROM t WHERE ctid = $1 AND id = $2;
 EXECUTE del_key('(0,1)', 5);
 DEALLOCATE del_key;
 SELECT count(*) AS left_rows, sum(CASE WHEN id = 5 THEN 1 ELSE 0 END) AS id_5 FROM t;
+ROLLBACK;
+BEGIN;
+-- K3: a list of key values; ids 1, 2 and 5 are the rows at (0,1)
+DELETE FROM t WHERE ctid = '(0,1)' AND id IN (1, 2, 5);
+SELECT count(*) AS left_rows FROM t WHERE id IN (1, 2, 5);
+ROLLBACK;
+BEGIN;
+DELETE FROM t WHERE ctid = '(0,1)' AND (id = 1 OR id = 2);
+SELECT count(*) AS left_rows FROM t WHERE id IN (1, 2);
+ROLLBACK;
+BEGIN;
+-- a list as an array parameter, generic plan
+SET LOCAL plan_cache_mode = force_generic_plan;
+PREPARE del_keys(tid, int[]) AS DELETE FROM t WHERE ctid = $1 AND id = ANY ($2);
+EXECUTE del_keys('(0,1)', '{1,5}');
+DEALLOCATE del_keys;
+SELECT count(*) AS left_rows FROM t WHERE id IN (1, 2, 5);
+ROLLBACK;
+BEGIN;
+-- a two-column key: a list on one column, a value on the other
+DELETE FROM m WHERE ctid = '(0,1)' AND a IN (1, 4) AND b = 1;
+SELECT count(*) AS left_rows FROM m;
 ROLLBACK;
 BEGIN;
 -- Y33: d's ctid is a join key and d's gp_segment_id is not mentioned, but d
