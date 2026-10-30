@@ -19,6 +19,7 @@
 #include "access/tuptoaster.h"
 #include "catalog/pg_type.h"
 #include "utils/expandeddatum.h"
+#include "utils/memutils.h"
 
 #include "cdb/cdbvars.h"
 
@@ -632,7 +633,14 @@ memtuple_form_to(MemTupleBinding *pbind,
 		memset(mtup, 0, len);
 	}
 	else
+	{
+		if (len > MaxAllocSize)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("row is too big: size %zu, maximum size %zu",
+							(Size) len, (Size) MaxAllocSize)));
 		mtup = palloc0(len);
+	}
 
 	/* Set mtlen, this set the lead bit, len, and clears hasnull bit 
 	 * because the len returned from compute size is always max aligned

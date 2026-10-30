@@ -110,7 +110,7 @@ makeCdbCopy(CopyState cstate, bool is_copy_in)
 	c->is_replicated = GpPolicyIsReplicated(policy);
 	c->seglist = NIL;
 	c->dispatcherState = NULL;
-	initStringInfo(&(c->copy_out_buf));
+	initLongStringInfo(&(c->copy_out_buf));
 
 	/*
 	 * COPY replicated table TO file, pick only one replica, otherwise, duplicate
@@ -244,25 +244,38 @@ cdbCopySendData(CdbCopy *c, int target_seg, const char *buffer,
 	Assert(gp);
 	q = getSegmentDescriptorFromGang(gp, target_seg);
 
-	/* transmit the COPY data */
-	result = PQputCopyData(q->conn, buffer, nbytes);
-
-	if (result != 1)
+	/*
+	 * Transmit the COPY data.  The QE reads it as a byte stream, so a row
+	 * doesn't have to fit in one CopyData message.  Send a large row in
+	 * pieces, so that neither libpq's output buffer here nor the QE's
+	 * message buffer has to hold the whole row.
+	 */
+	do
 	{
-		if (result == 0)
+		int			chunk = Min(nbytes, COPYIN_CHUNK_SIZE);
+
+		result = PQputCopyData(q->conn, buffer, chunk);
+
+		if (result != 1)
 		{
-			/* We don't use blocking mode, so this shouldn't happen */
-			ereport(ERROR,
-					(errcode(ERRCODE_IO_ERROR),
-					 errmsg("could not send COPY data to segment %d, attempt blocked",
-							target_seg)));
+			if (result == 0)
+			{
+				/* We don't use blocking mode, so this shouldn't happen */
+				ereport(ERROR,
+						(errcode(ERRCODE_IO_ERROR),
+						 errmsg("could not send COPY data to segment %d, attempt blocked",
+								target_seg)));
+			}
+			else
+				ereport(ERROR,
+						(errcode(ERRCODE_IO_ERROR),
+						 errmsg("could not send COPY data to segment %d: %s",
+								target_seg, PQerrorMessage(q->conn))));
 		}
-		else
-			ereport(ERROR,
-					(errcode(ERRCODE_IO_ERROR),
-					 errmsg("could not send COPY data to segment %d: %s",
-							target_seg, PQerrorMessage(q->conn))));
-	}
+
+		buffer += chunk;
+		nbytes -= chunk;
+	} while (nbytes > 0);
 }
 
 /*
@@ -335,6 +348,14 @@ cdbCopyGetData(CdbCopy *c, bool copy_cancel, uint64 *rows_processed)
 				(*rows_processed)++;
 
 				PQfreemem(buffer);
+
+				/*
+				 * A row this large fills the chunk by itself.  Return it now
+				 * instead of adding a row from each of the other segments,
+				 * so that a chunk never holds more than one large row.
+				 */
+				if (nbytes >= COPYOUT_CHUNK_SIZE)
+					return false;
 			}
 
 			/*

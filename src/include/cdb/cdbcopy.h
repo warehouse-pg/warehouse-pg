@@ -22,6 +22,7 @@
 #include "cdb/cdbgang.h"
 
 #define COPYOUT_CHUNK_SIZE 16 * 1024
+#define COPYIN_CHUNK_SIZE (1024 * 1024)
 
 struct CdbDispatcherState;
 struct CopyStateData;

@@ -1744,3 +1744,43 @@ COPY 1
 DROP TABLE replicated_issue_14126;
 DROP TABLE
 \set QUIET on
+-- Rows wider than the 16kB chunk in which the QD gathers rows from the QEs,
+-- and than the 1MB pieces in which it sends rows to the QEs, in text and
+-- binary format, with the wide column also as the distribution key.
+CREATE TABLE copy_wide_rows (id int, a text, b bytea) DISTRIBUTED BY (id);
+INSERT INTO copy_wide_rows
+  SELECT i, repeat(md5(i::text), 100000), decode(repeat(md5((-i)::text), 50000), 'hex')
+  FROM generate_series(1, 6) i;
+COPY copy_wide_rows TO '/tmp/copy_wide_rows.txt';
+COPY copy_wide_rows TO '/tmp/copy_wide_rows.bin' (FORMAT binary);
+CREATE TABLE copy_wide_rows_in (LIKE copy_wide_rows) DISTRIBUTED BY (id);
+COPY copy_wide_rows_in FROM '/tmp/copy_wide_rows.txt';
+COPY copy_wide_rows_in FROM '/tmp/copy_wide_rows.bin' (FORMAT binary);
+CREATE TABLE copy_wide_rows_in_a (LIKE copy_wide_rows) DISTRIBUTED BY (a);
+COPY copy_wide_rows_in_a FROM '/tmp/copy_wide_rows.txt';
+SELECT o.id, count(i.id), bool_and(md5(i.a) = md5(o.a) AND md5(i.b) = md5(o.b)) AS same
+  FROM copy_wide_rows o LEFT JOIN copy_wide_rows_in i USING (id) GROUP BY o.id ORDER BY 1;
+ id | count | same 
+----+-------+------
+  1 |     2 | t
+  2 |     2 | t
+  3 |     2 | t
+  4 |     2 | t
+  5 |     2 | t
+  6 |     2 | t
+(6 rows)
+
+SELECT o.id, count(i.id), bool_and(md5(i.a) = md5(o.a) AND md5(i.b) = md5(o.b)) AS same
+  FROM copy_wide_rows o LEFT JOIN copy_wide_rows_in_a i USING (id) GROUP BY o.id ORDER BY 1;
+ id | count | same 
+----+-------+------
+  1 |     1 | t
+  2 |     1 | t
+  3 |     1 | t
+  4 |     1 | t
+  5 |     1 | t
+  6 |     1 | t
+(6 rows)
+
+DROP TABLE copy_wide_rows, copy_wide_rows_in, copy_wide_rows_in_a;
+\! rm -f /tmp/copy_wide_rows.txt /tmp/copy_wide_rows.bin
