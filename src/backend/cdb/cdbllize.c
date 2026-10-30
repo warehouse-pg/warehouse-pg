@@ -103,7 +103,7 @@ typedef struct decorate_subplan_info
 	bool		processed;
 
 	/*
-	 * WHPG (PTT-2066): does the slice that references this SubPlan, the
+	 * WHPG: does the slice that references this SubPlan, the
 	 * one recorded in parentFlow, run on the coordinator?  Kept apart from
 	 * parentFlow because a Flow does not always say where its node runs; see
 	 * slice_on_coordinator in the context.  parent_in_dist_random: was the
@@ -135,7 +135,7 @@ typedef struct decorate_subplans_with_motions_context
 	bool		top_on_coordinator;
 
 	/*
-	 * WHPG (PTT-2066): does the slice being walked run on the coordinator?
+	 * WHPG: does the slice being walked run on the coordinator?
 	 *
 	 * This is not read off currentPlanFlow.  A node's Flow is derived from
 	 * its Path's locus, and an Entry-locus path can be placed in a segment
@@ -150,7 +150,7 @@ typedef struct decorate_subplans_with_motions_context
 	bool		slice_on_coordinator;
 
 	/*
-	 * WHPG (PTT-2066): the query level whose range table the scanrelids of
+	 * WHPG: the query level whose range table the scanrelids of
 	 * the plan tree being walked index: the main query, a SubPlan's subroot,
 	 * or a subquery RTE's subroot under a SubqueryScan.  NULL when unknown,
 	 * which disables the coordinator-only check below that point.
@@ -158,7 +158,7 @@ typedef struct decorate_subplans_with_motions_context
 	PlannerInfo *cur_root;
 
 	/*
-	 * WHPG (PTT-2066): is the plan tree being walked inside a
+	 * WHPG: is the plan tree being walked inside a
 	 * gp_dist_random() subquery?  gp_dist_random('rel') or ('view') asks for
 	 * each segment's own copy of what it reads, empty or not: the planner
 	 * gives the whole subquery Strewn locus (set_subquery_pathlist()) and
@@ -170,7 +170,7 @@ typedef struct decorate_subplans_with_motions_context
 	bool		under_dist_random;
 
 	/*
-	 * WHPG (PTT-2066): the PARAM_EXEC ids that correlated SubPlans seen so
+	 * WHPG: the PARAM_EXEC ids that correlated SubPlans seen so
 	 * far receive from their outer queries (SubPlan.parParam).  A SubPlan is
 	 * processed after the plan that references it, so by then the set holds
 	 * its own parameters and those of every SubPlan enclosing it, skip-level
@@ -882,7 +882,7 @@ cdbllize_decorate_subplans_with_motions(PlannerInfo *root, Plan *plan,
 		}
 
 		/*
-		 * WHPG (PTT-2066): the SubPlan's scanrelids index its own level's
+		 * WHPG: the SubPlan's scanrelids index its own level's
 		 * range table.  glob->subroots parallels glob->subplans.
 		 */
 		context.cur_root = list_nth_node(PlannerInfo, root->glob->subroots,
@@ -904,7 +904,7 @@ cdbllize_decorate_subplans_with_motions(PlannerInfo *root, Plan *plan,
 			subplan = fix_subplan_motion(root, subplan, context.currentPlanFlow);
 
 			/*
-			 * WHPG (PTT-2066): the Motion just made is empty of parameter
+			 * WHPG: the Motion just made is empty of parameter
 			 * information; what it sends is the whole subquery.
 			 */
 			if (subplan != orig_subplan)
@@ -968,7 +968,7 @@ fix_outer_query_motions_mutator(Node *node, decorate_subplans_with_motions_conte
 			sstate->is_initplan = spexpr->is_initplan;
 			sstate->useHashTable = spexpr->useHashTable;
 
-			/* WHPG (PTT-2066): see correlation_params. */
+			/* WHPG: see correlation_params. */
 			{
 				ListCell   *lc;
 
@@ -997,7 +997,7 @@ fix_outer_query_motions_mutator(Node *node, decorate_subplans_with_motions_conte
 	plan = (Plan *) node;
 
 	/*
-	 * WHPG (PTT-2066): a scan of a relation whose rows exist on the
+	 * WHPG: a scan of a relation whose rows exist on the
 	 * coordinator only must run on the coordinator.  Checked for every plan
 	 * node before its subtree is entered, against the slice it sits in.
 	 */
@@ -1021,7 +1021,7 @@ fix_outer_query_motions_mutator(Node *node, decorate_subplans_with_motions_conte
 		 * All the fields on the Motion node are considered part of the sending
 		 * slice.
 		 *
-		 * WHPG (PTT-2066): the sending slice is a real slice, so its Flow
+		 * WHPG: the sending slice is a real slice, so its Flow
 		 * says where it runs: on the coordinator (an entry-db gang) when the
 		 * input has Entry locus.  An outer-query input runs wherever this
 		 * slice runs, like the Flow it keeps.
@@ -1104,7 +1104,7 @@ fix_outer_query_motions_mutator(Node *node, decorate_subplans_with_motions_conte
 		else
 		{
 			/*
-			 * WHPG (PTT-2066): the Motion stays, so whatever its sending
+			 * WHPG: the Motion stays, so whatever its sending
 			 * slice references must be available there.
 			 */
 			check_param_across_motion(motion->plan.lefttree, context);
@@ -1127,7 +1127,7 @@ fix_outer_query_motions_mutator(Node *node, decorate_subplans_with_motions_conte
 			context->currentPlanFlow = plan->flow;
 
 		/*
-		 * WHPG (PTT-2066): the plan under a SubqueryScan belongs to the
+		 * WHPG: the plan under a SubqueryScan belongs to the
 		 * subquery's own level, whose root set_subquery_pathlist() left on
 		 * the subquery's RelOptInfo; its scanrelids index that level's range
 		 * table.  Without it, the check is off below this node.  It is off
@@ -1160,7 +1160,7 @@ fix_outer_query_motions_mutator(Node *node, decorate_subplans_with_motions_conte
 }
 
 /*
- * WHPG (PTT-2066): does a slice with this Flow run on the coordinator?
+ * WHPG: does a slice with this Flow run on the coordinator?
  * Entry locus is the coordinator's own process or an entry-db gang on the
  * coordinator; a singleton on segindex 0, a replicated or a partitioned flow
  * runs on the segments.
@@ -1172,7 +1172,7 @@ flow_runs_on_coordinator(Flow *flow)
 }
 
 /*
- * WHPG (PTT-2066): is this a relation whose rows exist on the coordinator
+ * WHPG: is this a relation whose rows exist on the coordinator
  * only?  Most catalogs are maintained on every segment as well, and a
  * segment's copy is what a catalog scan in a segment slice has always read.
  * These are written on the coordinator alone: the cluster configuration
@@ -1224,7 +1224,7 @@ relation_is_coordinator_only(Oid relid, char relkind)
 }
 
 /*
- * WHPG (PTT-2066): does this plan node read rows that exist on the
+ * WHPG: does this plan node read rows that exist on the
  * coordinator only, and if so, what is it reading?  Besides the relations
  * above, a function declared EXECUTE ON COORDINATOR or ON INITPLAN produces
  * its rows on the coordinator alone, whether it is scanned in FROM or
@@ -1315,7 +1315,7 @@ plan_reads_coordinator_only(Plan *plan, PlannerInfo *root,
 }
 
 /*
- * WHPG (PTT-2066): a correlated SubPlan is evaluated in whichever slice
+ * WHPG: a correlated SubPlan is evaluated in whichever slice
  * references it, and the planner lets a Motion-free Entry path inside it be
  * evaluated there as well (see slice_on_coordinator above).  For a relation
  * whose rows exist on the coordinator only, a segment slice reads an empty
@@ -1356,7 +1356,7 @@ check_coordinator_only_scan(Plan *plan,
 }
 
 /*
- * WHPG (PTT-2066): a parameter that a SubPlan receives from its outer query
+ * WHPG: a parameter that a SubPlan receives from its outer query
  * is set in the process that evaluates the SubPlan.  A Motion's sending slice
  * runs in other processes, which never see the value: a correlated qual
  * placed below a Motion compares against garbage (an aggregate or a

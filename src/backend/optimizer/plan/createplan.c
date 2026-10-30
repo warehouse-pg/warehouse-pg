@@ -7303,7 +7303,7 @@ make_motion(PlannerInfo *root, Plan *lefttree,
 	Assert(lefttree);
 
 	/*
-	 * WHPG (PTT-2066): a Motion directly on a Motion is never a valid plan:
+	 * WHPG: a Motion directly on a Motion is never a valid plan:
 	 * the inner one's receiving slice would also be the outer one's sending
 	 * slice, with nothing in between to run it.  The planner can still ask
 	 * for one, e.g. when a base rel gathered to the coordinator for a

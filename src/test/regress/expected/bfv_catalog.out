@@ -124,11 +124,18 @@ order by u_vtgnr, u_zj, u_folio;
 CREATE TABLE t1 (a int, b int) DISTRIBUTED BY (a);
 CREATE TABLE t2 (a int, b int) DISTRIBUTED BY (a);
 CREATE TABLE x (a int) DISTRIBUTED BY (a);
+-- WHPG: with rows, every outer row has at most one foo.a group, so
+-- the subquery is a valid scalar: x.a = 1 matches (t1.a = 1, t2.a = 2).  The
+-- correlated clause is a join clause, which the Postgres planner evaluates in
+-- the Redistribute's sending slice, where x.a is never set; that
+-- plan is refused now instead of failing at execution ("illegal rescan of
+-- motion node") or, on empty tables, passing by accident.  GPORCA plans it.
+INSERT INTO t1 VALUES (1, 1);
+INSERT INTO t2 VALUES (2, 2), (3, 3);
+INSERT INTO x VALUES (1), (2), (3);
 select * from x where a=  (select sum(t1.a)  from t1 inner join (select x.a as outer_ref, * from t2) as foo on (foo.a=t1.a+ outer_ref)  group by foo.a);
- a 
----
-(0 rows)
-
+ERROR:  correlated subquery parameter cannot be passed across a Motion
+DETAIL:  A value of the outer query is referenced below a Motion node, in a slice that does not have it.
 SET statement_timeout = 0;
 SET client_encoding = 'UTF8';
 SET standard_conforming_strings = off;
