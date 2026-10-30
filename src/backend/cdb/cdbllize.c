@@ -106,9 +106,11 @@ typedef struct decorate_subplan_info
 	 * WHPG (PTT-2066): does the slice that references this SubPlan, the
 	 * one recorded in parentFlow, run on the coordinator?  Kept apart from
 	 * parentFlow because a Flow does not always say where its node runs; see
-	 * slice_on_coordinator in the context.
+	 * slice_on_coordinator in the context.  parent_in_dist_random: was the
+	 * reference inside a gp_dist_random() subquery?  See under_dist_random.
 	 */
 	bool		parent_on_coordinator;
+	bool		parent_in_dist_random;
 } decorate_subplan_info;
 
 typedef struct decorate_subplans_with_motions_context
@@ -154,6 +156,18 @@ typedef struct decorate_subplans_with_motions_context
 	 * which disables the coordinator-only check below that point.
 	 */
 	PlannerInfo *cur_root;
+
+	/*
+	 * WHPG (PTT-2066): is the plan tree being walked inside a
+	 * gp_dist_random() subquery?  gp_dist_random('rel') or ('view') asks for
+	 * each segment's own copy of what it reads, empty or not: the planner
+	 * gives the whole subquery Strewn locus (set_subquery_pathlist()) and
+	 * runs it on every segment on purpose, catalog scans and coordinator
+	 * functions included (gp_toolkit's census views do exactly this).  The
+	 * coordinator-only scan check does not apply below such a scan, nor to a
+	 * SubPlan referenced from inside one.
+	 */
+	bool		under_dist_random;
 
 	/*
 	 * WHPG (PTT-2066): the PARAM_EXEC ids that correlated SubPlans seen so
@@ -797,6 +811,7 @@ cdbllize_decorate_subplans_with_motions(PlannerInfo *root, Plan *plan,
 	context.top_on_coordinator = (top_slice->gangType == GANGTYPE_UNALLOCATED);
 	context.slice_on_coordinator = context.top_on_coordinator;
 	context.cur_root = root;
+	context.under_dist_random = false;
 	context.correlation_params = NULL;
 
 	nsubplans = list_length(root->glob->subplans);
@@ -811,6 +826,7 @@ cdbllize_decorate_subplans_with_motions(PlannerInfo *root, Plan *plan,
 		sstate->is_initplan = false;
 		sstate->processed = false;
 		sstate->parent_on_coordinator = false;
+		sstate->parent_in_dist_random = false;
 	}
 
 	/*
@@ -855,12 +871,14 @@ cdbllize_decorate_subplans_with_motions(PlannerInfo *root, Plan *plan,
 			context.sliceDepth = 0;
 			context.currentPlanFlow = topFlow;
 			context.slice_on_coordinator = true;
+			context.under_dist_random = false;
 		}
 		else
 		{
 			context.sliceDepth = sstate->sliceDepth;
 			context.currentPlanFlow = sstate->parentFlow;
 			context.slice_on_coordinator = sstate->parent_on_coordinator;
+			context.under_dist_random = sstate->parent_in_dist_random;
 		}
 
 		/*
@@ -970,6 +988,7 @@ fix_outer_query_motions_mutator(Node *node, decorate_subplans_with_motions_conte
 				sstate->sliceDepth = context->sliceDepth;
 				sstate->parentFlow = context->currentPlanFlow;
 				sstate->parent_on_coordinator = context->slice_on_coordinator;
+				sstate->parent_in_dist_random = context->under_dist_random;
 			}
 		}
 		return node;
@@ -1101,6 +1120,7 @@ fix_outer_query_motions_mutator(Node *node, decorate_subplans_with_motions_conte
 		 * parallelization will have had it applied.
 		 */
 		PlannerInfo *saveCurRoot = context->cur_root;
+		bool		saveUnderDistRandom = context->under_dist_random;
 
 		saveCurrentPlanFlow = context->currentPlanFlow;
 		if (plan->flow != NULL && plan->flow->locustype != CdbLocusType_OuterQuery)
@@ -1110,7 +1130,9 @@ fix_outer_query_motions_mutator(Node *node, decorate_subplans_with_motions_conte
 		 * WHPG (PTT-2066): the plan under a SubqueryScan belongs to the
 		 * subquery's own level, whose root set_subquery_pathlist() left on
 		 * the subquery's RelOptInfo; its scanrelids index that level's range
-		 * table.  Without it, the check is off below this node.
+		 * table.  Without it, the check is off below this node.  It is off
+		 * as well below a gp_dist_random('<view>') subquery, which runs on
+		 * every segment by request (see under_dist_random).
 		 */
 		if (IsA(plan, SubqueryScan))
 		{
@@ -1120,13 +1142,18 @@ fix_outer_query_motions_mutator(Node *node, decorate_subplans_with_motions_conte
 			if (context->cur_root != NULL &&
 				scanrelid < context->cur_root->simple_rel_array_size &&
 				context->cur_root->simple_rel_array[scanrelid] != NULL)
+			{
 				subroot = context->cur_root->simple_rel_array[scanrelid]->subroot;
+				if (rt_fetch(scanrelid, context->cur_root->parse->rtable)->forceDistRandom)
+					context->under_dist_random = true;
+			}
 			context->cur_root = subroot;
 		}
 
 		newnode = plan_tree_mutator(node, fix_outer_query_motions_mutator, context, false);
 		context->currentPlanFlow = saveCurrentPlanFlow;
 		context->cur_root = saveCurRoot;
+		context->under_dist_random = saveUnderDistRandom;
 	}
 
 	return newnode;
@@ -1225,7 +1252,9 @@ plan_reads_coordinator_only(Plan *plan, PlannerInfo *root,
 					scanrelid > list_length(root->parse->rtable))
 					return false;
 				rte = rt_fetch(scanrelid, root->parse->rtable);
-				if (rte->rtekind != RTE_RELATION ||
+
+				/* gp_dist_random('rel'): see under_dist_random. */
+				if (rte->rtekind != RTE_RELATION || rte->forceDistRandom ||
 					!relation_is_coordinator_only(rte->relid, rte->relkind))
 					return false;
 				*kind = "relation";
@@ -1305,7 +1334,7 @@ check_coordinator_only_scan(Plan *plan,
 	const char *kind;
 	char	   *name;
 
-	if (context->slice_on_coordinator)
+	if (context->slice_on_coordinator || context->under_dist_random)
 		return;
 	if (!plan_reads_coordinator_only(plan, context->cur_root, &kind, &name))
 		return;
