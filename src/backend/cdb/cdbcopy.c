@@ -76,6 +76,9 @@
 
 #include <poll.h>
 
+/* Shrink a connection's input buffer after receiving a row this large */
+#define COPYOUT_SHRINK_SIZE (1024 * 1024)
+
 static void cdbCopyEndInternal(CdbCopy *c, char *abort_msg,
 				   int64 *total_rows_completed_p,
 				   int64 *total_rows_rejected_p);
@@ -111,6 +114,8 @@ makeCdbCopy(CopyState cstate, bool is_copy_in)
 	c->seglist = NIL;
 	c->dispatcherState = NULL;
 	initStringInfo(&(c->copy_out_buf));
+	c->large_row = NULL;
+	c->large_row_len = 0;
 
 	/*
 	 * COPY replicated table TO file, pick only one replica, otherwise, duplicate
@@ -244,31 +249,86 @@ cdbCopySendData(CdbCopy *c, int target_seg, const char *buffer,
 	Assert(gp);
 	q = getSegmentDescriptorFromGang(gp, target_seg);
 
-	/* transmit the COPY data */
-	result = PQputCopyData(q->conn, buffer, nbytes);
-
-	if (result != 1)
+	/*
+	 * Transmit the COPY data.  The QE reads it as a byte stream, so a row
+	 * doesn't have to fit in one CopyData message.  Send a large row in
+	 * pieces, so that neither libpq's output buffer here nor the QE's
+	 * message buffer has to hold the whole row.
+	 */
+	do
 	{
-		if (result == 0)
+		int			chunk = Min(nbytes, COPYIN_CHUNK_SIZE);
+
+		result = PQputCopyData(q->conn, buffer, chunk);
+
+		if (result != 1)
 		{
-			/* We don't use blocking mode, so this shouldn't happen */
-			ereport(ERROR,
-					(errcode(ERRCODE_IO_ERROR),
-					 errmsg("could not send COPY data to segment %d, attempt blocked",
-							target_seg)));
+			if (result == 0)
+			{
+				/* We don't use blocking mode, so this shouldn't happen */
+				ereport(ERROR,
+						(errcode(ERRCODE_IO_ERROR),
+						 errmsg("could not send COPY data to segment %d, attempt blocked",
+								target_seg)));
+			}
+			else
+				ereport(ERROR,
+						(errcode(ERRCODE_IO_ERROR),
+						 errmsg("could not send COPY data to segment %d: %s",
+								target_seg, PQerrorMessage(q->conn))));
 		}
-		else
-			ereport(ERROR,
-					(errcode(ERRCODE_IO_ERROR),
-					 errmsg("could not send COPY data to segment %d: %s",
-							target_seg, PQerrorMessage(q->conn))));
+
+		buffer += chunk;
+		nbytes -= chunk;
+	} while (nbytes > 0);
+}
+
+/*
+ * Free the large row returned by the previous cdbCopyGetData() call, if any.
+ */
+static void
+cdbCopyFreeLargeRow(CdbCopy *c)
+{
+	if (c->large_row)
+	{
+		PQfreemem(c->large_row);
+		c->large_row = NULL;
+		c->large_row_len = 0;
 	}
+}
+
+/*
+ * libpq enlarges a connection's input buffer to hold a whole message, and
+ * never shrinks it.  Give the memory back after a large row, rather than
+ * keeping it for as long as the gang lives.
+ */
+static void
+cdbCopyShrinkInBuffer(PGconn *conn)
+{
+	int			avail = conn->inEnd - conn->inStart;
+	int			newsize = Max(16 * 1024, (avail + 8191) & ~8191);
+	char	   *newbuf;
+
+	if (conn->inBufSize <= 4 * newsize)
+		return;
+	newbuf = malloc(newsize);
+	if (newbuf == NULL)
+		return;					/* just keep the old buffer */
+	memcpy(newbuf, conn->inBuffer + conn->inStart, avail);
+	free(conn->inBuffer);
+	conn->inBuffer = newbuf;
+	conn->inBufSize = newsize;
+	conn->inStart = conn->inCursor = 0;
+	conn->inEnd = avail;
 }
 
 /*
  * gets a chunk of rows of data from a copy command.
  * returns boolean true if done. Caller should still
  * empty the leftovers in the outbuf in that case.
+ *
+ * A row of COPYOUT_CHUNK_SIZE or more is not added to the chunk, but
+ * returned in c->large_row, which stays valid until the next call.
  */
 bool
 cdbCopyGetData(CdbCopy *c, bool copy_cancel, uint64 *rows_processed)
@@ -279,6 +339,7 @@ cdbCopyGetData(CdbCopy *c, bool copy_cancel, uint64 *rows_processed)
 
 	/* clean out buf data */
 	resetStringInfo(&c->copy_out_buf);
+	cdbCopyFreeLargeRow(c);
 
 	gp = getCdbCopyPrimaryGang(c);
 
@@ -328,11 +389,30 @@ cdbCopyGetData(CdbCopy *c, bool copy_cancel, uint64 *rows_processed)
 			 */
 			if (nbytes > 0 && buffer)
 			{
-				/* append the data row to the data chunk */
-				appendBinaryStringInfo(&(c->copy_out_buf), buffer, nbytes);
-
 				/* increment the rows processed counter for the end tag */
 				(*rows_processed)++;
+
+				/*
+				 * A row this large fills the chunk by itself.  Hand it to the
+				 * caller as it is, instead of copying it into the chunk, and
+				 * move this segment to the end of the list, so that the
+				 * other segments get their turn first in the next call.
+				 */
+				if (nbytes >= COPYOUT_CHUNK_SIZE)
+				{
+					if (nbytes >= COPYOUT_SHRINK_SIZE)
+						cdbCopyShrinkInBuffer(q->conn);
+
+					c->large_row = buffer;
+					c->large_row_len = nbytes;
+
+					c->seglist = list_delete_int(c->seglist, source_seg);
+					c->seglist = lappend_int(c->seglist, source_seg);
+					return false;
+				}
+
+				/* append the data row to the data chunk */
+				appendBinaryStringInfo(&(c->copy_out_buf), buffer, nbytes);
 
 				PQfreemem(buffer);
 			}
@@ -447,6 +527,8 @@ cdbCopyEndInternal(CdbCopy *c, char *abort_msg,
 	int				nest_level;
 
 	SIMPLE_FAULT_INJECTOR("cdb_copy_end_internal_start");
+
+	cdbCopyFreeLargeRow(c);
 
 	initStringInfo(&io_err_msg);
 

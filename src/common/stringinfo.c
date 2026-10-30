@@ -3,9 +3,10 @@
  * stringinfo.c
  *
  * StringInfo provides an extensible string data type (currently limited to a
- * length of 1GB).  It can be used to buffer either ordinary C strings
- * (null-terminated text) or arbitrary binary data.  All storage is allocated
- * with palloc() (falling back to malloc in frontend code).
+ * length of 1GB, or 2GB for "huge" strings).  It can be used to buffer either
+ * ordinary C strings (null-terminated text) or arbitrary binary data.  All
+ * storage is allocated with palloc() (falling back to malloc in frontend
+ * code).
  *
  * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -29,6 +30,12 @@
 
 #endif
 
+/*
+ * Size limit of a "huge" StringInfo.  The StringInfo API uses int lengths,
+ * so even huge strings stay within the 4-byte signed integer range.
+ */
+#define MaxHugeStringInfoSize	((Size) PG_INT32_MAX)
+
 #include "lib/stringinfo.h"
 
 
@@ -50,6 +57,23 @@ makeStringInfo(void)
 }
 
 /*
+ * makeHugeStringInfo
+ *
+ * Same as makeStringInfo, but the string may grow up to 2GB.
+ */
+StringInfo
+makeHugeStringInfo(void)
+{
+	StringInfo	res;
+
+	res = (StringInfo) palloc(sizeof(StringInfoData));
+
+	initHugeStringInfo(res);
+
+	return res;
+}
+
+/*
  * initStringInfo
  *
  * Initialize a StringInfoData struct (with previously undefined contents)
@@ -62,7 +86,20 @@ initStringInfo(StringInfo str)
 
 	str->data = (char *) palloc(size);
 	str->maxlen = size;
+	str->allow_huge = false;
 	resetStringInfo(str);
+}
+
+/*
+ * initHugeStringInfo
+ *
+ * Same as initStringInfo, but the string may grow up to 2GB.
+ */
+void
+initHugeStringInfo(StringInfo str)
+{
+	initStringInfo(str);
+	str->allow_huge = true;
 }
 
 /*
@@ -76,6 +113,7 @@ initStringInfoOfSize(StringInfo str, int size)
 
 	str->data = (char *) palloc(size);
 	str->maxlen = size;
+	str->allow_huge = false;
 	str->len = 0;
 	str->data[0] = '\0';
 	str->cursor = 0;
@@ -298,7 +336,10 @@ appendBinaryStringInfoNT(StringInfo str, const char *data, int datalen)
 void
 enlargeStringInfo(StringInfo str, int needed)
 {
-	int			newlen;
+	Size		newlen;
+	Size		limit;
+
+	limit = str->allow_huge ? MaxHugeStringInfoSize : MaxAllocSize;
 
 	/*
 	 * Guard against out-of-range "needed" values.  Without this, we can get
@@ -313,7 +354,7 @@ enlargeStringInfo(StringInfo str, int needed)
 		exit(EXIT_FAILURE);
 #endif
 	}
-	if (((Size) needed) >= (MaxAllocSize - (Size) str->len))
+	if (((Size) needed) >= (limit - (Size) str->len))
 	{
 #ifndef FRONTEND
 		ereport(ERROR,
@@ -331,7 +372,7 @@ enlargeStringInfo(StringInfo str, int needed)
 
 	needed += str->len + 1;		/* total space required now */
 
-	/* Because of the above test, we now have needed <= MaxAllocSize */
+	/* Because of the above test, we now have needed <= limit */
 
 	if (needed <= str->maxlen)
 		return;					/* got enough space already */
@@ -340,22 +381,34 @@ enlargeStringInfo(StringInfo str, int needed)
 	 * We don't want to allocate just a little more space with each append;
 	 * for efficiency, double the buffer size each time it overflows.
 	 * Actually, we might need to more than double it if 'needed' is big...
+	 * newlen is a Size, so the doubling cannot overflow.
 	 */
-	newlen = 2 * str->maxlen;
-	while (needed > newlen)
+	newlen = 2 * (Size) str->maxlen;
+	while ((Size) needed > newlen)
 		newlen = 2 * newlen;
 
 	/*
-	 * Clamp to MaxAllocSize in case we went past it.  Note we are assuming
-	 * here that MaxAllocSize <= INT_MAX/2, else the above loop could
-	 * overflow.  We will still have newlen >= needed.
+	 * Past MaxAllocSize, doubling would make a huge string jump right to the
+	 * 2GB limit, so grow it to what's needed plus 1/8 slack instead.
 	 */
-	if (newlen > (int) MaxAllocSize)
-		newlen = (int) MaxAllocSize;
+	if (str->allow_huge && newlen > MaxAllocSize)
+		newlen = (Size) needed + (Size) needed / 8;
 
-	str->data = (char *) repalloc(str->data, newlen);
+	/*
+	 * Clamp to the limit in case we went past it.  We will still have newlen
+	 * >= needed.
+	 */
+	if (newlen > limit)
+		newlen = limit;
 
-	str->maxlen = newlen;
+#ifndef FRONTEND
+	if (str->allow_huge)
+		str->data = (char *) repalloc_huge(str->data, newlen);
+	else
+#endif
+		str->data = (char *) repalloc(str->data, newlen);
+
+	str->maxlen = (int) newlen;
 }
 
 /*
