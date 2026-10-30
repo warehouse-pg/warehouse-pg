@@ -2041,11 +2041,11 @@ gpdb::CheckCollation(Node *node)
 }
 
 bool
-gpdb::DMLReadsCtid(Query *query)
+gpdb::DMLCtidUnlocated(Query *query)
 {
 	GP_WRAP_START;
 	{
-		return cdbmutate_dml_reads_ctid(query);
+		return cdbmutate_dml_ctid_unlocated(query);
 	}
 	GP_WRAP_END;
 	return false;

@@ -139,6 +139,18 @@ HINT:  To uniquely identify a row within a distributed table, use the "gp_segmen
 DELETE FROM t WHERE ctid = '(0,1)' AND id = (random() * 0 + 1)::int;
 ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
+-- Skip-level, not proven: no gp_segment_id at all (Y11), a segment
+-- condition only under an OR or only in a separate subquery, a key condition
+-- inside the subquery.  These are left to
+-- the planner, which cannot plan skip-level correlations.
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid));
+ERROR:  correlated subquery with skip-level correlations is not supported
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid AND (s.sid = t.gp_segment_id OR s.sid IS NULL)));
+ERROR:  correlated subquery with skip-level correlations is not supported
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid) AND EXISTS (SELECT 1 FROM s s2 WHERE s2.sid = t.gp_segment_id));
+ERROR:  correlated subquery with skip-level correlations is not supported
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid AND t.id = 7));
+ERROR:  correlated subquery with skip-level correlations is not supported
 -- ctid IS NOT NULL does not pick rows, but a ctid comparison next to it does.
 DELETE FROM t WHERE ctid IS NOT NULL AND ctid = '(0,1)';
 ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
@@ -403,6 +415,46 @@ SELECT count(*) AS left_rows FROM t;
  left_rows 
 -----------
         18
+(1 row)
+
+ROLLBACK;
+-- A ctid referenced two subquery levels down.  The Postgres planner cannot
+-- plan such a skip-level correlation at all; GPORCA plans it when the
+-- statement itself proves the row's segment, with a condition on
+-- gp_segment_id in an AND around the ctid (Y12, its UPDATE form, the
+-- condition one level up, IS NOT NULL).
+BEGIN;
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid AND s.sid = t.gp_segment_id));
+ERROR:  correlated subquery with skip-level correlations is not supported
+SELECT count(*) AS left_rows, sum(CASE WHEN id = 7 THEN 1 ELSE 0 END) AS id_7 FROM t;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK;
+BEGIN;
+UPDATE t SET note = 'y' WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid AND s.sid = t.gp_segment_id));
+ERROR:  correlated subquery with skip-level correlations is not supported
+SELECT id, note FROM t WHERE note <> 'x';
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK;
+BEGIN;
+DELETE FROM t WHERE id IN (SELECT d.id FROM d WHERE t.gp_segment_id = (SELECT sid FROM s) AND EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid));
+ERROR:  correlated subquery with skip-level correlations is not supported
+SELECT count(*) AS left_rows FROM t;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK;
+BEGIN;
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid AND t.gp_segment_id IS NOT NULL));
+ERROR:  correlated subquery with skip-level correlations is not supported
+SELECT count(*) AS left_rows FROM t;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK;
+-- A ctid reached through a select list is not proven, so GPORCA leaves the
+-- statement to the planner, which plans this one.
+BEGIN;
+DELETE FROM t WHERE id IN (SELECT (SELECT max(sid) FROM s WHERE s.tid = t.ctid AND s.sid = t.gp_segment_id) FROM d);
+SELECT count(*) AS left_rows FROM t;
+ left_rows 
+-----------
+        20
 (1 row)
 
 ROLLBACK;

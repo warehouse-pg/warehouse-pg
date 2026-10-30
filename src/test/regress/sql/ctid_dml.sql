@@ -81,6 +81,14 @@ DELETE FROM t WHERE ctid = '(0,1)' AND id = v;
 DELETE FROM t WHERE ctid = '(0,1)' AND id IN (1, v);
 -- a volatile expression is not a fixed value
 DELETE FROM t WHERE ctid = '(0,1)' AND id = (random() * 0 + 1)::int;
+-- Skip-level, not proven: no gp_segment_id at all (Y11), a segment
+-- condition only under an OR or only in a separate subquery, a key condition
+-- inside the subquery.  These are left to
+-- the planner, which cannot plan skip-level correlations.
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid));
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid AND (s.sid = t.gp_segment_id OR s.sid IS NULL)));
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid) AND EXISTS (SELECT 1 FROM s s2 WHERE s2.sid = t.gp_segment_id));
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid AND t.id = 7));
 -- ctid IS NOT NULL does not pick rows, but a ctid comparison next to it does.
 DELETE FROM t WHERE ctid IS NOT NULL AND ctid = '(0,1)';
 
@@ -213,6 +221,33 @@ BEGIN;
 DELETE FROM t WHERE ctid IS NOT NULL AND id < 3;
 SELECT count(*) AS left_rows FROM t;
 DELETE FROM t WHERE ctid IS NULL;
+SELECT count(*) AS left_rows FROM t;
+ROLLBACK;
+-- A ctid referenced two subquery levels down.  The Postgres planner cannot
+-- plan such a skip-level correlation at all; GPORCA plans it when the
+-- statement itself proves the row's segment, with a condition on
+-- gp_segment_id in an AND around the ctid (Y12, its UPDATE form, the
+-- condition one level up, IS NOT NULL).
+BEGIN;
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid AND s.sid = t.gp_segment_id));
+SELECT count(*) AS left_rows, sum(CASE WHEN id = 7 THEN 1 ELSE 0 END) AS id_7 FROM t;
+ROLLBACK;
+BEGIN;
+UPDATE t SET note = 'y' WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid AND s.sid = t.gp_segment_id));
+SELECT id, note FROM t WHERE note <> 'x';
+ROLLBACK;
+BEGIN;
+DELETE FROM t WHERE id IN (SELECT d.id FROM d WHERE t.gp_segment_id = (SELECT sid FROM s) AND EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid));
+SELECT count(*) AS left_rows FROM t;
+ROLLBACK;
+BEGIN;
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid AND t.gp_segment_id IS NOT NULL));
+SELECT count(*) AS left_rows FROM t;
+ROLLBACK;
+-- A ctid reached through a select list is not proven, so GPORCA leaves the
+-- statement to the planner, which plans this one.
+BEGIN;
+DELETE FROM t WHERE id IN (SELECT (SELECT max(sid) FROM s WHERE s.tid = t.ctid AND s.sid = t.gp_segment_id) FROM d);
 SELECT count(*) AS left_rows FROM t;
 ROLLBACK;
 -- Mentioning gp_segment_id is the user choosing the segments, even when the
