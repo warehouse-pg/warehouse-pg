@@ -1,0 +1,24 @@
+# Everything not listed below
+*                               @EnterpriseDB/warehousepg-maintainers
+
+# Lint configuration and workflows need admin review
+/.github/                       @EnterpriseDB/warehouse-pg-admins
+/.githooks/                     @EnterpriseDB/warehouse-pg-admins
+/hooks/                         @EnterpriseDB/warehouse-pg-admins
+/LICENSE                        @EnterpriseDB/warehouse-pg-admins
+/HISTORY                        @EnterpriseDB/warehouse-pg-admins
+/COPYRIGHT                      @EnterpriseDB/warehouse-pg-admins
+/CONTRIBUTING.md                @EnterpriseDB/warehouse-pg-admins
+/CODE-OF-CONDUCT.md             @EnterpriseDB/warehouse-pg-admins
+/SECURITY.md                    @EnterpriseDB/warehouse-pg-admins
+/PROVENANCE.md                  @EnterpriseDB/warehouse-pg-admins
+/NOTICE                         @EnterpriseDB/warehouse-pg-admins
+/.well-known/security.txt       @EnterpriseDB/warehouse-pg-admins
+/.gitmodules                    @EnterpriseDB/warehouse-pg-admins
+/dockerfiles/                   @EnterpriseDB/warehouse-pg-admins
+/python-dependencies.txt        @EnterpriseDB/warehouse-pg-admins
+/.abi-check/                    @EnterpriseDB/warehouse-pg-admins
+/getversion                     @EnterpriseDB/warehouse-pg-admins
+/putversion                     @EnterpriseDB/warehouse-pg-admins
+/configure.in                   @EnterpriseDB/warehouse-pg-admins
+/configure                      @EnterpriseDB/warehouse-pg-admins
