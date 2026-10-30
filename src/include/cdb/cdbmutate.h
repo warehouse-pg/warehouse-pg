@@ -38,6 +38,8 @@ void
 cdbmutate_warn_ctid_without_segid(struct PlannerInfo *root, struct RelOptInfo *rel);
 
 extern bool cdbmutate_dml_ctid_unlocated(Query *query);
+extern bool cdbmutate_ctid_proof_begin(Query *query);
+extern void cdbmutate_ctid_proof_end(bool save);
 
 extern Plan *apply_shareinput_dag_to_tree(PlannerInfo *root, Plan *plan);
 extern void collect_shareinput_producers(PlannerInfo *root, Plan *plan);

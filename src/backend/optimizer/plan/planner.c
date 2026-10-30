@@ -563,9 +563,27 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	else
 		top_slice = NULL;
 
-	/* primary planning entry point (may recurse for subqueries) */
-	root = subquery_planner(glob, parse, NULL,
-							false, tuple_fraction, config);
+	/*
+	 * primary planning entry point (may recurse for subqueries).  An UPDATE
+	 * or DELETE whose ctid use is proven located is exempt from the planner's
+	 * ctid check, as it is planned by GPORCA (see cdbmutate_ctid_proof_begin()).
+	 */
+	{
+		bool		save_ctid_proof = cdbmutate_ctid_proof_begin(parse);
+
+		PG_TRY();
+		{
+			root = subquery_planner(glob, parse, NULL,
+									false, tuple_fraction, config);
+		}
+		PG_CATCH();
+		{
+			cdbmutate_ctid_proof_end(save_ctid_proof);
+			PG_RE_THROW();
+		}
+		PG_END_TRY();
+		cdbmutate_ctid_proof_end(save_ctid_proof);
+	}
 
 	/* Select best Path and turn it into a Plan */
 	final_rel = fetch_upper_rel(root, UPPERREL_FINAL, NULL);

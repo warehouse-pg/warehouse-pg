@@ -48,141 +48,164 @@ HINT:  To uniquely identify a row within a distributed table, use the "gp_segmen
 --
 -- U1, U2, U3
 DELETE FROM t WHERE ctid = '(0,1)';
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 UPDATE t SET note = 'y' WHERE ctid = '(0,2)';
-ERROR:  UPDATE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
+ERROR:  UPDATE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 UPDATE t SET note = 'y' WHERE ctid = '(0,1)' RETURNING id;
-ERROR:  UPDATE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
+ERROR:  UPDATE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 UPDATE t SET id = id + 100 WHERE ctid = '(0,1)';
-ERROR:  UPDATE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
+ERROR:  UPDATE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE ctid::text = '(0,1)' OR id = 99;
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 -- append-only, partitioned and randomly distributed tables
 DELETE FROM ao WHERE ctid = '(33554432,2)';
-ERROR:  DELETE uses system-defined column "ao.ctid" without the necessary companion column "ao.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "ao.ctid" without the necessary companion column "ao.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM pt WHERE ctid = '(0,1)';
 NOTICE:  SELECT uses system-defined column "pt.ctid" without the necessary companion column "pt.gp_segment_id"
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
-ERROR:  DELETE uses system-defined column "pt.ctid" without the necessary companion column "pt.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "pt.ctid" without the necessary companion column "pt.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM r WHERE ctid = '(0,1)';
-ERROR:  DELETE uses system-defined column "r.ctid" without the necessary companion column "r.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "r.ctid" without the necessary companion column "r.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 -- prepared statement and PL/pgSQL
 PREPARE del_ctid(tid) AS DELETE FROM t WHERE ctid = $1;
 EXECUTE del_ctid('(0,1)');
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DEALLOCATE del_ctid;
 CREATE FUNCTION del_by_ctid(tid) RETURNS void LANGUAGE plpgsql AS
   $$ BEGIN DELETE FROM t WHERE ctid = $1; END $$;
 SELECT del_by_ctid('(0,1)');
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 CONTEXT:  SQL statement "DELETE FROM t WHERE ctid = $1"
 PL/pgSQL function del_by_ctid(tid) line 1 at SQL statement
 -- K2: another column does not choose the segment.
 DELETE FROM t WHERE ctid = '(0,1)' AND v = 0;
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 -- A distribution key condition that does not fix the key to values: a
 -- range, only one column of a two-column key, a key joined to another table,
 -- a list read by a sub-select, an OR that mixes the key with another column
 -- or a range, a NOT IN list, a randomly distributed table.
 DELETE FROM t WHERE ctid = '(0,1)' AND id BETWEEN 1 AND 2;
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM m WHERE ctid = '(0,1)' AND a = 1;
-ERROR:  DELETE uses system-defined column "m.ctid" without the necessary companion column "m.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "m.ctid" without the necessary companion column "m.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM m WHERE ctid = '(0,1)' AND a IN (1, 4);
-ERROR:  DELETE uses system-defined column "m.ctid" without the necessary companion column "m.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "m.ctid" without the necessary companion column "m.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t USING d WHERE t.ctid = '(0,1)' AND t.id = d.id;
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE ctid = '(0,1)' AND id IN (SELECT id FROM d);
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE ctid = '(0,1)' AND id = ANY (ARRAY(SELECT id FROM d));
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE ctid = '(0,1)' AND (id = 1 OR v = 2);
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE ctid = '(0,1)' AND (id = 1 OR id > 5);
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE ctid = '(0,1)' AND id NOT IN (1, 2);
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE ctid = '(0,1)' AND id = ALL ('{1,2}'::int[]);
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM r WHERE ctid = '(0,1)' AND id = 1;
-ERROR:  DELETE uses system-defined column "r.ctid" without the necessary companion column "r.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "r.ctid" without the necessary companion column "r.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 -- another column of the same row is not a fixed value
 DELETE FROM t WHERE ctid = '(0,1)' AND id = v;
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE ctid = '(0,1)' AND id IN (1, v);
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 -- a volatile expression is not a fixed value
 DELETE FROM t WHERE ctid = '(0,1)' AND id = (random() * 0 + 1)::int;
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
--- Skip-level, not proven: no gp_segment_id at all (Y11), a segment
--- condition only under an OR or only in a separate subquery, a key condition
--- inside the subquery.  These are left to
--- the planner, which cannot plan skip-level correlations.
+-- A non-strict operator, which constant folding can turn into true.
+CREATE FUNCTION ctid_dml_any(int, bigint) RETURNS bool LANGUAGE sql IMMUTABLE AS 'SELECT true';
+CREATE OPERATOR >>> (LEFTARG = int, RIGHTARG = bigint, FUNCTION = ctid_dml_any);
+-- Skip-level, not proven, left to the planner, which cannot plan skip-level
+-- correlations: no gp_segment_id at all (Y11); a segment condition in an OR
+-- that is always true; in the output list of a sibling sub-select; in a
+-- scalar sub-select inside CASE or a non-strict operator, which constant
+-- folding can remove.
 DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid));
 ERROR:  correlated subquery with skip-level correlations is not supported
-DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid AND (s.sid = t.gp_segment_id OR s.sid IS NULL)));
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid AND (t.gp_segment_id = 0 OR 1 = 1)));
 ERROR:  correlated subquery with skip-level correlations is not supported
-DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid) AND EXISTS (SELECT 1 FROM s s2 WHERE s2.sid = t.gp_segment_id));
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid) AND EXISTS (SELECT t.gp_segment_id FROM s s2));
 ERROR:  correlated subquery with skip-level correlations is not supported
-DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid AND t.id = 7));
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid) AND CASE WHEN false THEN (SELECT count(*) FROM s s2 WHERE s2.sid = t.gp_segment_id) > 0 ELSE true END);
 ERROR:  correlated subquery with skip-level correlations is not supported
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid) AND 0 >>> (SELECT count(*) FROM s s2 WHERE s2.sid = t.gp_segment_id));
+ERROR:  correlated subquery with skip-level correlations is not supported
+-- One level down, kept as a SubPlan (LIMIT): the planner folds the operator
+-- to true before it checks, and rejects the statement.
+DELETE FROM t WHERE ctid = '(0,1)' AND 0 >>> (SELECT count(*) FROM s s2 WHERE s2.sid = t.gp_segment_id LIMIT 1);
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
+HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
+DROP OPERATOR >>> (int, bigint);
+DROP FUNCTION ctid_dml_any(int, bigint);
 -- ctid IS NOT NULL does not pick rows, but a ctid comparison next to it does.
 DELETE FROM t WHERE ctid IS NOT NULL AND ctid = '(0,1)';
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 --
 -- gp_segment_id that the planner removes before it checks: rejected.
 --
 -- T4: "A OR (A AND B)" is simplified to "A".
 DELETE FROM t WHERE ctid = '(0,1)' OR (ctid = '(0,1)' AND gp_segment_id = 0);
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
+-- The same after constant folding, which the planner does first.
+DELETE FROM t WHERE ctid = '(0,1)' OR (ctid = ('(0,' || '1)')::tid AND gp_segment_id = 0);
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
+HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
+-- With a parameter bound to the same ctid (a custom plan folds it).
+PREPARE del_or(tid) AS DELETE FROM t WHERE ctid = $1 OR (ctid = '(0,1)' AND gp_segment_id = 0);
+EXECUTE del_or('(0,1)');
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
+HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
+DEALLOCATE del_or;
 -- T5: the output list of an EXISTS subquery is discarded, with the qualifier
 -- nested in it.
 DELETE FROM t a WHERE EXISTS (SELECT (SELECT 1 WHERE b.gp_segment_id = 0) FROM t b WHERE b.id = a.id AND b.ctid = '(0,1)');
-ERROR:  DELETE uses system-defined column "b.ctid" without the necessary companion column "b.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "b.ctid" without the necessary companion column "b.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 -- T7: once z is pulled up, z.k = 1 is true, and so is the OR.
 DELETE FROM t a USING (SELECT 1 AS k) z WHERE a.ctid = '(0,1)' AND (a.gp_segment_id = 0 OR z.k = 1);
-ERROR:  DELETE uses system-defined column "a.ctid" without the necessary companion column "a.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "a.ctid" without the necessary companion column "a.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 -- The output of an EXISTS is not used, so this gp_segment_id is not counted.
 DELETE FROM t a WHERE EXISTS (SELECT b.gp_segment_id FROM t b WHERE b.id = a.id AND b.ctid = '(0,1)');
-ERROR:  DELETE uses system-defined column "b.ctid" without the necessary companion column "b.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "b.ctid" without the necessary companion column "b.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 -- D1: an unused column of a derived table.
 DELETE FROM t a USING (SELECT b.id, b.gp_segment_id AS s FROM t b WHERE b.ctid = '(0,1)') x WHERE a.id = x.id;
-ERROR:  DELETE uses system-defined column "b.ctid" without the necessary companion column "b.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "b.ctid" without the necessary companion column "b.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 -- B1: b's ctid is used through the derived table and b's gp_segment_id is not,
 -- so rows of a would be paired with another segment's ctid.
 DELETE FROM t a USING (SELECT b.id, b.ctid AS c, b.gp_segment_id AS s FROM t b) x WHERE a.ctid = x.c AND a.gp_segment_id = 1;
-ERROR:  DELETE uses system-defined column "b.ctid" without the necessary companion column "b.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "b.ctid" without the necessary companion column "b.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 --
 -- ctid of a table in a subquery that the planner pulls up into the DML:
@@ -191,47 +214,47 @@ HINT:  To uniquely identify a row within a distributed table, use the "gp_segmen
 -- O1: the deleted table's ctid appears only inside a subquery, as an outer
 -- reference.  The planner turns the EXISTS into a join on t.ctid.
 DELETE FROM t WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid);
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 -- V2, E1, E2
 DELETE FROM t a USING (SELECT b.id FROM t b WHERE b.ctid = '(0,1)') x WHERE a.id = x.id;
-ERROR:  DELETE uses system-defined column "b.ctid" without the necessary companion column "b.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "b.ctid" without the necessary companion column "b.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t a WHERE EXISTS (SELECT 1 FROM t b WHERE b.id = a.id AND b.ctid = '(0,1)');
-ERROR:  DELETE uses system-defined column "b.ctid" without the necessary companion column "b.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "b.ctid" without the necessary companion column "b.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE id IN (SELECT id FROM t t2 WHERE t2.ctid = '(0,1)');
-ERROR:  DELETE uses system-defined column "t2.ctid" without the necessary companion column "t2.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "t2.ctid" without the necessary companion column "t2.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM d WHERE ctid = (SELECT ctid FROM d WHERE v = 0 ORDER BY id LIMIT 1);
-ERROR:  DELETE uses system-defined column "d.ctid" without the necessary companion column "d.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "d.ctid" without the necessary companion column "d.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM d WHERE ctid IN (SELECT ctid FROM (SELECT ctid, row_number() OVER (PARTITION BY v ORDER BY id) AS rn FROM d) x WHERE rn > 1);
-ERROR:  DELETE uses system-defined column "d.ctid" without the necessary companion column "d.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "d.ctid" without the necessary companion column "d.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM d WHERE ctid NOT IN (SELECT min(ctid) FROM d GROUP BY v);
-ERROR:  DELETE uses system-defined column "d.ctid" without the necessary companion column "d.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "d.ctid" without the necessary companion column "d.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM d a WHERE EXISTS (SELECT 1 FROM d b WHERE a.v = b.v AND a.ctid > b.ctid);
-ERROR:  DELETE uses system-defined column "a.ctid" without the necessary companion column "a.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "a.ctid" without the necessary companion column "a.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE ctid IN (SELECT ctid FROM t WHERE v = 1 LIMIT 2);
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t USING t t2 WHERE t.ctid = t2.ctid AND t2.id = 7;
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t USING s WHERE t.ctid = s.tid;
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t USING s WHERE t.ctid = s.tid AND s.sid IS NOT NULL;
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 UPDATE t SET note = 'y' FROM s WHERE t.ctid = s.tid;
-ERROR:  UPDATE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
+ERROR:  UPDATE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 WITH x AS (SELECT tid FROM s) DELETE FROM t WHERE ctid IN (SELECT tid FROM x);
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:493)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:500)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 -- Nothing was changed.
 SELECT count(*), sum(id), sum(CASE WHEN note <> 'x' THEN 1 ELSE 0 END) AS changed FROM t;
@@ -446,6 +469,119 @@ DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE 
 ERROR:  correlated subquery with skip-level correlations is not supported
 SELECT count(*) AS left_rows FROM t;
 ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK;
+-- The same with the segment given in an OR the planner keeps (R2), in a
+-- sibling EXISTS (R3), NOT EXISTS, scalar or ALL sub-select, or with the
+-- distribution key fixed inside the subquery (R4).
+BEGIN;
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid AND (s.sid = t.gp_segment_id OR s.sid IS NULL)));
+ERROR:  correlated subquery with skip-level correlations is not supported
+SELECT count(*) AS left_rows FROM t;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK;
+BEGIN;
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid) AND EXISTS (SELECT 1 FROM s s2 WHERE s2.sid = t.gp_segment_id));
+ERROR:  correlated subquery with skip-level correlations is not supported
+SELECT count(*) AS left_rows FROM t;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK;
+BEGIN;
+DELETE FROM t WHERE id IN (SELECT id + 1 FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid) AND NOT EXISTS (SELECT 1 FROM s s2 WHERE s2.sid = t.gp_segment_id));
+ERROR:  correlated subquery with skip-level correlations is not supported
+SELECT count(*) AS left_rows, sum(CASE WHEN id = 10 THEN 1 ELSE 0 END) AS id_10 FROM t;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK;
+BEGIN;
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid) AND (SELECT count(*) FROM s s2 WHERE s2.sid = t.gp_segment_id) > 0);
+ERROR:  correlated subquery with skip-level correlations is not supported
+SELECT count(*) AS left_rows FROM t;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK;
+BEGIN;
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid) AND t.v <> ALL (SELECT s2.sid + 10 FROM s s2 WHERE s2.sid = t.gp_segment_id));
+ERROR:  correlated subquery with skip-level correlations is not supported
+SELECT count(*) AS left_rows FROM t;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK;
+BEGIN;
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid AND t.id = 7));
+ERROR:  correlated subquery with skip-level correlations is not supported
+SELECT count(*) AS left_rows FROM t;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK;
+BEGIN;
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid AND (s.sid = t.gp_segment_id OR 1 = 0)));
+ERROR:  correlated subquery with skip-level correlations is not supported
+SELECT count(*) AS left_rows FROM t;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK;
+BEGIN;
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid) AND EXISTS (SELECT 1 FROM d d2 WHERE EXISTS (SELECT 1 FROM s s2 WHERE s2.sid = t.gp_segment_id)));
+ERROR:  correlated subquery with skip-level correlations is not supported
+SELECT count(*) AS left_rows FROM t;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK;
+-- With a strict operator the sub-select stays, and so does gp_segment_id.
+BEGIN;
+DELETE FROM t WHERE ctid = '(0,1)' AND 0 < (SELECT count(*) FROM s s2 WHERE s2.sid = t.gp_segment_id LIMIT 1);
+SELECT count(*) AS left_rows FROM t;
+ left_rows 
+-----------
+        19
+(1 row)
+
+ROLLBACK;
+-- A key condition inside a sub-select the planner keeps as a SubPlan still
+-- fixes the segment: both optimizers accept it.
+BEGIN;
+DELETE FROM t WHERE 0 < (SELECT count(*) FROM s WHERE s.tid = t.ctid AND t.id = 7);
+SELECT count(*) AS left_rows, sum(CASE WHEN id = 7 THEN 1 ELSE 0 END) AS id_7 FROM t;
+ left_rows | id_7 
+-----------+------
+        19 |    0
+(1 row)
+
+ROLLBACK;
+-- The same with a key value from an immutable function that the planner
+-- runs while it plans the statement, and that plans (and catches an error
+-- in) a statement of its own.
+CREATE FUNCTION ctid_dml_seven() RETURNS int LANGUAGE plpgsql IMMUTABLE AS $$
+BEGIN
+  PERFORM 1 / 0;
+  RETURN 7;
+EXCEPTION WHEN division_by_zero THEN
+  RETURN 7;
+END $$;
+BEGIN;
+DELETE FROM t WHERE 0 < (SELECT count(*) FROM s WHERE s.tid = t.ctid AND t.id = ctid_dml_seven());
+SELECT count(*) AS left_rows, sum(CASE WHEN id = 7 THEN 1 ELSE 0 END) AS id_7 FROM t;
+ left_rows | id_7 
+-----------+------
+        19 |    0
+(1 row)
+
+ROLLBACK;
+DROP FUNCTION ctid_dml_seven();
+-- An OR whose arms share the gp_segment_id condition: the planner reduces it
+-- to that condition, and GPORCA plans it.
+BEGIN;
+DELETE FROM t WHERE ctid = '(0,1)' AND ((gp_segment_id = 0 AND v = 1) OR gp_segment_id = 0);
+SELECT count(*) AS left_rows FROM t;
+ left_rows 
+-----------
+        19
+(1 row)
+
+ROLLBACK;
+-- An OR with a sub-select in an arm is left to the planner, which plans it.
+BEGIN;
+DELETE FROM t WHERE ctid = '(0,1)' AND (gp_segment_id = 0 OR EXISTS (SELECT 1 FROM s WHERE s.sid = t.v));
+SELECT count(*) AS left_rows FROM t;
+ left_rows 
+-----------
+        19
+(1 row)
+
 ROLLBACK;
 -- A ctid reached through a select list is not proven, so GPORCA leaves the
 -- statement to the planner, which plans this one.

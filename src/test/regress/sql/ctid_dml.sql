@@ -81,14 +81,24 @@ DELETE FROM t WHERE ctid = '(0,1)' AND id = v;
 DELETE FROM t WHERE ctid = '(0,1)' AND id IN (1, v);
 -- a volatile expression is not a fixed value
 DELETE FROM t WHERE ctid = '(0,1)' AND id = (random() * 0 + 1)::int;
--- Skip-level, not proven: no gp_segment_id at all (Y11), a segment
--- condition only under an OR or only in a separate subquery, a key condition
--- inside the subquery.  These are left to
--- the planner, which cannot plan skip-level correlations.
+-- A non-strict operator, which constant folding can turn into true.
+CREATE FUNCTION ctid_dml_any(int, bigint) RETURNS bool LANGUAGE sql IMMUTABLE AS 'SELECT true';
+CREATE OPERATOR >>> (LEFTARG = int, RIGHTARG = bigint, FUNCTION = ctid_dml_any);
+-- Skip-level, not proven, left to the planner, which cannot plan skip-level
+-- correlations: no gp_segment_id at all (Y11); a segment condition in an OR
+-- that is always true; in the output list of a sibling sub-select; in a
+-- scalar sub-select inside CASE or a non-strict operator, which constant
+-- folding can remove.
 DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid));
-DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid AND (s.sid = t.gp_segment_id OR s.sid IS NULL)));
-DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid) AND EXISTS (SELECT 1 FROM s s2 WHERE s2.sid = t.gp_segment_id));
-DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid AND t.id = 7));
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid AND (t.gp_segment_id = 0 OR 1 = 1)));
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid) AND EXISTS (SELECT t.gp_segment_id FROM s s2));
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid) AND CASE WHEN false THEN (SELECT count(*) FROM s s2 WHERE s2.sid = t.gp_segment_id) > 0 ELSE true END);
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid) AND 0 >>> (SELECT count(*) FROM s s2 WHERE s2.sid = t.gp_segment_id));
+-- One level down, kept as a SubPlan (LIMIT): the planner folds the operator
+-- to true before it checks, and rejects the statement.
+DELETE FROM t WHERE ctid = '(0,1)' AND 0 >>> (SELECT count(*) FROM s s2 WHERE s2.sid = t.gp_segment_id LIMIT 1);
+DROP OPERATOR >>> (int, bigint);
+DROP FUNCTION ctid_dml_any(int, bigint);
 -- ctid IS NOT NULL does not pick rows, but a ctid comparison next to it does.
 DELETE FROM t WHERE ctid IS NOT NULL AND ctid = '(0,1)';
 
@@ -97,6 +107,12 @@ DELETE FROM t WHERE ctid IS NOT NULL AND ctid = '(0,1)';
 --
 -- T4: "A OR (A AND B)" is simplified to "A".
 DELETE FROM t WHERE ctid = '(0,1)' OR (ctid = '(0,1)' AND gp_segment_id = 0);
+-- The same after constant folding, which the planner does first.
+DELETE FROM t WHERE ctid = '(0,1)' OR (ctid = ('(0,' || '1)')::tid AND gp_segment_id = 0);
+-- With a parameter bound to the same ctid (a custom plan folds it).
+PREPARE del_or(tid) AS DELETE FROM t WHERE ctid = $1 OR (ctid = '(0,1)' AND gp_segment_id = 0);
+EXECUTE del_or('(0,1)');
+DEALLOCATE del_or;
 -- T5: the output list of an EXISTS subquery is discarded, with the qualifier
 -- nested in it.
 DELETE FROM t a WHERE EXISTS (SELECT (SELECT 1 WHERE b.gp_segment_id = 0) FROM t b WHERE b.id = a.id AND b.ctid = '(0,1)');
@@ -242,6 +258,78 @@ SELECT count(*) AS left_rows FROM t;
 ROLLBACK;
 BEGIN;
 DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid AND t.gp_segment_id IS NOT NULL));
+SELECT count(*) AS left_rows FROM t;
+ROLLBACK;
+-- The same with the segment given in an OR the planner keeps (R2), in a
+-- sibling EXISTS (R3), NOT EXISTS, scalar or ALL sub-select, or with the
+-- distribution key fixed inside the subquery (R4).
+BEGIN;
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid AND (s.sid = t.gp_segment_id OR s.sid IS NULL)));
+SELECT count(*) AS left_rows FROM t;
+ROLLBACK;
+BEGIN;
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid) AND EXISTS (SELECT 1 FROM s s2 WHERE s2.sid = t.gp_segment_id));
+SELECT count(*) AS left_rows FROM t;
+ROLLBACK;
+BEGIN;
+DELETE FROM t WHERE id IN (SELECT id + 1 FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid) AND NOT EXISTS (SELECT 1 FROM s s2 WHERE s2.sid = t.gp_segment_id));
+SELECT count(*) AS left_rows, sum(CASE WHEN id = 10 THEN 1 ELSE 0 END) AS id_10 FROM t;
+ROLLBACK;
+BEGIN;
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid) AND (SELECT count(*) FROM s s2 WHERE s2.sid = t.gp_segment_id) > 0);
+SELECT count(*) AS left_rows FROM t;
+ROLLBACK;
+BEGIN;
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid) AND t.v <> ALL (SELECT s2.sid + 10 FROM s s2 WHERE s2.sid = t.gp_segment_id));
+SELECT count(*) AS left_rows FROM t;
+ROLLBACK;
+BEGIN;
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid AND t.id = 7));
+SELECT count(*) AS left_rows FROM t;
+ROLLBACK;
+BEGIN;
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid AND (s.sid = t.gp_segment_id OR 1 = 0)));
+SELECT count(*) AS left_rows FROM t;
+ROLLBACK;
+BEGIN;
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid) AND EXISTS (SELECT 1 FROM d d2 WHERE EXISTS (SELECT 1 FROM s s2 WHERE s2.sid = t.gp_segment_id)));
+SELECT count(*) AS left_rows FROM t;
+ROLLBACK;
+-- With a strict operator the sub-select stays, and so does gp_segment_id.
+BEGIN;
+DELETE FROM t WHERE ctid = '(0,1)' AND 0 < (SELECT count(*) FROM s s2 WHERE s2.sid = t.gp_segment_id LIMIT 1);
+SELECT count(*) AS left_rows FROM t;
+ROLLBACK;
+-- A key condition inside a sub-select the planner keeps as a SubPlan still
+-- fixes the segment: both optimizers accept it.
+BEGIN;
+DELETE FROM t WHERE 0 < (SELECT count(*) FROM s WHERE s.tid = t.ctid AND t.id = 7);
+SELECT count(*) AS left_rows, sum(CASE WHEN id = 7 THEN 1 ELSE 0 END) AS id_7 FROM t;
+ROLLBACK;
+-- The same with a key value from an immutable function that the planner
+-- runs while it plans the statement, and that plans (and catches an error
+-- in) a statement of its own.
+CREATE FUNCTION ctid_dml_seven() RETURNS int LANGUAGE plpgsql IMMUTABLE AS $$
+BEGIN
+  PERFORM 1 / 0;
+  RETURN 7;
+EXCEPTION WHEN division_by_zero THEN
+  RETURN 7;
+END $$;
+BEGIN;
+DELETE FROM t WHERE 0 < (SELECT count(*) FROM s WHERE s.tid = t.ctid AND t.id = ctid_dml_seven());
+SELECT count(*) AS left_rows, sum(CASE WHEN id = 7 THEN 1 ELSE 0 END) AS id_7 FROM t;
+ROLLBACK;
+DROP FUNCTION ctid_dml_seven();
+-- An OR whose arms share the gp_segment_id condition: the planner reduces it
+-- to that condition, and GPORCA plans it.
+BEGIN;
+DELETE FROM t WHERE ctid = '(0,1)' AND ((gp_segment_id = 0 AND v = 1) OR gp_segment_id = 0);
+SELECT count(*) AS left_rows FROM t;
+ROLLBACK;
+-- An OR with a sub-select in an arm is left to the planner, which plans it.
+BEGIN;
+DELETE FROM t WHERE ctid = '(0,1)' AND (gp_segment_id = 0 OR EXISTS (SELECT 1 FROM s WHERE s.sid = t.v));
 SELECT count(*) AS left_rows FROM t;
 ROLLBACK;
 -- A ctid reached through a select list is not proven, so GPORCA leaves the
