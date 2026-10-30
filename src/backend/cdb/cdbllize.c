@@ -54,8 +54,16 @@
 
 #include "postgres.h"
 
+#include "access/external.h"	/* GetExtTableEntryIfExists() */
+#include "access/htup_details.h"	/* MaxPolicyAttributeNumber */
+#include "catalog/gp_configuration_history.h"
+#include "catalog/gp_segment_configuration.h"
 #include "catalog/pg_am.h"
+#include "catalog/pg_proc.h"	/* PROEXECLOCATION_* */
+#include "catalog/pg_stat_last_operation.h"
+#include "catalog/pg_stat_last_shoperation.h"
 #include "commands/defrem.h"
+#include "foreign/foreign.h"	/* rel_is_external_table() */
 #include "optimizer/clauses.h"
 #include "optimizer/pathnode.h"
 #include "nodes/primnodes.h"
@@ -69,6 +77,7 @@
 #include "nodes/makefuncs.h"	/* for makeTargetEntry() */
 #include "utils/guc.h"			/* for Debug_pretty_print */
 #include "utils/lsyscache.h"
+#include "utils/syscache.h"
 
 #include "cdb/cdbhash.h"
 #include "cdb/cdbvars.h"
@@ -93,6 +102,13 @@ typedef struct decorate_subplan_info
 	bool		useHashTable;
 	bool		processed;
 
+	/*
+	 * WHPG (PTT-2066): does the slice that references this SubPlan, the
+	 * one recorded in parentFlow, run on the coordinator?  Kept apart from
+	 * parentFlow because a Flow does not always say where its node runs; see
+	 * slice_on_coordinator in the context.
+	 */
+	bool		parent_on_coordinator;
 } decorate_subplan_info;
 
 typedef struct decorate_subplans_with_motions_context
@@ -112,6 +128,41 @@ typedef struct decorate_subplans_with_motions_context
 	/* Current position in the tree. */
 	int			sliceDepth;
 	Flow	   *currentPlanFlow;
+
+	/* Does the top slice of the main plan run on the coordinator? */
+	bool		top_on_coordinator;
+
+	/*
+	 * WHPG (PTT-2066): does the slice being walked run on the coordinator?
+	 *
+	 * This is not read off currentPlanFlow.  A node's Flow is derived from
+	 * its Path's locus, and an Entry-locus path can be placed in a segment
+	 * slice without a Motion: cdbpath_create_motion_path() relabels a
+	 * Motion-free Entry path (a catalog scan) to OuterQuery locus on the
+	 * assumption that a catalog reads the same everywhere, so such a scan
+	 * node claims Entry while it runs wherever the SubPlan runs.  The slice
+	 * itself is known for certain: the main plan's top slice from top_slice,
+	 * a Motion's sending slice from the Motion, and a SubPlan's slice from
+	 * the one that references it.  Only those change this flag.
+	 */
+	bool		slice_on_coordinator;
+
+	/*
+	 * WHPG (PTT-2066): the query level whose range table the scanrelids of
+	 * the plan tree being walked index: the main query, a SubPlan's subroot,
+	 * or a subquery RTE's subroot under a SubqueryScan.  NULL when unknown,
+	 * which disables the coordinator-only check below that point.
+	 */
+	PlannerInfo *cur_root;
+
+	/*
+	 * WHPG (PTT-2066): the PARAM_EXEC ids that correlated SubPlans seen so
+	 * far receive from their outer queries (SubPlan.parParam).  A SubPlan is
+	 * processed after the plan that references it, so by then the set holds
+	 * its own parameters and those of every SubPlan enclosing it, skip-level
+	 * ones included.
+	 */
+	Bitmapset  *correlation_params;
 } decorate_subplans_with_motions_context;
 
 /* State for the recursive build_slice_table() function. */
@@ -143,6 +194,11 @@ typedef struct
  */
 static Node *fix_outer_query_motions_mutator(Node *node, decorate_subplans_with_motions_context *context);
 static Plan *fix_subplan_motion(PlannerInfo *root, Plan *subplan, Flow *outer_query_flow);
+static bool flow_runs_on_coordinator(Flow *flow);
+static void check_coordinator_only_scan(Plan *plan,
+										decorate_subplans_with_motions_context *context);
+static void check_param_across_motion(Plan *sender,
+									  decorate_subplans_with_motions_context *context);
 static bool build_slice_table_walker(Node *node, build_slice_table_context *context);
 static void adjust_top_path_for_parallel_retrieve_cursor(Path *path, PlanSlice *slice);
 
@@ -727,7 +783,8 @@ cdbllize_adjust_init_plan_path(PlannerInfo *root, Path *best_path)
  * too, so we need to scan the tree even if there are no SubPlans.
  */
 Plan *
-cdbllize_decorate_subplans_with_motions(PlannerInfo *root, Plan *plan)
+cdbllize_decorate_subplans_with_motions(PlannerInfo *root, Plan *plan,
+										PlanSlice *top_slice)
 {
 	Plan	   *result;
 	decorate_subplans_with_motions_context context;
@@ -737,6 +794,10 @@ cdbllize_decorate_subplans_with_motions(PlannerInfo *root, Plan *plan)
 	planner_init_plan_tree_base(&context.base, root);
 	context.sliceDepth = 0;
 	context.subplan_workingQueue = NIL;
+	context.top_on_coordinator = (top_slice->gangType == GANGTYPE_UNALLOCATED);
+	context.slice_on_coordinator = context.top_on_coordinator;
+	context.cur_root = root;
+	context.correlation_params = NULL;
 
 	nsubplans = list_length(root->glob->subplans);
 	context.subplans = (decorate_subplan_info *)
@@ -749,6 +810,7 @@ cdbllize_decorate_subplans_with_motions(PlannerInfo *root, Plan *plan)
 		sstate->parentFlow = NULL;
 		sstate->is_initplan = false;
 		sstate->processed = false;
+		sstate->parent_on_coordinator = false;
 	}
 
 	/*
@@ -792,12 +854,21 @@ cdbllize_decorate_subplans_with_motions(PlannerInfo *root, Plan *plan)
 			topFlow->segindex = -1;
 			context.sliceDepth = 0;
 			context.currentPlanFlow = topFlow;
+			context.slice_on_coordinator = true;
 		}
 		else
 		{
 			context.sliceDepth = sstate->sliceDepth;
 			context.currentPlanFlow = sstate->parentFlow;
+			context.slice_on_coordinator = sstate->parent_on_coordinator;
 		}
+
+		/*
+		 * WHPG (PTT-2066): the SubPlan's scanrelids index its own level's
+		 * range table.  glob->subroots parallels glob->subplans.
+		 */
+		context.cur_root = list_nth_node(PlannerInfo, root->glob->subroots,
+										 plan_id - 1);
 
 		if (!subplan->flow)
 			elog(ERROR, "subplan is missing Flow information");
@@ -810,7 +881,16 @@ cdbllize_decorate_subplans_with_motions(PlannerInfo *root, Plan *plan)
 			subplan->flow->locustype != CdbLocusType_SegmentGeneral &&
 			subplan->flow->locustype != CdbLocusType_General)
 		{
+			Plan	   *orig_subplan = subplan;
+
 			subplan = fix_subplan_motion(root, subplan, context.currentPlanFlow);
+
+			/*
+			 * WHPG (PTT-2066): the Motion just made is empty of parameter
+			 * information; what it sends is the whole subquery.
+			 */
+			if (subplan != orig_subplan)
+				check_param_across_motion(orig_subplan, &context);
 
 			/*
 			 * If we created a Motion, protect it from rescanning. Init Plans
@@ -870,6 +950,15 @@ fix_outer_query_motions_mutator(Node *node, decorate_subplans_with_motions_conte
 			sstate->is_initplan = spexpr->is_initplan;
 			sstate->useHashTable = spexpr->useHashTable;
 
+			/* WHPG (PTT-2066): see correlation_params. */
+			{
+				ListCell   *lc;
+
+				foreach(lc, spexpr->parParam)
+					context->correlation_params =
+						bms_add_member(context->correlation_params, lfirst_int(lc));
+			}
+
 			if (sstate->processed)
 				elog(ERROR, "found reference to already-processed SubPlan");
 			if (sstate->sliceDepth == -1)
@@ -880,6 +969,7 @@ fix_outer_query_motions_mutator(Node *node, decorate_subplans_with_motions_conte
 			{
 				sstate->sliceDepth = context->sliceDepth;
 				sstate->parentFlow = context->currentPlanFlow;
+				sstate->parent_on_coordinator = context->slice_on_coordinator;
 			}
 		}
 		return node;
@@ -887,9 +977,17 @@ fix_outer_query_motions_mutator(Node *node, decorate_subplans_with_motions_conte
 
 	plan = (Plan *) node;
 
+	/*
+	 * WHPG (PTT-2066): a scan of a relation whose rows exist on the
+	 * coordinator only must run on the coordinator.  Checked for every plan
+	 * node before its subtree is entered, against the slice it sits in.
+	 */
+	check_coordinator_only_scan(plan, context);
+
 	if (IsA(plan, Motion))
 	{
 		Motion	   *motion = (Motion *) plan;
+		bool		saveSliceOnCoordinator = context->slice_on_coordinator;
 
 		/* sanity check: Sub plan must have flow */
 		Assert(motion->plan.lefttree->flow);
@@ -903,10 +1001,19 @@ fix_outer_query_motions_mutator(Node *node, decorate_subplans_with_motions_conte
 		 *
 		 * All the fields on the Motion node are considered part of the sending
 		 * slice.
+		 *
+		 * WHPG (PTT-2066): the sending slice is a real slice, so its Flow
+		 * says where it runs: on the coordinator (an entry-db gang) when the
+		 * input has Entry locus.  An outer-query input runs wherever this
+		 * slice runs, like the Flow it keeps.
 		 */
 		saveCurrentPlanFlow = context->currentPlanFlow;
 		if (plan->lefttree->flow->locustype != CdbLocusType_OuterQuery)
+		{
 			context->currentPlanFlow = plan->lefttree->flow;
+			context->slice_on_coordinator =
+				flow_runs_on_coordinator(plan->lefttree->flow);
+		}
 		context->sliceDepth++;
 
 		plan = (Plan *) plan_tree_mutator((Node *) plan,
@@ -916,6 +1023,7 @@ fix_outer_query_motions_mutator(Node *node, decorate_subplans_with_motions_conte
 		motion = (Motion *) plan;
 		context->sliceDepth--;
 		context->currentPlanFlow = saveCurrentPlanFlow;
+		context->slice_on_coordinator = saveSliceOnCoordinator;
 
 		/*
 		 * If this is a Motion node in a correlated SubPlan, where we bring
@@ -976,6 +1084,12 @@ fix_outer_query_motions_mutator(Node *node, decorate_subplans_with_motions_conte
 		}
 		else
 		{
+			/*
+			 * WHPG (PTT-2066): the Motion stays, so whatever its sending
+			 * slice references must be available there.
+			 */
+			check_param_across_motion(motion->plan.lefttree, context);
+
 			newnode = (Node *) motion;
 		}
 	}
@@ -986,14 +1100,257 @@ fix_outer_query_motions_mutator(Node *node, decorate_subplans_with_motions_conte
 		 * an exact image of the input node, except that contained nodes requiring
 		 * parallelization will have had it applied.
 		 */
+		PlannerInfo *saveCurRoot = context->cur_root;
+
 		saveCurrentPlanFlow = context->currentPlanFlow;
 		if (plan->flow != NULL && plan->flow->locustype != CdbLocusType_OuterQuery)
 			context->currentPlanFlow = plan->flow;
+
+		/*
+		 * WHPG (PTT-2066): the plan under a SubqueryScan belongs to the
+		 * subquery's own level, whose root set_subquery_pathlist() left on
+		 * the subquery's RelOptInfo; its scanrelids index that level's range
+		 * table.  Without it, the check is off below this node.
+		 */
+		if (IsA(plan, SubqueryScan))
+		{
+			Index		scanrelid = ((SubqueryScan *) plan)->scan.scanrelid;
+			PlannerInfo *subroot = NULL;
+
+			if (context->cur_root != NULL &&
+				scanrelid < context->cur_root->simple_rel_array_size &&
+				context->cur_root->simple_rel_array[scanrelid] != NULL)
+				subroot = context->cur_root->simple_rel_array[scanrelid]->subroot;
+			context->cur_root = subroot;
+		}
+
 		newnode = plan_tree_mutator(node, fix_outer_query_motions_mutator, context, false);
 		context->currentPlanFlow = saveCurrentPlanFlow;
+		context->cur_root = saveCurRoot;
 	}
 
 	return newnode;
+}
+
+/*
+ * WHPG (PTT-2066): does a slice with this Flow run on the coordinator?
+ * Entry locus is the coordinator's own process or an entry-db gang on the
+ * coordinator; a singleton on segindex 0, a replicated or a partitioned flow
+ * runs on the segments.
+ */
+static bool
+flow_runs_on_coordinator(Flow *flow)
+{
+	return flow->flotype == FLOW_SINGLETON && flow->segindex == -1;
+}
+
+/*
+ * WHPG (PTT-2066): is this a relation whose rows exist on the coordinator
+ * only?  Most catalogs are maintained on every segment as well, and a
+ * segment's copy is what a catalog scan in a segment slice has always read.
+ * These are written on the coordinator alone: the cluster configuration
+ * (gp_segment_configuration, gp_configuration_history) and the metadata
+ * tracking catalogs (pg_stat_last_operation, pg_stat_last_shoperation).  A
+ * table DISTRIBUTED COORDINATOR ONLY keeps all its rows there (its
+ * gp_distribution_policy row says so; a catalog has no row), and so does a
+ * readable external table declared EXECUTE ... ON COORDINATOR.
+ *
+ * Foreign tables are not included, although mpp_execute 'coordinator' is
+ * their default: their rows are fetched from the remote server, which a
+ * segment process can reach as well, so a scan placed on a segment reads
+ * the right rows (postgres_fdw's correlated subquery tests rely on that).
+ */
+static bool
+relation_is_coordinator_only(Oid relid, char relkind)
+{
+	HeapTuple	tp;
+
+	if (relid == GpSegmentConfigRelationId ||
+		relid == GpConfigHistoryRelationId ||
+		relid == StatLastOpRelationId ||
+		relid == StatLastShOpRelationId)
+		return true;
+
+	if (relkind == RELKIND_FOREIGN_TABLE)
+	{
+		ExtTableEntry *ext;
+
+		if (!rel_is_external_table(relid))
+			return false;
+		ext = GetExtTableEntryIfExists(relid);
+		return ext != NULL && !ext->iswritable && ext->execlocations != NIL &&
+			strcmp(strVal(linitial(ext->execlocations)), "COORDINATOR_ONLY") == 0;
+	}
+
+	tp = SearchSysCache1(GPPOLICYID, ObjectIdGetDatum(relid));
+	if (HeapTupleIsValid(tp))
+	{
+		bool		coordinator_only =
+			((Form_gp_distribution_policy) GETSTRUCT(tp))->policytype ==
+			SYM_POLICYTYPE_ENTRY;
+
+		ReleaseSysCache(tp);
+		return coordinator_only;
+	}
+
+	return false;
+}
+
+/*
+ * WHPG (PTT-2066): does this plan node read rows that exist on the
+ * coordinator only, and if so, what is it reading?  Besides the relations
+ * above, a function declared EXECUTE ON COORDINATOR or ON INITPLAN produces
+ * its rows on the coordinator alone, whether it is scanned in FROM or
+ * called in the target list of a query without FROM (a Result, or the
+ * ProjectSet above it for a set-returning function).  Scan relids are
+ * resolved against the range table of the level the plan tree belongs to.
+ */
+static bool
+plan_reads_coordinator_only(Plan *plan, PlannerInfo *root,
+							const char **kind, char **name)
+{
+	switch (nodeTag(plan))
+	{
+		case T_SeqScan:
+		case T_IndexScan:
+		case T_IndexOnlyScan:
+		case T_BitmapHeapScan:
+		case T_TidScan:
+		case T_ForeignScan:
+			{
+				Index		scanrelid = ((Scan *) plan)->scanrelid;
+				RangeTblEntry *rte;
+
+				if (root == NULL || scanrelid == 0 ||
+					scanrelid > list_length(root->parse->rtable))
+					return false;
+				rte = rt_fetch(scanrelid, root->parse->rtable);
+				if (rte->rtekind != RTE_RELATION ||
+					!relation_is_coordinator_only(rte->relid, rte->relkind))
+					return false;
+				*kind = "relation";
+				*name = get_rel_name(rte->relid);
+				return true;
+			}
+
+		case T_FunctionScan:
+			{
+				ListCell   *lc;
+
+				foreach(lc, ((FunctionScan *) plan)->functions)
+				{
+					RangeTblFunction *rtfunc = (RangeTblFunction *) lfirst(lc);
+					Oid			funcid;
+					char		exec_location;
+
+					if (rtfunc->funcexpr == NULL ||
+						!IsA(rtfunc->funcexpr, FuncExpr))
+						continue;
+					funcid = ((FuncExpr *) rtfunc->funcexpr)->funcid;
+					exec_location = func_exec_location(funcid);
+					if (exec_location == PROEXECLOCATION_COORDINATOR ||
+						exec_location == PROEXECLOCATION_INITPLAN)
+					{
+						*kind = "function";
+						*name = get_func_name(funcid);
+						return true;
+					}
+				}
+				return false;
+			}
+
+		case T_Result:
+		case T_ProjectSet:
+			{
+				char		exec_location;
+
+				/* Only the FROM-less level's own projection, not a projection above a scan. */
+				if (plan->lefttree != NULL &&
+					!(IsA(plan, ProjectSet) && IsA(plan->lefttree, Result) &&
+					  plan->lefttree->lefttree == NULL))
+					return false;
+				exec_location = check_execute_on_functions((Node *) plan->targetlist);
+				if (exec_location == PROEXECLOCATION_COORDINATOR ||
+					exec_location == PROEXECLOCATION_INITPLAN)
+				{
+					*kind = "function";
+					*name = NULL;
+					return true;
+				}
+				return false;
+			}
+
+		default:
+			return false;
+	}
+}
+
+/*
+ * WHPG (PTT-2066): a correlated SubPlan is evaluated in whichever slice
+ * references it, and the planner lets a Motion-free Entry path inside it be
+ * evaluated there as well (see slice_on_coordinator above).  For a relation
+ * whose rows exist on the coordinator only, a segment slice reads an empty
+ * copy and the query silently returns wrong results: counts of 0, missing
+ * rows.  Making the query right needs a different plan shape; until the
+ * planner builds one, refuse the plan rather than run it.
+ *
+ * Plans whose outer query runs on the coordinator are unaffected: their
+ * SubPlans run there too.  A scan under a Motion sent from the coordinator
+ * is fine as well, whatever receives it.
+ */
+static void
+check_coordinator_only_scan(Plan *plan,
+							decorate_subplans_with_motions_context *context)
+{
+	const char *kind;
+	char	   *name;
+
+	if (context->slice_on_coordinator)
+		return;
+	if (!plan_reads_coordinator_only(plan, context->cur_root, &kind, &name))
+		return;
+
+	if (name != NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("correlated subquery over coordinator-only %s \"%s\" is not supported",
+						kind, name),
+				 errdetail("The rows of %s \"%s\" exist on the coordinator only, but the subquery would be evaluated on the segments.",
+						   kind, name)));
+	else
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("correlated subquery over a coordinator-only %s is not supported",
+						kind),
+				 errdetail("The %s produces its rows on the coordinator only, but the subquery would be evaluated on the segments.",
+						   kind)));
+}
+
+/*
+ * WHPG (PTT-2066): a parameter that a SubPlan receives from its outer query
+ * is set in the process that evaluates the SubPlan.  A Motion's sending slice
+ * runs in other processes, which never see the value: a correlated qual
+ * placed below a Motion compares against garbage (an aggregate or a
+ * placeholder parameter that the planner could not keep above the Motion, a
+ * Motion added to bring a coordinator-side subquery to the segments that
+ * evaluate it) and the query silently returns wrong results.  The planner's
+ * rule is that a correlated qual stays above every Motion of the SubPlan
+ * (upperrestrictinfo, OuterQuery locus); where a plan breaks it, refuse the
+ * plan rather than run it.  Nest-loop parameters have the same rule in
+ * checkMotionWithParam().
+ *
+ * 'sender' is the plan the Motion sends; SS_finalize_plan() has already
+ * computed extParam, the parameters its subtree needs from outside.
+ */
+static void
+check_param_across_motion(Plan *sender,
+						  decorate_subplans_with_motions_context *context)
+{
+	if (bms_overlap(sender->extParam, context->correlation_params))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("correlated subquery parameter cannot be passed across a Motion"),
+				 errdetail("A value of the outer query is referenced below a Motion node, in a slice that does not have it.")));
 }
 
 

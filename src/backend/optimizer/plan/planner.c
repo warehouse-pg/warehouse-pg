@@ -734,7 +734,7 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 		if (Debug_print_prelim_plan)
 			elog_node_display(DEBUG1, "preliminary plan", top_plan, Debug_pretty_print);
 
-		top_plan = cdbllize_decorate_subplans_with_motions(root, top_plan);
+		top_plan = cdbllize_decorate_subplans_with_motions(root, top_plan, top_slice);
 
 		if (gp_enable_motion_deadlock_sanity)
 			motion_sanity_check(root, top_plan);

@@ -7301,7 +7301,21 @@ make_motion(PlannerInfo *root, Plan *lefttree,
     Plan   *plan = &node->plan;
 
 	Assert(lefttree);
-	Assert(!IsA(lefttree, Motion));
+
+	/*
+	 * WHPG (PTT-2066): a Motion directly on a Motion is never a valid plan:
+	 * the inner one's receiving slice would also be the outer one's sending
+	 * slice, with nothing in between to run it.  The planner can still ask
+	 * for one, e.g. when a base rel gathered to the coordinator for a
+	 * correlated SubPlan (bring_to_entry()) is then redistributed to join a
+	 * distributed rel.  Report it in every build rather than only trip an
+	 * assertion, so a release build does not execute the plan.
+	 */
+	if (IsA(lefttree, Motion))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot create a Motion directly on top of another Motion"),
+				 errdetail("The planner produced a plan that moves the same rows twice in a row, which cannot be executed.")));
 
 	plan->startup_cost = lefttree->startup_cost;
 	plan->total_cost = lefttree->total_cost;
