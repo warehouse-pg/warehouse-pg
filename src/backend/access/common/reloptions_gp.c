@@ -23,6 +23,7 @@
 #include "access/bitmap.h"
 #include "access/reloptions.h"
 #include "catalog/pg_attribute_encoding.h"
+#include "catalog/pg_class.h"
 #include "catalog/pg_type.h"
 #include "cdb/cdbappendonlyam.h"
 #include "cdb/cdbvars.h"
@@ -32,6 +33,7 @@
 #include "utils/formatting.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
+#include "utils/syscache.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "storage/gp_compress.h"
@@ -55,6 +57,15 @@ static relopt_bool boolRelOpts_gp[] =
 			AccessExclusiveLock
 		},
 		AO_DEFAULT_CHECKSUM
+	},
+	{
+		{
+			SOPT_BLOCKDIRECTORY,
+			"Append table block directory",
+			RELOPT_KIND_APPENDOPTIMIZED,
+			AccessExclusiveLock
+		},
+		AO_DEFAULT_BLOCKDIRECTORY
 	},
 	{
 		{
@@ -241,6 +252,15 @@ accumAOStorageOpt(char *name, char *value,
 							value, name)));
 		appendStringInfo(&buf, "%s=%s", SOPT_CHECKSUM, boolval ? "true" : "false");
 	}
+	else if (pg_strcasecmp(SOPT_BLOCKDIRECTORY, name) == 0)
+	{
+		if (!parse_bool(value, &boolval))
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("invalid bool value \"%s\" for storage option \"%s\"",
+							value, name)));
+		appendStringInfo(&buf, "%s=%s", SOPT_BLOCKDIRECTORY, boolval ? "true" : "false");
+	}
 	else
 	{
 		/*
@@ -279,6 +299,7 @@ resetAOStorageOpts(StdRdOptions *ao_opts)
 {
 	ao_opts->blocksize = AO_DEFAULT_BLOCKSIZE;
 	ao_opts->checksum = AO_DEFAULT_CHECKSUM;
+	ao_opts->blockdirectory = AO_DEFAULT_BLOCKDIRECTORY;
 	ao_opts->compresslevel = AO_DEFAULT_COMPRESSLEVEL;
 	ao_opts->compresstype[0] = '\0';
 }
@@ -553,6 +574,7 @@ transformAOStdRdOptions(StdRdOptions *opts, Datum withOpts, bool hasStorage)
 				foundComptype = false,
 				foundComplevel = false,
 				foundChecksum = false,
+				foundBlockdirectory = false,
 				foundAnalyzeHLL = false;
 
 	/*
@@ -657,6 +679,20 @@ transformAOStdRdOptions(StdRdOptions *opts, Datum withOpts, bool hasStorage)
 				astate = accumArrayResult(astate, d, false, TEXTOID,
 										  CurrentMemoryContext);
 			}
+			soptLen = strlen(SOPT_BLOCKDIRECTORY);
+			if (withLen > soptLen &&
+				pg_strncasecmp(strval, SOPT_BLOCKDIRECTORY, soptLen) == 0)
+			{
+				/* recorded only when on, see below */
+				foundBlockdirectory = true;
+				if (opts->blockdirectory)
+				{
+					d = CStringGetTextDatum(psprintf("%s=true",
+													 SOPT_BLOCKDIRECTORY));
+					astate = accumArrayResult(astate, d, false, TEXTOID,
+											  CurrentMemoryContext);
+				}
+			}
 			soptLen = strlen(SOPT_ANALYZEHLL);
 			if (withLen > soptLen &&
 				pg_strncasecmp(strval, SOPT_ANALYZEHLL, soptLen) == 0)
@@ -708,6 +744,22 @@ transformAOStdRdOptions(StdRdOptions *opts, Datum withOpts, bool hasStorage)
 									(opts->checksum ? "true" : "false")));
 	astate = accumArrayResult(astate, d, false, TEXTOID,
 								CurrentMemoryContext);
+	}
+	/*
+	 * Unlike the four parameters above, blockdirectory is not needed to read
+	 * the table, so it is recorded only when it is on, whether it was named
+	 * in the WITH clause or turned on by gp_default_storage_options; an
+	 * explicit "false" is not recorded either, so that an absent option
+	 * always means off.  This keeps the reloptions of the many tables that
+	 * never asked for a directory unchanged, and lets the paths that recreate
+	 * a table (see build_ao_rel_blockdirectory_opt()) pin an absent option
+	 * to off without leaving "blockdirectory=false" behind.
+	 */
+	if (!foundBlockdirectory && opts->blockdirectory)
+	{
+		d = CStringGetTextDatum(psprintf("%s=true", SOPT_BLOCKDIRECTORY));
+		astate = accumArrayResult(astate, d, false, TEXTOID,
+								  CurrentMemoryContext);
 	}
 	if ((opts->analyze_hll_non_part_table != ANALYZE_DEFAULT_HLL) && !foundAnalyzeHLL)
 	{
@@ -782,6 +834,11 @@ reloption_is_default(const char *optstr, int optlen)
  * Note that this will not handle the case where the option doesn't contain
  * the '=' sign in it, e.g. "checksum" vs. "checksum=true". But it seems
  * that at this point we should always have both options as "x=y" anyways.
+ *
+ * The result decides whether ALTER TABLE SET must rewrite the table, so the
+ * blockdirectory option is ignored here: it does not change how the table
+ * data is stored, and ATExecSetRelOptions() builds the block directory in
+ * place when the option is turned on.
  */
 bool
 relOptionsEquals(Datum oldOptions, Datum newOptions)
@@ -816,6 +873,10 @@ relOptionsEquals(Datum oldOptions, Datum newOptions)
 
 		keylen = strchr(newopt_str, '=') - newopt_str;
 
+		if (keylen == strlen(SOPT_BLOCKDIRECTORY) &&
+			pg_strncasecmp(newopt_str, SOPT_BLOCKDIRECTORY, keylen) == 0)
+			continue;
+
 		/* Search for a match in old options. */
 		for (j = 0; j < noldoptions; j++)
 		{
@@ -848,6 +909,34 @@ relOptionsEquals(Datum oldOptions, Datum newOptions)
 	return true;
 }
 
+/*
+ * Return the blockdirectory option recorded in a pg_class.reloptions datum.
+ *
+ * Only the recorded value counts: unlike default_reloptions(), this does not
+ * fall back to gp_default_storage_options, so an existing table is judged by
+ * what its own reloptions say.  Used to decide whether a rewrite or an ALTER
+ * TABLE SET has to give the table a block directory.
+ */
+bool
+relOptionsHaveBlockDirectory(Datum reloptions)
+{
+	relopt_value *options;
+	relopt_value *opt;
+	int			num_options;
+	bool		result;
+
+	if (!PointerIsValid(DatumGetPointer(reloptions)))
+		return false;
+
+	options = parseRelOptions(reloptions, false, RELOPT_KIND_APPENDOPTIMIZED,
+							  &num_options);
+	opt = get_option_set(options, num_options, SOPT_BLOCKDIRECTORY);
+	result = (opt != NULL && opt->values.bool_val);
+	free_options_deep(options, num_options);
+
+	return result;
+}
+
 void
 validate_and_adjust_options(StdRdOptions *result,
 							relopt_value *options,
@@ -858,6 +947,7 @@ validate_and_adjust_options(StdRdOptions *result,
 	relopt_value *comptype_opt;
 	relopt_value *complevel_opt;
 	relopt_value *checksum_opt;
+	relopt_value *blockdirectory_opt;
 
 	/*
 	 * Firstly, for AO/CO tables, if anything is not set in the options but has
@@ -877,6 +967,9 @@ validate_and_adjust_options(StdRdOptions *result,
 
 		if (!(get_option_set(options, num_options, SOPT_CHECKSUM)))
 			result->checksum = ao_storage_opts->checksum;
+
+		if (!(get_option_set(options, num_options, SOPT_BLOCKDIRECTORY)))
+			result->blockdirectory = ao_storage_opts->blockdirectory;
 	}
 
 	/* blocksize */
@@ -1039,6 +1132,18 @@ validate_and_adjust_options(StdRdOptions *result,
 					 errmsg("usage of parameter \"checksum\" in a non relation object is not supported")));
 
 		result->checksum = checksum_opt->values.bool_val;
+	}
+
+	/* block directory */
+	blockdirectory_opt = get_option_set(options, num_options, SOPT_BLOCKDIRECTORY);
+	if (blockdirectory_opt != NULL)
+	{
+		if (!KIND_IS_APPENDOPTIMIZED(kind) && validate)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("usage of parameter \"blockdirectory\" in a non relation object is not supported")));
+
+		result->blockdirectory = blockdirectory_opt->values.bool_val;
 	}
 
 	/* More adjustment for compression settings: */
@@ -1615,8 +1720,10 @@ form_default_storage_directive(List *enc)
 			continue;
 		if (pg_strcasecmp("tablename", el->defname) == 0)
 			continue;
-		/* checksum is not a column specific attribute. */
+		/* checksum and blockdirectory are not column specific attributes. */
 		if (pg_strcasecmp("checksum", el->defname) == 0)
+			continue;
+		if (pg_strcasecmp(SOPT_BLOCKDIRECTORY, el->defname) == 0)
 			continue;
 		out = lappend(out, copyObject(el));
 	}
@@ -1649,6 +1756,13 @@ transformStorageEncodingClause(List *aocoColumnEncoding, bool validate)
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("\"%s\" is not a column specific option",
 							SOPT_CHECKSUM)));
+		}
+		if (pg_strcasecmp(dl->defname, SOPT_BLOCKDIRECTORY) == 0)
+		{
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("\"%s\" is not a column specific option",
+							SOPT_BLOCKDIRECTORY)));
 		}
 		/*
 		 * For compresstype, the value must be modified from the value passed
@@ -2019,4 +2133,42 @@ build_ao_rel_storage_opts(List *opts, Relation rel)
 	}
 
 	return opts;
+}
+
+/*
+ * GPDB: Pin the blockdirectory option of an append-optimized relation in
+ * opts, the WITH list of a CreateStmt that recreates the relation (SET
+ * DISTRIBUTED BY, reorganize, SPLIT PARTITION).
+ *
+ * pg_class.reloptions records the option only when it is on, and
+ * DefineRelation() fills an absent option from gp_default_storage_options,
+ * so an absent option has to be spelled out as off here, or the setting of
+ * the session that recreates the table would give it a block directory.
+ * transformAOStdRdOptions() does not record the explicit "false", so the new
+ * relation's reloptions look like the old one's.
+ */
+List *
+build_ao_rel_blockdirectory_opt(List *opts, Relation rel)
+{
+	HeapTuple	tuple;
+	Datum		reloptions;
+	bool		isnull;
+	bool		blockdirectory;
+
+	Assert(RelationStorageIsAO(rel));
+
+	if (reloptions_has_opt(opts, SOPT_BLOCKDIRECTORY))
+		return opts;
+
+	tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(RelationGetRelid(rel)));
+	if (!HeapTupleIsValid(tuple))
+		elog(ERROR, "cache lookup failed for relation %u",
+			 RelationGetRelid(rel));
+	reloptions = SysCacheGetAttr(RELOID, tuple, Anum_pg_class_reloptions,
+								 &isnull);
+	blockdirectory = !isnull && relOptionsHaveBlockDirectory(reloptions);
+	ReleaseSysCache(tuple);
+
+	return lappend(opts, makeDefElem(SOPT_BLOCKDIRECTORY,
+									 (Node *) makeInteger(blockdirectory), -1));
 }

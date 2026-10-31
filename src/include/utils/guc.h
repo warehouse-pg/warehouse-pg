@@ -643,6 +643,7 @@ extern IndexCheckType gp_indexcheck_insert;
 #define SOPT_COMPLEVEL     "compresslevel"
 #define SOPT_CHECKSUM      "checksum"
 #define SOPT_ANALYZEHLL    "analyze_hll_non_part_table"
+#define SOPT_BLOCKDIRECTORY "blockdirectory"
 
 /*
  * Functions exported by guc.c

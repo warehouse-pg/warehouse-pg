@@ -15,3 +15,5 @@ struct CdbComponentDatabaseInfo
 struct DtxContextInfo
 struct MotionConn
 struct CdbCopy
+struct StdRdOptions
+struct AlteredTableInfo

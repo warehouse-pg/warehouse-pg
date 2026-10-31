@@ -5403,6 +5403,9 @@ storageOptToString(const StdRdOptions *ao_opts)
 	}
 	appendStringInfo(&buf, "%s=%s", SOPT_CHECKSUM,
 					 ao_opts->checksum ? "true" : "false");
+	/* Like compresslevel, blockdirectory is shown only when it is on. */
+	if (ao_opts->blockdirectory)
+		appendStringInfo(&buf, ",%s=true", SOPT_BLOCKDIRECTORY);
 	ret = strdup(buf.data);
 	if (ret == NULL)
 		elog(ERROR, "out of memory");
