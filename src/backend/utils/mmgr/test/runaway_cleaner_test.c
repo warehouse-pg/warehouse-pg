@@ -351,6 +351,46 @@ test__RunawayCleaner_StartCleanup__IgnoresCleanupOutsideAnyTransaction(void **st
 }
 
 /*
+ * Checks if RunawayCleaner_StartCleanup() ignores a runaway event that
+ * happened before the process was activated, as for a parallel worker
+ * started while its leader's session was already flagged: the process
+ * deactivates at the version it was activated at, both above the event,
+ * and owes no cleanup for it
+ */
+static void
+test__RunawayCleaner_StartCleanup__IgnoresEventBeforeActivation(void **state)
+{
+	InitFakeSessionState(1 /* activeProcessCount */,
+			1 /* cleanupCountdown */,
+			RunawayStatus_PrimaryRunawaySession /* runawayStatus */, 2 /* pinCount */, 12345 /* vmem */);
+
+	EventVersion fakeLatestRunawayVersion = 10;
+	latestRunawayVersion = &fakeLatestRunawayVersion;
+
+	/* This process never started a cleanup */
+	beginCleanupRunawayVersion = 0;
+	endCleanupRunawayVersion = 0;
+
+	/* Activated after the event, deactivated with no event in between */
+	activationVersion = 12;
+	deactivationVersion = 12;
+	isProcessActive = false;
+
+	vmemTrackerInited = true;
+	CritSectionCount = 0;
+	InterruptHoldoffCount = 0;
+
+	RunawayCleaner_StartCleanup();
+
+	/* Cleanup shouldn't have begun, and the countdown is not this process's to decrement */
+	assert_true(beginCleanupRunawayVersion != *latestRunawayVersion);
+	assert_true(MySessionState->cleanupCountdown == 1);
+
+	activationVersion = 0;
+	deactivationVersion = 0;
+}
+
+/*
  * Checks if RunawayCleaner_RunawayCleanupDoneForProcess() ignores cleanupCountdown
  * if optional cleanup
  */
@@ -636,6 +676,7 @@ main(int argc, char* argv[])
 		unit_test(test__RunawayCleaner_StartCleanup__IgnoresCleanupInCriticalSection),
 		unit_test(test__RunawayCleaner_StartCleanup__IgnoresCleanupInHoldoffInterrupt),
 		unit_test(test__RunawayCleaner_StartCleanup__IgnoresCleanupOutsideAnyTransaction),
+		unit_test(test__RunawayCleaner_StartCleanup__IgnoresEventBeforeActivation),
 		unit_test(test__RunawayCleaner_RunawayCleanupDoneForProcess__IgnoresCleanupIfNotRequired),
 		unit_test(test__RunawayCleaner_RunawayCleanupDoneForProcess__IgnoresDuplicateCalls),
 		unit_test(test__RunawayCleaner_RunawayCleanupDoneForProcess__PreventsDuplicateCleanup),

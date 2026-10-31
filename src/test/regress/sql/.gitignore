@@ -25,6 +25,7 @@
 /default_tablespace.sql
 /dispatch.sql
 /dropdb_check_shared_buffer_cache.sql
+/dsm_vmem.sql
 /external_table.sql
 /filespace.sql
 /gpcopy.sql

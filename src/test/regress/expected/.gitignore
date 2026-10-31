@@ -27,6 +27,7 @@
 /default_tablespace.out
 /dispatch.out
 /dropdb_check_shared_buffer_cache.out
+/dsm_vmem.out
 /external_table.out
 /filespace.out
 /gpcopy.out
