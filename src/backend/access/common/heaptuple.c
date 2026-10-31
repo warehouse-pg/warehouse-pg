@@ -64,6 +64,7 @@
 #include "access/tuptoaster.h"
 #include "executor/tuptable.h"
 #include "utils/expandeddatum.h"
+#include "utils/memutils.h"
 
 #include "catalog/pg_type.h"
 #include "cdb/cdbvars.h"                /* GpIdentity.segindex */
@@ -1101,7 +1102,14 @@ heaptuple_form_to(TupleDesc tupleDescriptor, Datum *values, bool *isnull, HeapTu
 		memset(tuple, 0, HEAPTUPLESIZE + len);
 	}
 	else
+	{
+		if (HEAPTUPLESIZE + len > MaxAllocSize)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("row is too big: size %zu, maximum size %zu",
+							HEAPTUPLESIZE + len, (Size) MaxAllocSize)));
 		tuple = (HeapTuple) palloc0(HEAPTUPLESIZE + len);
+	}
 
 	/*
 	 * Allocate and zero the space needed.  Note that the tuple body and
@@ -1436,6 +1444,12 @@ heap_form_minimal_tuple(TupleDesc tupleDescriptor,
 	data_len = heap_compute_data_size(tupleDescriptor, values, isnull);
 
 	len += data_len;
+
+	if (len > MaxAllocSize)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("row is too big: size %zu, maximum size %zu",
+						len, (Size) MaxAllocSize)));
 
 	/*
 	 * Allocate and zero the space needed.

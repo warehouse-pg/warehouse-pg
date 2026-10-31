@@ -494,7 +494,7 @@ ReceiveCopyBegin(CopyState cstate)
 			pq_sendint16(&buf, format); /* per-column formats */
 		pq_endmessage(&buf);
 		cstate->copy_dest = COPY_NEW_FE;
-		cstate->fe_msgbuf = makeStringInfo();
+		cstate->fe_msgbuf = makeLongStringInfo();
 	}
 	else
 	{
@@ -530,6 +530,13 @@ SendCopyEnd(CopyState cstate)
 		pq_endcopyout(false);
 	}
 }
+
+/*
+ * Largest row we send as a single CopyData message.  The message length word
+ * is a signed int32 that counts itself, and libpq enlarges its input buffer
+ * in 8kB steps within the int range, so stay clear of 2GB.
+ */
+#define MAX_COPY_DATA_SIZE	(PG_INT32_MAX - 64 * 1024)
 
 /*----------
  * CopySendData sends output data to the destination (file or frontend)
@@ -633,6 +640,12 @@ CopySendEndOfRow(CopyState cstate)
 			if (!cstate->binary)
 				CopySendChar(cstate, '\n');
 
+			if (fe_msgbuf->len > MAX_COPY_DATA_SIZE)
+				ereport(ERROR,
+						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						 errmsg("row is too big: size %d, maximum size %d",
+								fe_msgbuf->len, MAX_COPY_DATA_SIZE)));
+
 			/* Dump the accumulated row as one CopyData message */
 			(void) pq_putmessage('d', fe_msgbuf->data, fe_msgbuf->len);
 			break;
@@ -660,15 +673,13 @@ CopySendEndOfRow(CopyState cstate)
  * with newlines (from the executors).
  */
 static void
-CopyToDispatchFlush(CopyState cstate)
+CopyToDispatchFlush(CopyState cstate, StringInfo buf)
 {
-	StringInfo	fe_msgbuf = cstate->fe_msgbuf;
-
 	switch (cstate->copy_dest)
 	{
 		case COPY_FILE:
 
-			(void) fwrite(fe_msgbuf->data, fe_msgbuf->len,
+			(void) fwrite(buf->data, buf->len,
 						  1, cstate->copy_file);
 			if (ferror(cstate->copy_file))
 			{
@@ -703,7 +714,7 @@ CopyToDispatchFlush(CopyState cstate)
 			break;
 		case COPY_OLD_FE:
 
-			if (pq_putbytes(fe_msgbuf->data, fe_msgbuf->len))
+			if (pq_putbytes(buf->data, buf->len))
 			{
 				/* no hope of recovering connection sync, so FATAL */
 				ereport(FATAL,
@@ -713,15 +724,21 @@ CopyToDispatchFlush(CopyState cstate)
 			break;
 		case COPY_NEW_FE:
 
-			/* Dump the accumulated row as one CopyData message */
-			(void) pq_putmessage('d', fe_msgbuf->data, fe_msgbuf->len);
+			/*
+			 * Dump the accumulated rows as CopyData messages.  A chunk holds
+			 * many rows, so the frontend can't expect one row per message
+			 * anyway; split a chunk that is too big for one message.
+			 */
+			for (Size off = 0; off < (Size) buf->len; off += MAX_COPY_DATA_SIZE)
+				(void) pq_putmessage('d', buf->data + off,
+									 Min((Size) buf->len - off, MAX_COPY_DATA_SIZE));
 			break;
 		case COPY_CALLBACK:
 			elog(ERROR, "unexpected destination COPY_CALLBACK to flush data");
 			break;
 	}
 
-	resetStringInfo(fe_msgbuf);
+	resetStringInfo(buf);
 }
 
 /*
@@ -2396,7 +2413,7 @@ BeginCopyToOnSegment(QueryDesc *queryDesc)
 	cstate->null_print_client = cstate->null_print;		/* default */
 
 	/* We use fe_msgbuf as a per-row buffer regardless of copy_dest */
-	cstate->fe_msgbuf = makeStringInfo();
+	cstate->fe_msgbuf = makeLongStringInfo();
 
 	cstate->filename = pstrdup(copyIntoClause->filename);
 	cstate->is_program = copyIntoClause->is_program;
@@ -2902,6 +2919,7 @@ CopyToDispatch(CopyState cstate)
 			/* No header extension */
 			tmp = 0;
 			CopySendInt32(cstate, tmp);
+			CopyToDispatchFlush(cstate, cstate->fe_msgbuf);
 		}
 
 		/* if a header has been requested send the line */
@@ -2962,11 +2980,10 @@ CopyToDispatch(CopyState cstate)
 				/*
 				 * in the dispatcher we receive chunks of whole rows with row endings.
 				 * We don't want to use CopySendEndOfRow() b/c it adds row endings and
-				 * also b/c it's intended for a single row at a time. Therefore we need
-				 * to fill in the out buffer and just flush it instead.
+				 * also b/c it's intended for a single row at a time. Therefore we
+				 * just flush the chunk as it is, without copying it to fe_msgbuf.
 				 */
-				CopySendData(cstate, (void *) cdbCopy->copy_out_buf.data, cdbCopy->copy_out_buf.len);
-				CopyToDispatchFlush(cstate);
+				CopyToDispatchFlush(cstate, &cdbCopy->copy_out_buf);
 			}
 		} while(!done);
 
@@ -3033,7 +3050,7 @@ CopyTo(CopyState cstate)
 	cstate->null_print_client = cstate->null_print; /* default */
 
 	/* We use fe_msgbuf as a per-row buffer regardless of copy_dest */
-	cstate->fe_msgbuf = makeStringInfo();
+	cstate->fe_msgbuf = makeLongStringInfo();
 
 	/* Get info about the columns we need to process. */
 	cstate->out_functions = (FmgrInfo *) palloc(num_phys_attrs * sizeof(FmgrInfo));
@@ -4282,7 +4299,7 @@ CopyFrom(CopyState cstate)
 		/*
 		 * pre-allocate buffer for constructing a message.
 		 */
-		cstate->dispatch_msgbuf = makeStringInfo();
+		cstate->dispatch_msgbuf = makeLongStringInfo();
 		enlargeStringInfo(cstate->dispatch_msgbuf, SizeOfCopyFromDispatchRow);
 
 		/*
@@ -4971,8 +4988,8 @@ BeginCopyFrom(ParseState *pstate,
 	cstate->cur_attval = NULL;
 
 	/* Set up variables to avoid per-attribute overhead. */
-	initStringInfo(&cstate->attribute_buf);
-	initStringInfo(&cstate->line_buf);
+	initLongStringInfo(&cstate->attribute_buf);
+	initLongStringInfo(&cstate->line_buf);
 	cstate->line_buf_converted = false;
 	cstate->raw_buf = (char *) palloc(RAW_BUF_SIZE + 1);
 	cstate->raw_buf_index = cstate->raw_buf_len = 0;
@@ -6026,7 +6043,7 @@ HandleQDErrorFrame(CopyState cstate, char *p, int len)
 
 #define APPEND_MSGBUF(buf, ptr, datalen) \
 	do { \
-		if ((buf)->len + (datalen) >= (buf)->maxlen) \
+		if ((Size) (buf)->len + (datalen) >= (Size) (buf)->maxlen) \
 			enlargeStringInfo((buf), (datalen)); \
 		memcpy((buf)->data + (buf)->len, ptr, (datalen)); \
 		(buf)->len += (datalen); \
@@ -6034,7 +6051,7 @@ HandleQDErrorFrame(CopyState cstate, char *p, int len)
 
 #define ENLARGE_MSGBUF(buf, needed) \
 	do { \
-		if ((buf)->len + (needed) >= (buf)->maxlen) \
+		if ((Size) (buf)->len + (needed) >= (Size) (buf)->maxlen) \
 			enlargeStringInfo((buf), (needed)); \
 	} while(0)
 
@@ -6074,6 +6091,7 @@ SendCopyFromForwardedTuple(CopyState cstate,
 	 * the OID if any, and the residual line.
 	 */
 	msgbuf = cstate->dispatch_msgbuf;
+	resetStringInfo(msgbuf);
 	ENLARGE_MSGBUF(msgbuf, SizeOfCopyFromDispatchRow + sizeof(Oid) + cstate->line_buf.len);
 
 	/* the header goes to the beginning of the struct, but it will be filled in later. */
