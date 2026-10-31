@@ -1,0 +1,77 @@
+-- WHPG: a dynamic shared memory segment is charged in full to
+-- the vmem budget of the process that creates it, and the charge is returned
+-- when the segment is detached, by the process or by the resource owner on
+-- abort. A request the budget cannot hold is refused
+-- before any shared memory is allocated, with the error of a failed palloc.
+-- The budget is enforced on segment instances only, so every request below
+-- is sent to one primary.
+CREATE FUNCTION test_dsm_create_and_detach(bigint) RETURNS void
+AS '@abs_builddir@/regress@DLSUFFIX@', 'test_dsm_create_and_detach'
+LANGUAGE C VOLATILE STRICT;
+-- A segment that fits is created and detached. The segments the test really
+-- creates are 16MB, so that they fit a 64MB /dev/shm, Docker's default; the
+-- budget check needs the arithmetic, not the memory.
+SELECT test_dsm_create_and_detach(16 * 1024 * 1024)
+FROM gp_dist_random('gp_id') WHERE gp_segment_id = 0;
+ test_dsm_create_and_detach 
+----------------------------
+ 
+(1 row)
+
+-- Segments worth twice the budget, created and detached one after another,
+-- all fit: each charge is returned at detach.
+DO $$
+DECLARE
+    limit_mb int := current_setting('gp_vmem_protect_limit')::int;
+BEGIN
+    FOR i IN 1 .. 2 * limit_mb / 16 + 1 LOOP
+        PERFORM test_dsm_create_and_detach(16 * 1024 * 1024)
+        FROM gp_dist_random('gp_id') WHERE gp_segment_id = 0;
+    END LOOP;
+END
+$$;
+-- A segment still attached when its transaction aborts is detached by the
+-- resource owner, which returns the charge: segments worth twice the budget,
+-- each abandoned by an error, all fit one after another as well.
+CREATE FUNCTION test_dsm_create_and_error(bigint) RETURNS void
+AS '@abs_builddir@/regress@DLSUFFIX@', 'test_dsm_create_and_error'
+LANGUAGE C VOLATILE STRICT;
+DO $$
+DECLARE
+    limit_mb int := current_setting('gp_vmem_protect_limit')::int;
+    n int := 2 * limit_mb / 16 + 1;
+    aborted int := 0;
+BEGIN
+    FOR i IN 1 .. n LOOP
+        BEGIN
+            PERFORM test_dsm_create_and_error(16 * 1024 * 1024)
+            FROM gp_dist_random('gp_id') WHERE gp_segment_id = 0;
+        EXCEPTION WHEN raise_exception THEN
+            aborted := aborted + 1;
+        END;
+    END LOOP;
+    RAISE NOTICE 'every abandoned segment fit: %', aborted = n;
+END
+$$;
+NOTICE:  every abandoned segment fit: t
+-- One segment worth twice the budget is refused, whatever the budget is.
+-- The numbers in the detail depend on the budget and on what else the
+-- segment instance holds.
+DO $$
+DECLARE
+    limit_mb int := current_setting('gp_vmem_protect_limit')::int;
+    detail text;
+BEGIN
+    PERFORM test_dsm_create_and_detach(2 * limit_mb::bigint * 1024 * 1024)
+    FROM gp_dist_random('gp_id') WHERE gp_segment_id = 0;
+    RAISE NOTICE 'a segment worth twice the budget was created';
+EXCEPTION WHEN OTHERS THEN
+    GET STACKED DIAGNOSTICS detail = PG_EXCEPTION_DETAIL;
+    RAISE NOTICE 'SQLSTATE %: %', SQLSTATE, regexp_replace(SQLERRM, '\s+\(seg.*\)$', '');
+    RAISE NOTICE 'DETAIL: %', regexp_replace(detail, '\d+', 'N', 'g');
+END
+$$;
+NOTICE:  SQLSTATE 53500: Out of memory
+NOTICE:  DETAIL: Vmem limit reached, failed to allocate N bytes from tracker, which has N MB available
+DROP FUNCTION test_dsm_create_and_detach(bigint);
+DROP FUNCTION test_dsm_create_and_error(bigint);

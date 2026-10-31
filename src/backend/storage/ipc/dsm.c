@@ -39,9 +39,11 @@
 #include "storage/ipc.h"
 #include "storage/lwlock.h"
 #include "storage/pg_shmem.h"
+#include "utils/gp_alloc.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/resowner_private.h"
+#include "utils/vmem_tracker.h"
 
 #define PG_DYNSHMEM_CONTROL_MAGIC		0x9a503d32
 
@@ -69,6 +71,7 @@ struct dsm_segment
 	void	   *mapped_address; /* Mapping address, or NULL if unmapped. */
 	Size		mapped_size;	/* Size of our mapping. */
 	slist_head	on_detach;		/* On-detach callbacks. */
+	int64		vmem_reserved;	/* WHPG: bytes charged to the vmem tracker */
 };
 
 /* Shared-memory state for a dynamic shared memory segment. */
@@ -95,6 +98,8 @@ static dsm_segment *dsm_create_descriptor(void);
 static bool dsm_control_segment_sane(dsm_control_header *control,
 									 Size mapped_size);
 static uint64 dsm_control_bytes_needed(uint32 nitems);
+static void dsm_vmem_reserve(dsm_segment *seg, Size size);
+static void dsm_vmem_release(dsm_segment *seg);
 
 /* Has this backend initialized the dynamic shared memory system yet? */
 static bool dsm_init_done = false;
@@ -444,6 +449,9 @@ dsm_create(Size size, int flags)
 	/* Create a new segment descriptor. */
 	seg = dsm_create_descriptor();
 
+	/* WHPG: charged before the segment exists, so a refusal touches no memory. */
+	dsm_vmem_reserve(seg, size);
+
 	/* Loop until we find an unused segment identifier. */
 	for (;;)
 	{
@@ -482,6 +490,8 @@ dsm_create(Size size, int flags)
 		LWLockRelease(DynamicSharedMemoryControlLock);
 		dsm_impl_op(DSM_OP_DESTROY, seg->handle, 0, &seg->impl_private,
 					&seg->mapped_address, &seg->mapped_size, WARNING);
+		/* WHPG: this exit bypasses dsm_detach(), so return the charge here. */
+		dsm_vmem_release(seg);
 		if (seg->resowner != NULL)
 			ResourceOwnerForgetDSM(seg->resowner, seg);
 		dlist_delete(&seg->node);
@@ -699,6 +709,9 @@ dsm_detach(dsm_segment *seg)
 		seg->mapped_address = NULL;
 		seg->mapped_size = 0;
 	}
+
+	/* WHPG: return the segment's charge to the vmem budget. */
+	dsm_vmem_release(seg);
 
 	/* Reduce reference count, if we previously increased it. */
 	if (seg->control_slot != INVALID_CONTROL_SLOT)
@@ -1055,6 +1068,7 @@ dsm_create_descriptor(void)
 	seg->impl_private = NULL;
 	seg->mapped_address = NULL;
 	seg->mapped_size = 0;
+	seg->vmem_reserved = 0;
 
 	seg->resowner = CurrentResourceOwner;
 	if (CurrentResourceOwner)
@@ -1063,6 +1077,48 @@ dsm_create_descriptor(void)
 	slist_init(&seg->on_detach);
 
 	return seg;
+}
+
+/*
+ * WHPG: charge a segment to the vmem budget of the creating process.
+ *
+ * The full size is the charge: a posix segment is committed in full when its
+ * file is sized, and the tracker cannot follow the pages of the other
+ * implementations as they are touched. It is taken before the segment exists,
+ * so that a refused request never touches shared memory. A refusal is
+ * reported through the memory protection path, like a failed palloc. The
+ * charge stays on the descriptor and is returned when the descriptor is
+ * detached; a pinned segment that outlives its creator is thus charged only
+ * while the creator is attached, and a process that merely attaches is not
+ * charged at all.
+ */
+static void
+dsm_vmem_reserve(dsm_segment *seg, Size size)
+{
+	MemoryAllocationStatus status;
+
+	Assert(seg->vmem_reserved == 0);
+
+	status = VmemTracker_ReserveVmem((int64) size);
+	if (status != MemoryAllocation_Success)
+	{
+		gp_failed_to_alloc(status, 0, (int64) size);
+		return;					/* gp_failed_to_alloc() raised an error */
+	}
+	seg->vmem_reserved = (int64) size;
+}
+
+/*
+ * WHPG: return a segment's charge to the vmem budget, if it carries one.
+ */
+static void
+dsm_vmem_release(dsm_segment *seg)
+{
+	if (seg->vmem_reserved > 0)
+	{
+		VmemTracker_ReleaseVmem(seg->vmem_reserved);
+		seg->vmem_reserved = 0;
+	}
 }
 
 /*

@@ -16,6 +16,7 @@
 #define GP_ALLOC_H
 
 #include "nodes/nodes.h"
+#include "utils/vmem_tracker.h"
 
 #ifdef USE_ASSERT_CHECKING
 #define GP_ALLOC_DEBUG
@@ -56,6 +57,12 @@ typedef struct VmemHeader
 extern void *gp_malloc(int64 sz);
 extern void *gp_realloc(void *ptr, int64 newsz);
 extern void gp_free(void *ptr);
+
+/*
+ * Report an allocation of sz bytes that the memory protection refused (status
+ * ec, errno en if any) and raise the out-of-memory error.
+ */
+extern void gp_failed_to_alloc(MemoryAllocationStatus ec, int en, int64 sz);
 
 /* Gets the actual usable payload address of a vmem pointer */
 static inline

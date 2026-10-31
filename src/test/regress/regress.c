@@ -39,6 +39,7 @@
 #include "optimizer/optimizer.h"
 #include "optimizer/plancat.h"
 #include "port/atomics.h"
+#include "storage/dsm.h"
 #include "storage/shm_toc.h"
 #include "storage/spin.h"
 #include "utils/array.h"
@@ -1420,4 +1421,52 @@ regress_parallel_worker_main(dsm_segment *seg, shm_toc *toc)
 		ereport(ERROR,
 				(errcode(ERRCODE_RAISE_EXCEPTION),
 				 errmsg("parallel worker failed on request")));
+}
+
+/*
+ * test_dsm_create_and_detach
+ *
+ * Create a dynamic shared memory segment of the given size in the calling
+ * process and detach it again. Lets a test exercise dsm_create() in a chosen
+ * process, for instance in a segment instance's QE via gp_dist_random().
+ */
+PG_FUNCTION_INFO_V1(test_dsm_create_and_detach);
+Datum
+test_dsm_create_and_detach(PG_FUNCTION_ARGS)
+{
+	int64		size = PG_GETARG_INT64(0);
+	dsm_segment *seg;
+
+	if (size <= 0)
+		elog(ERROR, "size must be positive");
+
+	seg = dsm_create((Size) size, 0);
+	dsm_detach(seg);
+
+	PG_RETURN_VOID();
+}
+
+/*
+ * test_dsm_create_and_error
+ *
+ * Create a dynamic shared memory segment of the given size and raise an
+ * error while it is still attached, so that the resource owner detaches it
+ * on abort.
+ */
+PG_FUNCTION_INFO_V1(test_dsm_create_and_error);
+Datum
+test_dsm_create_and_error(PG_FUNCTION_ARGS)
+{
+	int64		size = PG_GETARG_INT64(0);
+
+	if (size <= 0)
+		elog(ERROR, "size must be positive");
+
+	(void) dsm_create((Size) size, 0);
+
+	ereport(ERROR,
+			(errcode(ERRCODE_RAISE_EXCEPTION),
+			 errmsg("error raised with the segment attached")));
+
+	PG_RETURN_VOID();			/* not reached */
 }

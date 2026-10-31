@@ -77,10 +77,16 @@ RunawayCleaner_ShouldStartRunawayCleanup()
 		AssertImply(!isProcessActive, deactivationVersion >= activationVersion);
 
 		/*
-		 * We are marked as runaway. Therefore, if the runaway event happened before deactivation,
-		 * we must have a version counter increment
+		 * A process can also have been activated after the runaway event: a
+		 * parallel worker starts in its leader's session while that session
+		 * is already flagged.  The cleanup countdown was taken from the
+		 * active process count before it joined, so it owes no cleanup for
+		 * that event, and the checks below skip it: both its versions are
+		 * above the event, and equal when no later event happened.  (Before
+		 * parallel workers, every process of a flagged session was active
+		 * when the event happened, so a deactivated process always had its
+		 * activation version below its deactivation version.)
 		 */
-		AssertImply(*latestRunawayVersion < deactivationVersion && !isProcessActive, activationVersion < deactivationVersion);
 
 		if (isProcessActive && *latestRunawayVersion > activationVersion)
 		{
