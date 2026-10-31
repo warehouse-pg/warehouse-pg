@@ -45,6 +45,7 @@
 #define AO_DEFAULT_USABLE_COMPRESSTYPE   "none"
 #endif
 #define AO_DEFAULT_CHECKSUM       true
+#define AO_DEFAULT_BLOCKDIRECTORY false
 #define ANALYZE_DEFAULT_HLL       false
 
 /* types supported by reloptions */
@@ -314,6 +315,7 @@ extern LOCKMODE AlterTableGetRelOptionsLockLevel(List *defList);
 extern Datum transformAOStdRdOptions(StdRdOptions *opts, Datum withOpts, bool hasStorage);
 
 extern bool relOptionsEquals(Datum oldOptions, Datum newOptions);
+extern bool relOptionsHaveBlockDirectory(Datum reloptions);
 
 extern void validateOrientationRelOptions(char* comptype, bool co);
 
@@ -329,6 +331,7 @@ extern void validate_and_adjust_options(StdRdOptions *result, relopt_value *opti
 
 extern bool reloptions_has_opt(List *opts, const char *name);
 extern List *build_ao_rel_storage_opts(List *opts, Relation rel);
+extern List *build_ao_rel_blockdirectory_opt(List *opts, Relation rel);
 
 /* attribute enconding specific functions */
 ColumnReferenceStorageDirective *find_crsd(const char *column, List *stenc);

@@ -673,6 +673,9 @@ AtExecGPSplitPartition(Relation rel, AlterTableCmd *cmd)
 		p_tablespacename = get_tablespace_name(partrel->rd_rel->reltablespace);
 		p_accessMethod = get_am_name(partrel->rd_rel->relam);
 		p_colencs = rel_get_column_encodings(partrel);
+		/* the new halves must not take blockdirectory from the GUC */
+		if (RelationIsAppendOptimized(partrel))
+			p_reloptions = build_ao_rel_blockdirectory_opt(p_reloptions, partrel);
 
 		table_close(partrel, AccessShareLock);
 

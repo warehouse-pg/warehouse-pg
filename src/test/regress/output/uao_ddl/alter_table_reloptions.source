@@ -124,7 +124,7 @@ HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sur
 -- pg_class.reloptions should show defaults.
 SELECT reloptions FROM pg_class WHERE relname = 'aorelopts_@amname@';
                             reloptions                             
------------------------------------------------------
+-------------------------------------------------------------------
  {blocksize=32768,compresslevel=0,compresstype=none,checksum=true}
 (1 row)
 
@@ -152,7 +152,7 @@ SELECT * FROM relfilebefore EXCEPT SELECT * FROM relfileafter;
 -- pg_class.reloptions should now show the reloption we just explicitly set
 SELECT reloptions FROM pg_class WHERE relname = 'aorelopts_@amname@';
                             reloptions                             
------------------------------------------------------
+-------------------------------------------------------------------
  {compresslevel=0,compresstype=none,checksum=true,blocksize=32768}
 (1 row)
 
@@ -165,12 +165,16 @@ CREATE TEMP TABLE relfilebefore AS
 SELECT -1 segid, relfilenode FROM pg_class WHERE relname in ('aorelopts_@amname@')
 UNION SELECT gp_segment_id segid, relfilenode FROM gp_dist_random('pg_class')
 WHERE relname in ('aorelopts_@amname@') ORDER BY segid;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'segid' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 -- Option w/o '=' should work (same as checksum=true).
 ALTER TABLE aorelopts_@amname@ SET (checksum);
 CREATE TEMP TABLE relfileafter AS
 SELECT -1 segid, relfilenode FROM pg_class WHERE relname in ('aorelopts_@amname@')
 UNION SELECT gp_segment_id segid, relfilenode FROM gp_dist_random('pg_class')
 WHERE relname in ('aorelopts_@amname@') ORDER BY segid;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'segid' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 -- The table should have been rewritten
 SELECT * FROM relfilebefore INTERSECT SELECT * FROM relfileafter;
  segid | relfilenode 
@@ -180,7 +184,7 @@ SELECT * FROM relfilebefore INTERSECT SELECT * FROM relfileafter;
 -- pg_class.reloptions will reflect the change too 
 SELECT reloptions FROM pg_class WHERE relname = 'aorelopts_@amname@';
                             reloptions                             
----------------------------------
+-------------------------------------------------------------------
  {compresslevel=0,compresstype=none,blocksize=32768,checksum=true}
 (1 row)
 
@@ -191,3 +195,88 @@ SELECT count(*) FROM aorelopts_@amname@;
 (1 row)
 
 DROP TABLE aorelopts_@amname@;
+-- ADD COLUMN and SET in one statement: the new storage options must reach
+-- pg_class and the column files, so the table is rewritten even for
+-- ao_column tables, which otherwise only write the new column's files.
+RESET gp_default_storage_options;
+DROP TABLE relfilebefore;
+DROP TABLE relfileafter;
+CREATE TABLE aorelopts_addcol_@amname@ (a int, b int) DISTRIBUTED BY (a);
+INSERT INTO aorelopts_addcol_@amname@ SELECT i, i FROM generate_series(1, 1000) i;
+CREATE TEMP TABLE relfilebefore AS
+SELECT -1 segid, relfilenode FROM pg_class WHERE relname in ('aorelopts_addcol_@amname@')
+UNION SELECT gp_segment_id segid, relfilenode FROM gp_dist_random('pg_class')
+WHERE relname in ('aorelopts_addcol_@amname@') ORDER BY segid;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'segid' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+ALTER TABLE aorelopts_addcol_@amname@ ADD COLUMN c int DEFAULT 1, SET (blocksize=65536);
+SELECT reloptions FROM pg_class WHERE relname = 'aorelopts_addcol_@amname@';
+                            reloptions                             
+-------------------------------------------------------------------
+ {compresslevel=0,compresstype=none,checksum=true,blocksize=65536}
+(1 row)
+
+-- (no rows for ao_row, where there are no column encodings)
+SELECT coalesce(bool_and(attoptions::text LIKE '%blocksize=65536%'), true) AS encodings_follow
+FROM pg_attribute_encoding WHERE attrelid = 'aorelopts_addcol_@amname@'::regclass;
+ encodings_follow 
+------------------
+ t
+(1 row)
+
+CREATE TEMP TABLE relfileafter AS
+SELECT -1 segid, relfilenode FROM pg_class WHERE relname in ('aorelopts_addcol_@amname@')
+UNION SELECT gp_segment_id segid, relfilenode FROM gp_dist_random('pg_class')
+WHERE relname in ('aorelopts_addcol_@amname@') ORDER BY segid;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'segid' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+-- The table was rewritten
+SELECT * FROM relfilebefore INTERSECT SELECT * FROM relfileafter;
+ segid | relfilenode 
+-------+-------------
+(0 rows)
+
+SELECT count(*), sum(b), sum(c) FROM aorelopts_addcol_@amname@;
+ count |  sum   | sum  
+-------+--------+------
+  1000 | 500500 | 1000
+(1 row)
+
+-- The same through SET ACCESS METHOD with options
+ALTER TABLE aorelopts_addcol_@amname@ ADD COLUMN d int DEFAULT 2,
+  SET ACCESS METHOD @amname@ WITH (compresstype=zlib, compresslevel=1);
+SELECT reloptions FROM pg_class WHERE relname = 'aorelopts_addcol_@amname@';
+                            reloptions                             
+-------------------------------------------------------------------
+ {checksum=true,blocksize=65536,compresstype=zlib,compresslevel=1}
+(1 row)
+
+SELECT count(*), sum(c), sum(d) FROM aorelopts_addcol_@amname@;
+ count | sum  | sum  
+-------+------+------
+  1000 | 1000 | 2000
+(1 row)
+
+DROP TABLE relfilebefore;
+DROP TABLE relfileafter;
+DROP TABLE aorelopts_addcol_@amname@;
+-- Two SET subcommands on the same option: the last one wins, as for heap
+-- tables, also when it sets the value the table already has.
+CREATE TABLE aorelopts_twice_@amname@ (a int, b int) DISTRIBUTED BY (a);
+ALTER TABLE aorelopts_twice_@amname@ SET (blocksize=65536), SET (blocksize=32768);
+SELECT o AS blocksize FROM pg_class, unnest(reloptions) o
+WHERE relname = 'aorelopts_twice_@amname@' AND o LIKE 'blocksize=%';
+    blocksize    
+-----------------
+ blocksize=32768
+(1 row)
+
+ALTER TABLE aorelopts_twice_@amname@ SET (compresslevel=3), SET (compresslevel=5);
+SELECT o AS compresslevel FROM pg_class, unnest(reloptions) o
+WHERE relname = 'aorelopts_twice_@amname@' AND o LIKE 'compresslevel=%';
+  compresslevel  
+-----------------
+ compresslevel=5
+(1 row)
+
+DROP TABLE aorelopts_twice_@amname@;

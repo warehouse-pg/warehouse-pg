@@ -129,11 +129,13 @@
 #include "access/appendonly_compaction.h"
 #include "access/bitmap_private.h"
 #include "access/external.h"
+#include "catalog/aoblkdir.h"
 #include "catalog/aocatalog.h"
 #include "catalog/oid_dispatch.h"
 #include "nodes/altertablenodes.h"
 #include "cdb/cdbdisp.h"
 #include "cdb/cdbdisp_query.h"
+#include "cdb/cdbappendonlyblockdirectory.h"
 #include "cdb/cdbvars.h"
 #include "cdb/cdbrelsize.h"
 #include "cdb/cdboidsync.h"
@@ -477,11 +479,13 @@ static void ATExecSetTableSpace(Oid tableOid, Oid newTableSpace, LOCKMODE lockmo
 static void ATExecSetTableSpaceNoStorage(Relation rel, Oid newTableSpace);
 static Datum ATExecSetRelOptions(Relation rel, List *defList,
 								AlterTableType operation,
+								AlteredTableInfo *tab,
 								bool *aoopt_changed,
 								Oid newam,
 								LOCKMODE lockmode);
 static void ATSetAoColumnDefaultEncodings(AlteredTableInfo *tab, Relation rel,
 										  Datum newOptions);
+static void ATBuildAoBlockDirectory(Oid relid);
 static void ATExecEnableDisableTrigger(Relation rel, const char *trigname,
 									   char fires_when, bool skip_system, bool recurse,
 									   LOCKMODE lockmode);
@@ -591,6 +595,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	List       *parentenc = NIL;
 	Datum		reloptions;
 	Datum		oldoptions = (Datum) 0;
+	bool		buildAoBlkdir = stmt->buildAoBlkdir;
 	ListCell   *listptr;
 	AttrNumber	attnum;
 	bool		partitioned;
@@ -871,6 +876,15 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 		/* check orientation-specific rules */
 		validateOrientationRelOptions(stdRdOptions->compresstype,
 									 (accessMethodId == AO_COLUMN_TABLE_AM_OID));
+
+		/*
+		 * The block directory is built when the table asks for it with the
+		 * blockdirectory option (given in WITH, inherited from the parent
+		 * partition, or defaulted from gp_default_storage_options), not only
+		 * when CREATE INDEX or a rewrite of an indexed table needs it.
+		 */
+		if (stdRdOptions->blockdirectory)
+			buildAoBlkdir = true;
 
 		reloptions = transformAOStdRdOptions(stdRdOptions, reloptions, RELKIND_HAS_STORAGE(relkind));
 	} else if (relkind == RELKIND_VIEW)
@@ -1169,7 +1183,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	 * If this is an append-only relation, create the auxliary tables necessary
 	 */
 	if (RelationStorageIsAO(rel))
-		NewRelationCreateAOAuxTables(RelationGetRelid(rel), stmt->buildAoBlkdir);
+		NewRelationCreateAOAuxTables(RelationGetRelid(rel), buildAoBlkdir);
 
 	/*
 	 * Now add any newly specified column default and generation expressions
@@ -5707,7 +5721,7 @@ ATExecCmd(List **wqueue, AlteredTableInfo *tab, Relation rel,
 				/* discard existing reloptions if we are going to change AM */
 				AlterTableType op = OidIsValid(tab->newAccessMethod) ? AT_ReplaceRelOptions : AT_SetRelOptions; 
 
-				newOptions = ATExecSetRelOptions(rel, (List *) cmd->def, op, &aoopt_changed, tab->newAccessMethod, lockmode);
+				newOptions = ATExecSetRelOptions(rel, (List *) cmd->def, op, tab, &aoopt_changed, tab->newAccessMethod, lockmode);
 
 				/*
 				 * Same-AM SET ACCESS METHOD ao_column WITH (...) is a plain
@@ -5733,6 +5747,8 @@ ATExecCmd(List **wqueue, AlteredTableInfo *tab, Relation rel,
 				{
 					tab->rewrite |= AT_REWRITE_ALTER_RELOPTS;
 					tab->newOptions = newOptions;
+					/* see AT_SetRelOptions below */
+					tab->rewrite &= ~(AT_REWRITE_NEW_COLUMNS_ONLY | AT_REWRITE_REWRITE_COLUMNS_ONLY);
 				}
 			}
 
@@ -5767,13 +5783,26 @@ ATExecCmd(List **wqueue, AlteredTableInfo *tab, Relation rel,
 				bool 		aoopt_changed = false;
 				Datum 		newOptions;
 
-				newOptions = ATExecSetRelOptions(rel, (List *) cmd->def, cmd->subtype, &aoopt_changed, InvalidOid, lockmode);
+				newOptions = ATExecSetRelOptions(rel, (List *) cmd->def, cmd->subtype, tab, &aoopt_changed, InvalidOid, lockmode);
 
 				/* Will rewrite table if there's a change to the AO reloptions. */
 				if (aoopt_changed)
 				{
 					tab->rewrite |= AT_REWRITE_ALTER_RELOPTS;
 					tab->newOptions = newOptions;
+
+					/*
+					 * New storage options apply to every column file, so an
+					 * ADD COLUMN in the same statement cannot take the
+					 * column-file fast path of ao_column tables any more
+					 * (AT_PASS_ADD_COL has already set the bit by now): the
+					 * whole table has to be rewritten, which also installs
+					 * newOptions.  The column-only branch of
+					 * ATRewriteTables() never does, so the SET used to be
+					 * lost.  ALTER COLUMN TYPE already falls back on its own
+					 * through setupColumnOnlyRewrite().
+					 */
+					tab->rewrite &= ~(AT_REWRITE_NEW_COLUMNS_ONLY | AT_REWRITE_REWRITE_COLUMNS_ONLY);
 
 					/*
 					 * For AOCO tables, re-encode the columns that only
@@ -6102,6 +6131,13 @@ ATRewriteTables(AlterTableStmt *parsetree, List **wqueue, LOCKMODE lockmode)
 				table_relation_rewrite_columns(OldHeap, tab->newvals, tab->oldDesc);
 			}
 			heap_close(OldHeap, NoLock);
+
+			/*
+			 * The column files are complete now, so a block directory asked
+			 * for in the same command can be filled from them.
+			 */
+			if (tab->buildBlkdir)
+				ATBuildAoBlockDirectory(tab->relid);
 			continue;
 		}
 		heap_close(OldHeap, NoLock);
@@ -6286,6 +6322,14 @@ ATRewriteTables(AlterTableStmt *parsetree, List **wqueue, LOCKMODE lockmode)
 			 */
 			if (tab->newTableSpace)
 				ATExecSetTableSpace(tab->relid, tab->newTableSpace, lockmode);
+
+			/*
+			 * SET (blockdirectory=true) without a rewrite: build the
+			 * directory in place.  A rewrite above created it with the new
+			 * heap instead (see make_new_heap()).
+			 */
+			if (tab->buildBlkdir)
+				ATBuildAoBlockDirectory(tab->relid);
 		}
 	}
 
@@ -15089,12 +15133,18 @@ ATPrepSetTableSpace(AlteredTableInfo *tab, Relation rel, const char *tablespacen
  * Return the new options.
  *
  * GPDB specific arguments: 
+ * 	tab: the table's work queue entry.  A previous SET in the same ALTER TABLE
+ * 		may have left new AO storage options in tab->newOptions for the
+ * 		rewrite to install; a later SET then merges onto those instead of
+ * 		onto pg_class.  SET (blockdirectory=true) records its wish in
+ * 		tab->buildBlkdir for ATRewriteTables().
  * 	aoopt_changed: whether any AO storage options have been changed in this function.
  * 	newam: the new AM if we will change the table AM. It's InvalidOid if no change is needed.
  */
 static Datum
 ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
-					bool *aoopt_changed, Oid newam, LOCKMODE lockmode)
+					AlteredTableInfo *tab, bool *aoopt_changed, Oid newam,
+					LOCKMODE lockmode)
 {
 	Oid			relid;
 	Relation	pgclass;
@@ -15108,6 +15158,7 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 	bool		repl_repl[Natts_pg_class];
 	static char *validnsps[] = HEAP_RELOPT_NAMESPACES;
 	Oid 		tableam;
+	bool		rewrite_pending = false;
 
 	/* Get the new table AM if applicable. Otherwise get the one from the reltion. */
 	tableam = (newam != InvalidOid) ? newam : rel->rd_rel->relam;
@@ -15132,6 +15183,20 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 		 */
 		datum = (Datum) 0;
 		isnull = true;
+	}
+	else if ((tab->rewrite & AT_REWRITE_ALTER_RELOPTS) &&
+			 tab->newOptions != (Datum) 0)
+	{
+		/*
+		 * A previous SET in this ALTER TABLE changed the AO storage options.
+		 * They are not in pg_class yet (see below), so merge onto them, or
+		 * the rewrite would install the earlier options without ours.  (A
+		 * QE receives the rewrite flag from the QD but not the options, and
+		 * recomputes them the same way starting from pg_class.)
+		 */
+		rewrite_pending = true;
+		datum = tab->newOptions;
+		isnull = false;
 	}
 	else
 	{
@@ -15198,10 +15263,32 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 				validateOrientationRelOptions(stdRdOptions->compresstype,
 											 tableam == AO_COLUMN_TABLE_AM_OID);
 
+				/*
+				 * gp_default_storage_options only applies when a table is
+				 * created.  default_reloptions() filled in its blockdirectory
+				 * setting for an option that is absent from the table's
+				 * reloptions; take the table's own recorded value instead.
+				 * A change of access method is the exception: like the other
+				 * storage options, blockdirectory then comes from the WITH
+				 * clause or else from the GUC, as for CREATE TABLE.
+				 *
+				 * SET (blockdirectory=true) is carried out in
+				 * ATRewriteTables(), once the other subcommands have written
+				 * the table: a rewrite creates the directory with the new
+				 * heap, otherwise it is built in place.  Doing it here would
+				 * scan the table with the tuple descriptor ADD COLUMN or
+				 * ALTER COLUMN TYPE in the same command have already changed,
+				 * before their column files exist.
+				 */
+				if (!OidIsValid(newam))
+					stdRdOptions->blockdirectory = relOptionsHaveBlockDirectory(newOptions);
+				if (stdRdOptions->blockdirectory && RelationStorageIsAO(rel))
+					tab->buildBlkdir = true;
+
 				newOptions = transformAOStdRdOptions(stdRdOptions, newOptions, RELKIND_HAS_STORAGE(rel->rd_rel->relkind));
 
 				/* If reloptions will be changed, indicate so. */
-				if (!relOptionsEquals(datum, newOptions))
+				if (rewrite_pending || !relOptionsEquals(datum, newOptions))
 					*aoopt_changed = true;
 			}
 			else
@@ -15435,6 +15522,36 @@ ATSetAoColumnDefaultEncodings(AlteredTableInfo *tab, Relation rel, Datum newOpti
 
 	if (root_updates)
 		UpdateAttributeEncodings(RelationGetRelid(rel), root_updates);
+}
+
+/*
+ * Carry out SET (blockdirectory=true) on an append-optimized table that is
+ * not rewritten by the same ALTER TABLE: create the block directory and fill
+ * it from the existing rows in place.  An indexed table already has a
+ * directory, and SET (blockdirectory=false) or RESET keeps an existing
+ * directory because indexes depend on it, so only the option changes then.
+ */
+static void
+ATBuildAoBlockDirectory(Oid relid)
+{
+	Relation	rel;
+	Oid			blkdirrelid;
+
+	/* Make the catalog changes of the other subcommands visible. */
+	CommandCounterIncrement();
+
+	/* Already locked by ATController(). */
+	rel = table_open(relid, NoLock);
+	Assert(RelationStorageIsAO(rel));
+
+	GetAppendOnlyEntryAuxOids(rel, NULL, &blkdirrelid, NULL);
+	if (!OidIsValid(blkdirrelid))
+	{
+		AlterTableCreateAoBlkdirTable(relid);
+		AppendOnlyBlockDirectory_Build(rel);
+	}
+
+	table_close(rel, NoLock);
 }
 
 /*
@@ -17067,6 +17184,8 @@ build_ctas_with_dist(Relation rel, DistributedBy *dist_clause,
 			 */
 			into->options = build_ao_rel_storage_opts(into->options, rel);
 		}
+		if (RelationIsAppendOptimized(rel))
+			into->options = build_ao_rel_blockdirectory_opt(into->options, rel);
 		s->intoClause = into;
 
 		RawStmt *rawstmt = makeNode(RawStmt);
@@ -17268,6 +17387,8 @@ prebuild_temp_table(Relation rel, RangeVar *tmpname, DistributedBy *distro,
 			*/
 			cs->options = build_ao_rel_storage_opts(cs->options, rel);
 		}
+		if (RelationIsAppendOptimized(rel))
+			cs->options = build_ao_rel_blockdirectory_opt(cs->options, rel);
 
 		if (RelationIsAoCols(rel) && useExistingColumnAttributes)
 			col_encs = RelationGetUntransformedAttributeOptions(rel);

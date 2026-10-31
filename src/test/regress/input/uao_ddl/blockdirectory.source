@@ -1,0 +1,337 @@
+-- The blockdirectory storage option: asking for an append-optimized table's
+-- block directory in DDL, instead of getting one only as a side effect of
+-- CREATE INDEX.
+CREATE SCHEMA blockdirectory_@amname@;
+SET search_path="$user",blockdirectory_@amname@,public;
+SET default_table_access_method=@amname@;
+
+-- Shows the recorded storage options of a table and whether it has a
+-- block directory relation.
+CREATE VIEW blkdir_status AS
+SELECT c.relname, c.reloptions, a.blkdirrelid <> 0 AS has_blkdir
+FROM pg_class c LEFT JOIN pg_appendonly a ON a.relid = c.oid
+WHERE c.relnamespace = 'blockdirectory_@amname@'::regnamespace
+  AND c.relkind IN ('r', 'm', 'p');
+
+-- Block directory entries of a table on every segment, without the tuple id
+-- (which differs between tables).
+CREATE FUNCTION blkdir_entries(tab regclass)
+RETURNS TABLE (segid int, segno int, columngroup_no int, first_row_no bigint,
+               file_offset bigint, row_count bigint)
+LANGUAGE sql AS $$
+  SELECT gp_segment_id, (gp_toolkit.__gp_aoblkdir(tab)).segno,
+         (gp_toolkit.__gp_aoblkdir(tab)).columngroup_no,
+         (gp_toolkit.__gp_aoblkdir(tab)).first_row_no,
+         (gp_toolkit.__gp_aoblkdir(tab)).file_offset,
+         (gp_toolkit.__gp_aoblkdir(tab)).row_count
+  FROM gp_dist_random('gp_id')
+$$;
+
+--
+-- CREATE TABLE WITH (blockdirectory=...)
+--
+CREATE TABLE bd_create (a int, b text) WITH (blockdirectory=true) DISTRIBUTED BY (a);
+CREATE TABLE bd_create_off (a int, b text) WITH (blockdirectory=false) DISTRIBUTED BY (a);
+CREATE TABLE bd_create_default (a int, b text) DISTRIBUTED BY (a);
+SELECT * FROM blkdir_status WHERE relname LIKE 'bd_create%' ORDER BY relname;
+
+-- Not a storage option of heap tables, like blocksize.
+CREATE TABLE bd_heap (a int) USING heap WITH (blockdirectory=true) DISTRIBUTED BY (a);
+-- Not a column encoding option, like checksum.
+CREATE TABLE bd_encoding (a int ENCODING (blockdirectory=true)) USING ao_column DISTRIBUTED BY (a);
+CREATE TABLE bd_encoding (a int) USING ao_column WITH (blockdirectory=true) DISTRIBUTED BY (a);
+SELECT * FROM blkdir_status WHERE relname = 'bd_encoding';
+DROP TABLE bd_encoding;
+
+-- INSERT and COPY fill the directory of an unindexed table.
+INSERT INTO bd_create SELECT i, 'insert' FROM generate_series(1, 1000) i;
+SELECT count(*) > 0 AS filled_by_insert FROM blkdir_entries('bd_create');
+COPY bd_create FROM stdin;
+1001	copy
+1002	copy
+1003	copy
+\.
+SELECT count(*) AS inserted_rows FROM bd_create;
+
+-- The directory a table was created with is exactly what the first index
+-- build would have produced: bd_create_idx is loaded the same way and gets
+-- its directory from CREATE INDEX.
+CREATE TABLE bd_create_idx (a int, b text) DISTRIBUTED BY (a);
+INSERT INTO bd_create_idx SELECT i, 'insert' FROM generate_series(1, 1000) i;
+COPY bd_create_idx FROM stdin;
+1001	copy
+1002	copy
+1003	copy
+\.
+CREATE INDEX ON bd_create_idx (a);
+SELECT * FROM blkdir_entries('bd_create') EXCEPT SELECT * FROM blkdir_entries('bd_create_idx');
+SELECT * FROM blkdir_entries('bd_create_idx') EXCEPT SELECT * FROM blkdir_entries('bd_create');
+
+-- A later CREATE INDEX reuses the directory instead of creating a new one.
+SELECT blkdirrelid AS blkdir_before FROM pg_appendonly WHERE relid = 'bd_create'::regclass \gset
+CREATE INDEX ON bd_create (a);
+SELECT blkdirrelid = :blkdir_before AS blkdir_reused FROM pg_appendonly WHERE relid = 'bd_create'::regclass;
+SET enable_seqscan = off;
+SELECT count(*), sum(a) FROM bd_create WHERE a BETWEEN 500 AND 1002;
+RESET enable_seqscan;
+SELECT count(*), sum(a) FROM bd_create WHERE a BETWEEN 500 AND 1002;
+
+--
+-- ALTER TABLE SET (blockdirectory=true) on a loaded table builds the
+-- directory in place: the table is not rewritten.
+--
+CREATE TABLE bd_alter (a int, b text) DISTRIBUTED BY (a);
+INSERT INTO bd_alter SELECT i, 'insert' FROM generate_series(1, 1000) i;
+INSERT INTO bd_alter SELECT i, 'insert' FROM generate_series(1001, 1500) i;
+DELETE FROM bd_alter WHERE a % 10 = 0;
+
+CREATE TEMP TABLE relfilebefore AS
+SELECT -1 segid, relfilenode FROM pg_class WHERE relname = 'bd_alter'
+UNION SELECT gp_segment_id segid, relfilenode FROM gp_dist_random('pg_class')
+WHERE relname = 'bd_alter';
+
+ALTER TABLE bd_alter SET (blockdirectory=true);
+SELECT * FROM blkdir_status WHERE relname = 'bd_alter';
+
+CREATE TEMP TABLE relfileafter AS
+SELECT -1 segid, relfilenode FROM pg_class WHERE relname = 'bd_alter'
+UNION SELECT gp_segment_id segid, relfilenode FROM gp_dist_random('pg_class')
+WHERE relname = 'bd_alter';
+-- No rewrite: every relfilenode is unchanged.
+SELECT * FROM relfilebefore EXCEPT SELECT * FROM relfileafter;
+
+-- The directory built by ALTER TABLE matches the one CREATE INDEX builds from
+-- the same blocks.
+CREATE TABLE bd_alter_idx (a int, b text) DISTRIBUTED BY (a);
+INSERT INTO bd_alter_idx SELECT i, 'insert' FROM generate_series(1, 1000) i;
+INSERT INTO bd_alter_idx SELECT i, 'insert' FROM generate_series(1001, 1500) i;
+DELETE FROM bd_alter_idx WHERE a % 10 = 0;
+CREATE INDEX ON bd_alter_idx (a);
+SELECT * FROM blkdir_entries('bd_alter') EXCEPT SELECT * FROM blkdir_entries('bd_alter_idx');
+SELECT * FROM blkdir_entries('bd_alter_idx') EXCEPT SELECT * FROM blkdir_entries('bd_alter');
+
+-- Later inserts keep it up to date, and an index on top of it works.
+INSERT INTO bd_alter SELECT i, 'later' FROM generate_series(1501, 1600) i;
+CREATE INDEX ON bd_alter (a);
+SET enable_seqscan = off;
+SELECT count(*), sum(a) FROM bd_alter WHERE a BETWEEN 900 AND 1550;
+SELECT b, count(*) FROM bd_alter WHERE a > 1495 GROUP BY b ORDER BY b;
+RESET enable_seqscan;
+SELECT count(*), sum(a) FROM bd_alter WHERE a BETWEEN 900 AND 1550;
+
+-- Setting it again is a no-op; turning it off or resetting it keeps the
+-- directory and only changes the recorded option.
+ALTER TABLE bd_alter SET (blockdirectory=true);
+ALTER TABLE bd_alter SET (blockdirectory=false);
+SELECT * FROM blkdir_status WHERE relname = 'bd_alter';
+ALTER TABLE bd_alter RESET (blockdirectory);
+SELECT * FROM blkdir_status WHERE relname = 'bd_alter';
+-- Option without a value means true.
+ALTER TABLE bd_alter SET (blockdirectory);
+SELECT * FROM blkdir_status WHERE relname = 'bd_alter';
+
+-- Together with a storage change the table is rewritten, and the rewrite
+-- creates the directory.
+CREATE TABLE bd_alter_rewrite (a int, b text) DISTRIBUTED BY (a);
+INSERT INTO bd_alter_rewrite SELECT i, 'insert' FROM generate_series(1, 100) i;
+ALTER TABLE bd_alter_rewrite SET (blockdirectory=true, compresslevel=3);
+SELECT * FROM blkdir_status WHERE relname = 'bd_alter_rewrite';
+SELECT count(*) > 0 AS filled_by_rewrite FROM blkdir_entries('bd_alter_rewrite');
+
+-- Together with subcommands that change the columns, the directory is built
+-- after the column changes, from the rows as the command leaves them.
+CREATE TABLE bd_alter_addcol (a int, b int) DISTRIBUTED BY (a);
+INSERT INTO bd_alter_addcol SELECT i, i FROM generate_series(1, 1000) i;
+ALTER TABLE bd_alter_addcol ADD COLUMN c int DEFAULT 1, SET (blockdirectory=true);
+SELECT * FROM blkdir_status WHERE relname = 'bd_alter_addcol';
+SELECT count(*) > 0 AS filled_with_addcol FROM blkdir_entries('bd_alter_addcol');
+CREATE TABLE bd_alter_addcol2 (a int, b int) DISTRIBUTED BY (a);
+INSERT INTO bd_alter_addcol2 SELECT i, i FROM generate_series(1, 1000) i;
+ALTER TABLE bd_alter_addcol2 SET (blockdirectory=true), ADD COLUMN c int DEFAULT 1;
+SELECT * FROM blkdir_status WHERE relname = 'bd_alter_addcol2';
+CREATE TABLE bd_alter_type (a int, b int) DISTRIBUTED BY (a);
+INSERT INTO bd_alter_type SELECT i, i FROM generate_series(1, 1000) i;
+ALTER TABLE bd_alter_type ALTER COLUMN b TYPE bigint, SET (blockdirectory=true);
+SELECT * FROM blkdir_status WHERE relname = 'bd_alter_type';
+-- Each directory matches the one CREATE INDEX builds after the same change.
+CREATE TABLE bd_alter_addcol_idx (a int, b int) DISTRIBUTED BY (a);
+INSERT INTO bd_alter_addcol_idx SELECT i, i FROM generate_series(1, 1000) i;
+ALTER TABLE bd_alter_addcol_idx ADD COLUMN c int DEFAULT 1;
+CREATE INDEX ON bd_alter_addcol_idx (a);
+SELECT * FROM blkdir_entries('bd_alter_addcol') EXCEPT SELECT * FROM blkdir_entries('bd_alter_addcol_idx');
+SELECT * FROM blkdir_entries('bd_alter_addcol_idx') EXCEPT SELECT * FROM blkdir_entries('bd_alter_addcol');
+SELECT * FROM blkdir_entries('bd_alter_addcol2') EXCEPT SELECT * FROM blkdir_entries('bd_alter_addcol_idx');
+-- (The twin runs the same command without asking for the directory, so that
+-- both tables are rewritten the same way.)
+CREATE TABLE bd_alter_type_idx (a int, b int) DISTRIBUTED BY (a);
+INSERT INTO bd_alter_type_idx SELECT i, i FROM generate_series(1, 1000) i;
+ALTER TABLE bd_alter_type_idx ALTER COLUMN b TYPE bigint, SET (blockdirectory=false);
+CREATE INDEX ON bd_alter_type_idx (a);
+SELECT * FROM blkdir_entries('bd_alter_type') EXCEPT SELECT * FROM blkdir_entries('bd_alter_type_idx');
+SELECT * FROM blkdir_entries('bd_alter_type_idx') EXCEPT SELECT * FROM blkdir_entries('bd_alter_type');
+-- And the directories describe the new column files.
+CREATE INDEX ON bd_alter_addcol (a);
+CREATE INDEX ON bd_alter_type (a);
+SET enable_seqscan = off;
+SELECT count(*), sum(b), sum(c) FROM bd_alter_addcol WHERE a BETWEEN 100 AND 200;
+SELECT count(*), sum(b) FROM bd_alter_type WHERE a BETWEEN 100 AND 200;
+RESET enable_seqscan;
+SELECT count(*), sum(b), sum(c) FROM bd_alter_addcol WHERE a BETWEEN 100 AND 200;
+SELECT count(*), sum(b) FROM bd_alter_type WHERE a BETWEEN 100 AND 200;
+
+-- A later SET in the same command merges onto the options an earlier SET
+-- left for the rewrite, and the other way round.
+CREATE TABLE bd_alter_twosets (a int, b int) DISTRIBUTED BY (a);
+INSERT INTO bd_alter_twosets SELECT i, i FROM generate_series(1, 1000) i;
+ALTER TABLE bd_alter_twosets SET (blocksize=65536), SET (blockdirectory=true);
+SELECT * FROM blkdir_status WHERE relname = 'bd_alter_twosets';
+SELECT count(*) > 0 AS filled_by_two_sets FROM blkdir_entries('bd_alter_twosets');
+CREATE TABLE bd_alter_twosets2 (a int, b int) DISTRIBUTED BY (a);
+INSERT INTO bd_alter_twosets2 SELECT i, i FROM generate_series(1, 1000) i;
+ALTER TABLE bd_alter_twosets2 SET (blockdirectory=true), SET (blocksize=65536);
+SELECT * FROM blkdir_status WHERE relname = 'bd_alter_twosets2';
+
+-- Heap tables reject it in ALTER TABLE too.
+CREATE TABLE bd_heap (a int) USING heap DISTRIBUTED BY (a);
+ALTER TABLE bd_heap SET (blockdirectory=true);
+DROP TABLE bd_heap;
+
+--
+-- gp_default_storage_options
+--
+-- Tables that exist before the GUC is set, with the operations below that
+-- recreate or rewrite a table internally.
+CREATE TABLE bd_guc_old (a int, b int, c text) DISTRIBUTED BY (a);
+INSERT INTO bd_guc_old SELECT i, i, 'old' FROM generate_series(1, 200) i;
+CREATE TABLE bd_guc_old_reorg (a int, b int) DISTRIBUTED BY (a);
+INSERT INTO bd_guc_old_reorg SELECT i, i FROM generate_series(1, 200) i;
+CREATE TABLE bd_guc_old_part (a int, b int) DISTRIBUTED BY (a)
+PARTITION BY RANGE (b) (START (0) END (4) EVERY (2));
+INSERT INTO bd_guc_old_part SELECT i, i % 4 FROM generate_series(1, 200) i;
+CREATE MATERIALIZED VIEW bd_guc_old_mv AS SELECT a, b FROM bd_guc_old_reorg DISTRIBUTED BY (a);
+SET gp_default_storage_options = 'blockdirectory=true';
+SHOW gp_default_storage_options;
+CREATE TABLE bd_guc (a int, b text) DISTRIBUTED BY (a);
+-- WITH takes precedence over the GUC; an explicit false is not recorded.
+CREATE TABLE bd_guc_off (a int, b text) WITH (blockdirectory=false) DISTRIBUTED BY (a);
+CREATE TABLE bd_guc_ctas WITH (blockdirectory=false) AS SELECT * FROM bd_guc DISTRIBUTED BY (a);
+SELECT * FROM blkdir_status WHERE relname LIKE 'bd_guc%' ORDER BY relname;
+-- The GUC applies only when a table is created: an unrelated ALTER TABLE SET
+-- does not attach a directory to an existing table.
+ALTER TABLE bd_guc_off SET (compresslevel=2);
+SELECT * FROM blkdir_status WHERE relname = 'bd_guc_off';
+-- Nor does anything that rewrites or recreates an existing table: it keeps
+-- its own setting.
+ALTER TABLE bd_guc_old SET (compresslevel=2);
+ALTER TABLE bd_guc_old RESET (compresslevel);
+ALTER TABLE bd_guc_old ALTER COLUMN b TYPE bigint;
+ALTER TABLE bd_guc_old SET DISTRIBUTED BY (b);
+ALTER TABLE bd_guc_old_reorg SET WITH (reorganize=true);
+VACUUM FULL bd_guc_old;
+REFRESH MATERIALIZED VIEW bd_guc_old_mv;
+ALTER TABLE bd_guc_old_part SPLIT PARTITION FOR (2) AT (3) INTO (PARTITION p1a, PARTITION p1b);
+SELECT * FROM blkdir_status WHERE relname LIKE 'bd_guc_old%' ORDER BY relname;
+SELECT count(*), sum(b) FROM bd_guc_old;
+SELECT count(*) FROM bd_guc_old_part;
+-- A partition added now is a new table and takes the default.
+ALTER TABLE bd_guc_old_part ADD PARTITION p3 START (4) END (6);
+SELECT * FROM blkdir_status WHERE relname = 'bd_guc_old_part_1_prt_p3';
+-- So does the append-optimized table that SET ACCESS METHOD makes of a heap
+-- table: its storage options are those of the WITH clause, then of the GUC,
+-- as for CREATE TABLE, and the rewrite fills the directory.
+CREATE TABLE bd_guc_heap (a int, b int) USING heap DISTRIBUTED BY (a);
+INSERT INTO bd_guc_heap SELECT i, i FROM generate_series(1, 200) i;
+CREATE TABLE bd_guc_heap_off (a int, b int) USING heap DISTRIBUTED BY (a);
+ALTER TABLE bd_guc_heap SET ACCESS METHOD @amname@;
+ALTER TABLE bd_guc_heap_off SET ACCESS METHOD @amname@ WITH (blockdirectory=false);
+SELECT * FROM blkdir_status WHERE relname LIKE 'bd_guc_heap%' ORDER BY relname;
+SELECT count(DISTINCT segid), bool_and(row_count > 0) FROM blkdir_entries('bd_guc_heap');
+SET gp_default_storage_options = 'blockdirectory=maybe';
+SET gp_default_storage_options = 'checksum=false, BlockDirectory=TRUE';
+SHOW gp_default_storage_options;
+RESET gp_default_storage_options;
+SHOW gp_default_storage_options;
+
+--
+-- The option is inherited and survives operations that recreate the table's
+-- auxiliary relations.
+--
+CREATE TABLE bd_ctas WITH (blockdirectory=true) AS SELECT * FROM bd_create DISTRIBUTED BY (a);
+CREATE TABLE bd_like (LIKE bd_create INCLUDING ALL);
+CREATE MATERIALIZED VIEW bd_mv WITH (blockdirectory=true) AS SELECT * FROM bd_create DISTRIBUTED BY (a);
+SELECT * FROM blkdir_status WHERE relname IN ('bd_ctas', 'bd_like', 'bd_mv') ORDER BY relname;
+INSERT INTO bd_create SELECT i, 'refresh' FROM generate_series(2001, 2100) i;
+REFRESH MATERIALIZED VIEW bd_mv;
+SELECT * FROM blkdir_status WHERE relname = 'bd_mv';
+SELECT count(*) > 0 AS filled_by_refresh FROM blkdir_entries('bd_mv');
+
+-- Partition children inherit the parent's option unless they say otherwise.
+CREATE TABLE bd_part (a int, b int) WITH (blockdirectory=true) DISTRIBUTED BY (a)
+PARTITION BY RANGE (b) (START (0) END (20) EVERY (10));
+CREATE TABLE bd_part_p3 PARTITION OF bd_part FOR VALUES FROM (20) TO (30);
+CREATE TABLE bd_part_p4 PARTITION OF bd_part FOR VALUES FROM (30) TO (40) WITH (blockdirectory=false);
+ALTER TABLE bd_part ADD PARTITION p5 START (40) END (50);
+SELECT * FROM blkdir_status WHERE relname LIKE 'bd_part%' ORDER BY relname;
+-- ALTER TABLE SET on the root recurses to the partitions.
+CREATE TABLE bd_part_alter (a int, b int) DISTRIBUTED BY (a)
+PARTITION BY RANGE (b) (START (0) END (20) EVERY (10));
+INSERT INTO bd_part_alter SELECT i, i % 20 FROM generate_series(1, 400) i;
+ALTER TABLE bd_part_alter SET (blockdirectory=true);
+SELECT * FROM blkdir_status WHERE relname LIKE 'bd_part_alter%' ORDER BY relname;
+SELECT count(*) > 0 AS filled_by_alter FROM blkdir_entries('bd_part_alter_1_prt_1');
+-- RESET on the root recurses too and keeps the directories.
+ALTER TABLE bd_part_alter RESET (blockdirectory);
+SELECT * FROM blkdir_status WHERE relname LIKE 'bd_part_alter%' ORDER BY relname;
+-- ALTER TABLE ONLY changes the root's option, which only new partitions
+-- inherit.
+ALTER TABLE ONLY bd_part_alter SET (blockdirectory=true);
+ALTER TABLE bd_part_alter ADD PARTITION p3 START (20) END (30);
+SELECT * FROM blkdir_status WHERE relname LIKE 'bd_part_alter%' ORDER BY relname;
+-- EXCHANGE PARTITION: each table keeps its own directory.
+CREATE TABLE bd_exchange (a int, b int) WITH (blockdirectory=true) DISTRIBUTED BY (a);
+INSERT INTO bd_exchange SELECT i, 5 FROM generate_series(1, 100) i;
+ALTER TABLE bd_part_alter EXCHANGE PARTITION FOR (5) WITH TABLE bd_exchange;
+SELECT * FROM blkdir_status WHERE relname IN ('bd_exchange', 'bd_part_alter_1_prt_1') ORDER BY relname;
+SELECT count(*) FROM bd_part_alter WHERE b = 5;
+
+-- Rewrites keep the directory.
+CREATE TABLE bd_rewrite (a int, b int, c text) WITH (blockdirectory=true) DISTRIBUTED BY (a);
+INSERT INTO bd_rewrite SELECT i, i, 'c' FROM generate_series(1, 300) i;
+ALTER TABLE bd_rewrite SET DISTRIBUTED BY (b);
+SELECT * FROM blkdir_status WHERE relname = 'bd_rewrite';
+ALTER TABLE bd_rewrite SET WITH (reorganize=true);
+SELECT * FROM blkdir_status WHERE relname = 'bd_rewrite';
+ALTER TABLE bd_rewrite ALTER COLUMN c TYPE varchar(10);
+SELECT * FROM blkdir_status WHERE relname = 'bd_rewrite';
+-- The directory still describes the rewritten blocks.
+CREATE INDEX ON bd_rewrite (a);
+SET enable_seqscan = off;
+SELECT count(*), sum(a), max(c) FROM bd_rewrite WHERE a BETWEEN 100 AND 200;
+RESET enable_seqscan;
+DROP INDEX bd_rewrite_a_idx;
+-- Changing the access method recreates the auxiliary tables from the new
+-- options.  Heap in between drops the option, so both variants of this test
+-- change the access method on every step.
+ALTER TABLE bd_rewrite SET ACCESS METHOD heap;
+SELECT * FROM blkdir_status WHERE relname = 'bd_rewrite';
+ALTER TABLE bd_rewrite SET ACCESS METHOD ao_column WITH (blockdirectory=true);
+SELECT * FROM blkdir_status WHERE relname = 'bd_rewrite';
+ALTER TABLE bd_rewrite SET ACCESS METHOD ao_row WITH (blockdirectory=true);
+SELECT * FROM blkdir_status WHERE relname = 'bd_rewrite';
+SELECT count(*) > 0 AS filled_after_rewrites FROM blkdir_entries('bd_rewrite');
+SELECT count(*), sum(a) FROM bd_rewrite;
+-- VACUUM and TRUNCATE keep it as well.
+DELETE FROM bd_rewrite WHERE a % 2 = 0;
+VACUUM bd_rewrite;
+SELECT * FROM blkdir_status WHERE relname = 'bd_rewrite';
+TRUNCATE bd_rewrite;
+SELECT * FROM blkdir_status WHERE relname = 'bd_rewrite';
+
+-- Unchanged: a directory that exists only because of a dropped index is not
+-- carried over by a rewrite.
+CREATE TABLE bd_dropped_idx (a int) DISTRIBUTED BY (a);
+CREATE INDEX bd_dropped_idx_a ON bd_dropped_idx (a);
+DROP INDEX bd_dropped_idx_a;
+SELECT * FROM blkdir_status WHERE relname = 'bd_dropped_idx';
+ALTER TABLE bd_dropped_idx SET WITH (reorganize=true);
+SELECT * FROM blkdir_status WHERE relname = 'bd_dropped_idx';

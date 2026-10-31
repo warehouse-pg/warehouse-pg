@@ -302,6 +302,7 @@ typedef struct StdRdOptions
 	int			compresslevel;  /* compression level (AO rels only) */
 	char		compresstype[NAMEDATALEN]; /* compression type (AO rels only) */
 	bool		checksum;		/* checksum (AO rels only) */
+	bool		blockdirectory;	/* keep a block directory (AO rels only) */
 } StdRdOptions;
 
 #define HEAP_MIN_FILLFACTOR			10
