@@ -24,7 +24,8 @@ extern CdbPathLocus cdbllize_get_final_locus(PlannerInfo *root, PathTarget *targ
 
 extern Path *cdbllize_adjust_top_path(PlannerInfo *root, Path *best_path, PlanSlice *topslice);
 extern Path *cdbllize_adjust_init_plan_path(PlannerInfo *root, Path *best_path);
-extern Plan *cdbllize_decorate_subplans_with_motions(PlannerInfo *root, Plan *plan);
+extern Plan *cdbllize_decorate_subplans_with_motions(PlannerInfo *root, Plan *plan,
+													 PlanSlice *top_slice);
 extern void cdbllize_build_slice_table(PlannerInfo *root, Plan *top_plan, PlanSlice *top_slice);
 
 extern void motion_sanity_check(PlannerInfo *root, Plan *plan);
