@@ -2040,6 +2040,17 @@ gpdb::CheckCollation(Node *node)
 	return -1;
 }
 
+bool
+gpdb::DMLCtidUnlocated(Query *query)
+{
+	GP_WRAP_START;
+	{
+		return cdbmutate_dml_ctid_unlocated(query);
+	}
+	GP_WRAP_END;
+	return false;
+}
+
 Node *
 gpdb::CoerceToCommonType(ParseState *pstate, Node *node, Oid target_type,
 						 const char *context)

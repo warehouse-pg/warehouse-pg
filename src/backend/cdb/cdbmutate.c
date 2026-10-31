@@ -16,6 +16,7 @@
 #include "postgres.h"
 
 #include "access/relation.h"
+#include "access/stratnum.h"
 #include "access/xact.h"
 #include "parser/parsetree.h"	/* for rt_fetch() */
 #include "optimizer/planmain.h"
@@ -29,6 +30,7 @@
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "nodes/makefuncs.h"
+#include "nodes/nodeFuncs.h"
 
 #include "commands/tablecmds.h"
 #include "commands/tablespace.h"
@@ -209,10 +211,19 @@ getExprListFromTargetList(List *tlist,
 	return elist;
 }
 
+/* set by cdbmutate_ctid_proof_begin(), see there */
+static bool ctid_dml_proven = false;
+
 /* ----------------------------------------------------------------------- *
  * cdbmutate_warn_ctid_without_segid() warns the user if the plan refers to a
  * partitioned table's ctid column without also referencing its
  * gp_segment_id column.
+ *
+ * A ctid is unique only within one segment.  The rel counts as having its
+ * segment named when gp_segment_id is referenced, or when its restriction
+ * clauses fix every distribution key column to values, so that each row's
+ * key names its segment (see ctid_rel_located_by_key()).  A ctid that is
+ * only tested with IS [NOT] NULL does not pick rows and is not counted.
  * ----------------------------------------------------------------------- *
  */
 typedef struct ctid_inventory_context
@@ -248,6 +259,148 @@ ctid_inventory_walker(Node *node, ctid_inventory_context *inv)
 	return plan_tree_walker(node, ctid_inventory_walker, inv, true);
 }
 
+/*
+ * Helpers for ctid_rel_located_by_key().
+ */
+
+/* Is node the given column of the rel, at this query level? */
+static bool
+ctid_is_rel_column(Node *node, RelOptInfo *rel, AttrNumber attno)
+{
+	node = strip_implicit_coercions(node);
+	return IsA(node, Var) &&
+		((Var *) node)->varno == rel->relid &&
+		((Var *) node)->varattno == attno &&
+		((Var *) node)->varlevelsup == 0;
+}
+
+/* Does the expression contain a value produced by a sub-select? */
+static bool
+ctid_contains_subselect_walker(Node *node, void *context)
+{
+	if (node == NULL)
+		return false;
+	if (IsA(node, Param) && ((Param *) node)->paramkind == PARAM_EXEC)
+		return true;
+	if (IsA(node, SubPlan) || IsA(node, AlternativeSubPlan) || IsA(node, SubLink))
+		return true;
+	return expression_tree_walker(node, ctid_contains_subselect_walker, context);
+}
+
+/*
+ * A value the statement supplies: no Vars, no volatile functions.  When
+ * 'one_value' is false the expression may yield several values (the array of
+ * an IN list), and then it must not come from a sub-select either: a list
+ * read from a table can cover every key and locates nothing.
+ */
+static bool
+ctid_is_key_value(Node *node, bool one_value)
+{
+	if (contain_var_clause(node) || contain_volatile_functions(node))
+		return false;
+	if (!one_value && ctid_contains_subselect_walker(node, NULL))
+		return false;
+	return true;
+}
+
+/*
+ * Does the clause fix the given key column of the rel to values?
+ *   column = value             (equality of the column's distribution opclass)
+ *   column IN (list), column = ANY (array)
+ *   an OR whose every arm is one of these for the same column
+ */
+static bool
+ctid_clause_fixes_key(Node *clause, RelOptInfo *rel, AttrNumber attno, Oid opfamily)
+{
+	if (is_opclause(clause))
+	{
+		OpExpr	   *op = (OpExpr *) clause;
+		Node	   *other;
+
+		if (list_length(op->args) != 2 ||
+			get_op_opfamily_strategy(op->opno, opfamily) != HTEqualStrategyNumber)
+			return false;
+		if (ctid_is_rel_column(linitial(op->args), rel, attno))
+			other = lsecond(op->args);
+		else if (ctid_is_rel_column(lsecond(op->args), rel, attno))
+			other = linitial(op->args);
+		else
+			return false;
+		return ctid_is_key_value(other, true);
+	}
+
+	if (IsA(clause, ScalarArrayOpExpr))
+	{
+		ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) clause;
+
+		return saop->useOr &&
+			list_length(saop->args) == 2 &&
+			get_op_opfamily_strategy(saop->opno, opfamily) == HTEqualStrategyNumber &&
+			ctid_is_rel_column(linitial(saop->args), rel, attno) &&
+			ctid_is_key_value(lsecond(saop->args), false);
+	}
+
+	if (is_orclause(clause))
+	{
+		ListCell   *lc;
+
+		foreach(lc, ((BoolExpr *) clause)->args)
+		{
+			if (!ctid_clause_fixes_key((Node *) lfirst(lc), rel, attno, opfamily))
+				return false;
+		}
+		return true;
+	}
+
+	return false;
+}
+
+/*
+ * ctid_rel_located_by_key() -- do the rel's own restriction clauses fix its
+ * whole distribution key to values?
+ *
+ * True when the rel is hash-distributed and every distribution key column is
+ * fixed, with the equality operator of its distribution opclass, to a value or
+ * a list of values the statement supplies: a constant, a parameter, an
+ * expression of those, a single-valued sub-select, an IN list, = ANY (array),
+ * or an OR of such equalities.  Each row the statement can reach then has a
+ * key that names its segment, so the ctid identifies at most one row per key
+ * -- the row is located, as with gp_segment_id.  A range, a cast of the
+ * column, another column of the same row, a column of another rel, a list read
+ * by a sub-select, or a randomly distributed rel does not qualify.
+ */
+static bool
+ctid_rel_located_by_key(RelOptInfo *rel)
+{
+	GpPolicy   *policy = rel->cdbpolicy;
+	int			i;
+
+	if (!GpPolicyIsHashPartitioned(policy) || policy->nattrs == 0)
+		return false;
+
+	for (i = 0; i < policy->nattrs; i++)
+	{
+		AttrNumber	attno = policy->attrs[i];
+		Oid			opfamily = get_opclass_family(policy->opclasses[i]);
+		bool		found = false;
+		ListCell   *lc;
+
+		foreach(lc, rel->baserestrictinfo)
+		{
+			RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
+
+			if (ctid_clause_fixes_key((Node *) rinfo->clause, rel, attno, opfamily))
+			{
+				found = true;
+				break;
+			}
+		}
+		if (!found)
+			return false;
+	}
+	return true;
+}
+
 void
 cdbmutate_warn_ctid_without_segid(struct PlannerInfo *root, struct RelOptInfo *rel)
 {
@@ -256,6 +409,10 @@ cdbmutate_warn_ctid_without_segid(struct PlannerInfo *root, struct RelOptInfo *r
 	ListCell   *cell;
 	AttrNumber	attno;
 	int			ndx;
+
+	/* the statement's ctid use is proven located (see cdbmutate_ctid_proof_begin()) */
+	if (ctid_dml_proven)
+		return;
 
 	planner_init_plan_tree_base(&inv.base, root);
 	inv.uses_ctid = false;
@@ -291,8 +448,25 @@ cdbmutate_warn_ctid_without_segid(struct PlannerInfo *root, struct RelOptInfo *r
 
 		Assert(IsA(rinfo, RestrictInfo));
 
+		/*
+		 * "ctid IS [NOT] NULL" does not pick rows by position (a ctid is
+		 * never null), so it is not a use of ctid for this check.
+		 */
+		if (IsA(rinfo->clause, NullTest) &&
+			IsA(((NullTest *) rinfo->clause)->arg, Var) &&
+			((Var *) ((NullTest *) rinfo->clause)->arg)->varno == rel->relid &&
+			((Var *) ((NullTest *) rinfo->clause)->arg)->varattno == SelfItemPointerAttributeNumber)
+			continue;
+
 		ctid_inventory_walker((Node *) rinfo->clause, &inv);
 	}
+
+	/*
+	 * A distribution key fixed to values names each row's segment, which
+	 * locates the row as well as gp_segment_id would.
+	 */
+	if (inv.uses_ctid && !inv.uses_segid && ctid_rel_located_by_key(rel))
+		inv.uses_segid = true;
 
 	/* Notify client if found a reference to ctid only, without gp_segment_id */
 	if (inv.uses_ctid &&
@@ -327,6 +501,708 @@ cdbmutate_warn_ctid_without_segid(struct PlannerInfo *root, struct RelOptInfo *r
 	}
 	bms_free(relids_to_ignore);
 }								/* cdbmutate_warn_ctid_without_segid */
+
+/* ----------------------------------------------------------------------- *
+ * cdbmutate_dml_ctid_unlocated() tells GPORCA when to leave an UPDATE or
+ * DELETE to the Postgres planner.  A ctid is unique only within one segment,
+ * so a statement that picks rows by a ctid whose segment it does not fix
+ * changes one row on every segment.  The planner checks this in
+ * cdbmutate_warn_ctid_without_segid() above; GPORCA has no such check.
+ *
+ * GPORCA keeps a statement only when, for every reference to a relation's
+ * ctid outside the top-level SET and RETURNING lists, the row's location is
+ * provable from the statement itself: some AND-ed condition that encloses
+ * the reference is
+ *
+ *	- a condition on that relation's gp_segment_id (the bare column compared
+ *	  with an expression that does not contain it, = ANY, IS [NOT] NULL), at
+ *	  the reference's query level or at any level up to the relation's own; or
+ *	- one of the conditions that fix every distribution key column of that
+ *	  relation to values (as in ctid_rel_located_by_key()), at the relation's
+ *	  own query level.
+ *
+ * Moving up from a sub-select to the query around it, the path must pass
+ * through a qualifier (WHERE, JOIN ... ON, the test of a sublink); a
+ * reference reached through a target list, HAVING, LIMIT, a function in the
+ * range table, a derived table or a CTE is not proven.  Anything not proven
+ * is handed to the planner, which runs it or raises its error.
+ *
+ * Why a proven statement cannot make GPORCA run something the planner
+ * rejects: the enclosing AND-ed condition is an ancestor of the ctid
+ * reference, so every rewrite the planner applies either removes both or
+ * keeps a reference to gp_segment_id (or the key condition, which at the
+ * relation's own level becomes one of its restriction clauses), and the
+ * planner's check counts gp_segment_id wherever it remains.  This lets
+ * GPORCA plan statements the planner cannot plan at all, such as a
+ * correctly paired ctid referenced from a subquery two levels down.
+ * ----------------------------------------------------------------------- *
+ */
+typedef struct ctid_frame
+{
+	Query	   *query;
+	bool		via_qual;		/* entered through a sublink in a qualifier? */
+	List	   *conjs;			/* active AND-lists (Lists of member nodes) */
+} ctid_frame;
+
+typedef struct ctid_keep_context
+{
+	List	   *frames;			/* ctid_frame *, innermost first */
+	bool		in_qual;		/* inside a qualifier of the innermost frame? */
+	bool		unproven;		/* found a ctid reference that is not proven */
+} ctid_keep_context;
+
+static bool ctid_keep_walker(Node *node, ctid_keep_context *cxt);
+static void ctid_keep_query(Query *query, bool via_qual, bool top, ctid_keep_context *cxt);
+
+/* Members of a (possibly nested) AND. */
+static List *
+ctid_and_members(Node *node, List *members)
+{
+	if (node == NULL)
+		return members;
+	if (IsA(node, List))
+	{
+		ListCell   *lc;
+
+		foreach(lc, (List *) node)
+			members = ctid_and_members((Node *) lfirst(lc), members);
+		return members;
+	}
+	if (is_andclause(node))
+	{
+		ListCell   *lc;
+
+		foreach(lc, ((BoolExpr *) node)->args)
+			members = ctid_and_members((Node *) lfirst(lc), members);
+		return members;
+	}
+	return lappend(members, node);
+}
+
+/* Is node, seen in frame 'level', the column 'attno' of relation 'varno' of frame 'target'? */
+static bool
+ctid_is_column_of(Node *node, int level, int target, Index varno, AttrNumber attno)
+{
+	node = strip_implicit_coercions(node);
+	return IsA(node, Var) &&
+		((Var *) node)->varno == varno &&
+		((Var *) node)->varattno == attno &&
+		level + (int) ((Var *) node)->varlevelsup == target;
+}
+
+typedef struct ctid_col_search
+{
+	int			level;
+	int			target;
+	Index		varno;
+	AttrNumber	attno;
+} ctid_col_search;
+
+static bool
+ctid_contains_column_walker(Node *node, ctid_col_search *s)
+{
+	if (node == NULL)
+		return false;
+	if (IsA(node, Var))
+		return ctid_is_column_of(node, s->level, s->target, s->varno, s->attno);
+	if (IsA(node, Query))
+	{
+		bool		result;
+
+		s->level++;
+		result = query_tree_walker((Query *) node, ctid_contains_column_walker, s, 0);
+		s->level--;
+		return result;
+	}
+	return expression_tree_walker(node, ctid_contains_column_walker, s);
+}
+
+/* Is member m, seen in frame 'level', a condition on gp_segment_id of relation varno of frame 'target'? */
+static bool
+ctid_is_segid_condition(Node *m, int level, int target, Index varno)
+{
+	ctid_col_search s = {level, target, varno, GpSegmentIdAttributeNumber};
+
+	if (is_opclause(m) && list_length(((OpExpr *) m)->args) == 2)
+	{
+		Node	   *l = linitial(((OpExpr *) m)->args);
+		Node	   *r = lsecond(((OpExpr *) m)->args);
+
+		if (ctid_is_column_of(l, level, target, varno, GpSegmentIdAttributeNumber))
+			return !ctid_contains_column_walker(r, &s);
+		if (ctid_is_column_of(r, level, target, varno, GpSegmentIdAttributeNumber))
+			return !ctid_contains_column_walker(l, &s);
+		return false;
+	}
+	if (IsA(m, ScalarArrayOpExpr) && list_length(((ScalarArrayOpExpr *) m)->args) == 2)
+	{
+		ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) m;
+
+		return ctid_is_column_of(linitial(saop->args), level, target, varno, GpSegmentIdAttributeNumber) &&
+			!ctid_contains_column_walker(lsecond(saop->args), &s);
+	}
+	if (IsA(m, NullTest))
+		return ctid_is_column_of((Node *) ((NullTest *) m)->arg, level, target, varno,
+								 GpSegmentIdAttributeNumber);
+	return false;
+}
+
+/* Any Var at any level, or a sub-select? */
+static bool
+ctid_has_var_or_subselect_walker(Node *node, void *context)
+{
+	if (node == NULL)
+		return false;
+	if (IsA(node, Var) || IsA(node, SubLink) || IsA(node, Query))
+		return true;
+	return expression_tree_walker(node, ctid_has_var_or_subselect_walker, context);
+}
+
+/* A value the statement supplies (parse-tree form): no column, no volatile function, no sub-select. */
+static bool
+ctid_is_parse_key_value(Node *node)
+{
+	return !ctid_has_var_or_subselect_walker(node, NULL) &&
+		!contain_volatile_functions(node);
+}
+
+/*
+ * Parse-tree form of ctid_clause_fixes_key(), for a member seen in frame
+ * 'level' and the relation of frame 'target'.
+ */
+static bool
+ctid_member_fixes_key(Node *m, int level, int target, Index varno,
+					  AttrNumber attno, Oid opfamily)
+{
+	if (is_opclause(m))
+	{
+		OpExpr	   *op = (OpExpr *) m;
+
+		if (list_length(op->args) != 2 ||
+			get_op_opfamily_strategy(op->opno, opfamily) != HTEqualStrategyNumber)
+			return false;
+		if (ctid_is_column_of(linitial(op->args), level, target, varno, attno))
+			return ctid_is_parse_key_value(lsecond(op->args));
+		if (ctid_is_column_of(lsecond(op->args), level, target, varno, attno))
+			return ctid_is_parse_key_value(linitial(op->args));
+		return false;
+	}
+	if (IsA(m, ScalarArrayOpExpr))
+	{
+		ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) m;
+
+		return saop->useOr &&
+			list_length(saop->args) == 2 &&
+			get_op_opfamily_strategy(saop->opno, opfamily) == HTEqualStrategyNumber &&
+			ctid_is_column_of(linitial(saop->args), level, target, varno, attno) &&
+			ctid_is_parse_key_value(lsecond(saop->args));
+	}
+	if (is_orclause(m))
+	{
+		ListCell   *lc;
+
+		foreach(lc, ((BoolExpr *) m)->args)
+		{
+			if (!ctid_member_fixes_key((Node *) lfirst(lc), level, target, varno,
+									   attno, opfamily))
+				return false;
+		}
+		return true;
+	}
+	return false;
+}
+
+/*
+ * Do the active AND-lists, at any level from the reference's up to the
+ * relation's own, fix the relation's whole distribution key to values?
+ * Every such AND-list encloses the ctid reference, so for a row whose key
+ * has another value the reference cannot choose it.
+ */
+static bool
+ctid_frames_fix_key(ctid_keep_context *cxt, int target, Index varno)
+{
+	ctid_frame *own = (ctid_frame *) list_nth(cxt->frames, target);
+	RangeTblEntry *rte = rt_fetch(varno, own->query->rtable);
+	GpPolicy   *policy;
+	bool		all = true;
+	int			k;
+
+	if (rte->rtekind != RTE_RELATION)
+		return false;
+	policy = GpPolicyFetch(rte->relid);
+	if (!GpPolicyIsHashPartitioned(policy) || policy->nattrs == 0)
+	{
+		pfree(policy);
+		return false;
+	}
+	for (k = 0; k < policy->nattrs && all; k++)
+	{
+		Oid			opfamily = get_opclass_family(policy->opclasses[k]);
+		bool		found = false;
+		int			i;
+
+		for (i = 0; i <= target && !found; i++)
+		{
+			ctid_frame *frame = (ctid_frame *) list_nth(cxt->frames, i);
+			ListCell   *lc1;
+
+			foreach(lc1, frame->conjs)
+			{
+				ListCell   *lc2;
+
+				foreach(lc2, (List *) lfirst(lc1))
+				{
+					if (ctid_member_fixes_key((Node *) lfirst(lc2), i, target, varno,
+											  policy->attrs[k], opfamily))
+					{
+						found = true;
+						break;
+					}
+				}
+				if (found)
+					break;
+			}
+		}
+		all = found;
+	}
+	pfree(policy);
+	return all;
+}
+
+/*
+ * Can an expression seen in frame 'level' be turned into a constant by the
+ * planner, beyond what eval_const_expressions() does on its own?  That
+ * happens to a parameter (bound to a value for a custom plan), to a column of
+ * a sub-select, function, VALUES list or join alias in the range table
+ * (pulled up and replaced by its defining expression), and inside a
+ * sub-select (not analysed here).  Columns of base tables, at any level,
+ * never become constants.
+ */
+typedef struct ctid_foldable_context
+{
+	ctid_keep_context *cxt;
+	int			level;
+} ctid_foldable_context;
+
+static bool
+ctid_may_fold_walker(Node *node, ctid_foldable_context *fc)
+{
+	if (node == NULL)
+		return false;
+	if (IsA(node, Param) || IsA(node, SubLink))
+		return true;
+	if (IsA(node, Var))
+	{
+		Var		   *var = (Var *) node;
+		int			f = fc->level + (int) var->varlevelsup;
+		ctid_frame *frame;
+
+		Assert(f >= 0 && f < list_length(fc->cxt->frames));
+		frame = (ctid_frame *) list_nth(fc->cxt->frames, f);
+		return rt_fetch(var->varno, frame->query->rtable)->rtekind != RTE_RELATION;
+	}
+	return expression_tree_walker(node, ctid_may_fold_walker, fc);
+}
+
+/* Is member m, seen in frame 'level', a condition on gp_segment_id that the planner keeps? */
+static bool ctid_member_keeps_segid(Node *m, int level, int target, Index varno,
+									ctid_keep_context *cxt);
+
+/*
+ * An OR keeps a condition on gp_segment_id when the planner's simplification
+ * cannot remove it.  The planner folds constants (an arm that becomes true
+ * makes the OR true, an arm that becomes false or null is dropped) and then,
+ * in canonicalize_qual(), factors out the AND-members common to every arm:
+ * (A AND B) OR (A AND C) becomes A AND (B OR C), and when an arm consists of
+ * common members only, A OR (A AND B) becomes A and the rest is dropped.
+ * The same steps are applied here to a copy of the OR, which must contain
+ * nothing the planner could fold further.
+ */
+static bool
+ctid_or_keeps_segid(Node *m, int level, int target, Index varno,
+					ctid_keep_context *cxt)
+{
+	ctid_foldable_context fc = {cxt, level};
+	Node	   *folded;
+	List	   *arms = NIL;
+	List	   *winners = NIL;
+	bool		reduced = false;
+	ListCell   *lc;
+
+	if (ctid_may_fold_walker(m, &fc))
+		return false;
+	folded = eval_const_expressions(NULL, copyObject(m));
+
+	/*
+	 * Folded into something else (a plain condition or a constant): not
+	 * counted.  GPORCA's input is folded already (fold_constants()), so it
+	 * sees the plain condition directly; the planner's own check sees it too.
+	 */
+	if (!is_orclause(folded))
+		return false;
+	foreach(lc, ((BoolExpr *) folded)->args)
+		arms = lappend(arms, ctid_and_members((Node *) lfirst(lc), NIL));
+
+	/* AND-members common to every arm */
+	foreach(lc, (List *) linitial(arms))
+	{
+		Node	   *cand = (Node *) lfirst(lc);
+		bool		everywhere = true;
+		ListCell   *la;
+
+		for_each_cell(la, lnext(list_head(arms)))
+		{
+			if (!list_member((List *) lfirst(la), cand))
+			{
+				everywhere = false;
+				break;
+			}
+		}
+		if (everywhere)
+			winners = list_append_unique(winners, cand);
+	}
+
+	/* is some arm made of common members only?  then only those survive */
+	foreach(lc, arms)
+	{
+		ListCell   *lm;
+		bool		all_common = true;
+
+		foreach(lm, (List *) lfirst(lc))
+		{
+			if (!list_member(winners, lfirst(lm)))
+			{
+				all_common = false;
+				break;
+			}
+		}
+		if (all_common)
+		{
+			reduced = true;
+			break;
+		}
+	}
+
+	if (reduced)
+	{
+		foreach(lc, winners)
+		{
+			if (ctid_is_segid_condition((Node *) lfirst(lc), level, target, varno))
+				return true;
+		}
+		return false;
+	}
+	foreach(lc, arms)
+	{
+		ListCell   *lm;
+
+		foreach(lm, (List *) lfirst(lc))
+		{
+			if (ctid_is_segid_condition((Node *) lfirst(lm), level, target, varno))
+				return true;
+		}
+	}
+	return false;
+}
+
+/*
+ * A sub-select (EXISTS, IN, ALL, scalar, ...) AND-ed with the ctid reference,
+ * whose WHERE clause has a condition on gp_segment_id among its AND-members.  The planner keeps the reference: as a join qualifier when it
+ * pulls the sub-select up, as an argument of the SubPlan when it does not.
+ * (Constant folding could remove it only by turning that whole WHERE clause
+ * into false or null, and then the sub-select chooses no rows.)
+ */
+static bool ctid_sublink_member_keeps_segid(Node *m, int level, int target,
+											Index varno, ctid_keep_context *cxt);
+
+static bool
+ctid_sublink_keeps_segid(SubLink *sl, int level, int target, Index varno,
+						 ctid_keep_context *cxt)
+{
+	Query	   *sub = castNode(Query, sl->subselect);
+	ListCell   *lc;
+
+	/* a set operation has no qualifier at this level, and finds nothing */
+	foreach(lc, ctid_and_members(sub->jointree->quals, NIL))
+	{
+		Node	   *m = (Node *) lfirst(lc);
+
+		if (ctid_is_segid_condition(m, level - 1, target, varno))
+			return true;
+		if (ctid_sublink_member_keeps_segid(m, level - 1, target, varno, cxt))
+			return true;
+	}
+	return false;
+}
+
+/*
+ * m is such a sub-select, NOT of one, or a strict operator with a sub-select
+ * as a direct argument.  Constant folding
+ * can remove a sub-select from a strict operator only by turning the operator
+ * into null, which chooses no rows; it could remove one from other
+ * expressions (CASE, COALESCE, a non-strict function), so those do not count.
+ */
+static bool
+ctid_sublink_member_keeps_segid(Node *m, int level, int target, Index varno,
+								ctid_keep_context *cxt)
+{
+	if (is_notclause(m))
+		m = (Node *) get_notclausearg((Expr *) m);
+	if (IsA(m, SubLink))
+		return ctid_sublink_keeps_segid((SubLink *) m, level, target, varno, cxt);
+	if (is_opclause(m) && op_strict(((OpExpr *) m)->opno))
+	{
+		ListCell   *lc;
+
+		foreach(lc, ((OpExpr *) m)->args)
+		{
+			Node	   *arg = (Node *) lfirst(lc);
+
+			if (IsA(arg, SubLink) &&
+				ctid_sublink_keeps_segid((SubLink *) arg, level, target, varno, cxt))
+				return true;
+		}
+	}
+	return false;
+}
+
+static bool
+ctid_member_keeps_segid(Node *m, int level, int target, Index varno,
+						ctid_keep_context *cxt)
+{
+	if (ctid_is_segid_condition(m, level, target, varno))
+		return true;
+	if (is_orclause(m))
+		return ctid_or_keeps_segid(m, level, target, varno, cxt);
+	return ctid_sublink_member_keeps_segid(m, level, target, varno, cxt);
+}
+
+/* Is this ctid reference proven located? */
+static bool
+ctid_reference_proven(Var *var, ctid_keep_context *cxt)
+{
+	int			target = (int) var->varlevelsup;
+	int			i;
+
+	if (target >= list_length(cxt->frames))
+		return false;
+
+	/* every level crossed on the way up must be entered from a qualifier */
+	for (i = 0; i < target; i++)
+	{
+		if (!((ctid_frame *) list_nth(cxt->frames, i))->via_qual)
+			return false;
+	}
+
+	/* a condition on gp_segment_id in an enclosing AND-list, at any level up to the relation's */
+	for (i = 0; i <= target; i++)
+	{
+		ctid_frame *frame = (ctid_frame *) list_nth(cxt->frames, i);
+		ListCell   *lc1;
+
+		foreach(lc1, frame->conjs)
+		{
+			ListCell   *lc2;
+
+			foreach(lc2, (List *) lfirst(lc1))
+			{
+				if (ctid_member_keeps_segid((Node *) lfirst(lc2), i, target, var->varno, cxt))
+					return true;
+			}
+		}
+	}
+
+	/* or the whole distribution key fixed to values on the way */
+	return ctid_frames_fix_key(cxt, target, var->varno);
+}
+
+/* Walk a qualifier: its AND-members form an active AND-list. */
+static void
+ctid_keep_qual(Node *qual, ctid_keep_context *cxt)
+{
+	ctid_frame *frame = (ctid_frame *) linitial(cxt->frames);
+	bool		save_in_qual = cxt->in_qual;
+	List	   *members;
+	ListCell   *lc;
+
+	if (qual == NULL || cxt->unproven)
+		return;
+	members = ctid_and_members(qual, NIL);
+	frame->conjs = lcons(members, frame->conjs);
+	cxt->in_qual = true;
+	foreach(lc, members)
+	{
+		if (ctid_keep_walker((Node *) lfirst(lc), cxt))
+			break;
+	}
+	cxt->in_qual = save_in_qual;
+	frame->conjs = list_delete_first(frame->conjs);
+	list_free(members);
+}
+
+static void
+ctid_keep_jointree(Node *node, ctid_keep_context *cxt)
+{
+	if (node == NULL || cxt->unproven)
+		return;
+	if (IsA(node, FromExpr))
+	{
+		ListCell   *lc;
+
+		foreach(lc, ((FromExpr *) node)->fromlist)
+			ctid_keep_jointree((Node *) lfirst(lc), cxt);
+		ctid_keep_qual(((FromExpr *) node)->quals, cxt);
+	}
+	else if (IsA(node, JoinExpr))
+	{
+		ctid_keep_jointree(((JoinExpr *) node)->larg, cxt);
+		ctid_keep_jointree(((JoinExpr *) node)->rarg, cxt);
+		ctid_keep_qual(((JoinExpr *) node)->quals, cxt);
+	}
+	/* RangeTblRef: the range table is walked separately */
+}
+
+static bool
+ctid_keep_walker(Node *node, ctid_keep_context *cxt)
+{
+	if (node == NULL || cxt->unproven)
+		return cxt->unproven;
+
+	if (IsA(node, Var))
+	{
+		Var		   *var = (Var *) node;
+
+		if (var->varattno == SelfItemPointerAttributeNumber &&
+			!ctid_reference_proven(var, cxt))
+			cxt->unproven = true;
+		return cxt->unproven;
+	}
+
+	if (is_andclause(node) && cxt->in_qual)
+	{
+		ctid_keep_qual(node, cxt);
+		return cxt->unproven;
+	}
+
+	if (IsA(node, SubLink))
+	{
+		SubLink    *sl = (SubLink *) node;
+
+		if (ctid_keep_walker(sl->testexpr, cxt))
+			return true;
+		ctid_keep_query((Query *) sl->subselect, cxt->in_qual, false, cxt);
+		return cxt->unproven;
+	}
+
+	if (IsA(node, Query))
+	{
+		ctid_keep_query((Query *) node, false, false, cxt);
+		return cxt->unproven;
+	}
+
+	return expression_tree_walker(node, ctid_keep_walker, cxt);
+}
+
+static void
+ctid_keep_query(Query *query, bool via_qual, bool top, ctid_keep_context *cxt)
+{
+	ctid_frame	frame = {query, via_qual, NIL};
+	bool		save_in_qual = cxt->in_qual;
+	ListCell   *lc;
+
+	if (cxt->unproven)
+		return;
+	cxt->frames = lcons(&frame, cxt->frames);
+	cxt->in_qual = false;
+
+	ctid_keep_jointree((Node *) query->jointree, cxt);
+
+	foreach(lc, query->rtable)
+	{
+		RangeTblEntry *rte = (RangeTblEntry *) lfirst(lc);
+
+		if (cxt->unproven)
+			break;
+		switch (rte->rtekind)
+		{
+			case RTE_SUBQUERY:
+				ctid_keep_query(rte->subquery, false, false, cxt);
+				break;
+			case RTE_FUNCTION:
+				(void) ctid_keep_walker((Node *) rte->functions, cxt);
+				break;
+			case RTE_TABLEFUNC:
+				(void) ctid_keep_walker((Node *) rte->tablefunc, cxt);
+				break;
+			case RTE_VALUES:
+				(void) ctid_keep_walker((Node *) rte->values_lists, cxt);
+				break;
+			default:
+				break;
+		}
+	}
+
+	foreach(lc, query->cteList)
+	{
+		if (cxt->unproven)
+			break;
+		ctid_keep_query((Query *) ((CommonTableExpr *) lfirst(lc))->ctequery, false, false, cxt);
+	}
+
+	/* the top-level SET and RETURNING lists are not row lookups */
+	if (!top && !cxt->unproven)
+	{
+		(void) ctid_keep_walker((Node *) query->targetList, cxt);
+		(void) ctid_keep_walker(query->havingQual, cxt);
+		(void) ctid_keep_walker(query->limitOffset, cxt);
+		(void) ctid_keep_walker(query->limitCount, cxt);
+	}
+
+	cxt->in_qual = save_in_qual;
+	cxt->frames = list_delete_first(cxt->frames);
+}
+
+bool
+cdbmutate_dml_ctid_unlocated(Query *query)
+{
+	ctid_keep_context cxt;
+
+	if (query->commandType != CMD_UPDATE &&
+		query->commandType != CMD_DELETE)
+		return false;
+
+	cxt.frames = NIL;
+	cxt.in_qual = false;
+	cxt.unproven = false;
+	ctid_keep_query(query, false, true, &cxt);
+	return cxt.unproven;
+}
+
+/*
+ * The Postgres planner accepts every UPDATE or DELETE that the proof above
+ * accepts, so that a statement GPORCA plans is never one the planner would
+ * reject: standard_planner() records the proof for the statement it plans
+ * (cdbmutate_ctid_proof_begin()/_end(), nested planner calls save and restore
+ * it) and cdbmutate_warn_ctid_without_segid() then has nothing to check.
+ * The planner's own check still decides every statement the proof does not
+ * cover.
+ */
+bool
+cdbmutate_ctid_proof_begin(Query *query)
+{
+	bool		save = ctid_dml_proven;
+
+	ctid_dml_proven = (query->commandType == CMD_UPDATE ||
+					   query->commandType == CMD_DELETE) &&
+		!cdbmutate_dml_ctid_unlocated(query);
+	return save;
+}
+
+void
+cdbmutate_ctid_proof_end(bool save)
+{
+	ctid_dml_proven = save;
+}
 
 
 /*

@@ -552,6 +552,10 @@ int FindNodes(Node *node, List *nodeTags);
 // look for nodes with non-default collation; returns 1 if any exist, -1 otherwise
 int CheckCollation(Node *node);
 
+// does an UPDATE or DELETE use a ctid whose row location it does not prove
+// (see cdbmutate_dml_ctid_unlocated())
+bool DMLCtidUnlocated(Query *query);
+
 Node *CoerceToCommonType(ParseState *pstate, Node *node, Oid target_type,
 						 const char *context);
 
