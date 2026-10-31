@@ -294,6 +294,7 @@ extern void AppendOnlyBlockDirectory_InsertPlaceholder(AppendOnlyBlockDirectory 
 												  int64 firstRowNum,
 												  int64 fileOffset,
 												  int columnGroupNo);
+extern void AppendOnlyBlockDirectory_Build(Relation rel);
 /*
  * AppendOnlyBlockDirectory_UniqueCheck
  *
