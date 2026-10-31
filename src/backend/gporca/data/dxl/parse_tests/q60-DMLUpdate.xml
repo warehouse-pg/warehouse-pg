@@ -60,7 +60,7 @@
         </dxl:ProjList>
         <dxl:Filter/>
         <dxl:OneTimeFilter/>
-        <dxl:Split DeleteColumns="0,1,2" InsertColumns="0,10,2" ActionCol="11" CtidCol="3" SegmentIdCol="9">
+        <dxl:Split DeleteColumns="0,1,2" InsertColumns="0,10,2" ActionCol="11" CtidCol="3" SegmentIdCol="9" NeedsResJunk="false">
           <dxl:Properties>
             <dxl:Cost StartupCost="0" TotalCost="100.000000" Rows="0" Width="48"/>
           </dxl:Properties>

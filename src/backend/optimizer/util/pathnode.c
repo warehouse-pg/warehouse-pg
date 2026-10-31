@@ -5374,7 +5374,7 @@ create_modifytable_path(PlannerInfo *root, RelOptInfo *rel,
 		{
 				ereport(ERROR,
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("cannot update distribution key columns in utility mode")));
+						 errmsg("updates changing tuples distribution across segments can not be executed in utility mode")));
 		}
 
 		CdbPathLocus_MakeEntry(&pathnode->path.locus);

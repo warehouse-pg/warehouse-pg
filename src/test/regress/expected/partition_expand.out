@@ -5,6 +5,10 @@ select gp_debug_set_create_table_default_numsegments(1);
  1
 (1 row)
 
+drop schema if exists test_partial_table;
+NOTICE:  schema "test_partial_table" does not exist, skipping
+create schema test_partial_table;
+set search_path=test_partial_table,public;
 --only partition table can be expanded partition prepare
 drop table if exists t_hash_expand_prepare;
 NOTICE:  table "t_hash_expand_prepare" does not exist, skipping
@@ -1166,4 +1170,5 @@ select gp_debug_reset_create_table_default_numsegments();
  
 (1 row)
 
-drop extension gp_debug_numsegments;
+drop schema test_partial_table cascade;
+NOTICE:  drop cascades to table t_root_partition_expand
