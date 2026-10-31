@@ -120,6 +120,167 @@ cdbconn_termSegmentDescriptor(SegmentDatabaseDescriptor *segdbDesc)
 }								/* cdbconn_termSegmentDescriptor */
 
 /*
+ * Resolve an SSL credential file path the way the libpq client expects it.
+ *
+ * The server-side / file GUCs follow the convention that a relative path is
+ * taken relative to the data directory.  libpq, on the other hand, resolves
+ * relative sslcert/sslkey/sslrootcert paths against ~/.postgresql.  Rewrite any
+ * relative path to an absolute one rooted at DataDir so both ends agree on the
+ * file.  Returns NULL for an empty/unset path.
+ */
+static const char *
+cdbconn_resolve_ssl_path(const char *path, char *buf, size_t bufsz)
+{
+	if (path == NULL || path[0] == '\0')
+		return NULL;
+
+	if (is_absolute_path(path))
+		return path;
+
+	snprintf(buf, bufsz, "%s/%s", DataDir, path);
+	return buf;
+}
+
+/*
+ * Resolve this node's *internal* (intra-cluster) client TLS credentials for the
+ * QD->QE connection from the dedicated gp_internal_tls_* GUCs.  These are kept
+ * separate from the external-facing ssl_* credentials and there is deliberately
+ * no fallback to ssl_*: when gp_internal_tls is "verify-ca" the postmaster refuses
+ * to start unless they are set explicitly (see PostmasterMain), so an operator
+ * cannot accidentally dial segments with, say, a coordinator's external-facing
+ * certificate.  An empty value resolves to NULL (no parameter passed).
+ */
+static void
+cdbconn_resolve_internal_tls_paths(char *certbuf, char *keybuf, char *rootbuf,
+								   const char **certfile, const char **keyfile,
+								   const char **rootcertfile)
+{
+	*certfile = cdbconn_resolve_ssl_path(gp_internal_tls_cert_file, certbuf, MAXPGPATH);
+	*keyfile = cdbconn_resolve_ssl_path(gp_internal_tls_key_file, keybuf, MAXPGPATH);
+	*rootcertfile = cdbconn_resolve_ssl_path(gp_internal_tls_ca_file, rootbuf, MAXPGPATH);
+}
+
+/*
+ * Decide the TLS parameters for an internal QD->QE connection according to the
+ * gp_internal_tls policy.  Returns the libpq "sslmode" value (never NULL).  The
+ * cert, key and rootcert out-params are set either to NULL (TLS off) or to
+ * resolved absolute paths stored in the caller-supplied buffers, which must
+ * each be at least MAXPGPATH bytes and must outlive the connection.
+ *
+ * The QD presents this node's own server certificate as its client certificate
+ * so the QE can authenticate it (mutual TLS) against the shared cluster CA.
+ * This is shared by both the keyword-array form (dispatch, see
+ * cdbconn_add_internal_tls_options) and the conninfo-string form (FTS).
+ */
+const char *
+cdbconn_internal_tls_resolve(char *certbuf, char *keybuf, char *rootbuf,
+							 const char **certfile, const char **keyfile,
+							 const char **rootcertfile)
+{
+	*certfile = NULL;
+	*keyfile = NULL;
+	*rootcertfile = NULL;
+
+	switch (gp_internal_tls)
+	{
+		case GP_INTERNAL_TLS_DISABLE:
+			/*
+			 * Legacy behavior: force plaintext explicitly so the connection
+			 * does not silently negotiate TLS based on the libpq default.
+			 */
+			return "disable";
+
+		case GP_INTERNAL_TLS_VERIFY_CA:
+		default:
+			/*
+			 * Mandatory encryption plus verification that the peer's
+			 * certificate chains to the internal cluster CA.  verify-ca (rather
+			 * than verify-full) is used because internal connections are made by
+			 * IP address; chaining to our private CA already proves the peer is
+			 * a cluster member.  There is deliberately no plaintext fallback: if
+			 * the operator configured internal TLS, a connection that cannot be
+			 * mutually authenticated must fail loudly rather than silently
+			 * downgrade.
+			 */
+			cdbconn_resolve_internal_tls_paths(certbuf, keybuf, rootbuf,
+											   certfile, keyfile, rootcertfile);
+			return "verify-ca";
+	}
+}
+
+/*
+ * Append the TLS-related libpq connection options for an internal QD->QE
+ * connection (keyword-array form).  Returns the updated keyword count.  The
+ * three path buffers must outlive the eventual PQconnectStartParams() call.
+ */
+static int
+cdbconn_add_internal_tls_options(const char **keywords, const char **values,
+								 int nkeywords, bool is_local,
+								 char *sslcertpath, char *sslkeypath,
+								 char *sslrootcertpath)
+{
+	const char *certfile;
+	const char *keyfile;
+	const char *rootcertfile;
+	const char *sslmode;
+
+	/*
+	 * A local (Unix-domain socket) connection is trusted by the OS and cannot
+	 * negotiate TLS; force plaintext regardless of the gp_internal_tls policy.
+	 */
+	if (is_local)
+	{
+		keywords[nkeywords] = "sslmode";
+		values[nkeywords] = "disable";
+		nkeywords++;
+		return nkeywords;
+	}
+
+	sslmode = cdbconn_internal_tls_resolve(sslcertpath, sslkeypath,
+										   sslrootcertpath,
+										   &certfile, &keyfile,
+										   &rootcertfile);
+	keywords[nkeywords] = "sslmode";
+	values[nkeywords] = sslmode;
+	nkeywords++;
+
+	if (certfile)
+	{
+		keywords[nkeywords] = "sslcert";
+		values[nkeywords] = certfile;
+		nkeywords++;
+	}
+	if (keyfile)
+	{
+		keywords[nkeywords] = "sslkey";
+		values[nkeywords] = keyfile;
+		nkeywords++;
+	}
+	if (rootcertfile)
+	{
+		keywords[nkeywords] = "sslrootcert";
+		values[nkeywords] = rootcertfile;
+		nkeywords++;
+	}
+
+	/*
+	 * Leave a breadcrumb for diagnosing mutual-TLS failures: which sslmode and
+	 * which client certificate / CA this QD is about to present.  A common
+	 * misconfiguration is the QD dialing with the wrong certificate (e.g. its
+	 * external ssl_cert_file instead of the cluster identity), which the QE
+	 * then rejects; pairing this with the QE-side verify_cb diagnostic makes
+	 * the mismatch obvious.
+	 */
+	ereport(DEBUG2,
+			(errmsg_internal("internal QD->QE TLS: sslmode=%s sslcert=%s sslrootcert=%s",
+							 sslmode,
+							 certfile ? certfile : "(none)",
+							 rootcertfile ? rootcertfile : "(none)")));
+
+	return nkeywords;
+}
+
+/*
  * Establish socket connection via libpq.
  * Caller should call PQconnectPoll to finish it up.
  */
@@ -129,7 +290,7 @@ cdbconn_doConnectStart(SegmentDatabaseDescriptor *segdbDesc,
 					   const char *options,
 					   const char *diff_options)
 {
-#define MAX_KEYWORDS 15
+#define MAX_KEYWORDS 20
 #define MAX_INT_STRING_LEN 20
 	CdbComponentDatabaseInfo *cdbinfo = segdbDesc->segment_database_info;
 	const char *keywords[MAX_KEYWORDS];
@@ -138,6 +299,9 @@ cdbconn_doConnectStart(SegmentDatabaseDescriptor *segdbDesc,
 	char		keepalivesIdleStr[MAX_INT_STRING_LEN];
 	char		keepalivesCountStr[MAX_INT_STRING_LEN];
 	char		keepalivesIntervalStr[MAX_INT_STRING_LEN];
+	char		sslcertpath[MAXPGPATH];
+	char		sslkeypath[MAXPGPATH];
+	char		sslrootcertpath[MAXPGPATH];
 	int			nkeywords = 0;
 
 	keywords[nkeywords] = "gpqeid";
@@ -275,6 +439,33 @@ cdbconn_doConnectStart(SegmentDatabaseDescriptor *segdbDesc,
 		values[nkeywords] = keepalivesCountStr;
 		nkeywords++;
 	}
+
+	/*
+	 * TLS for the internal QD->QE connection.  This is the QD acting as a libpq
+	 * client; it presents this node's own server certificate as its client
+	 * certificate (mutual TLS) so the QE can authenticate the QD against the
+	 * shared cluster CA, replacing the historical "magic protocol bit skips
+	 * authentication" model.  See gp_internal_tls / GpVars_InternalTls.
+	 *
+	 * The entry-DB / QE-at-coordinator connection is local to this node (Unix
+	 * domain socket; see above), so it neither needs nor can negotiate TLS --
+	 * it is trusted by filesystem permissions.  Forcing TLS there would make
+	 * libpq fail because the postmaster declines SSL on Unix sockets.
+	 *
+	 * Relative cert paths follow the server GUC convention of being relative to
+	 * the data directory, so resolve them here before handing them to libpq
+	 * (which would otherwise look under ~/.postgresql).
+	 */
+	{
+		bool		is_local = (segdbDesc->segindex == COORDINATOR_CONTENT_ID &&
+								IS_QUERY_DISPATCHER());
+
+		nkeywords = cdbconn_add_internal_tls_options(keywords, values, nkeywords,
+													 is_local,
+													 sslcertpath, sslkeypath,
+													 sslrootcertpath);
+	}
+
 	keywords[nkeywords] = NULL;
 	values[nkeywords] = NULL;
 
