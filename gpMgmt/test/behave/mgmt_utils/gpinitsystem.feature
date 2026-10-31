@@ -34,6 +34,32 @@ Feature: gpinitsystem tests
         Then psql should return a return code of 0
         And psql should print "(0 rows)" to stdout
 
+    Scenario: gpinitsystem should import the system collations into whadmin and gpadmin
+        Given the database is not running
+        And create demo cluster config
+        When the user runs command "gpinitsystem -a -c ../gpAux/gpdemo/clusterConfigFile"
+        Then gpinitsystem should return a return code of 0
+        And the user runs "psql whadmin -c "create table collationimport1 as select * from pg_collation where collnamespace = 'pg_catalog'::regnamespace""
+        And the user runs "psql gpadmin -c "create table collationimport1 as select * from pg_collation where collnamespace = 'pg_catalog'::regnamespace""
+        # no more collation is imported
+        When the user runs "psql whadmin -c "select pg_import_system_collations('pg_catalog')""
+        Then psql should return a return code of 0
+        And psql should print "0" to stdout
+        And psql should print "(1 row)" to stdout
+        When the user runs "psql gpadmin -c "select pg_import_system_collations('pg_catalog')""
+        Then psql should return a return code of 0
+        And psql should print "0" to stdout
+        And psql should print "(1 row)" to stdout
+        And the user runs "psql whadmin -c "create table collationimport2 as select * from pg_collation where collnamespace = 'pg_catalog'::regnamespace""
+        And the user runs "psql gpadmin -c "create table collationimport2 as select * from pg_collation where collnamespace = 'pg_catalog'::regnamespace""
+        # no difference is before import and after import
+        When the user runs "psql whadmin -c "select * from collationimport1 except select * from collationimport2""
+        Then psql should return a return code of 0
+        And psql should print "(0 rows)" to stdout
+        When the user runs "psql gpadmin -c "select * from collationimport1 except select * from collationimport2""
+        Then psql should return a return code of 0
+        And psql should print "(0 rows)" to stdout
+
     Scenario: gpinitsystem creates a cluster when the user set LC_ALL env variable
         Given create demo cluster config
         And the environment variable "LC_ALL" is set to "en_US.UTF-8"
@@ -170,6 +196,8 @@ Feature: gpinitsystem tests
         And gpinitsystem should not print "To activate the Standby Coordinator Segment in the event of Coordinator" to stdout
         And gpinitsystem should print "Cluster setup finished, but Standby Coordinator failed to initialize. Review contents of log files for errors." to stdout
         And sql "select * from gp_toolkit.__gp_user_namespaces" is executed in "postgres" db
+        And sql "select * from gp_toolkit.__gp_user_namespaces" is executed in "whadmin" db
+        And sql "select * from gp_toolkit.__gp_user_namespaces" is executed in "gpadmin" db
 
     Scenario: gpinitsystem generates an output configuration file and then starts cluster with data_checksums on
         Given the cluster config is generated with data_checksums "on"
@@ -211,6 +239,8 @@ Feature: gpinitsystem tests
         Then gpinitsystem should return a return code of 0
         And gpinitsystem should print "Log file scan check passed" to stdout
         And sql "select * from gp_toolkit.__gp_user_namespaces" is executed in "postgres" db
+        And sql "select * from gp_toolkit.__gp_user_namespaces" is executed in "whadmin" db
+        And sql "select * from gp_toolkit.__gp_user_namespaces" is executed in "gpadmin" db
 
     Scenario: gpinitsystem creates a cluster in default timezone
         Given the database is not running

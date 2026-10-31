@@ -271,7 +271,8 @@ static void setup_cdb_schema(FILE *cmdfd);
 static void load_plpgsql(FILE *cmdfd);
 static void vacuum_db(FILE *cmdfd);
 static void make_template0(FILE *cmdfd);
-static void make_postgres(FILE *cmdfd);
+static void make_db(FILE *cmdfd, const char *dbname, const char *comment,
+					 bool is_template);
 static void trapsig(int signum);
 static void check_ok(void);
 static char *escape_quotes(const char *src);
@@ -2254,30 +2255,19 @@ make_template0(FILE *cmdfd)
 }
 
 /*
- * copy template1 to postgres
+ * copy template1 to a new default database (e.g. postgres, whadmin,
+ * gpadmin), optionally marking it as a template database
  */
 static void
-make_postgres(FILE *cmdfd)
+make_db(FILE *cmdfd, const char *dbname, const char *comment, bool is_template)
 {
-	const char *const *line;
-	static const char *const postgres_setup[] = {
-		"CREATE DATABASE postgres;\n\n",
-		"COMMENT ON DATABASE postgres IS 'default administrative connection database';\n\n",
-		/*
-		 * Make 'postgres' a template database
-		 */
-		"UPDATE pg_database SET "
-		"	datistemplate = 't' "
-		"    WHERE datname = 'postgres';\n\n",
-		/*
-		 * Clean out dead rows in pg_database
-		 */
-		"VACUUM FULL pg_database;\n\n",
-		NULL
-	};
+	PG_CMD_PRINTF1("CREATE DATABASE %s;\n\n", dbname);
+	PG_CMD_PRINTF2("COMMENT ON DATABASE %s IS '%s';\n\n", dbname, comment);
 
-	for (line = postgres_setup; *line; line++)
-		PG_CMD_PUTS(*line);
+	if (is_template)
+		PG_CMD_PRINTF1("UPDATE pg_database SET "
+					   "	datistemplate = 't' "
+					   "    WHERE datname = '%s';\n\n", dbname);
 }
 
 /*
@@ -3308,7 +3298,12 @@ initialize_data_directory(void)
 
 	make_template0(cmdfd);
 
-	make_postgres(cmdfd);
+	make_db(cmdfd, "postgres", "default administrative connection database", true);
+	make_db(cmdfd, "whadmin", "Default database for the whadmin role", false);
+	make_db(cmdfd, "gpadmin", "Default database for the gpadmin role", false);
+
+	/* Clean out dead rows left behind by creating the databases above */
+	PG_CMD_PUTS("VACUUM FULL pg_database;\n\n");
 
 	PG_CMD_CLOSE;
 
