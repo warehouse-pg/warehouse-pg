@@ -360,11 +360,10 @@ ExecAppend(PlanState *pstate)
  * also squelch the SubPlans in the child's quals and targetlist.  Those
  * SubPlans' plan states are shared by all the leaves of a partitioned table
  * (there is one per plan_id), so squelching them -- and any Motion under them
- * -- when the first leaf finishes would break the leaves still to come.  A
- * later ExecSquelchNode() of the Append skips this child, and so its
- * SubPlans, but a leaf that hasn't been released yet still reaches the shared
- * plan states, and Motions that nobody squelched are cleaned up when the
- * interconnect is torn down anyway.
+ * -- when the first leaf finishes would break the leaves still to come.
+ * Because of the flag, ExecSquelchNode() returns early for this child and
+ * doesn't reach its SubPlans either, so ExecSquelchAppend() squelches them
+ * itself.
  */
 static void
 ExecAppendEagerFreeSubplan(PlanState *subnode)
@@ -855,5 +854,21 @@ ExecSquelchAppend(AppendState *node)
 	int			i;
 
 	for (i = 0; i < node->as_nplans; i++)
-		ExecSquelchNode(node->appendplans[i]);
+	{
+		PlanState  *subnode = node->appendplans[i];
+		ListCell   *lc;
+
+		ExecSquelchNode(subnode);
+
+		/*
+		 * WHPG: a subplan released by ExecAppendEagerFreeSubplan() is already
+		 * marked squelched, so ExecSquelchNode() above skipped its SubPlans.
+		 * Squelch them here, as they would have been without the early
+		 * release; no leaves are left to need them now.  For any other
+		 * subplan, ExecSquelchNode() has just squelched them, and squelching
+		 * a squelched node again is a no-op.
+		 */
+		foreach(lc, subnode->subPlan)
+			ExecSquelchNode(((SubPlanState *) lfirst(lc))->planstate);
+	}
 }

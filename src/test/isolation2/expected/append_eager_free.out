@@ -287,7 +287,82 @@ SET
 (1 row)
 0Uq: ... <quitting>
 
+-- WHPG: a released leaf is marked squelched, so squelching the Append
+-- later skips it; the Append must still squelch the SubPlans in the leaf's
+-- quals, and the Motions under them.  Here only the first branch's qual has
+-- a SubPlan, and the per-segment Limit stops the Append in the second
+-- branch, after the first one was released.  The queries must finish
+-- normally.
+CREATE TABLE ef_sq_a1 (x int, z int) USING ao_row DISTRIBUTED BY (x);
+CREATE TABLE
+CREATE TABLE ef_sq_a2 (x int, z int) USING ao_row DISTRIBUTED BY (x);
+CREATE TABLE
+CREATE TABLE ef_sq_b (y int, z int) DISTRIBUTED BY (y);
+CREATE TABLE
+INSERT INTO ef_sq_a1 SELECT i, 1 FROM generate_series(1, 30) i;
+INSERT 0 30
+INSERT INTO ef_sq_a2 SELECT i, 1 FROM generate_series(1, 30000) i;
+INSERT 0 30000
+INSERT INTO ef_sq_b SELECT i, 1 FROM generate_series(1, 1000) i;
+INSERT 0 1000
+ANALYZE ef_sq_a1, ef_sq_a2, ef_sq_b;
+ANALYZE
+
+1: SET optimizer = off;
+SET
+-- A hashed SubPlan, with the Motion right under it.
+1: EXPLAIN (COSTS OFF) SELECT count(x) FROM (SELECT x FROM ef_sq_a1 WHERE x > 1000 OR x IN (SELECT y FROM ef_sq_b) UNION ALL SELECT x FROM ef_sq_a2 LIMIT 100) s;
+ QUERY PLAN                                                                        
+-----------------------------------------------------------------------------------
+ Aggregate                                                                         
+   ->  Limit                                                                       
+         ->  Gather Motion 3:1  (slice1; segments: 3)                              
+               ->  Limit                                                           
+                     ->  Append                                                    
+                           ->  Seq Scan on ef_sq_a1                                
+                                 Filter: ((x > 1000) OR (hashed SubPlan 1))        
+                                 SubPlan 1                                         
+                                   ->  Broadcast Motion 3:3  (slice2; segments: 3) 
+                                         ->  Seq Scan on ef_sq_b                   
+                           ->  Seq Scan on ef_sq_a2                                
+ Optimizer: Postgres-based planner                                                 
+(12 rows)
+1: SELECT count(x) FROM (SELECT x FROM ef_sq_a1 WHERE x > 1000 OR x IN (SELECT y FROM ef_sq_b) UNION ALL SELECT x FROM ef_sq_a2 LIMIT 100) s;
+ count 
+-------
+ 100   
+(1 row)
+-- A correlated SubPlan, with a Materialize over the Motion.
+1: EXPLAIN (COSTS OFF) SELECT count(x) FROM (SELECT x FROM ef_sq_a1 WHERE x >= (SELECT y FROM ef_sq_b WHERE ef_sq_b.z = ef_sq_a1.z LIMIT 1) UNION ALL SELECT x FROM ef_sq_a2 LIMIT 100) s;
+ QUERY PLAN                                                                                          
+-----------------------------------------------------------------------------------------------------
+ Aggregate                                                                                           
+   ->  Limit                                                                                         
+         ->  Gather Motion 3:1  (slice1; segments: 3)                                                
+               ->  Limit                                                                             
+                     ->  Append                                                                      
+                           ->  Seq Scan on ef_sq_a1                                                  
+                                 Filter: (x >= (SubPlan 1))                                          
+                                 SubPlan 1                                                           
+                                   ->  Limit                                                         
+                                         ->  Result                                                  
+                                               Filter: (ef_sq_b.z = ef_sq_a1.z)                      
+                                               ->  Materialize                                       
+                                                     ->  Broadcast Motion 3:3  (slice2; segments: 3) 
+                                                           ->  Seq Scan on ef_sq_b                   
+                           ->  Seq Scan on ef_sq_a2                                                  
+ Optimizer: Postgres-based planner                                                                   
+(16 rows)
+1: SELECT count(x) FROM (SELECT x FROM ef_sq_a1 WHERE x >= (SELECT y FROM ef_sq_b WHERE ef_sq_b.z = ef_sq_a1.z LIMIT 1) UNION ALL SELECT x FROM ef_sq_a2 LIMIT 100) s;
+ count 
+-------
+ 100   
+(1 row)
+1q: ... <quitting>
+
 DROP TABLE ef_part;
+DROP TABLE
+DROP TABLE ef_sq_a1, ef_sq_a2, ef_sq_b;
 DROP TABLE
 DROP FUNCTION ef_executor_kb(text);
 DROP FUNCTION
