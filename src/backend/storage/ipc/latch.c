@@ -641,6 +641,10 @@ FlushWaitEventSet(WaitEventSet *set)
 	{
 		WaitEvent  *event = &(set->events[i]);
 		int			rc;
+
+		/* removed by RemoveWaitEvent(); nothing left to delete */
+		if (event->fd == PGINVALID_SOCKET)
+			continue;
 		rc = epoll_ctl(set->epoll_fd, EPOLL_CTL_DEL, event->fd, NULL);
 		if (rc < 0)
 		{
@@ -656,6 +660,55 @@ FlushWaitEventSet(WaitEventSet *set)
 	set->nevents = 0;
 	set->latch = NULL;
 	return ret;
+}
+
+/*
+ * Remove a socket event from the set.
+ *
+ * The other events keep their positions: the slot is left in place but made
+ * inert, with its fd set to PGINVALID_SOCKET and its event mask cleared, so
+ * FlushWaitEventSet() skips it and WaitEventSetWait() can never report it.
+ * Only socket events can be removed; the latch and postmaster-death events
+ * are permanent.
+ *
+ * The socket may already have been closed by its owner (libpq drops the
+ * socket of a broken connection, and the kernel then removes it from the
+ * epoll interest list by itself), so EBADF and ENOENT from epoll_ctl() are
+ * not errors here.
+ */
+void
+RemoveWaitEvent(WaitEventSet *set, int pos)
+{
+	WaitEvent  *event;
+
+	Assert(pos < set->nevents);
+	event = &set->events[pos];
+
+	if (event->events == WL_LATCH_SET)
+		elog(ERROR, "cannot remove latch event");
+	if (event->events == WL_POSTMASTER_DEATH)
+		elog(ERROR, "cannot remove postmaster death event");
+	if (event->fd == PGINVALID_SOCKET)
+		return;					/* already removed */
+
+#if defined(WAIT_USE_EPOLL)
+	if (epoll_ctl(set->epoll_fd, EPOLL_CTL_DEL, event->fd, NULL) < 0 &&
+		errno != EBADF && errno != ENOENT)
+		ereport(ERROR,
+				(errcode_for_socket_access(),
+				 errmsg("%s failed: %m",
+						"epoll_ctl()")));
+#elif defined(WAIT_USE_POLL)
+	/* poll() ignores a negative descriptor and reports no events for it */
+	set->pollfds[pos].fd = -1;
+	set->pollfds[pos].events = 0;
+	set->pollfds[pos].revents = 0;
+#else
+	elog(ERROR, "RemoveWaitEvent is not supported on this platform");
+#endif
+
+	event->fd = PGINVALID_SOCKET;
+	event->events = 0;
 }
 
 /*
