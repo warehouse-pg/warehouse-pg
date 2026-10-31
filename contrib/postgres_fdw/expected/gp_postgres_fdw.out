@@ -1493,6 +1493,67 @@ explain select * from sub_part;
 DROP TABLE sub_part;
 DROP TABLE sub_part_1_prt_1_2_prt_one_foreign;
 DROP TABLE sub_part_1_prt_1_2_prt_two_foreign;
+-- Dynamic index scan must not fold an indexless foreign leaf into the same
+-- scan node as its indexed heap sibling.
+--
+-- idx_mixed has one heap leaf (indexed) and one foreign leaf (not indexed).
+-- A nestloop join driving an index lookup on idx_mixed used to make ORCA
+-- build a single Dynamic Index Scan counting both leaves, which failed at
+-- execution time with "failed to find index for partition ... in dynamic
+-- index scan" once it reached the foreign leaf. The plan must instead keep
+-- the foreign leaf out of the index scan (e.g. by scanning heap and foreign
+-- leaves separately), and the query must return rows from both leaves.
+CREATE TABLE idx_mixed_heap_remote (id int, a int, b int) DISTRIBUTED BY (id);
+INSERT INTO idx_mixed_heap_remote SELECT g, g, g * 2 FROM generate_series(300, 309) g;
+CREATE TABLE idx_mixed (id int, a int, b int) DISTRIBUTED BY (id) PARTITION BY RANGE (id);
+CREATE TABLE idx_mixed_p0 (id int, a int, b int) DISTRIBUTED BY (id);
+ALTER TABLE idx_mixed ATTACH PARTITION idx_mixed_p0 FOR VALUES FROM (0) TO (100);
+INSERT INTO idx_mixed_p0 SELECT g, g, g * 2 FROM generate_series(0, 19) g;
+CREATE INDEX idx_mixed_a_idx ON idx_mixed (a);
+CREATE FOREIGN TABLE idx_mixed_p3 (id int, a int, b int)
+	SERVER loopback OPTIONS (schema_name 'postgres_fdw_gp', table_name 'idx_mixed_heap_remote');
+ALTER TABLE idx_mixed ATTACH PARTITION idx_mixed_p3 FOR VALUES FROM (300) TO (400);
+ANALYZE idx_mixed;
+CREATE TABLE idx_mixed_driver (a int);
+INSERT INTO idx_mixed_driver VALUES (0);
+SELECT idx_mixed.* FROM idx_mixed, idx_mixed_driver
+WHERE idx_mixed.a > idx_mixed_driver.a ORDER BY idx_mixed.id;
+ id  |  a  |  b  
+-----+-----+-----
+   1 |   1 |   2
+   2 |   2 |   4
+   3 |   3 |   6
+   4 |   4 |   8
+   5 |   5 |  10
+   6 |   6 |  12
+   7 |   7 |  14
+   8 |   8 |  16
+   9 |   9 |  18
+  10 |  10 |  20
+  11 |  11 |  22
+  12 |  12 |  24
+  13 |  13 |  26
+  14 |  14 |  28
+  15 |  15 |  30
+  16 |  16 |  32
+  17 |  17 |  34
+  18 |  18 |  36
+  19 |  19 |  38
+ 300 | 300 | 600
+ 301 | 301 | 602
+ 302 | 302 | 604
+ 303 | 303 | 606
+ 304 | 304 | 608
+ 305 | 305 | 610
+ 306 | 306 | 612
+ 307 | 307 | 614
+ 308 | 308 | 616
+ 309 | 309 | 618
+(29 rows)
+
+DROP TABLE idx_mixed;
+DROP TABLE idx_mixed_heap_remote;
+DROP TABLE idx_mixed_driver;
 -- GPDB #16219: validate scram-sha-256 in postgres_fdw
 alter system set password_encryption = 'scram-sha-256';
 -- add created user to pg_hba.conf

@@ -299,6 +299,17 @@ CXformJoin2IndexApplyGeneric::Transform(CXformContext *pxfctxt,
 				distributionCols = popDynamicGet->PcrsDist();
 				pexprGet = pexprCurrInnerChild;
 
+				// Do not build a dynamic index (apply) get when the partitioned
+				// table has foreign partitions: those leaves have no index to
+				// scan, and CXformExpandDynamicGetWithForeignPartitions is the
+				// xform responsible for splitting them out into their own
+				// (foreign) scan. See CXformSelect2DynamicIndexGet, which
+				// applies the same guard for the non-join Select case.
+				if (popDynamicGet->ContainsForeignParts())
+				{
+					return;
+				}
+
 				// We need to early exit when the relation contains security quals
 				// because we are adding the security quals when translating from DXL to
 				// Planned Statement as a filter. If we don't early exit then it may happen
