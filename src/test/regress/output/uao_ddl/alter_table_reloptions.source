@@ -260,3 +260,23 @@ SELECT count(*), sum(c), sum(d) FROM aorelopts_addcol_@amname@;
 DROP TABLE relfilebefore;
 DROP TABLE relfileafter;
 DROP TABLE aorelopts_addcol_@amname@;
+-- Two SET subcommands on the same option: the last one wins, as for heap
+-- tables, also when it sets the value the table already has.
+CREATE TABLE aorelopts_twice_@amname@ (a int, b int) DISTRIBUTED BY (a);
+ALTER TABLE aorelopts_twice_@amname@ SET (blocksize=65536), SET (blocksize=32768);
+SELECT o AS blocksize FROM pg_class, unnest(reloptions) o
+WHERE relname = 'aorelopts_twice_@amname@' AND o LIKE 'blocksize=%';
+    blocksize    
+-----------------
+ blocksize=32768
+(1 row)
+
+ALTER TABLE aorelopts_twice_@amname@ SET (compresslevel=3), SET (compresslevel=5);
+SELECT o AS compresslevel FROM pg_class, unnest(reloptions) o
+WHERE relname = 'aorelopts_twice_@amname@' AND o LIKE 'compresslevel=%';
+  compresslevel  
+-----------------
+ compresslevel=5
+(1 row)
+
+DROP TABLE aorelopts_twice_@amname@;

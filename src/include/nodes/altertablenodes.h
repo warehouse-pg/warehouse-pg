@@ -70,6 +70,7 @@ typedef struct AlteredTableInfo
 	int			rewrite;		/* Reason for forced rewrite, if any */
 	Oid 		newAccessMethod; /* new access method; 0 means no change */
 	Datum 		newOptions; /* new reloptions, in case when we need a table rewrite */
+	bool		buildBlkdir;	/* T if SET (blockdirectory=true) asked for a block directory */
 	bool		dist_opfamily_changed; /* T if changing datatype of distribution key column and new opclass is in different opfamily than old one */
 	Oid			new_opclass;		/* new opclass, if changing a distribution key column */
 	Oid			newTableSpace;	/* new tablespace; 0 means no change */

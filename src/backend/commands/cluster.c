@@ -749,6 +749,7 @@ make_new_heap_with_colname(Oid OIDOldHeap, Oid NewTableSpace, Oid NewAccessMetho
 	Datum		reloptions;
 	bool		isNull;
 	Oid			namespaceid;
+	bool		wantsBlockDirectory;
 
 	OldHeap = table_open(OIDOldHeap, lockmode);
 	OldHeapDesc = RelationGetDescr(OldHeap);
@@ -793,6 +794,16 @@ make_new_heap_with_colname(Oid OIDOldHeap, Oid NewTableSpace, Oid NewAccessMetho
 		if (isNull)
 			reloptions = (Datum) 0;
 	}
+
+	/*
+	 * A table that asked for a block directory with the blockdirectory option
+	 * keeps it across every rewrite that goes through here (ALTER TABLE
+	 * rewrites, REFRESH MATERIALIZED VIEW, CLUSTER, REPACK), not just when the
+	 * caller found an index on the old table.  Decide it now: 'reloptions' is
+	 * reused for the TOAST table below.
+	 */
+	wantsBlockDirectory = IsAccessMethodAO(NewAccessMethod) &&
+		relOptionsHaveBlockDirectory(reloptions);
 
 	if (relpersistence == RELPERSISTENCE_TEMP)
 		namespaceid = LookupCreationNamespace("pg_temp");
@@ -877,7 +888,8 @@ make_new_heap_with_colname(Oid OIDOldHeap, Oid NewTableSpace, Oid NewAccessMetho
 	}
 
 	if (IsAccessMethodAO(NewAccessMethod))
-		NewRelationCreateAOAuxTables(OIDNewHeap, createAoBlockDirectory);
+		NewRelationCreateAOAuxTables(OIDNewHeap,
+									 createAoBlockDirectory || wantsBlockDirectory);
 
 	CacheInvalidateRelcacheByRelid(OIDNewHeap);
 

@@ -22,6 +22,11 @@
 #include "catalog/pg_appendonly.h"
 #include "access/heapam.h"
 #include "access/genam.h"
+#include "access/tableam.h"
+#include "cdb/cdbvars.h"
+#include "executor/tuptable.h"
+#include "miscadmin.h"
+#include "utils/snapmgr.h"
 #include "parser/parse_oper.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -2151,4 +2156,68 @@ findFileSegInfo(AppendOnlyBlockDirectory *blockDirectory, int segmentFileNum)
 	}
 
 	return i;
+}
+
+/*
+ * AppendOnlyBlockDirectory_Build
+ *
+ * Fill the (newly created, still empty) block directory of an append-optimized
+ * relation from the blocks already on disk.  This is how ALTER TABLE SET
+ * (blockdirectory=true) gives an existing table a directory without
+ * rewriting it.
+ *
+ * The scan code already knows how to record every block it reads when the
+ * scan descriptor carries a block directory: CREATE INDEX relies on that to
+ * build the directory of a previously unindexed table while it scans the rows
+ * (see appendonly_index_build_range_scan()).  We run the same kind of full
+ * scan here and throw the rows away.  Every column of an AOCO table has to be
+ * read, since the directory keeps one entry stream per column.
+ *
+ * The caller must hold a lock that keeps inserts and index builds out
+ * (ALTER TABLE SET takes AccessExclusiveLock for this option), so we have the
+ * directory to ourselves.
+ */
+void
+AppendOnlyBlockDirectory_Build(Relation rel)
+{
+	TableScanDesc scan;
+	TupleTableSlot *slot;
+
+	Assert(RelationStorageIsAO(rel));
+
+	/* Append-optimized tables have no data on the coordinator. */
+	if (IS_QUERY_DISPATCHER())
+		return;
+
+	ereportif(Debug_appendonly_print_blockdirectory, LOG,
+			  (errmsg("Append-only block directory build for relation \"%s\" (%u)",
+					  RelationGetRelationName(rel), RelationGetRelid(rel))));
+
+	/*
+	 * SnapshotAny, as in the index build: the directory describes physical
+	 * blocks, and deleted rows still occupy them.
+	 */
+	scan = table_beginscan_strat(rel, SnapshotAny, 0, NULL, true, false);
+
+	if (RelationIsAoRows(rel))
+	{
+		AppendOnlyScanDesc aoscan = (AppendOnlyScanDesc) scan;
+
+		Assert(aoscan->blockDirectory == NULL);
+		aoscan->blockDirectory = palloc0(sizeof(AppendOnlyBlockDirectory));
+	}
+	else
+	{
+		AOCSScanDesc aocoscan = (AOCSScanDesc) scan;
+
+		Assert(aocoscan->blockDirectory == NULL);
+		aocoscan->blockDirectory = palloc0(sizeof(AppendOnlyBlockDirectory));
+	}
+
+	slot = table_slot_create(rel, NULL);
+	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
+		CHECK_FOR_INTERRUPTS();
+
+	ExecDropSingleTupleTableSlot(slot);
+	table_endscan(scan);
 }
