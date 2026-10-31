@@ -3833,6 +3833,82 @@ reset optimizer;
 drop function dep_estimated_rows(text);
 drop table dep_t;
 
+-- WHPG: the interval derived from "col op ANY/ALL (array)" under
+-- optimizer_array_constraints read "<> ANY" as NOT IN and "= ALL" as IN.
+-- "<> ANY" over two or more distinct values holds for every non-NULL
+-- value, so partition pruning dropped leaves holding matching rows and a
+-- CHECK constraint turned a satisfiable predicate into a contradiction.
+set optimizer_array_constraints = on;
+create table arrcmp_part (k int, v int) distributed by (v)
+  partition by list (k);
+create table arrcmp_part_1 partition of arrcmp_part for values in (1);
+create table arrcmp_part_2 partition of arrcmp_part for values in (2);
+create table arrcmp_part_3 partition of arrcmp_part for values in (3);
+insert into arrcmp_part select 1 + i % 3, i from generate_series(1, 30) i;
+analyze arrcmp_part;
+explain (costs off)
+select count(*) from arrcmp_part where k <> any (array[1, 2]);
+select count(*) from arrcmp_part where k <> any (array[1, 2]);
+explain (costs off)
+select count(*) from arrcmp_part where not (k = all (array[1, 2]));
+select count(*) from arrcmp_part where not (k = all (array[1, 2]));
+explain (costs off)
+select count(*) from arrcmp_part where k <> any (array[1, 1]);
+select count(*) from arrcmp_part where k <> any (array[1, 1]);
+explain (costs off)
+select count(*) from arrcmp_part where k = all (array[1, 2]);
+select count(*) from arrcmp_part where k = all (array[1, 2]);
+explain (costs off)
+select count(*) from arrcmp_part where k = all (array[2, 2]);
+select count(*) from arrcmp_part where k = all (array[2, 2]);
+explain (costs off)
+select count(*) from arrcmp_part where k < all (array[2, 3]);
+select count(*) from arrcmp_part where k < all (array[2, 3]);
+explain (costs off)
+select count(*) from arrcmp_part where k <> all (array[null::int, null]);
+select count(*) from arrcmp_part where k <> all (array[null::int, null]);
+-- NOT IN with a NULL element is never true; its negation still is
+explain (costs off)
+select count(*) from arrcmp_part where k not in (1, null);
+select count(*) from arrcmp_part where k not in (1, null);
+explain (costs off)
+select count(*) from arrcmp_part where not (k not in (1, null));
+select count(*) from arrcmp_part where not (k not in (1, null));
+explain (costs off)
+delete from arrcmp_part where k <> any (array[1, 2]);
+begin;
+delete from arrcmp_part where k <> any (array[1, 2]);
+select count(*) from arrcmp_part;
+rollback;
+
+create table arrcmp_chk (a int check (a <> any (array[1, 2])))
+  distributed by (a);
+insert into arrcmp_chk values (1), (2), (3);
+explain (costs off) select * from arrcmp_chk where a = 1;
+select * from arrcmp_chk where a = 1;
+
+-- a comparison with a NULL element (or a NULL constant) is NULL, which a
+-- CHECK constraint accepts: the row (2, 1, 2, 2, 2) passes every CHECK
+create table arrcmp_chk_null (
+  a int check (a = any (array[1, null])),
+  b int check (b = all (array[1, null])),
+  c int check (c <> all (array[null::int, null])),
+  d int check (d < any (array[1, null])),
+  e int check (e = null::int)) distributed by (a);
+insert into arrcmp_chk_null values (2, 1, 2, 2, 2);
+explain (costs off) select count(*) from arrcmp_chk_null where a = 2;
+select count(*) from arrcmp_chk_null where a = 2;
+explain (costs off) select count(*) from arrcmp_chk_null where b = 1;
+select count(*) from arrcmp_chk_null where b = 1;
+explain (costs off) select count(*) from arrcmp_chk_null where c = 2;
+select count(*) from arrcmp_chk_null where c = 2;
+explain (costs off) select count(*) from arrcmp_chk_null where d = 2;
+select count(*) from arrcmp_chk_null where d = 2;
+explain (costs off) select count(*) from arrcmp_chk_null where e = 2;
+select count(*) from arrcmp_chk_null where e = 2;
+drop table arrcmp_part, arrcmp_chk, arrcmp_chk_null;
+reset optimizer_array_constraints;
+
 -- start_ignore
 DROP SCHEMA orca CASCADE;
 -- end_ignore

@@ -3,16 +3,18 @@
   <dxl:Comment><![CDATA[
       Objective: Test ArrayCmp ALL generates a table scan plan for predicates on Hash Index.
       It shouldn't consider any index alternatives (Plan SpaceSize = 1)
+      The array holds one distinct value: over two or more distinct values
+      "= ALL" is a contradiction and the plan is an empty Result.
 	  
       CREATE TABLE foo (a int, b int);
       INSERT INTO foo SELECT i,i FROM generate_series(1, 100)i;
       ANALYZE foo;
       CREATE INDEX hash_idx1 ON foo USING hash(b);
-      EXPLAIN SELECT * FROM foo WHERE b = ALL(ARRAY[3,5]);
+      EXPLAIN SELECT * FROM foo WHERE b = ALL(ARRAY[3,3]);
 
       Gather Motion 3:1  (slice1; segments: 3)  (cost=0.00..431.00 rows=1 width=8)
         ->  Seq Scan on foo  (cost=0.00..431.00 rows=1 width=8)
-              Filter: (b = ALL ('{3,5}'::integer[]))
+              Filter: (b = ALL ('{3,3}'::integer[]))
       Optimizer: Pivotal Optimizer (GPORCA)
   ]]>
   </dxl:Comment>
@@ -997,7 +999,7 @@
           <dxl:Ident ColId="2" ColName="b" TypeMdid="0.23.1.0"/>
           <dxl:Array ArrayType="0.1007.1.0" ElementType="0.23.1.0" MultiDimensional="false">
             <dxl:ConstValue TypeMdid="0.23.1.0" Value="3"/>
-            <dxl:ConstValue TypeMdid="0.23.1.0" Value="5"/>
+            <dxl:ConstValue TypeMdid="0.23.1.0" Value="3"/>
           </dxl:Array>
         </dxl:ArrayComp>
         <dxl:LogicalGet>
@@ -1049,7 +1051,7 @@
               <dxl:Ident ColId="1" ColName="b" TypeMdid="0.23.1.0"/>
               <dxl:Array ArrayType="0.1007.1.0" ElementType="0.23.1.0" MultiDimensional="false">
                 <dxl:ConstValue TypeMdid="0.23.1.0" Value="3"/>
-                <dxl:ConstValue TypeMdid="0.23.1.0" Value="5"/>
+                <dxl:ConstValue TypeMdid="0.23.1.0" Value="3"/>
               </dxl:Array>
             </dxl:ArrayComp>
           </dxl:Filter>

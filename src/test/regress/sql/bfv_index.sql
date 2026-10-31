@@ -496,6 +496,21 @@ SELECT * FROM bitmap_alt WHERE hash_idx_col IN (3, 5);
 SELECT * FROM bitmap_alt WHERE hash_idx_col IN (3, 5);
 
 -- ORCA should generate seq scan plans for the following
+-- WHPG: "= ALL" over two distinct values is never true, and
+-- ORCA plans an empty Result for it (see below); repeat the element so
+-- these queries still check that "= ALL" gets no index path.
+EXPLAIN (COSTS OFF)
+SELECT * FROM bitmap_alt WHERE bitmap_idx_col=ALL(ARRAY[3, 3]);
+SELECT * FROM bitmap_alt WHERE bitmap_idx_col=ALL(ARRAY[3, 3]);
+EXPLAIN (COSTS OFF)
+SELECT * FROM bitmap_alt WHERE btree_idx_col=ALL(ARRAY[3, 3]);
+SELECT * FROM bitmap_alt WHERE btree_idx_col=ALL(ARRAY[3, 3]);
+EXPLAIN (COSTS OFF)
+SELECT * FROM bitmap_alt WHERE hash_idx_col=ALL(ARRAY[3, 3]);
+SELECT * FROM bitmap_alt WHERE hash_idx_col=ALL(ARRAY[3, 3]);
+
+-- WHPG: ORCA derives "= ALL" over two distinct values as a
+-- contradiction and plans an empty Result.
 EXPLAIN (COSTS OFF)
 SELECT * FROM bitmap_alt WHERE bitmap_idx_col=ALL(ARRAY[3, 5]);
 SELECT * FROM bitmap_alt WHERE bitmap_idx_col=ALL(ARRAY[3, 5]);

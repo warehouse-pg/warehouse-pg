@@ -1407,6 +1407,8 @@ explain (costs off) select * from coercepart where a = all ('{ab}');
  Optimizer: Postgres query optimizer
 (4 rows)
 
+-- WHPG: ORCA derives "= ALL" over two distinct values, or
+-- with a NULL element, as a contradiction, as the planner does.
 explain (costs off) select * from coercepart where a = all ('{ab,bc}');
         QUERY PLAN        
 --------------------------
