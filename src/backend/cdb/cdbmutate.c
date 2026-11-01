@@ -37,6 +37,8 @@
 #include "commands/trigger.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_proc.h"
+#include "catalog/pg_partitioned_table.h"
+#include "catalog/pg_opfamily.h"
 #include "miscadmin.h"
 #include "catalog/pg_inherits.h"
 
@@ -553,8 +555,10 @@ cdbmutate_warn_ctid_without_segid(struct PlannerInfo *root, struct RelOptInfo *r
  *	- fixes every distribution key column of the relation to values (as in
  *	  ctid_rel_located_by_key()), at any level from the reference up to the
  *	  relation's own: the key then names the segment, so the ctid names at most
- *	  one row per key value.  Not for a table with partitions or inheritance
- *	  children, whose members each have their own ctids; or
+ *	  one row per key value.  A table with partitions or inheritance children
+ *	  has a set of ctids per member, so the member must be named as well:
+ *	  tableoid fixed to values, or the partition keys fixed to values at every
+ *	  level (ctid_frames_pin_member()); or
  *	- puts a condition on the relation's gp_segment_id: the bare column
  *	  compared with an expression that does not contain it, = ANY or IS [NOT]
  *	  NULL, at any level from the reference up to the relation's own; an OR
@@ -718,7 +722,7 @@ ctid_is_parse_key_value(Node *node)
  */
 static bool
 ctid_member_fixes_key(Node *m, int level, int target, Index varno,
-					  AttrNumber attno, Oid opfamily)
+					  AttrNumber attno, Oid opfamily, int16 strategy)
 {
 	check_stack_depth();
 
@@ -728,7 +732,7 @@ ctid_member_fixes_key(Node *m, int level, int target, Index varno,
 
 
 		if (list_length(op->args) != 2 ||
-			get_op_opfamily_strategy(op->opno, opfamily) != HTEqualStrategyNumber)
+			get_op_opfamily_strategy(op->opno, opfamily) != strategy)
 			return false;
 		if (ctid_is_column_of(linitial(op->args), level, target, varno, attno))
 			return ctid_is_parse_key_value(lsecond(op->args));
@@ -742,7 +746,7 @@ ctid_member_fixes_key(Node *m, int level, int target, Index varno,
 
 		return saop->useOr &&
 			list_length(saop->args) == 2 &&
-			get_op_opfamily_strategy(saop->opno, opfamily) == HTEqualStrategyNumber &&
+			get_op_opfamily_strategy(saop->opno, opfamily) == strategy &&
 			ctid_is_column_of(linitial(saop->args), level, target, varno, attno) &&
 			ctid_is_parse_key_value(lsecond(saop->args));
 	}
@@ -753,7 +757,7 @@ ctid_member_fixes_key(Node *m, int level, int target, Index varno,
 		foreach(lc, ((BoolExpr *) m)->args)
 		{
 			if (!ctid_member_fixes_key((Node *) lfirst(lc), level, target, varno,
-									   attno, opfamily))
+									   attno, opfamily, strategy))
 				return false;
 		}
 		return true;
@@ -763,9 +767,125 @@ ctid_member_fixes_key(Node *m, int level, int target, Index varno,
 
 /*
  * Do the active AND-lists, at any level from the reference's up to the
- * relation's own, fix the relation's whole distribution key to values?
- * Every such AND-list encloses the ctid reference, so for a row whose key
- * has another value the reference cannot choose it.
+ * relation's own, fix column attno of the relation to values, with the
+ * equality operator (strategy) of the given operator family?  Every such
+ * AND-list encloses the ctid reference, so for a row with another value in
+ * that column the reference cannot choose it.
+ */
+static bool
+ctid_frames_fix_column(ctid_keep_context *cxt, int target, Index varno,
+					   AttrNumber attno, Oid opfamily, int16 strategy)
+{
+	int			i;
+
+	for (i = 0; i <= target; i++)
+	{
+		ctid_frame *frame = (ctid_frame *) list_nth(cxt->frames, i);
+		ListCell   *lc1;
+
+		foreach(lc1, frame->conjs)
+		{
+			ListCell   *lc2;
+
+			foreach(lc2, (List *) lfirst(lc1))
+			{
+				if (ctid_member_fixes_key((Node *) lfirst(lc2), i, target, varno,
+										  attno, opfamily, strategy))
+					return true;
+			}
+		}
+	}
+	return false;
+}
+
+/*
+ * Is every partition key column of partitioned table relid, and of every
+ * partitioned table below it, fixed to values?  Then each combination of
+ * values falls into one leaf partition.  Columns are matched to the
+ * statement's relation (root_relid) by name, since a partition's column
+ * numbers can differ from its parent's.  A partition key expression is not
+ * analysed, and does not count.
+ */
+static bool
+ctid_partition_keys_fixed(ctid_keep_context *cxt, int target, Index varno,
+						  Oid root_relid, Oid relid)
+{
+	HeapTuple	tuple;
+	Form_pg_partitioned_table form;
+	oidvector  *classes;
+	bool		isnull;
+	bool		ok = true;
+	int			i;
+	ListCell   *lc;
+
+	check_stack_depth();
+
+	/*
+	 * Read the key from the catalog rather than the relcache: the partitions
+	 * below the statement's table are not locked yet.  An inheritance parent
+	 * has no partition key.
+	 */
+	tuple = SearchSysCache1(PARTRELID, ObjectIdGetDatum(relid));
+	if (!HeapTupleIsValid(tuple))
+		return false;
+	form = (Form_pg_partitioned_table) GETSTRUCT(tuple);
+	classes = (oidvector *) DatumGetPointer(SysCacheGetAttr(PARTRELID, tuple,
+															Anum_pg_partitioned_table_partclass,
+															&isnull));
+	Assert(!isnull);
+	for (i = 0; i < form->partnatts && ok; i++)
+	{
+		AttrNumber	attno = form->partattrs.values[i];
+		AttrNumber	root_attno;
+
+		if (attno == 0)
+		{
+			ok = false;
+			break;
+		}
+		root_attno = get_attnum(root_relid, get_attname(relid, attno, false));
+		ok = root_attno != InvalidAttrNumber &&
+			ctid_frames_fix_column(cxt, target, varno, root_attno,
+								   get_opclass_family(classes->values[i]),
+								   form->partstrat == PARTITION_STRATEGY_HASH ?
+								   HTEqualStrategyNumber : BTEqualStrategyNumber);
+	}
+	ReleaseSysCache(tuple);
+
+	foreach(lc, ok ? find_inheritance_children(relid, NoLock) : NIL)
+	{
+		Oid			child = lfirst_oid(lc);
+
+		if (get_rel_relkind(child) == RELKIND_PARTITIONED_TABLE &&
+			!ctid_partition_keys_fixed(cxt, target, varno, root_relid, child))
+		{
+			ok = false;
+			break;
+		}
+	}
+	return ok;
+}
+
+/*
+ * Does the statement name the member (partition or inheritance child) of
+ * table rte that the row is in?  A physical row is named by its segment, its
+ * member and its ctid; for a table with members the distribution key gives
+ * only the segment.  The member is named by tableoid fixed to values, or, for
+ * a partitioned table, by its partition keys fixed to values at every level.
+ */
+static bool
+ctid_frames_pin_member(ctid_keep_context *cxt, int target, Index varno,
+					   RangeTblEntry *rte)
+{
+	return ctid_frames_fix_column(cxt, target, varno, TableOidAttributeNumber,
+								  OID_BTREE_FAM_OID, BTEqualStrategyNumber) ||
+		ctid_partition_keys_fixed(cxt, target, varno, rte->relid, rte->relid);
+}
+
+/*
+ * Do the active AND-lists fix the relation's whole distribution key to
+ * values, and, for a table with partitions or inheritance children, name the
+ * member too?
  */
 static bool
 ctid_frames_fix_key(ctid_keep_context *cxt, int target, Index varno)
@@ -776,7 +896,7 @@ ctid_frames_fix_key(ctid_keep_context *cxt, int target, Index varno)
 	bool		all = true;
 	int			k;
 
-	if (rte->rtekind != RTE_RELATION || ctid_rte_has_members(rte))
+	if (rte->rtekind != RTE_RELATION)
 		return false;
 	policy = GpPolicyFetch(rte->relid);
 	if (!GpPolicyIsHashPartitioned(policy) || policy->nattrs == 0)
@@ -785,37 +905,12 @@ ctid_frames_fix_key(ctid_keep_context *cxt, int target, Index varno)
 		return false;
 	}
 	for (k = 0; k < policy->nattrs && all; k++)
-	{
-		Oid			opfamily = get_opclass_family(policy->opclasses[k]);
-		bool		found = false;
-		int			i;
-
-		for (i = 0; i <= target && !found; i++)
-		{
-			ctid_frame *frame = (ctid_frame *) list_nth(cxt->frames, i);
-			ListCell   *lc1;
-
-			foreach(lc1, frame->conjs)
-			{
-				ListCell   *lc2;
-
-				foreach(lc2, (List *) lfirst(lc1))
-				{
-					if (ctid_member_fixes_key((Node *) lfirst(lc2), i, target, varno,
-											  policy->attrs[k], opfamily))
-					{
-						found = true;
-						break;
-					}
-				}
-				if (found)
-					break;
-			}
-		}
-		all = found;
-	}
+		all = ctid_frames_fix_column(cxt, target, varno, policy->attrs[k],
+									 get_opclass_family(policy->opclasses[k]),
+									 HTEqualStrategyNumber);
 	pfree(policy);
-	return all;
+	return all && (!ctid_rte_has_members(rte) ||
+				   ctid_frames_pin_member(cxt, target, varno, rte));
 }
 
 /*

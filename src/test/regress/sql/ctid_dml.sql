@@ -38,6 +38,25 @@ CREATE TABLE ih (id int, v int) DISTRIBUTED BY (id);
 CREATE TABLE ih_c () INHERITS (ih) DISTRIBUTED BY (id);
 INSERT INTO ih VALUES (1, 1);
 INSERT INTO ih_c VALUES (1, 2);
+-- More partitioned tables: the distribution key includes the partition key;
+-- two levels, one subpartition attached with its columns in another order;
+-- hash partitions; a partition key expression.
+CREATE TABLE pk2 (id int, k int) DISTRIBUTED BY (id, k)
+  PARTITION BY RANGE (k) (START (0) END (4) EVERY (1));
+INSERT INTO pk2 SELECT 1, g FROM generate_series(0, 3) g;
+CREATE TABLE p2 (id int, k int, v int, w int) DISTRIBUTED BY (id) PARTITION BY RANGE (k);
+CREATE TABLE p2_a (w int, id int, k int, v int) DISTRIBUTED BY (id) PARTITION BY RANGE (v);
+CREATE TABLE p2_a0 PARTITION OF p2_a FOR VALUES FROM (0) TO (2);
+CREATE TABLE p2_a1 PARTITION OF p2_a FOR VALUES FROM (2) TO (4);
+ALTER TABLE p2 ATTACH PARTITION p2_a FOR VALUES FROM (0) TO (1);
+INSERT INTO p2 SELECT 1, 0, g, 0 FROM generate_series(0, 3, 2) g;
+CREATE TABLE ph (id int, k int) DISTRIBUTED BY (id) PARTITION BY HASH (k);
+CREATE TABLE ph_0 PARTITION OF ph FOR VALUES WITH (MODULUS 2, REMAINDER 0);
+CREATE TABLE ph_1 PARTITION OF ph FOR VALUES WITH (MODULUS 2, REMAINDER 1);
+INSERT INTO ph SELECT 1, g FROM generate_series(0, 3) g;
+CREATE TABLE pe (id int, k int) DISTRIBUTED BY (id) PARTITION BY RANGE ((k + 0));
+CREATE TABLE pe_a PARTITION OF pe FOR VALUES FROM (0) TO (4);
+INSERT INTO pe SELECT 1, g FROM generate_series(0, 3) g;
 
 -- The rows these tests are about: on the standard 3-segment cluster, ids 1, 2
 -- and 5 all sit at ctid (0,1), one on each segment.
@@ -81,13 +100,20 @@ DELETE FROM t WHERE ctid = '(0,1)' AND id NOT IN (1, 2);
 DELETE FROM t WHERE ctid = '(0,1)' AND id = ALL ('{1,2}'::int[]);
 DELETE FROM r WHERE ctid = '(0,1)' AND id = 1;
 -- A table with partitions or inheritance children: each member has its own
--- ctids, so one key value can reach a row in every member.  As the target,
--- joined in, or two subquery levels down.
+-- ctids, so one key value can reach a row in every member, unless the
+-- statement names the member as well.  Not named: no condition, a range on
+-- the partition key, only the top level of two, tableoid from another
+-- table, a partition key expression (not analysed).  As the target, joined
+-- in, or two subquery levels down.
 DELETE FROM pt WHERE ctid = '(0,1)' AND id = 1;
 UPDATE pt SET k = k WHERE ctid = '(0,1)' AND id = 1;
 DELETE FROM ih WHERE ctid = '(0,1)' AND id = 1;
 DELETE FROM t USING pt WHERE pt.ctid = '(0,1)' AND pt.id = 1 AND t.id = pt.k;
 DELETE FROM pt WHERE k IN (SELECT v FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = pt.ctid AND pt.id = 7));
+DELETE FROM pt WHERE ctid = '(0,1)' AND id = 1 AND k > 1;
+DELETE FROM p2 WHERE ctid = '(0,1)' AND id = 1 AND k = 0;
+DELETE FROM pt USING d WHERE pt.ctid = '(0,1)' AND pt.id = 1 AND pt.tableoid = d.v;
+DELETE FROM pe WHERE ctid = '(0,1)' AND id = 1 AND k = 2;
 -- another column of the same row is not a fixed value
 DELETE FROM t WHERE ctid = '(0,1)' AND id = v;
 DELETE FROM t WHERE ctid = '(0,1)' AND id IN (1, v);
@@ -165,6 +191,10 @@ SELECT count(*), sum(id), sum(CASE WHEN note <> 'x' THEN 1 ELSE 0 END) AS change
 SELECT count(*) FROM d;
 SELECT count(*) FROM pt;
 SELECT count(*) FROM ih;
+SELECT count(*) FROM pk2;
+SELECT count(*) FROM p2;
+SELECT count(*) FROM ph;
+SELECT count(*) FROM pe;
 
 --
 -- gp_segment_id mentioned with ctid: allowed, runs as written.  Planned by
@@ -319,6 +349,19 @@ BEGIN;
 DELETE FROM pt_1_prt_2 WHERE ctid = '(0,1)' AND id = 5;
 DELETE FROM ONLY ih WHERE ctid = '(0,1)' AND id = 1;
 SELECT (SELECT count(*) FROM pt_1_prt_2) AS leaf_rows, (SELECT count(*) FROM ih) AS ih_rows, (SELECT count(*) FROM ih_c) AS ih_c_rows;
+ROLLBACK;
+-- The member named too: the partition key fixed to a value or a list (one
+-- row per listed partition), tableoid fixed, a distribution key that
+-- includes the partition key, both levels of two, hash partitions.
+BEGIN;
+DELETE FROM pt WHERE ctid = '(0,1)' AND id = 5 AND k = 1;
+DELETE FROM pt WHERE ctid = '(0,1)' AND id = 2 AND k IN (1, 2);
+DELETE FROM pt WHERE ctid = '(0,1)' AND id = 3 AND tableoid = 'pt_1_prt_4'::regclass;
+DELETE FROM ih WHERE ctid = '(0,1)' AND id = 1 AND tableoid = 'ih_c'::regclass;
+DELETE FROM pk2 WHERE ctid = '(0,1)' AND id = 1 AND k = 2;
+DELETE FROM p2 WHERE ctid = '(0,1)' AND id = 1 AND k = 0 AND v = 2;
+DELETE FROM ph WHERE ctid = '(0,1)' AND id = 1 AND k = 3;
+SELECT (SELECT count(*) FROM pt) AS pt, (SELECT count(*) FROM ih) AS ih, (SELECT count(*) FROM pk2) AS pk2, (SELECT count(*) FROM p2) AS p2, (SELECT count(*) FROM ph) AS ph;
 ROLLBACK;
 -- A key condition inside a sub-select the planner keeps as a SubPlan still
 -- fixes the segment: both optimizers accept it.
