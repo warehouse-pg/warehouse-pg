@@ -34,6 +34,10 @@ INSERT INTO ao SELECT g, g FROM generate_series(1, 10) g;
 CREATE TABLE pt (id int, k int) DISTRIBUTED BY (id)
   PARTITION BY RANGE (k) (START (0) END (4) EVERY (1));
 INSERT INTO pt SELECT g, g % 4 FROM generate_series(1, 16) g;
+CREATE TABLE ih (id int, v int) DISTRIBUTED BY (id);
+CREATE TABLE ih_c () INHERITS (ih) DISTRIBUTED BY (id);
+INSERT INTO ih VALUES (1, 1);
+INSERT INTO ih_c VALUES (1, 2);
 
 -- The rows these tests are about: on the standard 3-segment cluster, ids 1, 2
 -- and 5 all sit at ctid (0,1), one on each segment.
@@ -76,6 +80,14 @@ DELETE FROM t WHERE ctid = '(0,1)' AND (id = 1 OR id > 5);
 DELETE FROM t WHERE ctid = '(0,1)' AND id NOT IN (1, 2);
 DELETE FROM t WHERE ctid = '(0,1)' AND id = ALL ('{1,2}'::int[]);
 DELETE FROM r WHERE ctid = '(0,1)' AND id = 1;
+-- A table with partitions or inheritance children: each member has its own
+-- ctids, so one key value can reach a row in every member.  As the target,
+-- joined in, or two subquery levels down.
+DELETE FROM pt WHERE ctid = '(0,1)' AND id = 1;
+UPDATE pt SET k = k WHERE ctid = '(0,1)' AND id = 1;
+DELETE FROM ih WHERE ctid = '(0,1)' AND id = 1;
+DELETE FROM t USING pt WHERE pt.ctid = '(0,1)' AND pt.id = 1 AND t.id = pt.k;
+DELETE FROM pt WHERE k IN (SELECT v FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = pt.ctid AND pt.id = 7));
 -- another column of the same row is not a fixed value
 DELETE FROM t WHERE ctid = '(0,1)' AND id = v;
 DELETE FROM t WHERE ctid = '(0,1)' AND id IN (1, v);
@@ -152,6 +164,7 @@ WITH x AS (SELECT tid FROM s) DELETE FROM t WHERE ctid IN (SELECT tid FROM x);
 SELECT count(*), sum(id), sum(CASE WHEN note <> 'x' THEN 1 ELSE 0 END) AS changed FROM t;
 SELECT count(*) FROM d;
 SELECT count(*) FROM pt;
+SELECT count(*) FROM ih;
 
 --
 -- gp_segment_id mentioned with ctid: allowed, runs as written.  Planned by
@@ -299,6 +312,13 @@ ROLLBACK;
 BEGIN;
 DELETE FROM t WHERE ctid = '(0,1)' AND 0 < (SELECT count(*) FROM s s2 WHERE s2.sid = t.gp_segment_id LIMIT 1);
 SELECT count(*) AS left_rows FROM t;
+ROLLBACK;
+-- One partition named directly, or the inheritance parent alone (ONLY), is
+-- an ordinary table: the key locates the row.
+BEGIN;
+DELETE FROM pt_1_prt_2 WHERE ctid = '(0,1)' AND id = 5;
+DELETE FROM ONLY ih WHERE ctid = '(0,1)' AND id = 1;
+SELECT (SELECT count(*) FROM pt_1_prt_2) AS leaf_rows, (SELECT count(*) FROM ih) AS ih_rows, (SELECT count(*) FROM ih_c) AS ih_c_rows;
 ROLLBACK;
 -- A key condition inside a sub-select the planner keeps as a SubPlan still
 -- fixes the segment: both optimizers accept it.

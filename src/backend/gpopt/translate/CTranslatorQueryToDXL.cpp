@@ -215,12 +215,12 @@ CTranslatorQueryToDXL::CTranslatorQueryToDXL(
 	// check if the query has SIRV functions in the targetlist without a FROM clause
 	CheckSirvFuncsWithoutFromClause(query);
 
-	// A ctid is unique only within one segment. The Postgres planner rejects
-	// an UPDATE or DELETE that uses a relation's ctid without its
-	// gp_segment_id (cdbmutate_warn_ctid_without_segid()); GPORCA has no such
-	// check. Leave every UPDATE or DELETE whose ctid use does not provably
-	// locate the row to the planner, which either runs it or raises that
-	// error, instead of changing one row per segment.
+	// A ctid is unique only within one segment. GPORCA plans an UPDATE or
+	// DELETE that uses a ctid only when every ctid reference is located by
+	// the rule both optimizers share (cdbmutate_dml_ctid_unlocated()): a
+	// condition on gp_segment_id or the distribution key fixed to values.
+	// Anything else goes to the planner, which runs it or raises its error,
+	// instead of changing one row per segment.
 	if (0 == query_level && gpdb::DMLCtidUnlocated(query))
 	{
 		GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLUnsupportedFeature,

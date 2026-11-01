@@ -37,6 +37,8 @@
 #include "commands/trigger.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_proc.h"
+#include "miscadmin.h"
+#include "catalog/pg_inherits.h"
 
 #include "cdb/cdbhash.h"
 #include "cdb/cdbllize.h"
@@ -356,6 +358,35 @@ ctid_clause_fixes_key(Node *clause, RelOptInfo *rel, AttrNumber attno, Oid opfam
 }
 
 /*
+ * Does the range table entry stand for a table together with its partitions
+ * or inheritance children?  Each member has its own ctids, so one segment can
+ * hold several rows with the same ctid, and a distribution key value does not
+ * name one row.  (In the parse tree inh is set for every table not named with
+ * ONLY; the planner clears it for tables without children.  A partitioned
+ * table's partitions are its children in pg_inherits.)
+ */
+static bool
+ctid_rte_has_members(RangeTblEntry *rte)
+{
+	return rte->rtekind == RTE_RELATION && rte->inh && has_subclass(rte->relid);
+}
+
+/*
+ * The planner's view of the same: a rel whose table has partitions or
+ * inheritance children, or one member of the target table of an UPDATE or
+ * DELETE on such a table, which inheritance_planner() plans one member at a
+ * time (it marks those with inhTargetKind, as relation_excluded_by_constraints()
+ * relies on).
+ */
+static bool
+ctid_rel_is_member_set(PlannerInfo *root, RelOptInfo *rel)
+{
+	return ctid_rte_has_members(root->simple_rte_array[rel->relid]) ||
+		(rel->relid == (Index) root->parse->resultRelation &&
+		 root->inhTargetKind != INHKIND_NONE);
+}
+
+/*
  * ctid_rel_located_by_key() -- do the rel's own restriction clauses fix its
  * whole distribution key to values?
  *
@@ -367,7 +398,9 @@ ctid_clause_fixes_key(Node *clause, RelOptInfo *rel, AttrNumber attno, Oid opfam
  * key that names its segment, so the ctid identifies at most one row per key
  * -- the row is located, as with gp_segment_id.  A range, a cast of the
  * column, another column of the same row, a column of another rel, a list read
- * by a sub-select, or a randomly distributed rel does not qualify.
+ * by a sub-select, a randomly distributed rel, or a table with partitions or
+ * inheritance children (ctid_rel_is_member_set(), checked by the caller) does
+ * not qualify.
  */
 static bool
 ctid_rel_located_by_key(RelOptInfo *rel)
@@ -465,7 +498,9 @@ cdbmutate_warn_ctid_without_segid(struct PlannerInfo *root, struct RelOptInfo *r
 	 * A distribution key fixed to values names each row's segment, which
 	 * locates the row as well as gp_segment_id would.
 	 */
-	if (inv.uses_ctid && !inv.uses_segid && ctid_rel_located_by_key(rel))
+	if (inv.uses_ctid && !inv.uses_segid &&
+		!ctid_rel_is_member_set(root, rel) &&
+		ctid_rel_located_by_key(rel))
 		inv.uses_segid = true;
 
 	/* Notify client if found a reference to ctid only, without gp_segment_id */
@@ -503,38 +538,46 @@ cdbmutate_warn_ctid_without_segid(struct PlannerInfo *root, struct RelOptInfo *r
 }								/* cdbmutate_warn_ctid_without_segid */
 
 /* ----------------------------------------------------------------------- *
- * cdbmutate_dml_ctid_unlocated() tells GPORCA when to leave an UPDATE or
- * DELETE to the Postgres planner.  A ctid is unique only within one segment,
- * so a statement that picks rows by a ctid whose segment it does not fix
- * changes one row on every segment.  The planner checks this in
- * cdbmutate_warn_ctid_without_segid() above; GPORCA has no such check.
+ * cdbmutate_dml_ctid_unlocated() decides, for an UPDATE or DELETE, whether
+ * every ctid reference outside the top-level SET and RETURNING lists is
+ * located.  A ctid is unique only within one segment, so a statement that
+ * picks rows by a ctid whose segment it leaves open changes one row on every
+ * segment.  Both optimizers use the answer: GPORCA plans the statement only
+ * when every reference is located (otherwise it falls back), and the planner
+ * skips its own check, cdbmutate_warn_ctid_without_segid(), for such a
+ * statement (cdbmutate_ctid_proof_begin()).
  *
- * GPORCA keeps a statement only when, for every reference to a relation's
- * ctid outside the top-level SET and RETURNING lists, the row's location is
- * provable from the statement itself: some AND-ed condition that encloses
- * the reference is
+ * "Located" follows the planner's rule.  A reference counts as located when
+ * some AND-ed condition around it
  *
- *	- a condition on that relation's gp_segment_id (the bare column compared
- *	  with an expression that does not contain it, = ANY, IS [NOT] NULL), at
- *	  the reference's query level or at any level up to the relation's own; or
- *	- one of the conditions that fix every distribution key column of that
- *	  relation to values (as in ctid_rel_located_by_key()), at the relation's
- *	  own query level.
+ *	- fixes every distribution key column of the relation to values (as in
+ *	  ctid_rel_located_by_key()), at any level from the reference up to the
+ *	  relation's own: the key then names the segment, so the ctid names at most
+ *	  one row per key value.  Not for a table with partitions or inheritance
+ *	  children, whose members each have their own ctids; or
+ *	- puts a condition on the relation's gp_segment_id: the bare column
+ *	  compared with an expression that does not contain it, = ANY or IS [NOT]
+ *	  NULL, at any level from the reference up to the relation's own; an OR
+ *	  whose gp_segment_id condition survives the planner's simplification
+ *	  (ctid_or_keeps_segid()); or a sub-select whose WHERE clause has one
+ *	  (ctid_sublink_member_keeps_segid()).  As in the planner's check, any
+ *	  condition on gp_segment_id is the statement naming the segments itself,
+ *	  even one that filters nothing (gp_segment_id IS NOT NULL); it does not
+ *	  prove that only one row is reached.
  *
  * Moving up from a sub-select to the query around it, the path must pass
  * through a qualifier (WHERE, JOIN ... ON, the test of a sublink); a
  * reference reached through a target list, HAVING, LIMIT, a function in the
- * range table, a derived table or a CTE is not proven.  Anything not proven
- * is handed to the planner, which runs it or raises its error.
+ * range table, a derived table or a CTE does not count.  A statement with
+ * any other ctid reference is left to the planner, which runs it or raises
+ * its error.
  *
- * Why a proven statement cannot make GPORCA run something the planner
- * rejects: the enclosing AND-ed condition is an ancestor of the ctid
- * reference, so every rewrite the planner applies either removes both or
- * keeps a reference to gp_segment_id (or the key condition, which at the
- * relation's own level becomes one of its restriction clauses), and the
- * planner's check counts gp_segment_id wherever it remains.  This lets
- * GPORCA plan statements the planner cannot plan at all, such as a
- * correctly paired ctid referenced from a subquery two levels down.
+ * Every counted condition encloses the ctid reference, and the OR and
+ * sub-select forms are counted only where the planner keeps the
+ * gp_segment_id reference, so the planner's rewrites cannot leave the ctid
+ * while dropping what located it.  This also lets GPORCA plan statements the
+ * planner cannot plan at all, such as a located ctid referenced from a
+ * subquery two levels down.
  * ----------------------------------------------------------------------- *
  */
 typedef struct ctid_frame
@@ -558,11 +601,14 @@ static void ctid_keep_query(Query *query, bool via_qual, bool top, ctid_keep_con
 static List *
 ctid_and_members(Node *node, List *members)
 {
+	check_stack_depth();
+
 	if (node == NULL)
 		return members;
 	if (IsA(node, List))
 	{
 		ListCell   *lc;
+
 
 		foreach(lc, (List *) node)
 			members = ctid_and_members((Node *) lfirst(lc), members);
@@ -674,9 +720,12 @@ static bool
 ctid_member_fixes_key(Node *m, int level, int target, Index varno,
 					  AttrNumber attno, Oid opfamily)
 {
+	check_stack_depth();
+
 	if (is_opclause(m))
 	{
 		OpExpr	   *op = (OpExpr *) m;
+
 
 		if (list_length(op->args) != 2 ||
 			get_op_opfamily_strategy(op->opno, opfamily) != HTEqualStrategyNumber)
@@ -727,7 +776,7 @@ ctid_frames_fix_key(ctid_keep_context *cxt, int target, Index varno)
 	bool		all = true;
 	int			k;
 
-	if (rte->rtekind != RTE_RELATION)
+	if (rte->rtekind != RTE_RELATION || ctid_rte_has_members(rte))
 		return false;
 	policy = GpPolicyFetch(rte->relid);
 	if (!GpPolicyIsHashPartitioned(policy) || policy->nattrs == 0)
@@ -922,6 +971,9 @@ ctid_sublink_keeps_segid(SubLink *sl, int level, int target, Index varno,
 	Query	   *sub = castNode(Query, sl->subselect);
 	ListCell   *lc;
 
+	check_stack_depth();
+
+
 	/* a set operation has no qualifier at this level, and finds nothing */
 	foreach(lc, ctid_and_members(sub->jointree->quals, NIL))
 	{
@@ -1043,11 +1095,14 @@ ctid_keep_qual(Node *qual, ctid_keep_context *cxt)
 static void
 ctid_keep_jointree(Node *node, ctid_keep_context *cxt)
 {
+	check_stack_depth();
+
 	if (node == NULL || cxt->unproven)
 		return;
 	if (IsA(node, FromExpr))
 	{
 		ListCell   *lc;
+
 
 		foreach(lc, ((FromExpr *) node)->fromlist)
 			ctid_keep_jointree((Node *) lfirst(lc), cxt);
@@ -1109,6 +1164,9 @@ ctid_keep_query(Query *query, bool via_qual, bool top, ctid_keep_context *cxt)
 	ctid_frame	frame = {query, via_qual, NIL};
 	bool		save_in_qual = cxt->in_qual;
 	ListCell   *lc;
+
+	check_stack_depth();
+
 
 	if (cxt->unproven)
 		return;
