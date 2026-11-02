@@ -235,7 +235,7 @@ Feature: expand the cluster by adding more segments
         Then the tablespace is valid after gpexpand
 
     @gpexpand_icproxy
-    Scenario: Cluster expansion failed (no new proxy address) with IC proxy mode enabled
+    Scenario: Cluster expansion derives the new proxy address with IC proxy mode enabled
         Given the database is not running
         And a working directory of the test as '/data/gpdata/gpexpand'
         And the user runs command "rm -rf /data/gpdata/gpexpand/*"
@@ -249,8 +249,11 @@ Feature: expand the cluster by adding more segments
         And the user runs gpexpand interview to add 1 new segment and 0 new host "ignore.host"
         And the number of segments have been saved
         When the user runs gpexpand with the latest gpexpand_inputfile without ret code check
-        Then gpexpand should return a return code of 3
-        And gpexpand should print "Checking ICProxy addresses failed" to stdout
+        Then gpexpand should return a return code of 0
+        And gpexpand should print "Assigning proxy port \d+ to dbid 4 \(content 2, host cdw\)" to stdout
+        And gpexpand should print "Updating gp_interconnect_proxy_addresses to: 1:-1:\S+:\d+,2:0:\S+:\d+,3:1:\S+:\d+,4:2:cdw:\d+" to stdout
+        And verify that the cluster has 1 new segments
+        And the proxy port of the new segment with dbid 4 is derived from the existing mesh
 
     @gpexpand_icproxy
     Scenario: Cluster expansion failed (bind an wrong proxy address) with IC proxy mode enabled

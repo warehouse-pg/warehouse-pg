@@ -4418,3 +4418,28 @@ def step_impl(context):
 @given(u'the cluster is running in IC proxy mode with new proxy address {address}')
 def step_impl(context, address):
     set_ic_proxy_and_address(context, address)
+
+@then(u'the proxy port of the new segment with dbid {dbid} is derived from the existing mesh')
+def impl(context, dbid):
+    """
+    gpexpand derives a new primary's proxy port as
+        min(primary proxy port) + (new data port - min(primary data port)),
+    recomputed here from the catalog and from the mesh gpexpand wrote.
+    """
+    with closing(dbconn.connect(dbconn.DbURL(), unsetSearchPath=False)) as conn:
+        mesh = dbconn.queryRow(conn, "SHOW gp_interconnect_proxy_addresses")[0].strip()
+        rows = dbconn.query(conn, "SELECT dbid, address, port FROM gp_segment_configuration "
+                                  "WHERE content >= 0 AND role = 'p'").fetchall()
+    data_port = dict((str(r[0]), int(r[2])) for r in rows)
+    address = dict((str(r[0]), r[1].strip()) for r in rows)
+    entries = dict((e.split(':')[0], e.split(':')) for e in mesh.split(','))
+
+    if dbid not in entries:
+        raise Exception("dbid %s has no entry in gp_interconnect_proxy_addresses: %s" % (dbid, mesh))
+    old_primaries = [d for d in data_port if d != dbid and d in entries]
+    expected = min(int(entries[d][3]) for d in old_primaries) + \
+        (data_port[dbid] - min(data_port[d] for d in old_primaries))
+    got = entries[dbid]
+    if got[2] != address[dbid] or int(got[3]) != expected:
+        raise Exception("expected mesh entry %s:*:%s:%d for the new segment, got %s (mesh: %s)" %
+                        (dbid, address[dbid], expected, ':'.join(got), mesh))

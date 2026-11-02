@@ -26,6 +26,7 @@ from gppylib.db import dbconn
 from gppylib.gpversion import GpVersion, MAIN_VERSION
 from gppylib.commands.unix import *
 import os
+import re
 
 logger = gplog.get_default_logger()
 
@@ -64,6 +65,31 @@ _MODE_LABELS = {
     MODE_SYNCHRONIZED: "Synchronized",
     MODE_NOT_SYNC:     "Not In Sync",
 }
+
+# One gp_interconnect_proxy_addresses entry the way the server reads it
+# (sscanf "%d:%d:%[^:]:%d" and an optional comma right after the port):
+# blanks may precede the entry and its numbers.
+ICPROXY_ENTRY_RE = re.compile(r'\s*([+-]?\d+):\s*([+-]?\d+):([^:,\s]+):\s*([+-]?\d+),?')
+
+def parse_icproxy_addresses(value):
+    """
+    Split a gp_interconnect_proxy_addresses value into its entries, a list of
+    (dbid, content, address, port) string tuples.  The value is one that the
+    server accepted: entries separated by a comma, by blanks or by both, and
+    a trailing comma (the proxy's own parser always took these).
+    """
+    entries = []
+    pos = 0
+    value = value.rstrip()
+    while pos < len(value):
+        m = ICPROXY_ENTRY_RE.match(value, pos)
+        if not m:
+            raise Exception("cannot parse gp_interconnect_proxy_addresses near \"%s\""
+                            % value[pos:pos + 40])
+        entries.append(tuple(str(int(f)) if i != 2 else f for i, f in enumerate(m.groups())))
+        pos = m.end()
+    return entries
+
 
 def getDataModeLabel(mode):
     return _MODE_LABELS[mode]
