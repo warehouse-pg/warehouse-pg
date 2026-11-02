@@ -1,5 +1,5 @@
 # Everything not listed below
-*                               @EnterpriseDB/warehousepg-maintainers
+*                               @EnterpriseDB/warehouse-pg
 
 # Lint configuration and workflows need admin review
 /.github/                       @EnterpriseDB/warehouse-pg-admins
