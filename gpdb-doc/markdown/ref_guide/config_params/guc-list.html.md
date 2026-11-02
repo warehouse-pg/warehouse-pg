@@ -1199,9 +1199,9 @@ Loss based flow control is based on capacity based flow control, and also tunes 
 
 ## <a id="gp_interconnect_proxy_addresses"></a>gp\_interconnect\_proxy\_addresses 
 
-Sets the proxy ports that Greenplum Database uses when the server configuration parameter [gp\_interconnect\_type](#gp_interconnect_type) is set to `proxy`. Otherwise, this parameter is ignored. The default value is an empty string \(""\).
+Sets the proxy ports that Greenplum Database uses when the server configuration parameter [gp\_interconnect\_type](#gp_interconnect_type) is set to `proxy`. The default value is an empty string \(""\), which means that no interconnect proxies run. When the parameter is set, the proxies start and listen on their ports; the interconnect uses them only when `gp_interconnect_type` is `proxy`.
 
-When the `gp_interconnect_type` parameter is set to `proxy`, You must specify a proxy port for the coordinator, standby coordinator, and all primary and mirror segment instances in this format:
+`gpinitsystem` writes this parameter when the cluster configuration file sets `PROXY_PORT_BASE` and the related `COORDINATOR_PROXY_PORT`, `MIRROR_PROXY_PORT_BASE` and `STANDBY_PROXY_PORT` parameters, and `gpexpand` and `gpinitstandby` keep it up to date afterwards. When you set it yourself, you must specify a proxy port for the coordinator, standby coordinator, and all primary and mirror segment instances in this format:
 
 ```
 <db_id>:<cont_id>:<seg_address>:<port>[, ... ]
@@ -1211,15 +1211,17 @@ For the coordinator, standby coordinator, and segment instance, the first three 
 
 -   db\_id is the `dbid` column in the catalog table.
 -   cont\_id is the `content` column in the catalog table.
--   seg\_address is the IP address or hostname corresponding to tge `address` column in the catalog table.
+-   seg\_address is the IP address or hostname corresponding to the `address` column in the catalog table.
 -   port is the TCP/IP port for the segment instance proxy that you specify.
 
-> **Important** If a segment instance hostname is bound to a different IP address at runtime, you must run `gpstop -U` to re-load the `gp_interconnect_proxy_addresses` value.
+The value is validated when it is set: an entry with a missing field, an out-of-range dbid, content or port, a hostname that is empty, contains blanks or is longer than the host name limit of the platform, a dbid that is listed twice, or a host and port that is listed twice is rejected.
 
-You must specify the value as a single-quoted string. This `gpconfig` command sets the value for `gp_interconnect_proxy_addresses` as a single-quoted string. The Greenplum system consists of a coordinator and a single segment instance.
+> **Important** If a segment instance hostname is bound to a different IP address at runtime, you must run `gpstop -u` to re-load the `gp_interconnect_proxy_addresses` value.
+
+This `gpconfig` command sets the value for `gp_interconnect_proxy_addresses`. The Greenplum system consists of a coordinator and a single segment instance.
 
 ```
-gpconfig --skipvalidation -c gp_interconnect_proxy_addresses -v "'1:-1:192.168.180.50:35432,2:0:192.168.180.54:35000'"
+gpconfig -c gp_interconnect_proxy_addresses -v "1:-1:192.168.180.50:35432,2:0:192.168.180.54:35000"
 ```
 
 For an example of setting `gp_interconnect_proxy_addresses`, see [Configuring Proxies for the Greenplum Interconnect](../../admin_guide/managing/proxy-ic.html).
