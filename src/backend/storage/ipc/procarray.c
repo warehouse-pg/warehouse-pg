@@ -45,6 +45,7 @@
 
 #include <signal.h>
 
+#include "access/anchorsnapshot.h"
 #include "access/clog.h"
 #include "access/distributedlog.h"
 #include "access/subtrans.h"
@@ -778,6 +779,7 @@ ProcArrayApplyRecoveryInfo(RunningTransactions running)
 	TransactionId *xids;
 	int			nxids;
 	int			i;
+	TransactionId committedRunning = InvalidTransactionId;
 
 	Assert(standbyState >= STANDBY_INITIALIZED);
 	Assert(TransactionIdIsValid(running->nextXid));
@@ -891,7 +893,15 @@ ProcArrayApplyRecoveryInfo(RunningTransactions running)
 		 * WAL-logged as completed. They're not running anymore, so ignore
 		 * them.
 		 */
-		if (TransactionIdDidCommit(xid) || TransactionIdDidAbort(xid))
+		if (TransactionIdDidCommit(xid))
+		{
+			/* GPDB: see the anchor note after latestCompletedXid below */
+			if (!TransactionIdIsValid(committedRunning) ||
+				TransactionIdFollows(xid, committedRunning))
+				committedRunning = xid;
+			continue;
+		}
+		if (TransactionIdDidAbort(xid))
 			continue;
 
 		xids[nxids++] = xid;
@@ -995,6 +1005,26 @@ ProcArrayApplyRecoveryInfo(RunningTransactions running)
 		ShmemVariableCache->latestCompletedXid = running->latestCompletedXid;
 
 	Assert(TransactionIdIsNormal(ShmemVariableCache->latestCompletedXid));
+
+	/*
+	 * GPDB: a committed xid the snapshot still listed as running reads as in
+	 * progress until a later commit moves latestCompletedXid past it.  On a
+	 * coordinator that is a distributed transaction's local xid whose COMMIT
+	 * PREPARED has already reached the segments, on a segment a prepared
+	 * transaction's xid after its COMMIT PREPARED (both stay in the primary's
+	 * proc array while the commit waits for its standby); an anchor exported
+	 * meanwhile would split the transaction, so tell the anchor export.  An
+	 * overflowed snapshot lists no subxids, which can be higher than both the
+	 * top xid and latestCompletedXid, so widen to every xid it covers before
+	 * comparing.
+	 */
+	if (TransactionIdIsValid(committedRunning))
+	{
+		if (running->subxid_overflow)
+			committedRunning = latestObservedXid;
+		if (TransactionIdFollows(committedRunning, ShmemVariableCache->latestCompletedXid))
+			AnchorSnapshotNoteCommittedAsRunning(committedRunning);
+	}
 
 	LWLockRelease(ProcArrayLock);
 

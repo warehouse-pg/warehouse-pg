@@ -20,6 +20,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "access/anchorsnapshot.h"
 #include "access/commit_ts.h"
 #include "access/multixact.h"
 #include "access/parallel.h"
@@ -7309,6 +7310,8 @@ xact_redo_distributed_commit(xl_xact_parsed_commit *parsed,
 		xact_redo_commit(parsed, xid, lsn, origin_id);
 
 	redoDistributedCommitRecord(parsed->distribXid);
+	AnchorSnapshotNoteDistributedCommit(parsed->distribXid, xid,
+										parsed->nsubxacts, parsed->subxacts);
 }
 
 /*
@@ -7398,6 +7401,7 @@ static void
 xact_redo_distributed_forget(xl_xact_distributed_forget *xlrec, TransactionId xid pg_attribute_unused() )
 {
 	redoDistributedForgetCommitRecord(xlrec->gxid);
+	AnchorSnapshotNoteDistributedForget(xlrec->gxid);
 }
 
 

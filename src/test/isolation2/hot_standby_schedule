@@ -11,6 +11,7 @@ test: hot_standby/dispatch_topology
 test: hot_standby/anchor_export
 test: hot_standby/anchor_import
 test: hot_standby/anchor_dispatch
+test: hot_standby/anchor_coordinator_only
 test: hot_standby/anchor_conflict
 test: hot_standby/anchor_partitions
 test: hot_standby/anchor_coverage

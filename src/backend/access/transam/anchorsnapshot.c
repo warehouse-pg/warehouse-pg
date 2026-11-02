@@ -1318,6 +1318,299 @@ AnchorSnapshotStartup(XLogRecPtr redoStart, List *history,
 	sweepAnchorFiles(keep ? name : NULL);
 }
 
+/* ------------------------------------------------------------------
+ * Distributed transactions committed on the coordinator but not yet
+ * forgotten.
+ *
+ * The coordinator writes its distributed commit record before it
+ * broadcasts COMMIT PREPARED, and gp_create_restore_point's two-phase
+ * commit lock blocks only the broadcast.  A restore point can therefore
+ * land between the two: the transaction's local xid is then committed in
+ * the coordinator's KnownAssignedXids while every segment still has it
+ * prepared, and an anchor exported from KnownAssignedXids alone would show
+ * its rows in coordinator-only tables but not its rows on the segments.
+ * The primary itself shows neither until COMMIT PREPARED: it keeps the
+ * local xid in its proc array until the broadcast is done
+ * (CommitTransaction), and the dispatcher judges visibility by local xids
+ * alone (XidInMVCCSnapshot).
+ *
+ * shmCommittedGxidArray already lists these transactions by gxid; this map
+ * keeps, for each one whose commit record this startup process replayed,
+ * the coordinator's local xid and subxids, so that the export can count
+ * them as in progress.  Only the startup process touches it.  A gxid of
+ * the array without an entry came from a checkpoint record (its commit
+ * record lies before this start's redo point): whether it wrote on the
+ * coordinator is unknown, and the export is skipped while it is there.
+ *
+ * A committed transaction can also read as in progress after this start:
+ * the standby snapshot was initialized from a running-xacts record logged
+ * while the primary still had the transaction's xid in its proc array (a
+ * distributed commit leaves it there until its COMMIT PREPARED broadcast,
+ * FORGET and, with remote_apply, the wait for the standby are done), and
+ * latestCompletedXid came from that record, so xmax may not pass the xid
+ * until a later local commit is replayed.  An anchor exported meanwhile
+ * would hide the transaction's coordinator rows while the segments show
+ * the rest.  The snapshot initialization (procarray.c) reports the newest
+ * such xid, or every xid it may have missed when the record lists no
+ * subxids, and exports are skipped until xmax passes it
+ * (committedAsRunningHorizon).
+ *
+ * The checkpoint can also list a transaction whose FORGET lies before its
+ * redo point: includeInCkpt is cleared only after the FORGET record is
+ * inserted, and the list is collected after the redo point is fixed.  Such
+ * a gxid stays in shmCommittedGxidArray for good (no FORGET follows), so a
+ * gxid of the array that a later checkpoint record no longer lists is
+ * taken as finished (staleGxids) instead of blocking every export.  If its
+ * xid still read as in progress, the initialization above reported it.
+ * ------------------------------------------------------------------
+ */
+typedef struct AnchorCommittedGxact
+{
+	DistributedTransactionId gxid;
+	TransactionId xid;			/* invalid: no local write */
+	int			nsubxids;
+	TransactionId *subxids;		/* malloc'd, NULL when nsubxids == 0 */
+} AnchorCommittedGxact;
+
+static AnchorCommittedGxact *committedGxacts = NULL;
+static int	numCommittedGxacts = 0;
+static int	maxCommittedGxacts = 0;
+static TransactionId committedAsRunningHorizon = InvalidTransactionId;
+static DistributedTransactionId *staleGxids = NULL;
+static int	numStaleGxids = 0;
+
+/* a malloc of the startup process's maps failed (logged once) */
+static bool committedGxactMapFailed = false;
+
+static void
+logCommittedGxactMapFailure(void)
+{
+	if (!committedGxactMapFailed)
+		ereport(LOG,
+				(errmsg("out of memory tracking distributed transactions for anchor snapshots; anchors are not exported while such a transaction is committed but not forgotten")));
+	committedGxactMapFailed = true;
+}
+
+static void
+raiseCommittedAsRunningHorizon(TransactionId xid)
+{
+	if (!TransactionIdIsValid(committedAsRunningHorizon) ||
+		TransactionIdFollows(xid, committedAsRunningHorizon))
+		committedAsRunningHorizon = xid;
+}
+
+static bool
+committedGxactKnown(DistributedTransactionId gxid)
+{
+	int			i;
+
+	for (i = 0; i < numCommittedGxacts; i++)
+	{
+		if (committedGxacts[i].gxid == gxid)
+			return true;
+	}
+	return false;
+}
+
+static bool
+gxidIsStale(DistributedTransactionId gxid)
+{
+	int			i;
+
+	for (i = 0; i < numStaleGxids; i++)
+	{
+		if (staleGxids[i] == gxid)
+			return true;
+	}
+	return false;
+}
+
+/*
+ * Redo of a distributed commit record (xact.c): remember the transaction's
+ * local xids until its FORGET record.  A map that cannot hold the entry
+ * leaves the gxid unknown, which skips exports while it stays committed.
+ */
+void
+AnchorSnapshotNoteDistributedCommit(DistributedTransactionId gxid,
+									TransactionId xid, int nsubxids,
+									const TransactionId *subxids)
+{
+	AnchorCommittedGxact *entry;
+
+	if (committedGxactKnown(gxid))
+		return;
+	if (committedGxacts == NULL)
+	{
+		maxCommittedGxacts = max_tm_gxacts;
+		committedGxacts = (AnchorCommittedGxact *)
+			malloc(maxCommittedGxacts * sizeof(AnchorCommittedGxact));
+		if (committedGxacts == NULL)
+		{
+			maxCommittedGxacts = 0;
+			logCommittedGxactMapFailure();
+			return;
+		}
+	}
+	if (numCommittedGxacts >= maxCommittedGxacts)
+		return;
+
+	entry = &committedGxacts[numCommittedGxacts];
+	entry->gxid = gxid;
+	entry->xid = xid;
+	entry->nsubxids = 0;
+	entry->subxids = NULL;
+	if (TransactionIdIsValid(xid) && nsubxids > 0)
+	{
+		entry->subxids = (TransactionId *) malloc(nsubxids * sizeof(TransactionId));
+		if (entry->subxids == NULL)
+		{
+			logCommittedGxactMapFailure();
+			return;
+		}
+		memcpy(entry->subxids, subxids, nsubxids * sizeof(TransactionId));
+		entry->nsubxids = nsubxids;
+	}
+	numCommittedGxacts++;
+}
+
+/* Redo of a distributed forget record (xact.c). */
+void
+AnchorSnapshotNoteDistributedForget(DistributedTransactionId gxid)
+{
+	int			i;
+
+	for (i = 0; i < numCommittedGxacts; i++)
+	{
+		if (committedGxacts[i].gxid != gxid)
+			continue;
+		if (committedGxacts[i].subxids != NULL)
+			free(committedGxacts[i].subxids);
+		committedGxacts[i] = committedGxacts[--numCommittedGxacts];
+		return;
+	}
+}
+
+/*
+ * Standby snapshot initialization (procarray.c): xid, committed, was
+ * listed as running and is not below xmax yet (see above).
+ */
+void
+AnchorSnapshotNoteCommittedAsRunning(TransactionId xid)
+{
+	raiseCommittedAsRunningHorizon(xid);
+}
+
+/*
+ * Redo of a checkpoint record (xlog.c), on the coordinator: gxids lists
+ * the distributed transactions the checkpoint still counts as committed
+ * but not forgotten.  A gxid of shmCommittedGxidArray with no map entry
+ * that the list lacks finished before this start's redo point (see above).
+ */
+void
+AnchorSnapshotNoteCheckpointGxids(const DistributedTransactionId *gxids,
+								  int ngxids)
+{
+	int			i;
+	int			j;
+
+	for (i = 0; i < *shmNumCommittedGxacts; i++)
+	{
+		DistributedTransactionId gxid = shmCommittedGxidArray[i];
+		bool		listed = false;
+
+		if (committedGxactKnown(gxid) || gxidIsStale(gxid))
+			continue;
+		for (j = 0; j < ngxids; j++)
+		{
+			if (gxids[j] == gxid)
+			{
+				listed = true;
+				break;
+			}
+		}
+		if (listed)
+			continue;
+
+		if (staleGxids == NULL)
+		{
+			staleGxids = (DistributedTransactionId *)
+				malloc(max_tm_gxacts * sizeof(DistributedTransactionId));
+			if (staleGxids == NULL)
+			{
+				logCommittedGxactMapFailure();
+				return;
+			}
+		}
+		if (numStaleGxids >= max_tm_gxacts)
+			return;
+		staleGxids[numStaleGxids++] = gxid;
+	}
+}
+
+/*
+ * Append the local xids of the committed-but-not-forgotten distributed
+ * transactions to an export's xid set, lowering xmin to cover them.
+ * Returns false, with the reason in *why, when one of them cannot be
+ * accounted for: its local xids are unknown, or they do not fit.
+ */
+static bool
+addCommittedGxactXids(TransactionId *xids, int *nxids, int maxxids,
+					  TransactionId *xmin, TransactionId xmax,
+					  char *why, Size whylen)
+{
+	int			i;
+	int			j;
+	int			k;
+
+	for (i = 0; i < *shmNumCommittedGxacts; i++)
+	{
+		DistributedTransactionId gxid = shmCommittedGxidArray[i];
+		AnchorCommittedGxact *entry = NULL;
+
+		for (j = 0; j < numCommittedGxacts; j++)
+		{
+			if (committedGxacts[j].gxid == gxid)
+			{
+				entry = &committedGxacts[j];
+				break;
+			}
+		}
+		if (entry == NULL && gxidIsStale(gxid))
+			continue;
+		if (entry == NULL)
+		{
+			snprintf(why, whylen,
+					 "distributed transaction " UINT64_FORMAT " committed on the coordinator before the restore point and is not known to be committed on every segment: %s",
+					 gxid,
+					 committedGxactMapFailed ?
+					 "its commit record lies before this start's redo point, or recording it failed for lack of memory" :
+					 "its commit record lies before this start's redo point");
+			return false;
+		}
+		if (!TransactionIdIsValid(entry->xid))
+			continue;
+		if (*nxids + 1 + entry->nsubxids > maxxids)
+		{
+			snprintf(why, whylen,
+					 "the xids of the distributed transactions committed on the coordinator but not yet on every segment do not fit the snapshot (%d entries)",
+					 maxxids);
+			return false;
+		}
+		for (k = -1; k < entry->nsubxids; k++)
+		{
+			TransactionId x = (k < 0) ? entry->xid : entry->subxids[k];
+
+			/* at or past xmax it reads as in progress already */
+			if (!TransactionIdPrecedes(x, xmax))
+				continue;
+			xids[(*nxids)++] = x;
+			if (TransactionIdPrecedes(x, *xmin))
+				*xmin = x;
+		}
+	}
+	return true;
+}
+
 /*
  * Called by the startup process right after a restore-point record has been
  * applied (and consistency re-checked), before the replay pause is taken.
@@ -1546,6 +1839,60 @@ AnchorSnapshotExportOnRestorePoint(XLogReaderState *record)
 	}
 
 	nxids = GetKnownAssignedXidsSnapshot(exportXids, &xmin, &xmax, &suboverflowed);
+
+	/*
+	 * On the coordinator, a distributed transaction whose commit record
+	 * precedes this restore point but whose COMMIT PREPARED does not is in
+	 * progress at this instant everywhere else; count it so here too.
+	 */
+	{
+		char		why[256];
+		TransactionId knownXmin = xmin;
+
+		if (!addCommittedGxactXids(exportXids, &nxids, GetMaxSnapshotSubxidCount(),
+								   &xmin, xmax, why, sizeof(why)))
+		{
+			ereport(WARNING,
+					(errmsg("anchor snapshot for restore point \"%s\" not exported: %s",
+							name, why),
+					 errhint("Use a later restore point as the anchor.")));
+			return;
+		}
+
+		/*
+		 * On any node, a transaction committed before this start may still
+		 * read as in progress (see committedAsRunningHorizon).
+		 */
+		if (TransactionIdIsValid(committedAsRunningHorizon) &&
+			TransactionIdPrecedes(committedAsRunningHorizon, xmax))
+			committedAsRunningHorizon = InvalidTransactionId;
+		if (TransactionIdIsValid(committedAsRunningHorizon))
+		{
+			ereport(WARNING,
+					(errmsg("anchor snapshot for restore point \"%s\" not exported: transaction %u had committed when this standby's snapshot was initialized, which still listed it as running, and it reads as in progress until xmax (%u) passes it",
+							name, committedAsRunningHorizon, xmax),
+					 errhint("Use a later restore point as the anchor; it exports once this node has replayed a later local commit.")));
+			return;
+		}
+
+		/*
+		 * An overflowed anchor makes its readers look xids of [xmin, xmax)
+		 * up in pg_subtrans.  A restartpoint truncates pg_subtrans at the
+		 * oldest of GetOldestXmin() and the registered anchors, which never
+		 * passes the oldest KnownAssignedXids xid, so an xmin taken from
+		 * KnownAssignedXids is always covered; one lowered below it by the
+		 * xids above may not be, if a restartpoint truncated before this
+		 * anchor is registered.
+		 */
+		if (suboverflowed && TransactionIdPrecedes(xmin, knownXmin))
+		{
+			ereport(WARNING,
+					(errmsg("anchor snapshot for restore point \"%s\" not exported: its snapshot overflowed, and a distributed transaction committed on the coordinator but not yet forgotten would lower its xmin from %u to %u, which pg_subtrans may no longer cover",
+							name, knownXmin, xmin),
+					 errhint("Use a later restore point as the anchor.")));
+			return;
+		}
+	}
 
 	if (!writeAnchorFile(name, ThisTimeLineID, record->EndRecPtr,
 						 xmin, xmax, exportXids, nxids, suboverflowed))
@@ -1942,6 +2289,15 @@ AnchorSnapshotClearAll(void)
 
 	pendingSet = false;
 	keptSet = false;
+
+	while (numCommittedGxacts > 0)
+	{
+		numCommittedGxacts--;
+		if (committedGxacts[numCommittedGxacts].subxids != NULL)
+			free(committedGxacts[numCommittedGxacts].subxids);
+	}
+	committedAsRunningHorizon = InvalidTransactionId;
+	numStaleGxids = 0;
 
 	if (anchorRegistry == NULL)
 		return;

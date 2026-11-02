@@ -1216,6 +1216,129 @@ test__ordinal_needs_an_install(void **state)
 	RecentGlobalDataXmin = savedXmins[3];
 }
 
+/*
+ * Distributed transactions committed on the coordinator but not yet
+ * forgotten: the export adds their coordinator xids, refuses while one of
+ * them is unknown or they do not fit, takes a gxid a later checkpoint no
+ * longer lists as finished, and holds exports behind the xid horizon.
+ */
+static void
+test__committed_gxact_xids(void **state)
+{
+	DistributedTransactionId gxids[4];
+	volatile int ngxids = 0;
+	VariableCacheData cache;
+	VariableCache savedCache = ShmemVariableCache;
+	DistributedTransactionId *savedArray = shmCommittedGxidArray;
+	volatile int *savedNum = shmNumCommittedGxacts;
+	int			savedMax = max_tm_gxacts;
+	TransactionId subs[2] = {205, 206};
+	DistributedTransactionId listed[1] = {12};
+	TransactionId xids[8];
+	int			nxids;
+	TransactionId xmin;
+	char		why[256];
+
+	max_tm_gxacts = 4;
+	shmCommittedGxidArray = gxids;
+	shmNumCommittedGxacts = &ngxids;
+	MemSet(&cache, 0, sizeof(cache));
+	ShmemVariableCache = &cache;
+
+	/* one with a coordinator xid and two subxids, one without */
+	gxids[ngxids++] = 10;
+	AnchorSnapshotNoteDistributedCommit(10, 204, 2, subs);
+	gxids[ngxids++] = 11;
+	AnchorSnapshotNoteDistributedCommit(11, InvalidTransactionId, 0, NULL);
+	/* replayed twice: one entry */
+	AnchorSnapshotNoteDistributedCommit(10, 204, 2, subs);
+	assert_int_equal(numCommittedGxacts, 2);
+
+	xids[0] = 300;
+	nxids = 1;
+	xmin = 300;
+	assert_true(addCommittedGxactXids(xids, &nxids, 8, &xmin, 310, why, sizeof(why)));
+	assert_int_equal(nxids, 4);
+	assert_int_equal(xids[1], 204);
+	assert_int_equal(xids[2], 205);
+	assert_int_equal(xids[3], 206);
+	assert_int_equal(xmin, 204);
+
+	/* at or past xmax they read as in progress already */
+	nxids = 0;
+	xmin = 200;
+	assert_true(addCommittedGxactXids(xids, &nxids, 8, &xmin, 205, why, sizeof(why)));
+	assert_int_equal(nxids, 1);
+	assert_int_equal(xids[0], 204);
+	assert_int_equal(xmin, 200);
+
+	/* the export buffer cannot hold them */
+	nxids = 6;
+	xmin = 300;
+	assert_false(addCommittedGxactXids(xids, &nxids, 8, &xmin, 310, why, sizeof(why)));
+	assert_true(strstr(why, "do not fit the snapshot") != NULL);
+
+	/* a gxid whose commit record this start did not replay */
+	gxids[ngxids++] = 12;
+	nxids = 0;
+	xmin = 300;
+	assert_false(addCommittedGxactXids(xids, &nxids, 8, &xmin, 310, why, sizeof(why)));
+	assert_true(strstr(why, "distributed transaction 12 committed on the coordinator before the restore point and is not known to be committed on every segment") != NULL);
+
+	/* a later checkpoint that still lists it changes nothing */
+	AnchorSnapshotNoteCheckpointGxids(listed, 1);
+	assert_int_equal(numStaleGxids, 0);
+
+	/* one that no longer lists it: finished, and no longer blocks */
+	AnchorSnapshotNoteCheckpointGxids(NULL, 0);
+	assert_int_equal(numStaleGxids, 1);
+	AnchorSnapshotNoteCheckpointGxids(NULL, 0);
+	assert_int_equal(numStaleGxids, 1);
+	nxids = 0;
+	xmin = 300;
+	assert_true(addCommittedGxactXids(xids, &nxids, 8, &xmin, 310, why, sizeof(why)));
+	assert_int_equal(nxids, 3);
+	assert_false(TransactionIdIsValid(committedAsRunningHorizon));
+
+	/* FORGET of a known gxid drops it; of an unknown one, nothing changes */
+	AnchorSnapshotNoteDistributedForget(10);
+	assert_false(committedGxactKnown(10));
+	assert_true(committedGxactKnown(11));
+	AnchorSnapshotNoteDistributedForget(13);
+	assert_int_equal(numCommittedGxacts, 1);
+
+	/*
+	 * Committed xids the standby snapshot listed as running raise the
+	 * horizon to the newest one reported.
+	 */
+	AnchorSnapshotNoteCommittedAsRunning(450);
+	assert_int_equal(committedAsRunningHorizon, 450);
+	AnchorSnapshotNoteCommittedAsRunning(420);
+	assert_int_equal(committedAsRunningHorizon, 450);
+	AnchorSnapshotNoteCommittedAsRunning(499);
+	assert_int_equal(committedAsRunningHorizon, 499);
+
+	/* an unknown gxid's refusal names a failed recording when there was one */
+	gxids[ngxids++] = 16;
+	committedGxactMapFailed = true;
+	nxids = 0;
+	xmin = 300;
+	assert_false(addCommittedGxactXids(xids, &nxids, 8, &xmin, 310, why, sizeof(why)));
+	assert_true(strstr(why, "or recording it failed for lack of memory") != NULL);
+	committedGxactMapFailed = false;
+
+	/* the end of recovery forgets it all */
+	AnchorSnapshotClearAll();
+	assert_int_equal(numCommittedGxacts, 0);
+	assert_int_equal(numStaleGxids, 0);
+	assert_false(TransactionIdIsValid(committedAsRunningHorizon));
+
+	ShmemVariableCache = savedCache;
+	shmCommittedGxidArray = savedArray;
+	shmNumCommittedGxacts = savedNum;
+	max_tm_gxacts = savedMax;
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1241,6 +1364,7 @@ main(int argc, char *argv[])
 		unit_test(test__relation_verdicts),
 		unit_test(test__inheritance_verdicts),
 		unit_test(test__ordinal_needs_an_install),
+		unit_test(test__committed_gxact_xids),
 	};
 
 	MemoryContextInit();

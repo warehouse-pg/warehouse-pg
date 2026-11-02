@@ -183,6 +183,13 @@ extern void AnchorRegistryShmemInit(void);
 extern void AnchorSnapshotStartup(XLogRecPtr redoStart, List *history,
 								  TransactionId oldestActiveXid);
 extern void AnchorSnapshotExportOnRestorePoint(XLogReaderState *record);
+extern void AnchorSnapshotNoteDistributedCommit(DistributedTransactionId gxid,
+												TransactionId xid, int nsubxids,
+												const TransactionId *subxids);
+extern void AnchorSnapshotNoteDistributedForget(DistributedTransactionId gxid);
+extern void AnchorSnapshotNoteCommittedAsRunning(TransactionId xid);
+extern void AnchorSnapshotNoteCheckpointGxids(const DistributedTransactionId *gxids,
+											  int ngxids);
 extern void AnchorSnapshotOnConfigReload(void);
 extern void AnchorSnapshotClearAll(void);
 
