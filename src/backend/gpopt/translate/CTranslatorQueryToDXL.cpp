@@ -216,12 +216,12 @@ CTranslatorQueryToDXL::CTranslatorQueryToDXL(
 	CheckSirvFuncsWithoutFromClause(query);
 
 	// A ctid is unique only within one segment. GPORCA plans an UPDATE or
-	// DELETE that uses a ctid only when every ctid reference is located by
-	// the rule both optimizers share (cdbmutate_dml_ctid_unlocated()): a
-	// condition on gp_segment_id, or the distribution key fixed to values
-	// (and, for a table with partitions or inheritance children, the member
-	// named). Anything else goes to the planner, which runs it or raises its
-	// error, instead of changing one row per segment.
+	// DELETE that uses a ctid only when cdbmutate_dml_ctid_unlocated() shows
+	// every ctid reference located: a condition on gp_segment_id, or the
+	// distribution key fixed to values (and, for a table with partitions or
+	// inheritance children, the member named). Anything else goes to the
+	// planner, whose own check runs it or raises its error, instead of
+	// changing one row per segment.
 	if (0 == query_level && gpdb::DMLCtidUnlocated(query))
 	{
 		GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLUnsupportedFeature,

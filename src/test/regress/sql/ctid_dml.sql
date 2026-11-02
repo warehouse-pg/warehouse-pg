@@ -261,6 +261,46 @@ EXECUTE del_lp(1, '(0,1)');
 DEALLOCATE del_lp;
 RESET plan_cache_mode;
 
+-- A gp_segment_id condition that the planner's rewrites remove, so the row
+-- is not located, under both optimizers: an operator whose SQL function
+-- folds to true, an OR arm that is null, a sub-select that folds to false,
+-- an EXISTS over an aggregate (always true), a LIMIT 0.  A row-level security
+-- policy that picks rows by ctid; a SQL set-returning function that does,
+-- inlined into the statement; an inheritance child distributed by another
+-- column, where fixing the parent's key does not fix the segment.
+CREATE FUNCTION ctid_dml_true(int, bigint) RETURNS bool LANGUAGE sql IMMUTABLE AS 'SELECT true';
+CREATE OPERATOR >>> (LEFTARG = int, RIGHTARG = bigint, FUNCTION = ctid_dml_true);
+DELETE FROM t WHERE ctid = '(0,1)' AND gp_segment_id >>> 0::bigint;
+DROP OPERATOR >>> (int, bigint);
+DROP FUNCTION ctid_dml_true(int, bigint);
+DELETE FROM t WHERE ctid = '(0,1)' AND (id > 0 OR (gp_segment_id = 0 AND NULL::boolean));
+DELETE FROM t WHERE ctid = '(0,1)' AND NOT EXISTS (SELECT 1 FROM s WHERE s.sid = t.gp_segment_id AND false);
+DELETE FROM t WHERE ctid = '(0,1)' AND EXISTS (SELECT count(*) FROM s WHERE s.sid = t.gp_segment_id);
+DELETE FROM t WHERE ctid = '(0,1)' AND NOT EXISTS (SELECT 1 FROM s WHERE s.sid = t.gp_segment_id LIMIT 0);
+CREATE ROLE ctid_dml_reader;
+GRANT USAGE ON SCHEMA ctid_dml TO ctid_dml_reader;
+CREATE TABLE rls (id int, v int) DISTRIBUTED BY (id);
+INSERT INTO rls SELECT g, g FROM generate_series(1, 20) g;
+GRANT SELECT, DELETE ON rls TO ctid_dml_reader;
+ALTER TABLE rls ENABLE ROW LEVEL SECURITY;
+CREATE POLICY rls_ctid ON rls USING (ctid = '(0,1)');
+SET ROLE ctid_dml_reader;
+DELETE FROM rls;
+RESET ROLE;
+SELECT count(*) AS rls_rows FROM rls;
+DROP TABLE rls;
+REVOKE USAGE ON SCHEMA ctid_dml FROM ctid_dml_reader;
+DROP ROLE ctid_dml_reader;
+CREATE FUNCTION ctid_dml_ids() RETURNS SETOF int LANGUAGE sql STABLE AS $$ SELECT id FROM ctid_dml.t WHERE ctid = '(0,1)' $$;
+DELETE FROM t a USING ctid_dml_ids() AS b(id) WHERE a.id = b.id;
+DROP FUNCTION ctid_dml_ids();
+CREATE TABLE ihd (id int, v int) DISTRIBUTED BY (id);
+CREATE TABLE ihd_c () INHERITS (ihd) DISTRIBUTED BY (v);
+INSERT INTO ihd_c SELECT 1, g FROM generate_series(1, 12) g;
+DELETE FROM ihd WHERE ctid = '(0,1)' AND id = 1 AND tableoid = 'ihd_c'::regclass;
+SELECT count(*) AS ihd_rows FROM ihd;
+DROP TABLE ihd CASCADE;
+
 -- Nothing was changed.
 SELECT count(*), sum(id), sum(CASE WHEN note <> 'x' THEN 1 ELSE 0 END) AS changed FROM t;
 SELECT count(*) FROM d;
@@ -430,45 +470,57 @@ SELECT (SELECT count(*) FROM pt_1_prt_2) AS leaf_rows, (SELECT count(*) FROM ih)
 ROLLBACK;
 -- The member named too: the partition key fixed to a value or a list (one
 -- row per listed partition), tableoid fixed, a distribution key that
--- includes the partition key, both levels of two, hash partitions.
+-- includes the partition key, both levels of two, hash partitions, two
+-- levels with a different sub-key per partition when every key is fixed.
+-- GPORCA plans the single-level range and list cases.  The planner's own
+-- check counts only gp_segment_id and the distribution key of a table
+-- without members, so with optimizer=off they are rejected, as before this
+-- change.  GPORCA leaves inheritance parents, multi-level and hash
+-- partitioned tables and explicit collations to the planner, so those are
+-- rejected under both optimizers.
 BEGIN;
 DELETE FROM pt WHERE ctid = '(0,1)' AND id = 5 AND k = 1;
-DELETE FROM pt WHERE ctid = '(0,1)' AND id = 2 AND k IN (1, 2);
-DELETE FROM pt WHERE ctid = '(0,1)' AND id = 3 AND tableoid = 'pt_1_prt_4'::regclass;
-DELETE FROM ih WHERE ctid = '(0,1)' AND id = 1 AND tableoid = 'ih_c'::regclass;
-DELETE FROM pk2 WHERE ctid = '(0,1)' AND id = 1 AND k = 2;
-DELETE FROM p2 WHERE ctid = '(0,1)' AND id = 1 AND k = 0 AND v = 2;
-DELETE FROM ph WHERE ctid = '(0,1)' AND id = 1 AND k = 3;
-SELECT (SELECT count(*) FROM pt) AS pt, (SELECT count(*) FROM ih) AS ih, (SELECT count(*) FROM pk2) AS pk2, (SELECT count(*) FROM p2) AS p2, (SELECT count(*) FROM ph) AS ph;
+SELECT count(*) AS pt FROM pt;
 ROLLBACK;
--- The partition key compared under another collation, and two levels with a
--- different sub-key per partition when every partition key is fixed.
+BEGIN;
+DELETE FROM pt WHERE ctid = '(0,1)' AND id = 2 AND k IN (1, 2);
+SELECT count(*) AS pt FROM pt;
+ROLLBACK;
+BEGIN;
+DELETE FROM pt WHERE ctid = '(0,1)' AND id = 3 AND tableoid = 'pt_1_prt_4'::regclass;
+SELECT count(*) AS pt FROM pt;
+ROLLBACK;
+BEGIN;
+DELETE FROM ih WHERE ctid = '(0,1)' AND id = 1 AND tableoid = 'ih_c'::regclass;
+SELECT count(*) AS ih FROM ih;
+ROLLBACK;
+BEGIN;
+DELETE FROM pk2 WHERE ctid = '(0,1)' AND id = 1 AND k = 2;
+SELECT count(*) AS pk2 FROM pk2;
+ROLLBACK;
+BEGIN;
+DELETE FROM p2 WHERE ctid = '(0,1)' AND id = 1 AND k = 0 AND v = 2;
+SELECT count(*) AS p2 FROM p2;
+ROLLBACK;
+BEGIN;
+DELETE FROM ph WHERE ctid = '(0,1)' AND id = 1 AND k = 3;
+SELECT count(*) AS ph FROM ph;
+ROLLBACK;
 BEGIN;
 DELETE FROM lp WHERE ctid = '(0,1)' AND id = 1 AND region = 'e' COLLATE "C";
-DELETE FROM hz WHERE ctid = '(0,1)' AND id = 1 AND k = 0 AND v = 2 AND w = 0;
-SELECT (SELECT count(*) FROM lp) AS lp, (SELECT count(*) FROM hz) AS hz;
+SELECT count(*) AS lp FROM lp;
 ROLLBACK;
--- A key condition inside a sub-select the planner keeps as a SubPlan still
--- fixes the segment: both optimizers accept it.
+BEGIN;
+DELETE FROM hz WHERE ctid = '(0,1)' AND id = 1 AND k = 0 AND v = 2 AND w = 0;
+SELECT count(*) AS hz FROM hz;
+ROLLBACK;
+-- A key condition inside a sub-select kept as a SubPlan fixes the segment:
+-- GPORCA plans it; the planner's check does not see the key inside the
+-- SubPlan and rejects it, as before this change.
 BEGIN;
 DELETE FROM t WHERE 0 < (SELECT count(*) FROM s WHERE s.tid = t.ctid AND t.id = 7);
 SELECT count(*) AS left_rows, sum(CASE WHEN id = 7 THEN 1 ELSE 0 END) AS id_7 FROM t;
 ROLLBACK;
--- The same with a key value from an immutable function that the planner
--- runs while it plans the statement, and that plans (and catches an error
--- in) a statement of its own.
-CREATE FUNCTION ctid_dml_seven() RETURNS int LANGUAGE plpgsql IMMUTABLE AS $$
-BEGIN
-  PERFORM 1 / 0;
-  RETURN 7;
-EXCEPTION WHEN division_by_zero THEN
-  RETURN 7;
-END $$;
-BEGIN;
-DELETE FROM t WHERE 0 < (SELECT count(*) FROM s WHERE s.tid = t.ctid AND t.id = ctid_dml_seven());
-SELECT count(*) AS left_rows, sum(CASE WHEN id = 7 THEN 1 ELSE 0 END) AS id_7 FROM t;
-ROLLBACK;
-DROP FUNCTION ctid_dml_seven();
 -- An OR whose arms share the gp_segment_id condition: the planner reduces it
 -- to that condition, and GPORCA plans it.
 BEGIN;

@@ -118,52 +118,52 @@ SELECT count(*) AS rows_at_0_1 FROM t WHERE ctid = '(0,1)';
 DELETE FROM t WHERE ctid = '(0,1)';
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 UPDATE t SET note = 'y' WHERE ctid = '(0,2)';
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  UPDATE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  UPDATE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 UPDATE t SET note = 'y' WHERE ctid = '(0,1)' RETURNING id;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  UPDATE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  UPDATE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 UPDATE t SET id = id + 100 WHERE ctid = '(0,1)';
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  UPDATE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  UPDATE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE ctid::text = '(0,1)' OR id = 99;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 -- append-only, partitioned and randomly distributed tables
 DELETE FROM ao WHERE ctid = '(33554432,2)';
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "ao.ctid" without the necessary companion column "ao.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "ao.ctid" without the necessary companion column "ao.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM pt WHERE ctid = '(0,1)';
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
 NOTICE:  SELECT uses system-defined column "pt.ctid" without the necessary companion column "pt.gp_segment_id"
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
-ERROR:  DELETE uses system-defined column "pt.ctid" without the necessary companion column "pt.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "pt.ctid" without the necessary companion column "pt.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM r WHERE ctid = '(0,1)';
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "r.ctid" without the necessary companion column "r.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "r.ctid" without the necessary companion column "r.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 -- prepared statement and PL/pgSQL
 PREPARE del_ctid(tid) AS DELETE FROM t WHERE ctid = $1;
 EXECUTE del_ctid('(0,1)');
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DEALLOCATE del_ctid;
 CREATE FUNCTION del_by_ctid(tid) RETURNS void LANGUAGE plpgsql AS
@@ -173,7 +173,7 @@ INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: SIRV functions
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 CONTEXT:  SQL statement "DELETE FROM t WHERE ctid = $1"
 PL/pgSQL function del_by_ctid(tid) line 1 at SQL statement
@@ -181,7 +181,7 @@ PL/pgSQL function del_by_ctid(tid) line 1 at SQL statement
 DELETE FROM t WHERE ctid = '(0,1)' AND v = 0;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 -- A distribution key condition that does not fix the key to values: a
 -- range, only one column of a two-column key, a key joined to another table,
@@ -190,57 +190,57 @@ HINT:  To uniquely identify a row within a distributed table, use the "gp_segmen
 DELETE FROM t WHERE ctid = '(0,1)' AND id BETWEEN 1 AND 2;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM m WHERE ctid = '(0,1)' AND a = 1;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "m.ctid" without the necessary companion column "m.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "m.ctid" without the necessary companion column "m.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM m WHERE ctid = '(0,1)' AND a IN (1, 4);
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "m.ctid" without the necessary companion column "m.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "m.ctid" without the necessary companion column "m.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t USING d WHERE t.ctid = '(0,1)' AND t.id = d.id;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE ctid = '(0,1)' AND id IN (SELECT id FROM d);
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE ctid = '(0,1)' AND id = ANY (ARRAY(SELECT id FROM d));
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE ctid = '(0,1)' AND (id = 1 OR v = 2);
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE ctid = '(0,1)' AND (id = 1 OR id > 5);
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE ctid = '(0,1)' AND id NOT IN (1, 2);
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE ctid = '(0,1)' AND id = ALL ('{1,2}'::int[]);
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM r WHERE ctid = '(0,1)' AND id = 1;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "r.ctid" without the necessary companion column "r.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "r.ctid" without the necessary companion column "r.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 -- A table with partitions or inheritance children: each member has its own
 -- ctids, so one key value can reach a row in every member, unless the
@@ -253,26 +253,26 @@ INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
 NOTICE:  SELECT uses system-defined column "pt.ctid" without the necessary companion column "pt.gp_segment_id"
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
-ERROR:  DELETE uses system-defined column "pt.ctid" without the necessary companion column "pt.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "pt.ctid" without the necessary companion column "pt.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 UPDATE pt SET k = k WHERE ctid = '(0,1)' AND id = 1;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
 NOTICE:  SELECT uses system-defined column "pt.ctid" without the necessary companion column "pt.gp_segment_id"
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
-ERROR:  UPDATE uses system-defined column "pt.ctid" without the necessary companion column "pt.gp_segment_id" (cdbmutate.c:537)
+ERROR:  UPDATE uses system-defined column "pt.ctid" without the necessary companion column "pt.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM ih WHERE ctid = '(0,1)' AND id = 1;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
 NOTICE:  SELECT uses system-defined column "ih.ctid" without the necessary companion column "ih.gp_segment_id"
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
-ERROR:  DELETE uses system-defined column "ih.ctid" without the necessary companion column "ih.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "ih.ctid" without the necessary companion column "ih.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t USING pt WHERE pt.ctid = '(0,1)' AND pt.id = 1 AND t.id = pt.k;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "pt.ctid" without the necessary companion column "pt.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "pt.ctid" without the necessary companion column "pt.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM pt WHERE k IN (SELECT v FROM d WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = pt.ctid AND pt.id = 7));
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
@@ -283,45 +283,45 @@ INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
 NOTICE:  SELECT uses system-defined column "pt.ctid" without the necessary companion column "pt.gp_segment_id"
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
-ERROR:  DELETE uses system-defined column "pt.ctid" without the necessary companion column "pt.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "pt.ctid" without the necessary companion column "pt.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM p2 WHERE ctid = '(0,1)' AND id = 1 AND k = 0;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
 NOTICE:  SELECT uses system-defined column "p2.ctid" without the necessary companion column "p2.gp_segment_id"
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
-ERROR:  DELETE uses system-defined column "p2.ctid" without the necessary companion column "p2.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "p2.ctid" without the necessary companion column "p2.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM pt USING d WHERE pt.ctid = '(0,1)' AND pt.id = 1 AND pt.tableoid = d.v;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
 NOTICE:  SELECT uses system-defined column "pt.ctid" without the necessary companion column "pt.gp_segment_id"
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
-ERROR:  DELETE uses system-defined column "pt.ctid" without the necessary companion column "pt.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "pt.ctid" without the necessary companion column "pt.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM pe WHERE ctid = '(0,1)' AND id = 1 AND k = 2;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
 NOTICE:  SELECT uses system-defined column "pe.ctid" without the necessary companion column "pe.gp_segment_id"
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
-ERROR:  DELETE uses system-defined column "pe.ctid" without the necessary companion column "pe.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "pe.ctid" without the necessary companion column "pe.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 -- another column of the same row is not a fixed value
 DELETE FROM t WHERE ctid = '(0,1)' AND id = v;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE ctid = '(0,1)' AND id IN (1, v);
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 -- a volatile expression is not a fixed value
 DELETE FROM t WHERE ctid = '(0,1)' AND id = (random() * 0 + 1)::int;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 -- A non-strict operator, which constant folding can turn into true.
 CREATE FUNCTION ctid_dml_any(int, bigint) RETURNS bool LANGUAGE sql IMMUTABLE AS 'SELECT true';
@@ -356,7 +356,7 @@ ERROR:  correlated subquery with skip-level correlations is not supported
 DELETE FROM t WHERE ctid = '(0,1)' AND 0 >>> (SELECT count(*) FROM s s2 WHERE s2.sid = t.gp_segment_id LIMIT 1);
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DROP OPERATOR >>> (int, bigint);
 DROP FUNCTION ctid_dml_any(int, bigint);
@@ -364,7 +364,7 @@ DROP FUNCTION ctid_dml_any(int, bigint);
 DELETE FROM t WHERE ctid IS NOT NULL AND ctid = '(0,1)';
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 --
 -- gp_segment_id that the planner removes before it checks: rejected.
@@ -373,20 +373,20 @@ HINT:  To uniquely identify a row within a distributed table, use the "gp_segmen
 DELETE FROM t WHERE ctid = '(0,1)' OR (ctid = '(0,1)' AND gp_segment_id = 0);
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 -- The same after constant folding, which the planner does first.
 DELETE FROM t WHERE ctid = '(0,1)' OR (ctid = ('(0,' || '1)')::tid AND gp_segment_id = 0);
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 -- With a parameter bound to the same ctid (a custom plan folds it).
 PREPARE del_or(tid) AS DELETE FROM t WHERE ctid = $1 OR (ctid = '(0,1)' AND gp_segment_id = 0);
 EXECUTE del_or('(0,1)');
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DEALLOCATE del_or;
 -- T5: the output list of an EXISTS subquery is discarded, with the qualifier
@@ -394,32 +394,32 @@ DEALLOCATE del_or;
 DELETE FROM t a WHERE EXISTS (SELECT (SELECT 1 WHERE b.gp_segment_id = 0) FROM t b WHERE b.id = a.id AND b.ctid = '(0,1)');
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "b.ctid" without the necessary companion column "b.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "b.ctid" without the necessary companion column "b.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 -- T7: once z is pulled up, z.k = 1 is true, and so is the OR.
 DELETE FROM t a USING (SELECT 1 AS k) z WHERE a.ctid = '(0,1)' AND (a.gp_segment_id = 0 OR z.k = 1);
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "a.ctid" without the necessary companion column "a.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "a.ctid" without the necessary companion column "a.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 -- The output of an EXISTS is not used, so this gp_segment_id is not counted.
 DELETE FROM t a WHERE EXISTS (SELECT b.gp_segment_id FROM t b WHERE b.id = a.id AND b.ctid = '(0,1)');
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "b.ctid" without the necessary companion column "b.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "b.ctid" without the necessary companion column "b.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 -- D1: an unused column of a derived table.
 DELETE FROM t a USING (SELECT b.id, b.gp_segment_id AS s FROM t b WHERE b.ctid = '(0,1)') x WHERE a.id = x.id;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "b.ctid" without the necessary companion column "b.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "b.ctid" without the necessary companion column "b.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 -- B1: b's ctid is used through the derived table and b's gp_segment_id is not,
 -- so rows of a would be paired with another segment's ctid.
 DELETE FROM t a USING (SELECT b.id, b.ctid AS c, b.gp_segment_id AS s FROM t b) x WHERE a.ctid = x.c AND a.gp_segment_id = 1;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "b.ctid" without the necessary companion column "b.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "b.ctid" without the necessary companion column "b.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 --
 -- ctid of a table in a subquery that the planner pulls up into the DML:
@@ -430,73 +430,73 @@ HINT:  To uniquely identify a row within a distributed table, use the "gp_segmen
 DELETE FROM t WHERE EXISTS (SELECT 1 FROM s WHERE s.tid = t.ctid);
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 -- V2, E1, E2
 DELETE FROM t a USING (SELECT b.id FROM t b WHERE b.ctid = '(0,1)') x WHERE a.id = x.id;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "b.ctid" without the necessary companion column "b.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "b.ctid" without the necessary companion column "b.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t a WHERE EXISTS (SELECT 1 FROM t b WHERE b.id = a.id AND b.ctid = '(0,1)');
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "b.ctid" without the necessary companion column "b.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "b.ctid" without the necessary companion column "b.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE id IN (SELECT id FROM t t2 WHERE t2.ctid = '(0,1)');
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t2.ctid" without the necessary companion column "t2.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t2.ctid" without the necessary companion column "t2.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM d WHERE ctid = (SELECT ctid FROM d WHERE v = 0 ORDER BY id LIMIT 1);
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "d.ctid" without the necessary companion column "d.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "d.ctid" without the necessary companion column "d.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM d WHERE ctid IN (SELECT ctid FROM (SELECT ctid, row_number() OVER (PARTITION BY v ORDER BY id) AS rn FROM d) x WHERE rn > 1);
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "d.ctid" without the necessary companion column "d.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "d.ctid" without the necessary companion column "d.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM d WHERE ctid NOT IN (SELECT min(ctid) FROM d GROUP BY v);
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "d.ctid" without the necessary companion column "d.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "d.ctid" without the necessary companion column "d.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM d a WHERE EXISTS (SELECT 1 FROM d b WHERE a.v = b.v AND a.ctid > b.ctid);
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "a.ctid" without the necessary companion column "a.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "a.ctid" without the necessary companion column "a.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE ctid IN (SELECT ctid FROM t WHERE v = 1 LIMIT 2);
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t USING t t2 WHERE t.ctid = t2.ctid AND t2.id = 7;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t USING s WHERE t.ctid = s.tid;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t USING s WHERE t.ctid = s.tid AND s.sid IS NOT NULL;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 UPDATE t SET note = 'y' FROM s WHERE t.ctid = s.tid;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  UPDATE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  UPDATE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 WITH x AS (SELECT tid FROM s) DELETE FROM t WHERE ctid IN (SELECT tid FROM x);
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 -- More statements that do not pin the row.  Except where noted, each changed
 -- rows on other segments (or partitions) under GPORCA in 7.6.0 with this
@@ -504,65 +504,65 @@ HINT:  To uniquely identify a row within a distributed table, use the "gp_segmen
 UPDATE t SET note = 'y' FROM (VALUES ('(0,1)'::tid), ('(0,2)'::tid)) v(c) WHERE t.ctid = v.c;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  UPDATE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  UPDATE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE ctid IS NOT DISTINCT FROM '(0,1)';
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE (ctid = '(0,1)') IS TRUE;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE CASE WHEN ctid = '(0,1)' THEN true ELSE false END;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE ctid > ALL (SELECT tid FROM s);
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE ctid IN (SELECT tid FROM s UNION SELECT '(0,2)'::tid);
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t USING s LEFT JOIN d ON d.id = 7 WHERE t.ctid = s.tid;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM t t2 WHERE t2.id = d.id AND t2.ctid = '(0,1)'));
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t2.ctid" without the necessary companion column "t2.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t2.ctid" without the necessary companion column "t2.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM tv WHERE c = '(0,1)';
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM tr WHERE id = 7;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 SELECT del_sql('(0,1)');
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: SIRV functions
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 CONTEXT:  SQL function "del_sql" during startup
 DO $$ BEGIN EXECUTE format('DELETE FROM ctid_dml.t WHERE ctid = %L', '(0,1)'); END $$;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 CONTEXT:  SQL statement "DELETE FROM ctid_dml.t WHERE ctid = '(0,1)'"
 PL/pgSQL function inline_code_block line 1 at EXECUTE
@@ -570,7 +570,7 @@ CREATE TEMP TABLE tt AS SELECT * FROM t DISTRIBUTED BY (id);
 DELETE FROM tt WHERE ctid = '(0,1)';
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "tt.ctid" without the necessary companion column "tt.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "tt.ctid" without the necessary companion column "tt.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DROP TABLE tt;
 -- A condition that does not pin the row: ctid IS NOT NULL in an OR, and
@@ -578,14 +578,14 @@ DROP TABLE tt;
 DELETE FROM t WHERE ctid IS NOT NULL OR ctid = '(0,1)';
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 CREATE TABLE s1 (tid tid) DISTRIBUTED RANDOMLY;
 INSERT INTO s1 VALUES ('(0,1)');
 DELETE FROM t USING d, s1 WHERE d.ctid = s1.tid AND t.id = d.id;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "d.ctid" without the necessary companion column "d.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "d.ctid" without the necessary companion column "d.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DROP TABLE s1;
 -- The rule counts a distribution key fixed with =, IN, = ANY or an OR of =
@@ -594,34 +594,34 @@ DROP TABLE s1;
 DELETE FROM t WHERE ctid = '(0,1)' AND id::text = '1';
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE ctid = '(0,1)' AND id IS NULL;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 -- A gp_segment_id condition that filters nothing after simplification, or
 -- does not reach the statement's rows:
 DELETE FROM t WHERE ctid = '(0,1)' AND CASE WHEN true THEN true ELSE gp_segment_id = 0 END;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE ctid = '(0,1)' AND COALESCE(true, gp_segment_id = 0);
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 WITH x AS (SELECT 1 FROM t b WHERE b.ctid = '(0,1)' AND b.gp_segment_id = 0) DELETE FROM t a WHERE a.ctid = '(0,1)';
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "a.ctid" without the necessary companion column "a.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "a.ctid" without the necessary companion column "a.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t a WHERE a.ctid = '(0,1)' AND a.id IN (SELECT b.id FROM t b ORDER BY a.gp_segment_id);
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "a.ctid" without the necessary companion column "a.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "a.ctid" without the necessary companion column "a.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 -- Partitioned tables, the row not named: a partition alone by ctid, tableoid
 -- or the partition key without the distribution key, a range on the
@@ -629,35 +629,35 @@ HINT:  To uniquely identify a row within a distributed table, use the "gp_segmen
 DELETE FROM pt_1_prt_2 WHERE ctid = '(0,1)';
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
-ERROR:  DELETE uses system-defined column "pt_1_prt_2.ctid" without the necessary companion column "pt_1_prt_2.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "pt_1_prt_2.ctid" without the necessary companion column "pt_1_prt_2.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM pt WHERE ctid = '(0,1)' AND tableoid = 'pt_1_prt_2'::regclass;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
 NOTICE:  SELECT uses system-defined column "pt.ctid" without the necessary companion column "pt.gp_segment_id"
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
-ERROR:  DELETE uses system-defined column "pt.ctid" without the necessary companion column "pt.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "pt.ctid" without the necessary companion column "pt.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM pt WHERE ctid = '(0,1)' AND k = 1;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
 NOTICE:  SELECT uses system-defined column "pt.ctid" without the necessary companion column "pt.gp_segment_id"
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
-ERROR:  DELETE uses system-defined column "pt.ctid" without the necessary companion column "pt.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "pt.ctid" without the necessary companion column "pt.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 UPDATE pt SET k = 3 WHERE ctid = '(0,1)' AND k < 2;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
 NOTICE:  SELECT uses system-defined column "pt.ctid" without the necessary companion column "pt.gp_segment_id"
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
-ERROR:  UPDATE uses system-defined column "pt.ctid" without the necessary companion column "pt.gp_segment_id" (cdbmutate.c:537)
+ERROR:  UPDATE uses system-defined column "pt.ctid" without the necessary companion column "pt.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM lp WHERE ctid = '(0,1)' AND id = 1;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
 NOTICE:  SELECT uses system-defined column "lp.ctid" without the necessary companion column "lp.gp_segment_id"
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
-ERROR:  DELETE uses system-defined column "lp.ctid" without the necessary companion column "lp.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "lp.ctid" without the necessary companion column "lp.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 SELECT ctid AS pao_ctid FROM pao WHERE id = 1 AND k = 0 \gset
 DELETE FROM pao WHERE ctid = :'pao_ctid' AND id = 1;
@@ -665,7 +665,7 @@ INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
 NOTICE:  SELECT uses system-defined column "pao.ctid" without the necessary companion column "pao.gp_segment_id"
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
-ERROR:  DELETE uses system-defined column "pao.ctid" without the necessary companion column "pao.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "pao.ctid" without the necessary companion column "pao.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 SET plan_cache_mode = force_generic_plan;
 PREPARE del_lp(int, tid) AS DELETE FROM lp WHERE id = $1 AND ctid = $2;
@@ -674,10 +674,94 @@ INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
 NOTICE:  SELECT uses system-defined column "lp.ctid" without the necessary companion column "lp.gp_segment_id"
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
-ERROR:  DELETE uses system-defined column "lp.ctid" without the necessary companion column "lp.gp_segment_id" (cdbmutate.c:537)
+ERROR:  DELETE uses system-defined column "lp.ctid" without the necessary companion column "lp.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DEALLOCATE del_lp;
 RESET plan_cache_mode;
+-- A gp_segment_id condition that the planner's rewrites remove, so the row
+-- is not located, under both optimizers: an operator whose SQL function
+-- folds to true, an OR arm that is null, a sub-select that folds to false,
+-- an EXISTS over an aggregate (always true), a LIMIT 0.  A row-level security
+-- policy that picks rows by ctid; a SQL set-returning function that does,
+-- inlined into the statement; an inheritance child distributed by another
+-- column, where fixing the parent's key does not fix the segment.
+CREATE FUNCTION ctid_dml_true(int, bigint) RETURNS bool LANGUAGE sql IMMUTABLE AS 'SELECT true';
+CREATE OPERATOR >>> (LEFTARG = int, RIGHTARG = bigint, FUNCTION = ctid_dml_true);
+DELETE FROM t WHERE ctid = '(0,1)' AND gp_segment_id >>> 0::bigint;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
+HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
+DROP OPERATOR >>> (int, bigint);
+DROP FUNCTION ctid_dml_true(int, bigint);
+DELETE FROM t WHERE ctid = '(0,1)' AND (id > 0 OR (gp_segment_id = 0 AND NULL::boolean));
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
+HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
+DELETE FROM t WHERE ctid = '(0,1)' AND NOT EXISTS (SELECT 1 FROM s WHERE s.sid = t.gp_segment_id AND false);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
+HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
+DELETE FROM t WHERE ctid = '(0,1)' AND EXISTS (SELECT count(*) FROM s WHERE s.sid = t.gp_segment_id);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
+HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
+DELETE FROM t WHERE ctid = '(0,1)' AND NOT EXISTS (SELECT 1 FROM s WHERE s.sid = t.gp_segment_id LIMIT 0);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
+HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
+CREATE ROLE ctid_dml_reader;
+GRANT USAGE ON SCHEMA ctid_dml TO ctid_dml_reader;
+CREATE TABLE rls (id int, v int) DISTRIBUTED BY (id);
+INSERT INTO rls SELECT g, g FROM generate_series(1, 20) g;
+GRANT SELECT, DELETE ON rls TO ctid_dml_reader;
+ALTER TABLE rls ENABLE ROW LEVEL SECURITY;
+CREATE POLICY rls_ctid ON rls USING (ctid = '(0,1)');
+SET ROLE ctid_dml_reader;
+DELETE FROM rls;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
+ERROR:  DELETE uses system-defined column "rls.ctid" without the necessary companion column "rls.gp_segment_id" (cdbmutate.c:558)
+HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
+RESET ROLE;
+SELECT count(*) AS rls_rows FROM rls;
+ rls_rows 
+----------
+       20
+(1 row)
+
+DROP TABLE rls;
+REVOKE USAGE ON SCHEMA ctid_dml FROM ctid_dml_reader;
+DROP ROLE ctid_dml_reader;
+CREATE FUNCTION ctid_dml_ids() RETURNS SETOF int LANGUAGE sql STABLE AS $$ SELECT id FROM ctid_dml.t WHERE ctid = '(0,1)' $$;
+DELETE FROM t a USING ctid_dml_ids() AS b(id) WHERE a.id = b.id;
+ERROR:  function cannot execute on a QE slice because it accesses relation "ctid_dml.t"  (seg0 slice1 127.0.0.1:7504 pid=38696)
+CONTEXT:  SQL function "ctid_dml_ids" during startup
+DROP FUNCTION ctid_dml_ids();
+CREATE TABLE ihd (id int, v int) DISTRIBUTED BY (id);
+CREATE TABLE ihd_c () INHERITS (ihd) DISTRIBUTED BY (v);
+INSERT INTO ihd_c SELECT 1, g FROM generate_series(1, 12) g;
+DELETE FROM ihd WHERE ctid = '(0,1)' AND id = 1 AND tableoid = 'ihd_c'::regclass;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Inherited tables
+NOTICE:  SELECT uses system-defined column "ihd.ctid" without the necessary companion column "ihd.gp_segment_id"
+HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
+ERROR:  DELETE uses system-defined column "ihd.ctid" without the necessary companion column "ihd.gp_segment_id" (cdbmutate.c:558)
+HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
+SELECT count(*) AS ihd_rows FROM ihd;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Inherited tables
+ ihd_rows 
+----------
+       12
+(1 row)
+
+DROP TABLE ihd CASCADE;
+NOTICE:  drop cascades to table ihd_c
 -- Nothing was changed.
 SELECT count(*), sum(id), sum(CASE WHEN note <> 'x' THEN 1 ELSE 0 END) AS changed FROM t;
  count | sum | changed 
@@ -1044,6 +1128,8 @@ ROLLBACK;
 -- With a strict operator the sub-select stays, and so does gp_segment_id.
 BEGIN;
 DELETE FROM t WHERE ctid = '(0,1)' AND 0 < (SELECT count(*) FROM s s2 WHERE s2.sid = t.gp_segment_id LIMIT 1);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
 SELECT count(*) AS left_rows FROM t;
  left_rows 
 -----------
@@ -1069,50 +1155,108 @@ DETAIL:  Falling back to Postgres-based planner because GPORCA does not support 
 ROLLBACK;
 -- The member named too: the partition key fixed to a value or a list (one
 -- row per listed partition), tableoid fixed, a distribution key that
--- includes the partition key, both levels of two, hash partitions.
+-- includes the partition key, both levels of two, hash partitions, two
+-- levels with a different sub-key per partition when every key is fixed.
+-- GPORCA plans the single-level range and list cases.  The planner's own
+-- check counts only gp_segment_id and the distribution key of a table
+-- without members, so with optimizer=off they are rejected, as before this
+-- change.  GPORCA leaves inheritance parents, multi-level and hash
+-- partitioned tables and explicit collations to the planner, so those are
+-- rejected under both optimizers.
 BEGIN;
 DELETE FROM pt WHERE ctid = '(0,1)' AND id = 5 AND k = 1;
-DELETE FROM pt WHERE ctid = '(0,1)' AND id = 2 AND k IN (1, 2);
-DELETE FROM pt WHERE ctid = '(0,1)' AND id = 3 AND tableoid = 'pt_1_prt_4'::regclass;
-DELETE FROM ih WHERE ctid = '(0,1)' AND id = 1 AND tableoid = 'ih_c'::regclass;
-INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
-DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Inherited tables
-DELETE FROM pk2 WHERE ctid = '(0,1)' AND id = 1 AND k = 2;
-DELETE FROM p2 WHERE ctid = '(0,1)' AND id = 1 AND k = 0 AND v = 2;
-INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
-DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Multi-level partitioned tables
-DELETE FROM ph WHERE ctid = '(0,1)' AND id = 1 AND k = 3;
-INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
-DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: hash partitioning
-SELECT (SELECT count(*) FROM pt) AS pt, (SELECT count(*) FROM ih) AS ih, (SELECT count(*) FROM pk2) AS pk2, (SELECT count(*) FROM p2) AS p2, (SELECT count(*) FROM ph) AS ph;
-INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
-DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Inherited tables
- pt | ih | pk2 | p2 | ph 
-----+----+-----+----+----
- 13 |  1 |   3 |  1 |  3
+SELECT count(*) AS pt FROM pt;
+ pt 
+----
+ 15
 (1 row)
 
 ROLLBACK;
--- The partition key compared under another collation, and two levels with a
--- different sub-key per partition when every partition key is fixed.
+BEGIN;
+DELETE FROM pt WHERE ctid = '(0,1)' AND id = 2 AND k IN (1, 2);
+SELECT count(*) AS pt FROM pt;
+ pt 
+----
+ 15
+(1 row)
+
+ROLLBACK;
+BEGIN;
+DELETE FROM pt WHERE ctid = '(0,1)' AND id = 3 AND tableoid = 'pt_1_prt_4'::regclass;
+SELECT count(*) AS pt FROM pt;
+ pt 
+----
+ 15
+(1 row)
+
+ROLLBACK;
+BEGIN;
+DELETE FROM ih WHERE ctid = '(0,1)' AND id = 1 AND tableoid = 'ih_c'::regclass;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Inherited tables
+NOTICE:  SELECT uses system-defined column "ih.ctid" without the necessary companion column "ih.gp_segment_id"
+HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
+ERROR:  DELETE uses system-defined column "ih.ctid" without the necessary companion column "ih.gp_segment_id" (cdbmutate.c:558)
+HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
+SELECT count(*) AS ih FROM ih;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK;
+BEGIN;
+DELETE FROM pk2 WHERE ctid = '(0,1)' AND id = 1 AND k = 2;
+SELECT count(*) AS pk2 FROM pk2;
+ pk2 
+-----
+   3
+(1 row)
+
+ROLLBACK;
+BEGIN;
+DELETE FROM p2 WHERE ctid = '(0,1)' AND id = 1 AND k = 0 AND v = 2;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
+NOTICE:  SELECT uses system-defined column "p2.ctid" without the necessary companion column "p2.gp_segment_id"
+HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
+ERROR:  DELETE uses system-defined column "p2.ctid" without the necessary companion column "p2.gp_segment_id" (cdbmutate.c:558)
+HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
+SELECT count(*) AS p2 FROM p2;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK;
+BEGIN;
+DELETE FROM ph WHERE ctid = '(0,1)' AND id = 1 AND k = 3;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
+NOTICE:  SELECT uses system-defined column "ph.ctid" without the necessary companion column "ph.gp_segment_id"
+HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
+ERROR:  DELETE uses system-defined column "ph.ctid" without the necessary companion column "ph.gp_segment_id" (cdbmutate.c:558)
+HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
+SELECT count(*) AS ph FROM ph;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK;
 BEGIN;
 DELETE FROM lp WHERE ctid = '(0,1)' AND id = 1 AND region = 'e' COLLATE "C";
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-default collation
+NOTICE:  SELECT uses system-defined column "lp.ctid" without the necessary companion column "lp.gp_segment_id"
+HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
+ERROR:  DELETE uses system-defined column "lp.ctid" without the necessary companion column "lp.gp_segment_id" (cdbmutate.c:558)
+HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
+SELECT count(*) AS lp FROM lp;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK;
+BEGIN;
 DELETE FROM hz WHERE ctid = '(0,1)' AND id = 1 AND k = 0 AND v = 2 AND w = 0;
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
-DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Multi-level partitioned tables
-SELECT (SELECT count(*) FROM lp) AS lp, (SELECT count(*) FROM hz) AS hz;
-INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
-DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Multi-level partitioned tables
- lp | hz 
-----+----
-  2 |  3
-(1 row)
-
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
+NOTICE:  SELECT uses system-defined column "hz.ctid" without the necessary companion column "hz.gp_segment_id"
+HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
+ERROR:  DELETE uses system-defined column "hz.ctid" without the necessary companion column "hz.gp_segment_id" (cdbmutate.c:558)
+HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
+SELECT count(*) AS hz FROM hz;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 ROLLBACK;
--- A key condition inside a sub-select the planner keeps as a SubPlan still
--- fixes the segment: both optimizers accept it.
+-- A key condition inside a sub-select kept as a SubPlan fixes the segment:
+-- GPORCA plans it; the planner's check does not see the key inside the
+-- SubPlan and rejects it, as before this change.
 BEGIN;
 DELETE FROM t WHERE 0 < (SELECT count(*) FROM s WHERE s.tid = t.ctid AND t.id = 7);
 SELECT count(*) AS left_rows, sum(CASE WHEN id = 7 THEN 1 ELSE 0 END) AS id_7 FROM t;
@@ -1122,26 +1266,6 @@ SELECT count(*) AS left_rows, sum(CASE WHEN id = 7 THEN 1 ELSE 0 END) AS id_7 FR
 (1 row)
 
 ROLLBACK;
--- The same with a key value from an immutable function that the planner
--- runs while it plans the statement, and that plans (and catches an error
--- in) a statement of its own.
-CREATE FUNCTION ctid_dml_seven() RETURNS int LANGUAGE plpgsql IMMUTABLE AS $$
-BEGIN
-  PERFORM 1 / 0;
-  RETURN 7;
-EXCEPTION WHEN division_by_zero THEN
-  RETURN 7;
-END $$;
-BEGIN;
-DELETE FROM t WHERE 0 < (SELECT count(*) FROM s WHERE s.tid = t.ctid AND t.id = ctid_dml_seven());
-SELECT count(*) AS left_rows, sum(CASE WHEN id = 7 THEN 1 ELSE 0 END) AS id_7 FROM t;
- left_rows | id_7 
------------+------
-        19 |    0
-(1 row)
-
-ROLLBACK;
-DROP FUNCTION ctid_dml_seven();
 -- An OR whose arms share the gp_segment_id condition: the planner reduces it
 -- to that condition, and GPORCA plans it.
 BEGIN;

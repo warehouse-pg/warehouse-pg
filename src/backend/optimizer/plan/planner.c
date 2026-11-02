@@ -563,28 +563,9 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	else
 		top_slice = NULL;
 
-	/*
-	 * primary planning entry point (may recurse for subqueries).  An UPDATE
-	 * or DELETE whose ctid use the rule shared with GPORCA accepts is exempt
-	 * from the planner's ctid check, so the planner accepts every statement
-	 * GPORCA would plan (see cdbmutate_ctid_proof_begin()).
-	 */
-	{
-		bool		save_ctid_proof = cdbmutate_ctid_proof_begin(parse);
-
-		PG_TRY();
-		{
-			root = subquery_planner(glob, parse, NULL,
-									false, tuple_fraction, config);
-		}
-		PG_CATCH();
-		{
-			cdbmutate_ctid_proof_end(save_ctid_proof);
-			PG_RE_THROW();
-		}
-		PG_END_TRY();
-		cdbmutate_ctid_proof_end(save_ctid_proof);
-	}
+	/* primary planning entry point (may recurse for subqueries) */
+	root = subquery_planner(glob, parse, NULL,
+							false, tuple_fraction, config);
 
 	/* Select best Path and turn it into a Plan */
 	final_rel = fetch_upper_rel(root, UPPERREL_FINAL, NULL);

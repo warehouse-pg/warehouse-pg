@@ -215,9 +215,6 @@ getExprListFromTargetList(List *tlist,
 	return elist;
 }
 
-/* set by cdbmutate_ctid_proof_begin(), see there */
-static bool ctid_dml_proven = false;
-
 /* ----------------------------------------------------------------------- *
  * cdbmutate_warn_ctid_without_segid() warns the user if the plan refers to a
  * partitioned table's ctid column without also referencing its
@@ -229,9 +226,10 @@ static bool ctid_dml_proven = false;
  * key names its segment (see ctid_rel_located_by_key()); the latter not for
  * a table with partitions or inheritance children, where one segment holds a
  * set of ctids per member (ctid_rel_is_member_set()).  A ctid that is only
- * tested with IS [NOT] NULL does not pick rows and is not counted.  An UPDATE
- * or DELETE that cdbmutate_dml_ctid_unlocated() accepts is not checked here
- * at all (cdbmutate_ctid_proof_begin()).
+ * tested with IS [NOT] NULL does not pick rows and is not counted.  This
+ * check runs after the planner's own rewrites (constant folding, function
+ * inlining, sub-select simplification, row-level security), so it sees the
+ * statement as it will run.
  * ----------------------------------------------------------------------- *
  */
 typedef struct ctid_inventory_context
@@ -312,13 +310,28 @@ ctid_is_key_value(Node *node, bool one_value)
 }
 
 /*
+ * May an equality with input collation inputcollid count as fixing a column
+ * (or partition key) of collation colcoll?  With a nondeterministic
+ * collation (for example case-insensitive) other than the column's own,
+ * equal values can be stored as different strings, which hash to different
+ * segments and fall into different partitions.
+ */
+static bool
+ctid_collation_ok(Oid inputcollid, Oid colcoll)
+{
+	return !OidIsValid(inputcollid) || inputcollid == colcoll ||
+		get_collation_isdeterministic(inputcollid);
+}
+
+/*
  * Does the clause fix the given key column of the rel to values?
  *   column = value             (equality of the column's distribution opclass)
  *   column IN (list), column = ANY (array)
  *   an OR whose every arm is one of these for the same column
  */
 static bool
-ctid_clause_fixes_key(Node *clause, RelOptInfo *rel, AttrNumber attno, Oid opfamily)
+ctid_clause_fixes_key(Node *clause, RelOptInfo *rel, AttrNumber attno, Oid opfamily,
+					  Oid colcoll)
 {
 	if (is_opclause(clause))
 	{
@@ -326,7 +339,8 @@ ctid_clause_fixes_key(Node *clause, RelOptInfo *rel, AttrNumber attno, Oid opfam
 		Node	   *other;
 
 		if (list_length(op->args) != 2 ||
-			get_op_opfamily_strategy(op->opno, opfamily) != HTEqualStrategyNumber)
+			get_op_opfamily_strategy(op->opno, opfamily) != HTEqualStrategyNumber ||
+			!ctid_collation_ok(op->inputcollid, colcoll))
 			return false;
 		if (ctid_is_rel_column(linitial(op->args), rel, attno))
 			other = lsecond(op->args);
@@ -344,6 +358,7 @@ ctid_clause_fixes_key(Node *clause, RelOptInfo *rel, AttrNumber attno, Oid opfam
 		return saop->useOr &&
 			list_length(saop->args) == 2 &&
 			get_op_opfamily_strategy(saop->opno, opfamily) == HTEqualStrategyNumber &&
+			ctid_collation_ok(saop->inputcollid, colcoll) &&
 			ctid_is_rel_column(linitial(saop->args), rel, attno) &&
 			ctid_is_key_value(lsecond(saop->args), false);
 	}
@@ -354,7 +369,8 @@ ctid_clause_fixes_key(Node *clause, RelOptInfo *rel, AttrNumber attno, Oid opfam
 
 		foreach(lc, ((BoolExpr *) clause)->args)
 		{
-			if (!ctid_clause_fixes_key((Node *) lfirst(lc), rel, attno, opfamily))
+			if (!ctid_clause_fixes_key((Node *) lfirst(lc), rel, attno, opfamily,
+									   colcoll))
 				return false;
 		}
 		return true;
@@ -409,9 +425,10 @@ ctid_rel_is_member_set(PlannerInfo *root, RelOptInfo *rel)
  * the caller) does not qualify.
  */
 static bool
-ctid_rel_located_by_key(RelOptInfo *rel)
+ctid_rel_located_by_key(PlannerInfo *root, RelOptInfo *rel)
 {
 	GpPolicy   *policy = rel->cdbpolicy;
+	Oid			relid = root->simple_rte_array[rel->relid]->relid;
 	int			i;
 
 	if (!GpPolicyIsHashPartitioned(policy) || policy->nattrs == 0)
@@ -421,14 +438,18 @@ ctid_rel_located_by_key(RelOptInfo *rel)
 	{
 		AttrNumber	attno = policy->attrs[i];
 		Oid			opfamily = get_opclass_family(policy->opclasses[i]);
+		Oid			coltype;
+		int32		coltypmod;
+		Oid			colcoll;
 		bool		found = false;
 		ListCell   *lc;
 
+		get_atttypetypmodcoll(relid, attno, &coltype, &coltypmod, &colcoll);
 		foreach(lc, rel->baserestrictinfo)
 		{
 			RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
 
-			if (ctid_clause_fixes_key((Node *) rinfo->clause, rel, attno, opfamily))
+			if (ctid_clause_fixes_key((Node *) rinfo->clause, rel, attno, opfamily, colcoll))
 			{
 				found = true;
 				break;
@@ -448,10 +469,6 @@ cdbmutate_warn_ctid_without_segid(struct PlannerInfo *root, struct RelOptInfo *r
 	ListCell   *cell;
 	AttrNumber	attno;
 	int			ndx;
-
-	/* the statement's ctid use is accepted; see cdbmutate_ctid_proof_begin() */
-	if (ctid_dml_proven)
-		return;
 
 	planner_init_plan_tree_base(&inv.base, root);
 	inv.uses_ctid = false;
@@ -506,7 +523,7 @@ cdbmutate_warn_ctid_without_segid(struct PlannerInfo *root, struct RelOptInfo *r
 	 */
 	if (inv.uses_ctid && !inv.uses_segid &&
 		!ctid_rel_is_member_set(root, rel) &&
-		ctid_rel_located_by_key(rel))
+		ctid_rel_located_by_key(root, rel))
 		inv.uses_segid = true;
 
 	/* Notify client if found a reference to ctid only, without gp_segment_id */
@@ -548,10 +565,9 @@ cdbmutate_warn_ctid_without_segid(struct PlannerInfo *root, struct RelOptInfo *r
  * every ctid reference outside the top-level SET and RETURNING lists is
  * located.  A ctid is unique only within one segment, so a statement that
  * picks rows by a ctid whose segment it leaves open changes one row on every
- * segment.  Both optimizers use the answer: GPORCA plans the statement only
- * when every reference is located (otherwise it falls back), and the planner
- * skips its own check, cdbmutate_warn_ctid_without_segid(), for such a
- * statement (cdbmutate_ctid_proof_begin()).
+ * segment.  GPORCA plans the statement only when every reference is located
+ * (otherwise it falls back); the planner always applies its own check,
+ * cdbmutate_warn_ctid_without_segid(), after its rewrites.
  *
  * "Located" follows the planner's rule.  A reference counts as located when
  * some AND-ed condition around it
@@ -561,8 +577,8 @@ cdbmutate_warn_ctid_without_segid(struct PlannerInfo *root, struct RelOptInfo *r
  *	  relation's own: the key then names the segment, so the ctid names at
  *	  most one row per key value.  A table with partitions or inheritance
  *	  children has a set of ctids per member, so the member must be named as
- *	  well: tableoid fixed to values, or the partition keys fixed to values at
- *	  every level (ctid_frames_pin_member()); or
+ *	  well: tableoid fixed to values, or the partition keys fixed to values
+ *	  (ctid_frames_pin_member()); or
  *	- puts a condition on the relation's gp_segment_id: the bare column
  *	  compared with an expression that does not contain it, = ANY or IS [NOT]
  *	  NULL, at any level from the reference up to the relation's own; an OR
@@ -604,6 +620,19 @@ typedef struct ctid_keep_context
 
 static bool ctid_keep_walker(Node *node, ctid_keep_context *cxt);
 static void ctid_keep_query(Query *query, bool via_qual, bool top, ctid_keep_context *cxt);
+
+/* Does the expression reference any relation's ctid? */
+static bool
+ctid_contains_ctid_walker(Node *node, void *context)
+{
+	if (node == NULL)
+		return false;
+	if (IsA(node, Var))
+		return ((Var *) node)->varattno == SelfItemPointerAttributeNumber;
+	if (IsA(node, Query))
+		return query_tree_walker((Query *) node, ctid_contains_ctid_walker, context, 0);
+	return expression_tree_walker(node, ctid_contains_ctid_walker, context);
+}
 
 /* Members of a (possibly nested) AND. */
 static List *
@@ -735,7 +764,7 @@ ctid_is_parse_key_value(Node *node)
  */
 static bool
 ctid_member_fixes_key(Node *m, int level, int target, Index varno,
-					  AttrNumber attno, Oid opfamily, int16 strategy)
+					  AttrNumber attno, Oid opfamily, int16 strategy, Oid colcoll)
 {
 	check_stack_depth();
 
@@ -745,7 +774,8 @@ ctid_member_fixes_key(Node *m, int level, int target, Index varno,
 
 
 		if (list_length(op->args) != 2 ||
-			get_op_opfamily_strategy(op->opno, opfamily) != strategy)
+			get_op_opfamily_strategy(op->opno, opfamily) != strategy ||
+			!ctid_collation_ok(op->inputcollid, colcoll))
 			return false;
 		if (ctid_is_column_of(linitial(op->args), level, target, varno, attno))
 			return ctid_is_parse_key_value(lsecond(op->args));
@@ -760,6 +790,7 @@ ctid_member_fixes_key(Node *m, int level, int target, Index varno,
 		return saop->useOr &&
 			list_length(saop->args) == 2 &&
 			get_op_opfamily_strategy(saop->opno, opfamily) == strategy &&
+			ctid_collation_ok(saop->inputcollid, colcoll) &&
 			ctid_is_column_of(linitial(saop->args), level, target, varno, attno) &&
 			ctid_is_parse_key_value(lsecond(saop->args));
 	}
@@ -770,7 +801,7 @@ ctid_member_fixes_key(Node *m, int level, int target, Index varno,
 		foreach(lc, ((BoolExpr *) m)->args)
 		{
 			if (!ctid_member_fixes_key((Node *) lfirst(lc), level, target, varno,
-									   attno, opfamily, strategy))
+									   attno, opfamily, strategy, colcoll))
 				return false;
 		}
 		return true;
@@ -787,7 +818,7 @@ ctid_member_fixes_key(Node *m, int level, int target, Index varno,
  */
 static bool
 ctid_frames_fix_column(ctid_keep_context *cxt, int target, Index varno,
-					   AttrNumber attno, Oid opfamily, int16 strategy)
+					   AttrNumber attno, Oid opfamily, int16 strategy, Oid colcoll)
 {
 	int			i;
 
@@ -803,7 +834,7 @@ ctid_frames_fix_column(ctid_keep_context *cxt, int target, Index varno,
 			foreach(lc2, (List *) lfirst(lc1))
 			{
 				if (ctid_member_fixes_key((Node *) lfirst(lc2), i, target, varno,
-										  attno, opfamily, strategy))
+										  attno, opfamily, strategy, colcoll))
 					return true;
 			}
 		}
@@ -812,65 +843,56 @@ ctid_frames_fix_column(ctid_keep_context *cxt, int target, Index varno,
 }
 
 /*
- * Is every partition key column of partitioned table relid, and of every
- * partitioned table below it, fixed to values?  Then each combination of
- * values falls into one leaf partition.  Columns are matched to the
- * statement's relation (root_relid) by name, since a partition's column
- * numbers can differ from its parent's.  A partition key expression is not
- * analysed, and does not count.
+ * Is every partition key column of partitioned table relid (the statement's
+ * table) fixed to values?  Then each combination of values falls into one
+ * partition.  Only one level of partitioning is analysed, with the btree
+ * equality of each key's operator class (a hash partition key has none, so it
+ * does not count), which is what GPORCA plans: it leaves multi-level and hash
+ * partitioned tables, inheritance parents and non-default collations to the
+ * planner, whose own check then decides.  The
+ * collation check guards the case of a nondeterministic collation, should
+ * GPORCA ever plan one.  The key is read from the catalog rather than the
+ * relcache, as the partitions are not locked yet.
  */
 static bool
-ctid_partition_keys_fixed(ctid_keep_context *cxt, int target, Index varno,
-						  Oid root_relid, Oid relid)
+ctid_partition_keys_fixed(ctid_keep_context *cxt, int target, Index varno, Oid relid)
 {
 	HeapTuple	tuple;
 	Form_pg_partitioned_table form;
 	oidvector  *classes;
+	oidvector  *collations;
 	bool		isnull;
 	bool		ok = true;
 	int			i;
 	ListCell   *lc;
 
-	check_stack_depth();
-
-	/*
-	 * Read the key from the catalog rather than the relcache: the partitions
-	 * below the statement's table are not locked yet.  An inheritance parent
-	 * has no partition key.
-	 */
 	tuple = SearchSysCache1(PARTRELID, ObjectIdGetDatum(relid));
 	if (!HeapTupleIsValid(tuple))
-		return false;
+		return false;			/* an inheritance parent: no partition key */
 	form = (Form_pg_partitioned_table) GETSTRUCT(tuple);
 	classes = (oidvector *) DatumGetPointer(SysCacheGetAttr(PARTRELID, tuple,
 															Anum_pg_partitioned_table_partclass,
 															&isnull));
 	Assert(!isnull);
+	collations = (oidvector *) DatumGetPointer(SysCacheGetAttr(PARTRELID, tuple,
+															   Anum_pg_partitioned_table_partcollation,
+															   &isnull));
+	Assert(!isnull);
 	for (i = 0; i < form->partnatts && ok; i++)
 	{
 		AttrNumber	attno = form->partattrs.values[i];
-		AttrNumber	root_attno;
 
-		if (attno == 0)
-		{
-			ok = false;
-			break;
-		}
-		root_attno = get_attnum(root_relid, get_attname(relid, attno, false));
-		ok = root_attno != InvalidAttrNumber &&
-			ctid_frames_fix_column(cxt, target, varno, root_attno,
+		ok = attno != 0 &&		/* an expression is not analysed */
+			ctid_frames_fix_column(cxt, target, varno, attno,
 								   get_opclass_family(classes->values[i]),
-								   form->partstrat == PARTITION_STRATEGY_HASH ?
-								   HTEqualStrategyNumber : BTEqualStrategyNumber);
+								   BTEqualStrategyNumber, collations->values[i]);
 	}
 	ReleaseSysCache(tuple);
 
+	/* one level only */
 	foreach(lc, ok ? find_inheritance_children(relid, NoLock) : NIL)
 	{
-		Oid			child = lfirst_oid(lc);
-
-		if (get_rel_relkind(child) == RELKIND_PARTITIONED_TABLE &&
-			!ctid_partition_keys_fixed(cxt, target, varno, root_relid, child))
+		if (get_rel_relkind(lfirst_oid(lc)) == RELKIND_PARTITIONED_TABLE)
 		{
 			ok = false;
 			break;
@@ -884,15 +906,15 @@ ctid_partition_keys_fixed(ctid_keep_context *cxt, int target, Index varno,
  * table rte that the row is in?  A physical row is named by its segment, its
  * member and its ctid; for a table with members the distribution key gives
  * only the segment.  The member is named by tableoid fixed to values, or, for
- * a partitioned table, by its partition keys fixed to values at every level.
+ * a partitioned table, by its partition keys fixed to values.
  */
 static bool
 ctid_frames_pin_member(ctid_keep_context *cxt, int target, Index varno,
 					   RangeTblEntry *rte)
 {
 	return ctid_frames_fix_column(cxt, target, varno, TableOidAttributeNumber,
-								  OID_BTREE_FAM_OID, BTEqualStrategyNumber) ||
-		ctid_partition_keys_fixed(cxt, target, varno, rte->relid, rte->relid);
+								  OID_BTREE_FAM_OID, BTEqualStrategyNumber, InvalidOid) ||
+		ctid_partition_keys_fixed(cxt, target, varno, rte->relid);
 }
 
 /*
@@ -918,9 +940,16 @@ ctid_frames_fix_key(ctid_keep_context *cxt, int target, Index varno)
 		return false;
 	}
 	for (k = 0; k < policy->nattrs && all; k++)
+	{
+		Oid			coltype;
+		int32		coltypmod;
+		Oid			colcoll;
+
+		get_atttypetypmodcoll(rte->relid, policy->attrs[k], &coltype, &coltypmod, &colcoll);
 		all = ctid_frames_fix_column(cxt, target, varno, policy->attrs[k],
 									 get_opclass_family(policy->opclasses[k]),
-									 HTEqualStrategyNumber);
+									 HTEqualStrategyNumber, colcoll);
+	}
 	pfree(policy);
 	return all && (!ctid_rte_has_members(rte) ||
 				   ctid_frames_pin_member(cxt, target, varno, rte));
@@ -1000,8 +1029,29 @@ ctid_or_keeps_segid(Node *m, int level, int target, Index varno,
 	 */
 	if (!is_orclause(folded))
 		return false;
+	/*
+	 * In a qualifier a null is as good as false, and canonicalize_qual()
+	 * drops an arm that is, or AND-s in, a null or false constant.
+	 */
 	foreach(lc, ((BoolExpr *) folded)->args)
-		arms = lappend(arms, ctid_and_members((Node *) lfirst(lc), NIL));
+	{
+		List	   *members = ctid_and_members((Node *) lfirst(lc), NIL);
+		ListCell   *lm;
+		bool		dropped = false;
+
+		foreach(lm, members)
+		{
+			Node	   *mm = (Node *) lfirst(lm);
+
+			if (IsA(mm, Const) &&
+				(((Const *) mm)->constisnull || !DatumGetBool(((Const *) mm)->constvalue)))
+				dropped = true;
+		}
+		if (!dropped)
+			arms = lappend(arms, members);
+	}
+	if (arms == NIL)
+		return false;
 
 	/* AND-members common to every arm */
 	foreach(lc, (List *) linitial(arms))
@@ -1070,8 +1120,6 @@ ctid_or_keeps_segid(Node *m, int level, int target, Index varno,
  * whose WHERE clause has a condition on gp_segment_id among its AND-members.
  * The planner keeps the reference: as a join qualifier when it pulls the
  * sub-select up, as an argument of the SubPlan when it does not.
- * (Constant folding could remove it only by turning that whole WHERE clause
- * into false or null, and then the sub-select chooses no rows.)
  */
 static bool ctid_sublink_member_keeps_segid(Node *m, int level, int target,
 											Index varno, ctid_keep_context *cxt);
@@ -1085,8 +1133,20 @@ ctid_sublink_keeps_segid(SubLink *sl, int level, int target, Index varno,
 
 	check_stack_depth();
 
-
-	/* a set operation has no qualifier at this level, and finds nothing */
+	/*
+	 * Only a sub-select whose WHERE clause the planner keeps as written: no
+	 * LIMIT or OFFSET (LIMIT 0 makes it empty), no set operation, and for
+	 * EXISTS no aggregate or grouping (the planner replaces such an EXISTS
+	 * with true).  A WHERE clause that constant folding turns into false or
+	 * null keeps no gp_segment_id: GPORCA's input is folded already
+	 * (fold_constants()), including inside sub-selects.
+	 */
+	if (sub->setOperations != NULL || sub->limitCount != NULL || sub->limitOffset != NULL)
+		return false;
+	if (sl->subLinkType == EXISTS_SUBLINK &&
+		(sub->hasAggs || sub->groupClause != NIL || sub->groupingSets != NIL ||
+		 sub->havingQual != NULL || sub->hasWindowFuncs))
+		return false;
 	foreach(lc, ctid_and_members(sub->jointree->quals, NIL))
 	{
 		Node	   *m = (Node *) lfirst(lc);
@@ -1296,6 +1356,16 @@ ctid_keep_query(Query *query, bool via_qual, bool top, ctid_keep_context *cxt)
 
 		if (cxt->unproven)
 			break;
+
+		/*
+		 * A row-level security policy is applied as a filter on this table;
+		 * a ctid in it chooses rows that nothing here locates.
+		 */
+		if (ctid_contains_ctid_walker((Node *) rte->securityQuals, NULL))
+		{
+			cxt->unproven = true;
+			break;
+		}
 		switch (rte->rtekind)
 		{
 			case RTE_SUBQUERY:
@@ -1351,31 +1421,6 @@ cdbmutate_dml_ctid_unlocated(Query *query)
 	return cxt.unproven;
 }
 
-/*
- * The Postgres planner accepts every UPDATE or DELETE that the proof above
- * accepts, so that a statement GPORCA plans is never one the planner would
- * reject: standard_planner() records the proof for the statement it plans
- * (cdbmutate_ctid_proof_begin()/_end(), nested planner calls save and restore
- * it) and cdbmutate_warn_ctid_without_segid() then has nothing to check.
- * The planner's own check still decides every statement the proof does not
- * cover.
- */
-bool
-cdbmutate_ctid_proof_begin(Query *query)
-{
-	bool		save = ctid_dml_proven;
-
-	ctid_dml_proven = (query->commandType == CMD_UPDATE ||
-					   query->commandType == CMD_DELETE) &&
-		!cdbmutate_dml_ctid_unlocated(query);
-	return save;
-}
-
-void
-cdbmutate_ctid_proof_end(bool save)
-{
-	ctid_dml_proven = save;
-}
 
 
 /*
