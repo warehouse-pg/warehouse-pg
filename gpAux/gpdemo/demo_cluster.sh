@@ -340,6 +340,32 @@ if [ "${WITH_MIRRORS}" == "true" ]; then
 	EOF
 fi
 
+# Configure ic-proxy mesh ports when requested. PROXY_DEMO_PORT_BASE can be
+# set in the environment; otherwise default to base+10000 to stay clear of
+# segment / mirror / replication port ranges.
+if [ "${WITH_PROXY}" == "true" ]; then
+    PROXY_DEMO_PORT_BASE=${PROXY_DEMO_PORT_BASE:-`expr $DEMO_PORT_BASE + 10000`}
+    PROXY_COORDINATOR_DEMO_PORT=`expr $PROXY_DEMO_PORT_BASE - 1`
+    cat >> $CLUSTER_CONFIG <<-EOF
+
+		# Coordinator ic-proxy listener port and per-host primary segment proxy port base.
+		COORDINATOR_PROXY_PORT=${PROXY_COORDINATOR_DEMO_PORT}
+		PROXY_PORT_BASE=${PROXY_DEMO_PORT_BASE}
+	EOF
+    if [ "${WITH_MIRRORS}" == "true" ]; then
+        cat >> $CLUSTER_CONFIG <<-EOF
+		MIRROR_PROXY_PORT_BASE=`expr $PROXY_DEMO_PORT_BASE + $NUM_PRIMARY_MIRROR_PAIRS`
+	EOF
+    fi
+    # The demo standby lives on the same host as the coordinator, so it
+    # cannot share the coordinator's proxy port.
+    if [ "${WITH_STANDBY}" == "true" ]; then
+        cat >> $CLUSTER_CONFIG <<-EOF
+		STANDBY_PROXY_PORT=`expr $PROXY_DEMO_PORT_BASE - 2`
+	EOF
+    fi
+fi
+
 
 STANDBY_INIT_OPTS=""
 if [ "${WITH_STANDBY}" == "true" ]; then
