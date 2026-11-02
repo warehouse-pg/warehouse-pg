@@ -42,6 +42,7 @@ extern "C" {
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/orca.h"
 #include "optimizer/plancat.h"
 #include "optimizer/subselect.h"
 #include "parser/parse_agg.h"
@@ -2784,6 +2785,24 @@ gpdb::TestexprIsHashable(Node *testexpr, List *param_ids)
 	}
 	GP_WRAP_END;
 	return false;
+}
+
+const int orca_hooks_abi_version = ORCA_HOOKS_ABI_VERSION;
+orca_plan_regions_hook_type orca_plan_regions_hook = nullptr;
+
+const struct OrcaPlanRegions *
+gpdb::PlanRegions(const char *plan_dxl, int nops, const char *const *opnames)
+{
+	if (nullptr == orca_plan_regions_hook)
+	{
+		return nullptr;
+	}
+	GP_WRAP_START;
+	{
+		return orca_plan_regions_hook(plan_dxl, nops, opnames);
+	}
+	GP_WRAP_END;
+	return nullptr;
 }
 
 // EOF

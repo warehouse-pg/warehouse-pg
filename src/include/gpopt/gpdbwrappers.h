@@ -46,6 +46,7 @@ struct TargetEntry;
 struct Expr;
 struct ExtTableEntry;
 struct ForeignScan;
+struct OrcaPlanRegions;
 struct Uri;
 struct CdbComponentDatabases;
 struct StringInfoData;
@@ -682,6 +683,10 @@ PartitionDesc GPDBRelationRetrievePartitionDesc(Relation rel);
 PartitionKey GPDBRelationRetrievePartitionKey(Relation rel);
 
 bool TestexprIsHashable(Node *testexpr, List *param_ids);
+
+// the regions orca_plan_regions_hook returns for a plan, if it is set
+const struct OrcaPlanRegions *PlanRegions(const char *plan_dxl, int nops,
+										  const char *const *opnames);
 
 gpos::BOOL WalkQueryTree(Query *query, bool (*walker)(), void *context,
 						 int flags);

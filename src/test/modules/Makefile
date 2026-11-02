@@ -25,6 +25,6 @@ SUBDIRS = \
 		  worker_spi
 
 # GPDB subdirs
-SUBDIRS += test_planner
+SUBDIRS += test_planner test_orca_regions
 
 $(recurse)
