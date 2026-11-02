@@ -21,8 +21,10 @@
 #include "storage/shmem.h"
 
 #include "ic_proxy_server.h"
+#include "cdb/ic_proxy_bgworker.h"
 #include "ic_proxy_addr.h"
 #include "ic_proxy_pkt_cache.h"
+#include "ic_proxy_tls.h"
 
 #include <uv.h>
 
@@ -202,7 +204,7 @@ ic_proxy_server_peer_listener_init(uv_loop_t *loop)
 	{
 		elog(WARNING, "ic-proxy: tcp: failed to bind: %s",
 					 uv_strerror(ret));
-		pg_atomic_exchange_u32(ic_proxy_peer_listener_failed, 1);
+		pg_atomic_exchange_u32(ic_proxy_peer_listener_failed, IC_PROXY_FAILURE_LISTEN);
 		return;
 	}
 
@@ -212,7 +214,7 @@ ic_proxy_server_peer_listener_init(uv_loop_t *loop)
 	{
 		elog(WARNING, "ic-proxy: tcp: failed to listen: %s",
 					 uv_strerror(ret));
-		pg_atomic_exchange_u32(ic_proxy_peer_listener_failed, 1);
+		pg_atomic_exchange_u32(ic_proxy_peer_listener_failed, IC_PROXY_FAILURE_LISTEN);
 		return;
 	}
 
@@ -220,7 +222,7 @@ ic_proxy_server_peer_listener_init(uv_loop_t *loop)
 	elogif(gp_log_interconnect >= GPVARS_VERBOSITY_VERBOSE, LOG,
 		   "ic-proxy: tcp: listening on socket %d", fd);
 
-	pg_atomic_exchange_u32(ic_proxy_peer_listener_failed, 0);
+	pg_atomic_exchange_u32(ic_proxy_peer_listener_failed, IC_PROXY_FAILURE_NONE);
 	ic_proxy_peer_listening = true;
 }
 
@@ -540,7 +542,45 @@ ic_proxy_server_main(void)
 	elogif(gp_log_interconnect >= GPVARS_VERBOSITY_TERSE,
 		   LOG, "ic-proxy: server setting up");
 
-	pg_atomic_exchange_u32(ic_proxy_peer_listener_failed, 0);
+	pg_atomic_exchange_u32(ic_proxy_peer_listener_failed, IC_PROXY_FAILURE_NONE);
+
+	/*
+	 * Initialize TLS state for peer connections. Runs before anything
+	 * else so a misconfigured cert / key fails the bgworker startup rather
+	 * than the first peer handshake. No-op when
+	 * gp_interconnect_proxy_tls_enable is off.
+	 *
+	 * All the TLS GUCs are PGC_POSTMASTER, so a bad value cannot be fixed
+	 * without a restart.  Letting the ERROR escape would exit with code 1
+	 * and the postmaster would relaunch us immediately (bgw_restart_time
+	 * is 0), turning a typo into a tight restart loop in the log.  Exit
+	 * with code 0 instead: the postmaster then leaves the worker down
+	 * until it is itself restarted, and the ERROR plus the LOG line below
+	 * tell the operator what to fix.  The shared flag makes proxy-mode
+	 * queries on this segment fail at interconnect setup with the same
+	 * explanation, instead of retrying the proxy socket until
+	 * gp_interconnect_setup_timeout.
+	 */
+	PG_TRY();
+	{
+		ic_proxy_tls_init();
+	}
+	PG_CATCH();
+	{
+		EmitErrorReport();
+		FlushErrorState();
+		ic_proxy_tls_uninit();
+		pg_atomic_exchange_u32(ic_proxy_peer_listener_failed,
+							   IC_PROXY_FAILURE_TLS_CONFIG);
+
+		elog(LOG,
+			 "ic-proxy: TLS configuration is invalid, the ic-proxy process "
+			 "exits and stays down until the next restart; fix the "
+			 "gp_interconnect_proxy_tls_* settings and restart the cluster");
+		return 0;
+	}
+	PG_END_TRY();
+
 	ic_proxy_pkt_cache_init(IC_PROXY_MAX_PKT_SIZE);
 
 	uv_loop_init(&ic_proxy_server_loop);
@@ -605,6 +645,7 @@ ic_proxy_server_main(void)
 #endif
 
 	ic_proxy_pkt_cache_uninit();
+	ic_proxy_tls_uninit();
 
 	elogif(gp_log_interconnect >= GPVARS_VERBOSITY_TERSE, LOG,
 		   "ic-proxy: server closed with code %d",
