@@ -133,6 +133,30 @@ extern PGDLLIMPORT orca_relation_size_hook_type orca_relation_size_hook;
 typedef HeapTuple (*orca_att_stats_hook_type) (Oid relid, AttrNumber attnum);
 extern PGDLLIMPORT orca_att_stats_hook_type orca_att_stats_hook;
 
+/*
+ * orca_relation_hook: whether an extension reads the relation itself, for a
+ * table of a table AM ORCA doesn't otherwise plan (such as one whose data
+ * lives outside PG).
+ *
+ * ORCA plans queries reading an ORCA_RELATION_RANDOM table as if it were a
+ * randomly distributed heap table: each segment reads a slice of it. The
+ * extension must execute every scan of it, as a leaf of a region it claims
+ * through orca_plan_regions_hook, since PG's executor can't: otherwise the
+ * query falls back to the PG planner. The PG planner plans DML on it, and
+ * queries over an ORCA_RELATION_PLANNER table.
+ *
+ * It is called several times per relation and query, so it should be cheap.
+ */
+typedef enum OrcaRelation
+{
+	ORCA_RELATION_NONE,			/* not the extension's */
+	ORCA_RELATION_PLANNER,		/* the extension's, planned by PG's planner */
+	ORCA_RELATION_RANDOM		/* the extension's, read in random slices */
+} OrcaRelation;
+
+typedef OrcaRelation (*orca_relation_hook_type) (Oid relid);
+extern PGDLLIMPORT orca_relation_hook_type orca_relation_hook;
+
 #endif
 
 #endif /* ORCA_H */

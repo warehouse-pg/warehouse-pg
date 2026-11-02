@@ -25,6 +25,8 @@ extern "C" {
 #include "catalog/pg_statistic_ext.h"
 #include "catalog/pg_type.h"
 #include "cdb/cdbhash.h"
+#include "nodes/plannodes.h"
+#include "optimizer/orca.h"
 #include "partitioning/partdesc.h"
 #include "utils/array.h"
 #include "utils/datum.h"
@@ -533,7 +535,11 @@ CTranslatorRelcacheToDXL::RetrieveRel(CMemoryPool *mp, CMDAccessor *md_accessor,
 
 	CheckUnsupportedRelation(rel.get());
 
-	if (!GpPolicyIsEntry(rel->rd_cdbpolicy) &&
+	// a table an extension reads itself, in random slices
+	// (orca_relation_hook): its own policy doesn't matter
+	BOOL extension_rel = ORCA_RELATION_RANDOM == gpdb::ExtensionRelation(oid);
+
+	if (!extension_rel && !GpPolicyIsEntry(rel->rd_cdbpolicy) &&
 		gpdb::GetGPSegmentCount() != rel->rd_cdbpolicy->numsegments)
 	{
 		// GPORCA does not support partially distributed tables yet
@@ -588,6 +594,10 @@ CTranslatorRelcacheToDXL::RetrieveRel(CMemoryPool *mp, CMDAccessor *md_accessor,
 		// then mapped to Orca's distribution spec
 		ForeignTable *ft = GetForeignTable(rel->rd_id);
 		dist = GetDistributionFromForeignRelExecLocation(ft);
+	}
+	else if (extension_rel)
+	{
+		dist = IMDRelation::EreldistrRandom;
 	}
 	else
 	{
@@ -2639,6 +2649,14 @@ CTranslatorRelcacheToDXL::RetrieveRelStorageType(Relation rel)
 			}
 			break;
 		default:
+			// a table an extension reads itself: only its scans matter to
+			// ORCA, which the extension executes
+			if (ORCA_RELATION_RANDOM ==
+				gpdb::ExtensionRelation(RelationGetRelid(rel)))
+			{
+				rel_storage_type = IMDRelation::ErelstorageHeap;
+				break;
+			}
 			GPOS_RAISE(gpdxl::ExmaMD, gpdxl::ExmiMDObjUnsupported,
 					   GPOS_WSZ_LIT("Unsupported table AM"));
 	}

@@ -1932,6 +1932,23 @@ gpdb::CdbEstimatePartitionedNumPages(Relation rel)
 	GP_WRAP_END;
 }
 
+orca_relation_hook_type orca_relation_hook = nullptr;
+
+int
+gpdb::ExtensionRelation(Oid relid)
+{
+	if (orca_relation_hook == nullptr)
+	{
+		return ORCA_RELATION_NONE;
+	}
+	GP_WRAP_START;
+	{
+		return orca_relation_hook(relid);
+	}
+	GP_WRAP_END;
+	return ORCA_RELATION_NONE;
+}
+
 bool
 gpdb::ExtensionRelationSize(Relation rel, double *tuples, PageEstimate *pages)
 {

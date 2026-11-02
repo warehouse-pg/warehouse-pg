@@ -380,6 +380,8 @@ private:
 	// the extension region rooted at the node, if any
 	const OrcaPlanRegion *ExtensionRegion(const CDXLNode *dxlnode) const;
 
+	BOOL IsExtensionRegionLeaf(const CDXLNode *dxlnode) const;
+
 	BOOL IsExtensionIpcConsumer(const CDXLNode *dxlnode) const;
 
 	Plan *TranslateDXLExtensionRegion(

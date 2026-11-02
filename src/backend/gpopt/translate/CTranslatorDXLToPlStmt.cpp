@@ -744,6 +744,26 @@ CTranslatorDXLToPlStmt::FindExtensionRegions(const CDXLNode *plan_dxlnode)
 	m_ext_nops = nops;
 }
 
+// whether the operator is a leaf of an extension region: a PG input the
+// extension reads
+BOOL
+CTranslatorDXLToPlStmt::IsExtensionRegionLeaf(const CDXLNode *dxlnode) const
+{
+	for (int i = 0; nullptr != m_ext_regions && i < m_ext_regions->nregions;
+		 i++)
+	{
+		const OrcaPlanRegion *region = &m_ext_regions->regions[i];
+		for (int j = 0; j < region->nleaves; j++)
+		{
+			if (m_ext_ops[region->leaves[j]] == dxlnode)
+			{
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 const OrcaPlanRegion *
 CTranslatorDXLToPlStmt::ExtensionRegion(const CDXLNode *dxlnode) const
 {
@@ -1010,6 +1030,18 @@ CTranslatorDXLToPlStmt::TranslateDXLTblScan(
 		phy_tbl_scan_dxlop->GetDXLTableDescr();
 	const IMDRelation *md_rel =
 		m_md_accessor->RetrieveRel(dxl_table_descr->MDId());
+
+	// The executor can't read a table an extension reads itself: the
+	// extension must, as a leaf of one of its regions.
+	if (ORCA_RELATION_RANDOM ==
+			gpdb::ExtensionRelation(
+				CMDIdGPDB::CastMdid(dxl_table_descr->MDId())->Oid()) &&
+		!IsExtensionRegionLeaf(tbl_scan_dxlnode))
+	{
+		GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiDXL2PlStmtConversion,
+				   GPOS_WSZ_LIT("scan of a table an extension reads itself "
+								"outside its regions"));
+	}
 
 	// Lock any table we are to scan, since it may not have been properly locked
 	// by the parser (e.g in case of generated scans for partitioned tables)
