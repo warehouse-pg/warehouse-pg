@@ -94,6 +94,14 @@ typedef struct OrcaPlanRegion
 	const int  *leaves;			/* operator numbers of the PG inputs */
 	int			ncols;
 	const OrcaPlanRegionCol *cols;	/* output columns */
+
+	/*
+	 * The region is a table scan without its filter and projection, which the
+	 * executor evaluates over its output (the table's columns): the
+	 * CustomScan's qual and target list. Its one leaf is the scan itself,
+	 * which the extension reads. Not with ipc.
+	 */
+	bool		pg_filter;
 } OrcaPlanRegion;
 
 typedef struct OrcaPlanRegions

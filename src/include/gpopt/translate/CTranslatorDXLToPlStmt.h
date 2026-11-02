@@ -391,6 +391,11 @@ private:
 
 	CHAR *SerializeDXL(const CDXLNode *dxlnode);
 
+	void TranslateExtensionRegionFilter(const CDXLNode *scan_dxlnode,
+										const OrcaPlanRegion *region,
+										List *leaves, CustomScan *cscan,
+										CDXLTranslateContext *output_context);
+
 	Plan *TranslateDXLMaterialize(
 		const CDXLNode *materialize_dxlnode,
 		CDXLTranslateContext *output_context,

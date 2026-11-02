@@ -646,7 +646,8 @@ ValidRegions(const OrcaPlanRegions *regions, const ULONG *ends, ULONG nops)
 			(0 < region->nleaves && nullptr == region->leaves) ||
 			region->ncols < 0 ||
 			(0 < region->ncols && nullptr == region->cols) ||
-			(!region->ipc && 0 == region->ncols))
+			(!region->ipc && 0 == region->ncols) ||
+			(region->ipc && region->pg_filter))
 		{
 			return false;
 		}
@@ -850,15 +851,74 @@ CTranslatorDXLToPlStmt::TranslateDXLExtensionRegion(
 		te->resno = (AttrNumber)(i + 1);
 		te->resname = PStrDup(col->name);
 		target_list = gpdb::LAppend(target_list, te);
-		output_context->InsertMapping(col->colid, te);
+		if (!region->pg_filter)
+		{
+			output_context->InsertMapping(col->colid, te);
+		}
 	}
 	SetRegionTargetList(cscan, target_list);
+	if (region->pg_filter)
+	{
+		TranslateExtensionRegionFilter(root_dxlnode, region, leaves, cscan,
+									   output_context);
+	}
 
 	cscan->custom_private =
 		gpdb::LAppend(NIL, gpdb::MakeStringValue(PStrDup(region->dxl)));
 
 	SetParamIds(plan);
 	return (Plan *) cscan;
+}
+
+// The table scan's filter and projection over the columns the region reads:
+// the CustomScan's qual and target list. The scan tuple's entries name the
+// table's columns for EXPLAIN, through the range table entry of the scan the
+// region replaces (its leaf).
+void
+CTranslatorDXLToPlStmt::TranslateExtensionRegionFilter(
+	const CDXLNode *scan_dxlnode, const OrcaPlanRegion *region, List *leaves,
+	CustomScan *cscan, CDXLTranslateContext *output_context)
+{
+	if (EdxlopPhysicalTableScan !=
+			scan_dxlnode->GetOperator()->GetDXLOperator() ||
+		1 != gpdb::ListLength(leaves) ||
+		!IsA(gpdb::ListNth(leaves, 0), SeqScan))
+	{
+		GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiDXL2PlStmtConversion,
+				   GPOS_WSZ_LIT("extension region filter off a table scan"));
+	}
+	const CDXLTableDescr *table_descr =
+		CDXLPhysicalTableScan::Cast(scan_dxlnode->GetOperator())
+			->GetDXLTableDescr();
+	Index scanrelid = ((Scan *) gpdb::ListNth(leaves, 0))->scanrelid;
+
+	CDXLTranslateContextBaseTable base_table_context(m_mp);
+	base_table_context.SetRelIndex(INDEX_VAR);
+	ListCell *lc = gpdb::ListHead(cscan->custom_scan_tlist);
+	for (int i = 0; i < region->ncols; i++, lc = lnext(lc))
+	{
+		const OrcaPlanRegionCol *col = &region->cols[i];
+		base_table_context.InsertMapping(col->colid, i + 1);
+		for (ULONG j = 0; j < table_descr->Arity(); j++)
+		{
+			const CDXLColDescr *col_descr = table_descr->GetColumnDescrAt(j);
+			if (col_descr->Id() == col->colid)
+			{
+				Var *var = gpdb::MakeVar(scanrelid, col_descr->AttrNum(),
+										 col->type, col->typmod, 0);
+				var->varcollid = gpdb::TypeCollation(col->type);
+				((TargetEntry *) lfirst(lc))->expr = (Expr *) var;
+			}
+		}
+	}
+	List *target_list = NIL;
+	List *qual = NIL;
+	TranslateProjListAndFilter((*scan_dxlnode)[EdxltsIndexProjList],
+							   (*scan_dxlnode)[EdxltsIndexFilter],
+							   &base_table_context, nullptr, &target_list,
+							   &qual, output_context);
+	cscan->scan.plan.targetlist = target_list;
+	cscan->scan.plan.qual = qual;
 }
 
 CHAR *
@@ -1063,11 +1123,22 @@ CTranslatorDXLToPlStmt::TranslateDXLTblScan(
 	// List to hold the quals after translating filter_dxlnode node.
 	List *query_quals = NIL;
 
-	TranslateProjListAndFilter(
-		project_list_dxlnode, filter_dxlnode,
-		&base_table_context,  // translate context for the base table
-		nullptr,			  // translate_ctxt_left and pdxltrctxRight,
-		&targetlist, &query_quals, output_context);
+	// The scan of a region with pg_filter only names the table the region
+	// reads: the region's CustomScan has its filter and projection, which
+	// would otherwise be translated twice, subplans and all.
+	const OrcaPlanRegion *region = tbl_scan_dxlnode == m_ext_root_leaf
+									   ? ExtensionRegion(tbl_scan_dxlnode)
+									   : nullptr;
+	BOOL bare = nullptr != region && region->pg_filter;
+
+	if (!bare)
+	{
+		TranslateProjListAndFilter(
+			project_list_dxlnode, filter_dxlnode,
+			&base_table_context,  // translate context for the base table
+			nullptr,			  // translate_ctxt_left and pdxltrctxRight,
+			&targetlist, &query_quals, output_context);
+	}
 
 	Plan *plan = nullptr;
 	Plan *plan_return = nullptr;
