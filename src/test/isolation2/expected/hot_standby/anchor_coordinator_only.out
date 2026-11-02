@@ -1,0 +1,803 @@
+-- Anchor snapshots and distributed transactions committed on the
+-- coordinator but not yet on the segments.
+--
+-- The coordinator writes its distributed commit record before it
+-- broadcasts COMMIT PREPARED, and gp_create_restore_point's two-phase
+-- commit lock blocks only the broadcast.  A restore point can land between
+-- the two: the segments' anchors then hold the transaction as in progress
+-- (prepared), and the coordinator's anchor must too, or an anchored read
+-- would see its rows in coordinator-only tables but not its rows on the
+-- segments.  The primary shows neither until COMMIT PREPARED.  The
+-- transaction is held in that window with the fault
+-- dtm_broadcast_commit_prepared (before the broadcast takes the lock).
+--
+-- When the standby coordinator did not replay the commit record itself (it
+-- started from a restartpoint past it, and took the gxid from the
+-- checkpoint), it cannot tell the transaction's local xids: it exports no
+-- anchor for such a restore point and says why.  After the transaction's
+-- FORGET it still reads as in progress there (that start's
+-- latestCompletedXid predates it), so the next restore points export only
+-- once the coordinator has replayed a later local commit.  A checkpoint
+-- that lists a transaction whose FORGET lies before its redo point leaves
+-- that gxid in the committed array for good after such a start; a later
+-- checkpoint that no longer lists it releases the exports.
+--
+-- The WARNING checks read only the standby log lines written after a
+-- mark taken just before the restore point, so that a line left by an
+-- earlier run with the same restore point name cannot satisfy them.
+--
+-- Session roles: 1: primary QD; 2: primary QD (the held transaction);
+-- 3: primary QD (a transaction whose xid falls between the held one's);
+-- -1S: standby QD (dispatch); -1M: standby QD utility; 0M: mirror utility.
+
+-- start_matchsubs
+-- m/\(seg\d+ [0-9.]+:\d+ pid=\d+\)/
+-- s/\(seg\d+ [0-9.]+:\d+ pid=\d+\)/(segN IP:PORT pid=PID)/
+-- end_matchsubs
+
+!\retcode gpconfig -c whpg_hot_standby_snapshot_mode -v anchored --skipvalidation;
+-- start_ignore
+20261104:10:03:53:1636164 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_snapshot_mode -v anchored --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -u;
+-- start_ignore
+20261104:10:03:53:1636211 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20261104:10:03:53:1636211 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20261104:10:03:53:1636211 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20261104:10:03:53:1636211 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20261104:10:03:53:1636211 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20261104:10:03:53:1636211 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+
+-- end_ignore
+(exited with code 0)
+1: create table hs_co_h(a int) distributed coordinator only;
+CREATE TABLE
+1: create table hs_co_ao(a int) with (appendonly = true) distributed coordinator only;
+CREATE TABLE
+1: create table hs_co_d(a int) distributed by (a);
+CREATE TABLE
+-- a running-xacts record on every node, so that restore points export
+1: checkpoint;
+CHECKPOINT
+1: insert into hs_co_d select generate_series(1, 30);
+INSERT 0 30
+
+----------------------------------------------------------------
+-- A restore point inside the window: the anchor holds the transaction as
+-- in progress on the coordinator (heap and append-optimized rows, and a
+-- subtransaction's row) as on the segments
+----------------------------------------------------------------
+1: select gp_inject_fault('dtm_broadcast_commit_prepared', 'suspend', dbid) from gp_segment_configuration where content = -1 and role = 'p';
+ gp_inject_fault 
+-----------------
+ Success:        
+(1 row)
+2: begin;
+BEGIN
+2: insert into hs_co_h values (1);
+INSERT 0 1
+2: insert into hs_co_ao values (1);
+INSERT 0 1
+2: savepoint s;
+SAVEPOINT
+2: insert into hs_co_h values (2);
+INSERT 0 1
+2: release savepoint s;
+RELEASE
+2: insert into hs_co_d select generate_series(101, 130);
+INSERT 0 30
+2&: commit;  <waiting ...>
+1: select gp_wait_until_triggered_fault('dtm_broadcast_commit_prepared', 1, dbid) from gp_segment_configuration where content = -1 and role = 'p';
+ gp_wait_until_triggered_fault 
+-------------------------------
+ Success:                      
+(1 row)
+-- the primary shows none of it yet
+1: select (select count(*) from hs_co_h) h, (select count(*) from hs_co_ao) ao, (select count(*) from hs_co_d where a > 100) d;
+ h | ao | d 
+---+----+---
+ 0 | 0  | 0 
+(1 row)
+-- the restore point is created in the shell, which then waits until the
+-- standby coordinator and every mirror have replayed it
+!\retcode rows=$(psql -d postgres -Atc "select gp_segment_id, restore_lsn from gp_create_restore_point('hs_co_a')"); for c in -1 0 1 2; do lsn=$(echo "$rows" | awk -F'|' -v c=$c '$1==c {print $2}'); host=$(psql -d postgres -Atc "select hostname from gp_segment_configuration where content = $c and role = 'm'"); port=$(psql -d postgres -Atc "select port from gp_segment_configuration where content = $c and role = 'm'"); cur=f; for i in $(seq 1 600); do cur=$(PGOPTIONS='-c gp_role=utility' psql -X -h "$host" -p "$port" -d postgres -Atc "select pg_last_wal_replay_lsn() >= '$lsn'::pg_lsn"); [ "$cur" = t ] && break; sleep 0.1; done; [ "$cur" = t ] || exit 1; done;
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+1: select gp_inject_fault('dtm_broadcast_commit_prepared', 'resume', dbid) from gp_segment_configuration where content = -1 and role = 'p';
+ gp_inject_fault 
+-----------------
+ Success:        
+(1 row)
+2<:  <... completed>
+COMMIT
+1: select gp_inject_fault('dtm_broadcast_commit_prepared', 'reset', dbid) from gp_segment_configuration where content = -1 and role = 'p';
+ gp_inject_fault 
+-----------------
+ Success:        
+(1 row)
+1: select (select count(*) from hs_co_h) h, (select count(*) from hs_co_ao) ao, (select count(*) from hs_co_d where a > 100) d;
+ h | ao | d  
+---+----+----
+ 2 | 1  | 30 
+(1 row)
+!\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_co_a --skipvalidation;
+-- start_ignore
+20261104:10:03:54:1636316 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_co_a --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -u;
+-- start_ignore
+20261104:10:03:54:1636363 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20261104:10:03:54:1636363 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20261104:10:03:54:1636363 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20261104:10:03:54:1636363 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20261104:10:03:54:1636363 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20261104:10:03:54:1636363 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+
+-- end_ignore
+(exited with code 0)
+-1S: set whpg_hot_standby_snapshot_mode = anchored;
+SET
+-1S: select (select count(*) from hs_co_h) h, (select count(*) from hs_co_ao) ao, (select count(*) from hs_co_d where a > 100) d;
+ h | ao | d 
+---+----+---
+ 0 | 0  | 0 
+(1 row)
+-1S: select count(*) from hs_co_d;
+ count 
+-------
+ 30    
+(1 row)
+
+-- the next restore point shows the whole transaction
+1: select count(*) from gp_create_restore_point('hs_co_b');
+ count 
+-------
+ 4     
+(1 row)
+1: insert into hs_co_d select generate_series(201, 210);
+INSERT 0 10
+!\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_co_b --skipvalidation;
+-- start_ignore
+20261104:10:03:54:1636396 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_co_b --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -u;
+-- start_ignore
+20261104:10:03:54:1636443 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20261104:10:03:54:1636443 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20261104:10:03:54:1636443 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20261104:10:03:54:1636443 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20261104:10:03:54:1636443 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20261104:10:03:54:1636443 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+
+-- end_ignore
+(exited with code 0)
+-1S: select (select count(*) from hs_co_h) h, (select count(*) from hs_co_ao) ao, (select count(*) from hs_co_d where a > 100 and a < 200) d;
+ h | ao | d  
+---+----+----
+ 2 | 1  | 30 
+(1 row)
+
+----------------------------------------------------------------
+-- The standby coordinator restarted past the commit record: it has the
+-- gxid from the checkpoint but not its local xids, so it exports no anchor
+-- for a restore point inside the window, while the mirrors do; after the
+-- FORGET it exports none until a later local commit is replayed.  The
+-- held transaction's subtransaction takes an xid above another
+-- transaction's, which commits first: the horizon must cover the
+-- subtransaction, not only the FORGET record's top xid
+----------------------------------------------------------------
+1: select gp_inject_fault('dtm_broadcast_commit_prepared', 'suspend', dbid) from gp_segment_configuration where content = -1 and role = 'p';
+ gp_inject_fault 
+-----------------
+ Success:        
+(1 row)
+2: begin;
+BEGIN
+2: insert into hs_co_h values (3);
+INSERT 0 1
+3: begin;
+BEGIN
+3: insert into hs_co_h values (31);
+INSERT 0 1
+2: savepoint s;
+SAVEPOINT
+2: insert into hs_co_h values (32);
+INSERT 0 1
+2: release savepoint s;
+RELEASE
+2: insert into hs_co_d select generate_series(301, 330);
+INSERT 0 30
+2&: commit;  <waiting ...>
+1: select gp_wait_until_triggered_fault('dtm_broadcast_commit_prepared', 1, dbid) from gp_segment_configuration where content = -1 and role = 'p';
+ gp_wait_until_triggered_fault 
+-------------------------------
+ Success:                      
+(1 row)
+-- a checkpoint that lists the held transaction; wait until the standby
+-- coordinator has replayed it
+1: checkpoint;
+CHECKPOINT
+!\retcode clsn=$(psql -d postgres -Atc "select pg_current_wal_lsn()"); sport=$(psql -d postgres -Atc "select port from gp_segment_configuration where content = -1 and role = 'm'"); cur=f; for i in $(seq 1 600); do cur=$(PGOPTIONS='-c gp_role=utility' psql -X -p "$sport" -d postgres -Atc "select pg_last_wal_replay_lsn() >= '$clsn'::pg_lsn"); [ "$cur" = t ] && break; sleep 0.1; done; [ "$cur" = t ];
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-- a restartpoint there, so that the restart's redo starts past the commit record
+-1M: checkpoint;
+CHECKPOINT
+-1Mq: ... <quitting>
+-1Sq: ... <quitting>
+!\retcode pg_ctl restart -w -m fast -D "$COORDINATOR_DATA_DIRECTORY/../../standby";
+-- start_ignore
+waiting for server to shut down.... done
+server stopped
+waiting for server to start....2026-11-04 10:03:55.544065 CST,,,p1636483,th-1518122016,,,,0,,,seg-1,,,,,"LOG","00000","starting PostgreSQL 12.12 (Greenplum Database 7.0.0-beta.0 build dev) on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14), 64-bit",,,,,,,,"PostmasterMain","postmaster.c",1242,
+2026-11-04 10:03:55.544382 CST,,,p1636483,th-1518122016,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv4 address ""0.0.0.0"", port 7101",,,,,,,,"StreamServerPort","pqcomm.c",639,
+2026-11-04 10:03:55.544473 CST,,,p1636483,th-1518122016,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv6 address ""::"", port 7101",,,,,,,,"StreamServerPort","pqcomm.c",639,
+2026-11-04 10:03:55.544649 CST,,,p1636483,th-1518122016,,,,0,,,seg-1,,,,,"LOG","00000","listening on Unix socket ""/tmp/.s.PGSQL.7101""",,,,,,,,"StreamServerPort","pqcomm.c",634,
+2026-11-04 10:03:55.559121 CST,,,p1636483,th-1518122016,,,,0,,,seg-1,,,,,"LOG","00000","redirecting log output to logging collector process",,"Future log output will appear in directory ""log"".",,,,,,"SysLogger_Start","syslogger.c",920,
+ done
+server started
+
+-- end_ignore
+(exited with code 0)
+!\retcode sdir="$COORDINATOR_DATA_DIRECTORY/../../standby"; cat "$sdir"/log/*.csv | wc -l > "$COORDINATOR_DATA_DIRECTORY/hs_co_log.lines";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode rows=$(psql -d postgres -Atc "select gp_segment_id, restore_lsn from gp_create_restore_point('hs_co_c')"); for c in -1 0 1 2; do lsn=$(echo "$rows" | awk -F'|' -v c=$c '$1==c {print $2}'); host=$(psql -d postgres -Atc "select hostname from gp_segment_configuration where content = $c and role = 'm'"); port=$(psql -d postgres -Atc "select port from gp_segment_configuration where content = $c and role = 'm'"); cur=f; for i in $(seq 1 600); do cur=$(PGOPTIONS='-c gp_role=utility' psql -X -h "$host" -p "$port" -d postgres -Atc "select pg_last_wal_replay_lsn() >= '$lsn'::pg_lsn"); [ "$cur" = t ] && break; sleep 0.1; done; [ "$cur" = t ] || exit 1; done;
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-1M: select count(*) from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_co_c';
+ count 
+-------
+ 0     
+(1 row)
+0M: select count(*) from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_co_c';
+ count 
+-------
+ 1     
+(1 row)
+!\retcode sdir="$COORDINATOR_DATA_DIRECTORY/../../standby"; test ! -e "$sdir/pg_anchor_snapshots/hs_co_c" && cat "$sdir"/log/*.csv | tail -n +$(( $(cat "$COORDINATOR_DATA_DIRECTORY/hs_co_log.lines") + 1 )) | grep -q 'anchor snapshot for restore point ..hs_co_c.. not exported: distributed transaction [0-9]* committed on the coordinator before the restore point and is not known to be committed on every segment: its commit record lies before this start.s redo point';
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+1: select gp_inject_fault('dtm_broadcast_commit_prepared', 'resume', dbid) from gp_segment_configuration where content = -1 and role = 'p';
+ gp_inject_fault 
+-----------------
+ Success:        
+(1 row)
+2<:  <... completed>
+COMMIT
+1: select gp_inject_fault('dtm_broadcast_commit_prepared', 'reset', dbid) from gp_segment_configuration where content = -1 and role = 'p';
+ gp_inject_fault 
+-----------------
+ Success:        
+(1 row)
+-- the held transaction has committed everywhere, but the standby
+-- coordinator still counts it as in progress: no export, also once the
+-- in-between transaction's commit has moved xmax past the top xid
+3: commit;
+COMMIT
+!\retcode sdir="$COORDINATOR_DATA_DIRECTORY/../../standby"; cat "$sdir"/log/*.csv | wc -l > "$COORDINATOR_DATA_DIRECTORY/hs_co_log.lines";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+1: select count(*) from gp_create_restore_point('hs_co_e');
+ count 
+-------
+ 4     
+(1 row)
+1: insert into hs_co_d select generate_series(401, 410);
+INSERT 0 10
+-1M: select count(*) from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_co_e';
+ count 
+-------
+ 0     
+(1 row)
+!\retcode sdir="$COORDINATOR_DATA_DIRECTORY/../../standby"; test ! -e "$sdir/pg_anchor_snapshots/hs_co_e" && cat "$sdir"/log/*.csv | tail -n +$(( $(cat "$COORDINATOR_DATA_DIRECTORY/hs_co_log.lines") + 1 )) | grep -q 'anchor snapshot for restore point ..hs_co_e.. not exported: transaction [0-9]* had committed when this standby.s snapshot was initialized';
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-- a later local commit on the coordinator; the next restore point exports
+-- and shows every row
+1: insert into hs_co_h values (4);
+INSERT 0 1
+1: select count(*) from gp_create_restore_point('hs_co_f');
+ count 
+-------
+ 4     
+(1 row)
+1: insert into hs_co_d select generate_series(501, 510);
+INSERT 0 10
+-1M: select count(*) from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_co_f';
+ count 
+-------
+ 1     
+(1 row)
+!\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_co_f --skipvalidation;
+-- start_ignore
+20261104:10:03:56:1636571 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_co_f --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -u;
+-- start_ignore
+20261104:10:03:56:1636618 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20261104:10:03:56:1636618 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20261104:10:03:56:1636618 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20261104:10:03:56:1636618 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20261104:10:03:56:1636618 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20261104:10:03:56:1636618 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+
+-- end_ignore
+(exited with code 0)
+-1S: set whpg_hot_standby_snapshot_mode = anchored;
+SET
+-1S: select (select count(*) from hs_co_h) h, (select count(*) from hs_co_d where a > 300 and a < 400) d;
+ h | d  
+---+----
+ 6 | 30 
+(1 row)
+
+----------------------------------------------------------------
+-- A checkpoint collected while a transaction has written its FORGET but
+-- not yet cleared includeInCkpt lists it although the FORGET precedes the
+-- checkpoint's redo point.  A start from that checkpoint keeps the gxid in
+-- the committed array for good: a later local commit does not release the
+-- exports, a later checkpoint that no longer lists it does
+----------------------------------------------------------------
+1: select gp_inject_fault('dtm_after_insert_forget_committed', 'suspend', dbid) from gp_segment_configuration where content = -1 and role = 'p';
+ gp_inject_fault 
+-----------------
+ Success:        
+(1 row)
+2: begin;
+BEGIN
+2: insert into hs_co_h values (5);
+INSERT 0 1
+2: insert into hs_co_d select generate_series(601, 630);
+INSERT 0 30
+2&: commit;  <waiting ...>
+1: select gp_wait_until_triggered_fault('dtm_after_insert_forget_committed', 1, dbid) from gp_segment_configuration where content = -1 and role = 'p';
+ gp_wait_until_triggered_fault 
+-------------------------------
+ Success:                      
+(1 row)
+1: checkpoint;
+CHECKPOINT
+!\retcode clsn=$(psql -d postgres -Atc "select pg_current_wal_lsn()"); sport=$(psql -d postgres -Atc "select port from gp_segment_configuration where content = -1 and role = 'm'"); cur=f; for i in $(seq 1 600); do cur=$(PGOPTIONS='-c gp_role=utility' psql -X -p "$sport" -d postgres -Atc "select pg_last_wal_replay_lsn() >= '$clsn'::pg_lsn"); [ "$cur" = t ] && break; sleep 0.1; done; [ "$cur" = t ];
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-1M: checkpoint;
+CHECKPOINT
+-1Mq: ... <quitting>
+-1Sq: ... <quitting>
+!\retcode pg_ctl restart -w -m fast -D "$COORDINATOR_DATA_DIRECTORY/../../standby";
+-- start_ignore
+waiting for server to shut down.... done
+server stopped
+waiting for server to start....2026-11-04 10:03:56.869688 CST,,,p1636662,th-1808385056,,,,0,,,seg-1,,,,,"LOG","00000","starting PostgreSQL 12.12 (Greenplum Database 7.0.0-beta.0 build dev) on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14), 64-bit",,,,,,,,"PostmasterMain","postmaster.c",1242,
+2026-11-04 10:03:56.869992 CST,,,p1636662,th-1808385056,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv4 address ""0.0.0.0"", port 7101",,,,,,,,"StreamServerPort","pqcomm.c",639,
+2026-11-04 10:03:56.870084 CST,,,p1636662,th-1808385056,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv6 address ""::"", port 7101",,,,,,,,"StreamServerPort","pqcomm.c",639,
+2026-11-04 10:03:56.870247 CST,,,p1636662,th-1808385056,,,,0,,,seg-1,,,,,"LOG","00000","listening on Unix socket ""/tmp/.s.PGSQL.7101""",,,,,,,,"StreamServerPort","pqcomm.c",634,
+2026-11-04 10:03:56.883475 CST,,,p1636662,th-1808385056,,,,0,,,seg-1,,,,,"LOG","00000","redirecting log output to logging collector process",,"Future log output will appear in directory ""log"".",,,,,,"SysLogger_Start","syslogger.c",920,
+ done
+server started
+
+-- end_ignore
+(exited with code 0)
+1: select gp_inject_fault('dtm_after_insert_forget_committed', 'resume', dbid) from gp_segment_configuration where content = -1 and role = 'p';
+ gp_inject_fault 
+-----------------
+ Success:        
+(1 row)
+2<:  <... completed>
+COMMIT
+1: select gp_inject_fault('dtm_after_insert_forget_committed', 'reset', dbid) from gp_segment_configuration where content = -1 and role = 'p';
+ gp_inject_fault 
+-----------------
+ Success:        
+(1 row)
+-- a later local commit is not enough
+1: insert into hs_co_h values (6);
+INSERT 0 1
+!\retcode sdir="$COORDINATOR_DATA_DIRECTORY/../../standby"; cat "$sdir"/log/*.csv | wc -l > "$COORDINATOR_DATA_DIRECTORY/hs_co_log.lines";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+1: select count(*) from gp_create_restore_point('hs_co_g');
+ count 
+-------
+ 4     
+(1 row)
+1: insert into hs_co_d select generate_series(701, 710);
+INSERT 0 10
+-1M: select count(*) from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_co_g';
+ count 
+-------
+ 0     
+(1 row)
+!\retcode sdir="$COORDINATOR_DATA_DIRECTORY/../../standby"; test ! -e "$sdir/pg_anchor_snapshots/hs_co_g" && cat "$sdir"/log/*.csv | tail -n +$(( $(cat "$COORDINATOR_DATA_DIRECTORY/hs_co_log.lines") + 1 )) | grep -q 'anchor snapshot for restore point ..hs_co_g.. not exported: distributed transaction [0-9]* committed on the coordinator before the restore point';
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-- a checkpoint that no longer lists it, then a local commit past the
+-- horizon: the next restore point exports and shows every row
+1: checkpoint;
+CHECKPOINT
+1: insert into hs_co_h values (7);
+INSERT 0 1
+1: select count(*) from gp_create_restore_point('hs_co_h');
+ count 
+-------
+ 4     
+(1 row)
+1: insert into hs_co_d select generate_series(801, 810);
+INSERT 0 10
+-1M: select count(*) from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_co_h';
+ count 
+-------
+ 1     
+(1 row)
+!\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_co_h --skipvalidation;
+-- start_ignore
+20261104:10:03:57:1636681 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_co_h --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -u;
+-- start_ignore
+20261104:10:03:57:1636728 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20261104:10:03:57:1636728 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20261104:10:03:57:1636728 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20261104:10:03:57:1636728 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20261104:10:03:57:1636728 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20261104:10:03:57:1636728 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+
+-- end_ignore
+(exited with code 0)
+-1S: set whpg_hot_standby_snapshot_mode = anchored;
+SET
+-1S: select (select count(*) from hs_co_h) h, (select count(*) from hs_co_d where a > 600 and a < 700) d;
+ h | d  
+---+----
+ 9 | 30 
+(1 row)
+
+----------------------------------------------------------------
+-- A transaction that has written its FORGET and cleared includeInCkpt but
+-- not yet left the proc array (with remote_apply it waits for the standby
+-- there) is not in a checkpoint's list but is in its running-xacts record.
+-- A start from that checkpoint reads it as in progress, although it has
+-- committed everywhere, until a later local commit; no export meanwhile
+----------------------------------------------------------------
+1: select gp_inject_fault('dtm_after_include_in_ckpt_cleared', 'suspend', dbid) from gp_segment_configuration where content = -1 and role = 'p';
+ gp_inject_fault 
+-----------------
+ Success:        
+(1 row)
+2: begin;
+BEGIN
+2: insert into hs_co_h values (8);
+INSERT 0 1
+2: insert into hs_co_d select generate_series(901, 930);
+INSERT 0 30
+2&: commit;  <waiting ...>
+1: select gp_wait_until_triggered_fault('dtm_after_include_in_ckpt_cleared', 1, dbid) from gp_segment_configuration where content = -1 and role = 'p';
+ gp_wait_until_triggered_fault 
+-------------------------------
+ Success:                      
+(1 row)
+1: checkpoint;
+CHECKPOINT
+!\retcode clsn=$(psql -d postgres -Atc "select pg_current_wal_lsn()"); sport=$(psql -d postgres -Atc "select port from gp_segment_configuration where content = -1 and role = 'm'"); cur=f; for i in $(seq 1 600); do cur=$(PGOPTIONS='-c gp_role=utility' psql -X -p "$sport" -d postgres -Atc "select pg_last_wal_replay_lsn() >= '$clsn'::pg_lsn"); [ "$cur" = t ] && break; sleep 0.1; done; [ "$cur" = t ];
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-1M: checkpoint;
+CHECKPOINT
+-1Mq: ... <quitting>
+-1Sq: ... <quitting>
+!\retcode pg_ctl restart -w -m fast -D "$COORDINATOR_DATA_DIRECTORY/../../standby";
+-- start_ignore
+waiting for server to shut down.... done
+server stopped
+waiting for server to start....2026-11-04 10:03:58.196979 CST,,,p1636772,th-1426674720,,,,0,,,seg-1,,,,,"LOG","00000","starting PostgreSQL 12.12 (Greenplum Database 7.0.0-beta.0 build dev) on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14), 64-bit",,,,,,,,"PostmasterMain","postmaster.c",1242,
+2026-11-04 10:03:58.197303 CST,,,p1636772,th-1426674720,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv4 address ""0.0.0.0"", port 7101",,,,,,,,"StreamServerPort","pqcomm.c",639,
+2026-11-04 10:03:58.197395 CST,,,p1636772,th-1426674720,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv6 address ""::"", port 7101",,,,,,,,"StreamServerPort","pqcomm.c",639,
+2026-11-04 10:03:58.197551 CST,,,p1636772,th-1426674720,,,,0,,,seg-1,,,,,"LOG","00000","listening on Unix socket ""/tmp/.s.PGSQL.7101""",,,,,,,,"StreamServerPort","pqcomm.c",634,
+2026-11-04 10:03:58.210322 CST,,,p1636772,th-1426674720,,,,0,,,seg-1,,,,,"LOG","00000","redirecting log output to logging collector process",,"Future log output will appear in directory ""log"".",,,,,,"SysLogger_Start","syslogger.c",920,
+ done
+server started
+
+-- end_ignore
+(exited with code 0)
+1: select gp_inject_fault('dtm_after_include_in_ckpt_cleared', 'resume', dbid) from gp_segment_configuration where content = -1 and role = 'p';
+ gp_inject_fault 
+-----------------
+ Success:        
+(1 row)
+2<:  <... completed>
+COMMIT
+1: select gp_inject_fault('dtm_after_include_in_ckpt_cleared', 'reset', dbid) from gp_segment_configuration where content = -1 and role = 'p';
+ gp_inject_fault 
+-----------------
+ Success:        
+(1 row)
+!\retcode sdir="$COORDINATOR_DATA_DIRECTORY/../../standby"; cat "$sdir"/log/*.csv | wc -l > "$COORDINATOR_DATA_DIRECTORY/hs_co_log.lines";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+1: select count(*) from gp_create_restore_point('hs_co_i');
+ count 
+-------
+ 4     
+(1 row)
+1: insert into hs_co_d select generate_series(1001, 1010);
+INSERT 0 10
+-1M: select count(*) from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_co_i';
+ count 
+-------
+ 0     
+(1 row)
+!\retcode sdir="$COORDINATOR_DATA_DIRECTORY/../../standby"; test ! -e "$sdir/pg_anchor_snapshots/hs_co_i" && cat "$sdir"/log/*.csv | tail -n +$(( $(cat "$COORDINATOR_DATA_DIRECTORY/hs_co_log.lines") + 1 )) | grep -q 'anchor snapshot for restore point ..hs_co_i.. not exported: transaction [0-9]* had committed when this standby.s snapshot was initialized'; rm -f "$COORDINATOR_DATA_DIRECTORY/hs_co_log.lines";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-- a later local commit; the next restore point exports and shows every row
+1: insert into hs_co_h values (9);
+INSERT 0 1
+1: select count(*) from gp_create_restore_point('hs_co_j');
+ count 
+-------
+ 4     
+(1 row)
+1: insert into hs_co_d select generate_series(1101, 1110);
+INSERT 0 10
+-1M: select count(*) from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_co_j';
+ count 
+-------
+ 1     
+(1 row)
+!\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_co_j --skipvalidation;
+-- start_ignore
+20261104:10:03:58:1636791 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_co_j --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -u;
+-- start_ignore
+20261104:10:03:58:1636838 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20261104:10:03:58:1636838 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20261104:10:03:58:1636838 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20261104:10:03:58:1636838 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20261104:10:03:58:1636838 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20261104:10:03:58:1636838 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+
+-- end_ignore
+(exited with code 0)
+-1S: set whpg_hot_standby_snapshot_mode = anchored;
+SET
+-1S: select (select count(*) from hs_co_h) h, (select count(*) from hs_co_d where a > 900 and a < 1000) d;
+ h  | d  
+----+----
+ 11 | 30 
+(1 row)
+
+----------------------------------------------------------------
+-- The same with an overflowed running-xacts record (more than 64
+-- subtransactions): it lists no subxids, which can be above both the top
+-- xid and latestCompletedXid, and a later overflowed record makes the
+-- standby ready without initializing it again.  The horizon must cover
+-- every xid the record covers
+----------------------------------------------------------------
+1: select gp_inject_fault('dtm_after_include_in_ckpt_cleared', 'suspend', dbid) from gp_segment_configuration where content = -1 and role = 'p';
+ gp_inject_fault 
+-----------------
+ Success:        
+(1 row)
+2: begin;
+BEGIN
+2: insert into hs_co_h values (50);
+INSERT 0 1
+3: insert into hs_co_h values (51);
+INSERT 0 1
+2: do $$ begin for i in 1..70 loop begin insert into hs_co_h values (5000 + i); exception when others then raise; end; end loop; end $$;
+DO
+2: insert into hs_co_d select generate_series(1201, 1230);
+INSERT 0 30
+2&: commit;  <waiting ...>
+1: select gp_wait_until_triggered_fault('dtm_after_include_in_ckpt_cleared', 1, dbid) from gp_segment_configuration where content = -1 and role = 'p';
+ gp_wait_until_triggered_fault 
+-------------------------------
+ Success:                      
+(1 row)
+1: checkpoint;
+CHECKPOINT
+!\retcode clsn=$(psql -d postgres -Atc "select pg_current_wal_lsn()"); sport=$(psql -d postgres -Atc "select port from gp_segment_configuration where content = -1 and role = 'm'"); cur=f; for i in $(seq 1 600); do cur=$(PGOPTIONS='-c gp_role=utility' psql -X -p "$sport" -d postgres -Atc "select pg_last_wal_replay_lsn() >= '$clsn'::pg_lsn"); [ "$cur" = t ] && break; sleep 0.1; done; [ "$cur" = t ];
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-1M: checkpoint;
+CHECKPOINT
+-1Mq: ... <quitting>
+-1Sq: ... <quitting>
+!\retcode pg_ctl restart -w -m fast -D "$COORDINATOR_DATA_DIRECTORY/../../standby";
+-- start_ignore
+waiting for server to shut down.... done
+server stopped
+waiting for server to start....2026-11-04 10:03:59.538436 CST,,,p1636888,th-1540473888,,,,0,,,seg-1,,,,,"LOG","00000","starting PostgreSQL 12.12 (Greenplum Database 7.0.0-beta.0 build dev) on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14), 64-bit",,,,,,,,"PostmasterMain","postmaster.c",1242,
+2026-11-04 10:03:59.538872 CST,,,p1636888,th-1540473888,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv4 address ""0.0.0.0"", port 7101",,,,,,,,"StreamServerPort","pqcomm.c",639,
+2026-11-04 10:03:59.538972 CST,,,p1636888,th-1540473888,,,,0,,,seg-1,,,,,"LOG","00000","listening on IPv6 address ""::"", port 7101",,,,,,,,"StreamServerPort","pqcomm.c",639,
+2026-11-04 10:03:59.539143 CST,,,p1636888,th-1540473888,,,,0,,,seg-1,,,,,"LOG","00000","listening on Unix socket ""/tmp/.s.PGSQL.7101""",,,,,,,,"StreamServerPort","pqcomm.c",634,
+2026-11-04 10:03:59.555224 CST,,,p1636888,th-1540473888,,,,0,,,seg-1,,,,,"LOG","00000","redirecting log output to logging collector process",,"Future log output will appear in directory ""log"".",,,,,,"SysLogger_Start","syslogger.c",920,
+ done
+server started
+
+-- end_ignore
+(exited with code 0)
+1: select gp_inject_fault('dtm_after_include_in_ckpt_cleared', 'resume', dbid) from gp_segment_configuration where content = -1 and role = 'p';
+ gp_inject_fault 
+-----------------
+ Success:        
+(1 row)
+2<:  <... completed>
+COMMIT
+1: select gp_inject_fault('dtm_after_include_in_ckpt_cleared', 'reset', dbid) from gp_segment_configuration where content = -1 and role = 'p';
+ gp_inject_fault 
+-----------------
+ Success:        
+(1 row)
+-- an overflowed transaction started after the restart keeps the next
+-- record overflowed with an oldest running xid past the first one's xids
+3: begin;
+BEGIN
+3: do $$ begin for i in 1..70 loop begin insert into hs_co_h values (6000 + i); exception when others then raise; end; end loop; end $$;
+DO
+1: checkpoint;
+CHECKPOINT
+!\retcode sdir="$COORDINATOR_DATA_DIRECTORY/../../standby"; cat "$sdir"/log/*.csv | wc -l > "$COORDINATOR_DATA_DIRECTORY/hs_co_log.lines";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+1: select count(*) from gp_create_restore_point('hs_co_k');
+ count 
+-------
+ 4     
+(1 row)
+1: insert into hs_co_d select generate_series(1301, 1310);
+INSERT 0 10
+-1M: select count(*) from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_co_k';
+ count 
+-------
+ 0     
+(1 row)
+!\retcode sdir="$COORDINATOR_DATA_DIRECTORY/../../standby"; test ! -e "$sdir/pg_anchor_snapshots/hs_co_k" && cat "$sdir"/log/*.csv | tail -n +$(( $(cat "$COORDINATOR_DATA_DIRECTORY/hs_co_log.lines") + 1 )) | grep -q 'anchor snapshot for restore point ..hs_co_k.. not exported: transaction [0-9]* had committed when this standby.s snapshot was initialized'; rm -f "$COORDINATOR_DATA_DIRECTORY/hs_co_log.lines";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+-- once the overflowed transaction commits, the next restore point exports
+-- and shows the whole held transaction, subtransactions included
+3: commit;
+COMMIT
+1: select count(*) from gp_create_restore_point('hs_co_l');
+ count 
+-------
+ 4     
+(1 row)
+1: insert into hs_co_d select generate_series(1401, 1410);
+INSERT 0 10
+-1M: select count(*) from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_co_l';
+ count 
+-------
+ 1     
+(1 row)
+!\retcode gpconfig -c whpg_hot_standby_anchor_name -v hs_co_l --skipvalidation;
+-- start_ignore
+20261104:10:04:00:1636913 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-c whpg_hot_standby_anchor_name -v hs_co_l --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -u;
+-- start_ignore
+20261104:10:04:00:1636960 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -u
+20261104:10:04:00:1636960 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20261104:10:04:00:1636960 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20261104:10:04:00:1636960 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20261104:10:04:00:1636960 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20261104:10:04:00:1636960 gpstop:localhost:yjf-[INFO]:-Signalling all postmaster processes to reload
+
+-- end_ignore
+(exited with code 0)
+-1S: set whpg_hot_standby_snapshot_mode = anchored;
+SET
+-1S: select (select count(*) from hs_co_h where a = 50 or a between 5001 and 5070) t, (select count(*) from hs_co_d where a between 1201 and 1230) d;
+ t  | d  
+----+----
+ 71 | 30 
+(1 row)
+
+----------------------------------------------------------------
+-- Cleanup: no published anchor
+----------------------------------------------------------------
+1: drop table hs_co_h;
+DROP TABLE
+1: drop table hs_co_ao;
+DROP TABLE
+1: drop table hs_co_d;
+DROP TABLE
+1q: ... <quitting>
+2q: ... <quitting>
+3q: ... <quitting>
+-1Sq: ... <quitting>
+-1Mq: ... <quitting>
+0Mq: ... <quitting>
+!\retcode gpconfig -r whpg_hot_standby_snapshot_mode --skipvalidation;
+-- start_ignore
+20261104:10:04:00:1636993 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-r whpg_hot_standby_snapshot_mode --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpconfig -r whpg_hot_standby_anchor_name --skipvalidation;
+-- start_ignore
+20261104:10:04:00:1637040 gpconfig:localhost:yjf-[INFO]:-completed successfully with parameters '-r whpg_hot_standby_anchor_name --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -ar;
+-- start_ignore
+20261104:10:04:00:1637087 gpstop:localhost:yjf-[INFO]:-Starting gpstop with args: -ar
+20261104:10:04:00:1637087 gpstop:localhost:yjf-[INFO]:-Gathering information and validating the environment...
+20261104:10:04:00:1637087 gpstop:localhost:yjf-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20261104:10:04:00:1637087 gpstop:localhost:yjf-[INFO]:-Obtaining Segment details from coordinator...
+20261104:10:04:00:1637087 gpstop:localhost:yjf-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.0.0-beta.0 build dev'
+20261104:10:04:00:1637087 gpstop:localhost:yjf-[INFO]:-Commencing Coordinator instance shutdown with mode='smart'
+20261104:10:04:00:1637087 gpstop:localhost:yjf-[INFO]:-Coordinator segment instance directory=/home/yjf/wpg-2037-wt/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
+20261104:10:04:00:1637087 gpstop:localhost:yjf-[INFO]:-Stopping coordinator segment and waiting for user connections to finish ...
+server shutting down
+20261104:10:04:01:1637087 gpstop:localhost:yjf-[INFO]:-Attempting forceful termination of any leftover coordinator process
+20261104:10:04:01:1637087 gpstop:localhost:yjf-[INFO]:-Terminating processes for segment /home/yjf/wpg-2037-wt/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
+20261104:10:04:01:1637087 gpstop:localhost:yjf-[INFO]:-Stopping coordinator standby host localhost.localdomain mode=smart
+20261104:10:04:01:1637087 gpstop:localhost:yjf-[INFO]:-Successfully shutdown standby process on localhost.localdomain
+20261104:10:04:01:1637087 gpstop:localhost:yjf-[INFO]:-Targeting dbid [2, 5, 3, 6, 4, 7] for shutdown
+20261104:10:04:01:1637087 gpstop:localhost:yjf-[INFO]:-Commencing parallel primary segment instance shutdown, please wait...
+20261104:10:04:01:1637087 gpstop:localhost:yjf-[INFO]:-0.00% of jobs completed
+20261104:10:04:04:1637087 gpstop:localhost:yjf-[INFO]:-100.00% of jobs completed
+20261104:10:04:04:1637087 gpstop:localhost:yjf-[INFO]:-Commencing parallel mirror segment instance shutdown, please wait...
+20261104:10:04:04:1637087 gpstop:localhost:yjf-[INFO]:-0.00% of jobs completed
+20261104:10:04:06:1637087 gpstop:localhost:yjf-[INFO]:-100.00% of jobs completed
+20261104:10:04:06:1637087 gpstop:localhost:yjf-[INFO]:-----------------------------------------------------
+20261104:10:04:06:1637087 gpstop:localhost:yjf-[INFO]:-   Segments stopped successfully      = 6
+20261104:10:04:06:1637087 gpstop:localhost:yjf-[INFO]:-   Segments with errors during stop   = 0
+20261104:10:04:06:1637087 gpstop:localhost:yjf-[INFO]:-----------------------------------------------------
+20261104:10:04:06:1637087 gpstop:localhost:yjf-[INFO]:-Successfully shutdown 6 of 6 segment instances 
+20261104:10:04:06:1637087 gpstop:localhost:yjf-[INFO]:-Database successfully shutdown with no errors reported
+20261104:10:04:06:1637087 gpstop:localhost:yjf-[INFO]:-Restarting System...
+
+-- end_ignore
+(exited with code 0)

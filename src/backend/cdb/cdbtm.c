@@ -533,8 +533,12 @@ doInsertForgetCommitted(void)
 
 	recptr = RecordDistributedForgetCommitted(getDistributedTransactionId());
 
+	SIMPLE_FAULT_INJECTOR("dtm_after_insert_forget_committed");
+
 	setCurrentDtxState(DTX_STATE_INSERTED_FORGET_COMMITTED);
 	MyTmGxact->includeInCkpt = false;
+
+	SIMPLE_FAULT_INJECTOR("dtm_after_include_in_ckpt_cleared");
 
 	return recptr;
 }

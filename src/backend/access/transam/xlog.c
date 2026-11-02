@@ -978,6 +978,7 @@ static int	get_sync_bit(int method);
 
 /* New functions added for WAL replication */
 static void XLogProcessCheckpointRecord(XLogReaderState *rec);
+static void XLogNoteCheckpointGxidsForAnchors(XLogReaderState *rec);
 static void CopyXLogRecordToWAL(int write_len, bool isLogSwitch,
 								XLogRecData *rdata,
 								XLogRecPtr StartPos, XLogRecPtr EndPos);
@@ -6358,6 +6359,23 @@ SetCurrentChunkStartTime(TimestampTz xtime)
 }
 
 /*
+ * GPDB: during replay, tell the anchor export which distributed transactions
+ * a checkpoint record still lists as committed but not forgotten.
+ */
+static void
+XLogNoteCheckpointGxidsForAnchors(XLogReaderState *rec)
+{
+	CheckpointExtendedRecord ckptExtended;
+
+	if (!IS_QUERY_DISPATCHER())
+		return;
+	UnpackCheckPointRecord(rec, &ckptExtended);
+	if (ckptExtended.dtxCheckpoint)
+		AnchorSnapshotNoteCheckpointGxids(ckptExtended.dtxCheckpoint->committedGxidArray,
+										  ckptExtended.dtxCheckpoint->committedCount);
+}
+
+/*
  * Process passed checkpoint record either during normal recovery or
  * in standby mode.
  *
@@ -10989,6 +11007,8 @@ xlog_redo(XLogReaderState *record)
 					(errmsg("unexpected timeline ID %u (should be %u) in checkpoint record",
 							checkPoint.ThisTimeLineID, ThisTimeLineID)));
 
+		XLogNoteCheckpointGxidsForAnchors(record);
+
 		RecoveryRestartPoint(&checkPoint);
 	}
 	else if (info == XLOG_CHECKPOINT_ONLINE)
@@ -11049,6 +11069,8 @@ xlog_redo(XLogReaderState *record)
 			ereport(PANIC,
 					(errmsg("unexpected timeline ID %u (should be %u) in checkpoint record",
 							checkPoint.ThisTimeLineID, ThisTimeLineID)));
+
+		XLogNoteCheckpointGxidsForAnchors(record);
 
 		RecoveryRestartPoint(&checkPoint);
 
