@@ -12,10 +12,10 @@ By default, connections between the QD on the coordinator and QEs on segment ins
 
 To enable interconnect proxies for the Greenplum system, set these system configuration parameters.
 
--   List the proxy ports with the parameter [gp\_interconnect\_proxy\_addresses](../../ref_guide/config_params/guc-list.html#gp_interconnect_proxy_addresses). You must specify a proxy port for the coordinator, standby coordinator, and all segment instances.
+-   List the proxy ports with the parameter [gp\_interconnect\_proxy\_addresses](../../ref_guide/config_params/guc-list.html#gp_interconnect_proxy_addresses). You must specify a proxy port for the coordinator, standby coordinator, and all segment instances. `gpinitsystem` writes this parameter when the cluster configuration file sets `PROXY_PORT_BASE`, `COORDINATOR_PROXY_PORT`, `MIRROR_PROXY_PORT_BASE` \(with mirrors\) and `STANDBY_PROXY_PORT` \(with a standby coordinator on the coordinator host\).
 -   Set the parameter [gp\_interconnect\_type](../../ref_guide/config_params/guc-list.html#gp_interconnect_type) to `proxy`.
 
-> **Note** When expanding a Greenplum Database system, you must deactivate interconnect proxies before adding new hosts and segment instances to the system, and you must update the `gp_interconnect_proxy_addresses` parameter with the newly-added segment instances before you re-enable interconnect proxies.
+> **Note** `gpexpand` and `gpinitstandby` keep `gp_interconnect_proxy_addresses` up to date: `gpexpand` adds an entry for every new segment instance, derived from the existing entries of the same role, and `gpinitstandby` adds or removes the standby coordinator's entry \(the `--standby-proxy-port` option sets its port when the standby runs on the coordinator host\). You do not need to deactivate interconnect proxies before expanding the system.
 
 **Parent topic:** [Managing a Greenplum System](../managing/partII.html)
 
@@ -29,7 +29,7 @@ This example sets up a Greenplum system to use proxies for the Greenplum interco
 
 ### <a id="set_proxy_address"></a>Setting the Interconnect Proxy Addresses 
 
-Set the `gp_interconnect_proxy_addresses` parameter to specify the proxy ports for the coordinator and segment instances. The syntax for the value has the following format and you must specify the parameter value as a single-quoted string.
+If `gpinitsystem` did not write the `gp_interconnect_proxy_addresses` parameter, set it to specify the proxy ports for the coordinator and segment instances. The syntax for the value has the following format. The value is validated when it is set: every entry must have the four fields, and no dbid or host and port may be listed twice.
 
 ```
 <db_id>:<cont_id>:<seg_address>:<port>[, ... ]
@@ -93,7 +93,7 @@ returns table(dbid smallint, content smallint, address text, port int) as $$
         value += '{}:{}:{}:{}'.format(dbid, content, address, port)
 
     if action.lower() == 'update proxy':
-        os.system('''gpconfig --skipvalidation -c gp_interconnect_proxy_addresses -v "'{}'"'''.format(value))
+        os.system('''gpconfig -c gp_interconnect_proxy_addresses -v "{}"'''.format(value))
         plpy.notice('''the settings are applied, please reload with 'gpstop -u' to take effect.''')
     else:
         plpy.notice('''if the settings are correct, re-run with 'update proxy' to apply.''')
@@ -119,10 +119,10 @@ This command runs the function to set the parameter.
 select my_setup_ic_proxy(-1000, 'update proxy');
 ```
 
-As an alternative, you can run the s[gpconfig](../../utility_guide/ref/gpconfig.html) utility to set the `gp_interconnect_proxy_addresses` parameter. To set the value as a string, the value is a single-quoted string that is enclosed in double quotes. The example Greenplum system consists of a coordinator and a single segment instance.
+As an alternative, you can run the [gpconfig](../../utility_guide/ref/gpconfig.html) utility to set the `gp_interconnect_proxy_addresses` parameter. The example Greenplum system consists of a coordinator and a single segment instance.
 
 ```
-gpconfig --skipvalidation -c gp_interconnect_proxy_addresses -v "'1:-1:192.168.180.50:35432,2:0:192.168.180.54:35000'"
+gpconfig -c gp_interconnect_proxy_addresses -v "1:-1:192.168.180.50:35432,2:0:192.168.180.54:35000"
 ```
 
 After setting the `gp_interconnect_proxy_addresses` parameter, reload the `postgresql.conf` file with the `gpstop -u` command. This command does not stop and restart the Greenplum system.
