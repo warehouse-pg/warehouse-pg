@@ -57,6 +57,29 @@ INSERT INTO ph SELECT 1, g FROM generate_series(0, 3) g;
 CREATE TABLE pe (id int, k int) DISTRIBUTED BY (id) PARTITION BY RANGE ((k + 0));
 CREATE TABLE pe_a PARTITION OF pe FOR VALUES FROM (0) TO (4);
 INSERT INTO pe SELECT 1, g FROM generate_series(0, 3) g;
+-- More fixtures: views that expose ctid (one with a DELETE rule that deletes
+-- by it), a SQL function that deletes by ctid, LIST partitions,
+-- append-only partitions, two levels with a different sub-key per partition.
+CREATE VIEW tv AS SELECT ctid AS c, id, v FROM t;
+CREATE VIEW tr AS SELECT ctid AS c, id, v FROM t;
+CREATE RULE tr_del AS ON DELETE TO tr DO INSTEAD DELETE FROM t WHERE ctid = OLD.c;
+CREATE FUNCTION del_sql(tid) RETURNS void LANGUAGE sql AS $$ DELETE FROM t WHERE ctid = $1 $$;
+CREATE TABLE lp (id int, region text) DISTRIBUTED BY (id) PARTITION BY LIST (region);
+CREATE TABLE lp_e PARTITION OF lp FOR VALUES IN ('e');
+CREATE TABLE lp_w PARTITION OF lp FOR VALUES IN ('w');
+CREATE TABLE lp_d PARTITION OF lp DEFAULT;
+INSERT INTO lp VALUES (1, 'e'), (1, 'w'), (1, 'x');
+CREATE TABLE pao (id int, k int) WITH (appendonly = true) DISTRIBUTED BY (id)
+  PARTITION BY RANGE (k) (START (0) END (4) EVERY (1));
+INSERT INTO pao SELECT 1, g FROM generate_series(0, 3) g;
+CREATE TABLE hz (id int, k int, v int, w int) DISTRIBUTED BY (id) PARTITION BY RANGE (k);
+CREATE TABLE hz_a PARTITION OF hz FOR VALUES FROM (0) TO (1) PARTITION BY RANGE (v);
+CREATE TABLE hz_a0 PARTITION OF hz_a FOR VALUES FROM (0) TO (2);
+CREATE TABLE hz_a1 PARTITION OF hz_a FOR VALUES FROM (2) TO (4);
+CREATE TABLE hz_b PARTITION OF hz FOR VALUES FROM (1) TO (2) PARTITION BY RANGE (w);
+CREATE TABLE hz_b0 PARTITION OF hz_b FOR VALUES FROM (0) TO (2);
+CREATE TABLE hz_b1 PARTITION OF hz_b FOR VALUES FROM (2) TO (4);
+INSERT INTO hz VALUES (1, 0, 0, 0), (1, 0, 2, 0), (1, 1, 0, 0), (1, 1, 0, 2);
 
 -- The rows these tests are about: on the standard 3-segment cluster, ids 1, 2
 -- and 5 all sit at ctid (0,1), one on each segment.
@@ -186,6 +209,49 @@ DELETE FROM t USING s WHERE t.ctid = s.tid AND s.sid IS NOT NULL;
 UPDATE t SET note = 'y' FROM s WHERE t.ctid = s.tid;
 WITH x AS (SELECT tid FROM s) DELETE FROM t WHERE ctid IN (SELECT tid FROM x);
 
+-- More statements that changed rows on other segments (or partitions) under
+-- GPORCA in 7.6.0, all rejected now.  Other SQL forms:
+UPDATE t SET note = 'y' FROM (VALUES ('(0,1)'::tid), ('(0,2)'::tid)) v(c) WHERE t.ctid = v.c;
+DELETE FROM t WHERE ctid IS NOT DISTINCT FROM '(0,1)';
+DELETE FROM t WHERE (ctid = '(0,1)') IS TRUE;
+DELETE FROM t WHERE CASE WHEN ctid = '(0,1)' THEN true ELSE false END;
+DELETE FROM t WHERE ctid > ALL (SELECT tid FROM s);
+DELETE FROM t WHERE ctid IN (SELECT tid FROM s UNION SELECT '(0,2)'::tid);
+DELETE FROM t USING s LEFT JOIN d ON d.id = 7 WHERE t.ctid = s.tid;
+DELETE FROM t WHERE id IN (SELECT id FROM d WHERE EXISTS (SELECT 1 FROM t t2 WHERE t2.id = d.id AND t2.ctid = '(0,1)'));
+DELETE FROM tv WHERE c = '(0,1)';
+DELETE FROM tr WHERE id = 7;
+SELECT del_sql('(0,1)');
+DO $$ BEGIN EXECUTE format('DELETE FROM ctid_dml.t WHERE ctid = %L', '(0,1)'); END $$;
+CREATE TEMP TABLE tt AS SELECT * FROM t DISTRIBUTED BY (id);
+DELETE FROM tt WHERE ctid = '(0,1)';
+DROP TABLE tt;
+-- A key condition that does not fix the key to values:
+DELETE FROM t WHERE ctid = '(0,1)' AND id::text = '1';
+DELETE FROM t WHERE ctid = '(0,1)' AND id IS NULL;
+DELETE FROM t WHERE ctid IS NOT NULL OR ctid = '(0,1)';
+DELETE FROM t USING d, s WHERE d.ctid = s.tid AND t.id = d.id;
+-- A gp_segment_id condition that filters nothing after simplification, or
+-- does not reach the statement's rows:
+DELETE FROM t WHERE ctid = '(0,1)' AND CASE WHEN true THEN true ELSE gp_segment_id = 0 END;
+DELETE FROM t WHERE ctid = '(0,1)' AND COALESCE(true, gp_segment_id = 0);
+WITH x AS (SELECT 1 FROM t b WHERE b.ctid = '(0,1)' AND b.gp_segment_id = 0) DELETE FROM t a WHERE a.ctid = '(0,1)';
+DELETE FROM t a WHERE a.ctid = '(0,1)' AND a.id IN (SELECT b.id FROM t b ORDER BY a.gp_segment_id);
+-- Partitioned tables, the row not named: a partition alone by ctid, tableoid
+-- or the partition key without the distribution key, a range on the
+-- partition key, LIST and append-only partitions, a prepared statement.
+DELETE FROM pt_1_prt_2 WHERE ctid = '(0,1)';
+DELETE FROM pt WHERE ctid = '(0,1)' AND tableoid = 'pt_1_prt_2'::regclass;
+DELETE FROM pt WHERE ctid = '(0,1)' AND k = 1;
+UPDATE pt SET k = 3 WHERE ctid = '(0,1)' AND k < 2;
+DELETE FROM lp WHERE ctid = '(0,1)' AND id = 1;
+DELETE FROM pao WHERE ctid = '(33554432,1)' AND id = 1;
+SET plan_cache_mode = force_generic_plan;
+PREPARE del_pt(int, tid) AS DELETE FROM pt WHERE id = $1 AND ctid = $2;
+EXECUTE del_pt(1, '(0,1)');
+DEALLOCATE del_pt;
+RESET plan_cache_mode;
+
 -- Nothing was changed.
 SELECT count(*), sum(id), sum(CASE WHEN note <> 'x' THEN 1 ELSE 0 END) AS changed FROM t;
 SELECT count(*) FROM d;
@@ -195,6 +261,9 @@ SELECT count(*) FROM pk2;
 SELECT count(*) FROM p2;
 SELECT count(*) FROM ph;
 SELECT count(*) FROM pe;
+SELECT count(*) FROM lp;
+SELECT count(*) FROM pao;
+SELECT count(*) FROM hz;
 
 --
 -- gp_segment_id mentioned with ctid: allowed, runs as written.  Planned by
@@ -362,6 +431,13 @@ DELETE FROM pk2 WHERE ctid = '(0,1)' AND id = 1 AND k = 2;
 DELETE FROM p2 WHERE ctid = '(0,1)' AND id = 1 AND k = 0 AND v = 2;
 DELETE FROM ph WHERE ctid = '(0,1)' AND id = 1 AND k = 3;
 SELECT (SELECT count(*) FROM pt) AS pt, (SELECT count(*) FROM ih) AS ih, (SELECT count(*) FROM pk2) AS pk2, (SELECT count(*) FROM p2) AS p2, (SELECT count(*) FROM ph) AS ph;
+ROLLBACK;
+-- The partition key compared under another collation, and two levels with a
+-- different sub-key per partition when every partition key is fixed.
+BEGIN;
+DELETE FROM lp WHERE ctid = '(0,1)' AND id = 1 AND region = 'e' COLLATE "C";
+DELETE FROM hz WHERE ctid = '(0,1)' AND id = 1 AND k = 0 AND v = 2 AND w = 0;
+SELECT (SELECT count(*) FROM lp) AS lp, (SELECT count(*) FROM hz) AS hz;
 ROLLBACK;
 -- A key condition inside a sub-select the planner keeps as a SubPlan still
 -- fixes the segment: both optimizers accept it.
