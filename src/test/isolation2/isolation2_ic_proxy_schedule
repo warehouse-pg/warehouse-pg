@@ -10,3 +10,6 @@ test: ic_proxy_peer_shutdown
 
 # test ic-proxy listen failed
 test: ic_proxy_listen_failed
+
+# test TLS on the proxy peer connections (restarts the cluster, leaves TLS off)
+test: ic_proxy_tls
