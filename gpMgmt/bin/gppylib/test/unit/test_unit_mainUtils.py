@@ -1,3 +1,4 @@
+import errno
 import os
 import shutil
 import subprocess
@@ -7,7 +8,7 @@ from mock import patch
 
 from gppylib.test.unit.gp_unittest import *
 from gppylib import mainUtils
-from gppylib.mainUtils import PIDLockFile, PIDLockHeld
+from gppylib.mainUtils import PIDLockFile, PIDLockHeld, SimpleMainLock
 from gppylib.mainUtils import parseStatusLine
 
 
@@ -157,16 +158,132 @@ class MainUtilsTestCase(GpTestCase):
             "lock.acquire()\n"
             "lock.release()\n"
         )
-        pylib = os.path.dirname(os.path.dirname(os.path.abspath(mainUtils.__file__)))
-        env = dict(os.environ)
-        env['PYTHONPATH'] = os.pathsep.join([pylib] + [p for p in sys.path if p])
-        proc = subprocess.run([sys.executable, '-c', script, lockdir],
-                              env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                              universal_newlines=True, timeout=60)
+        proc = self._run_python(script, lockdir)
         self.assertEqual(0, proc.returncode, proc.stderr)
         self.assertNotIn("Exception ignored", proc.stderr)
         self.assertNotIn("NameError", proc.stderr)
         self.assertFalse(os.path.exists(lockdir))
+
+    def test_child_exit_does_not_remove_parent_lock(self):
+        # A forked child inherits the lock object. When the child exits
+        # normally (here via sys.exit() inside the with block, which runs
+        # __exit__), it must not remove the lock its parent still holds.
+        # Run in a separate interpreter so the child can exit for real.
+        lockdir = self.lockfile + "-fork"
+        self.addCleanup(shutil.rmtree, lockdir, True)
+        script = (
+            "import os, sys\n"
+            "from gppylib.mainUtils import PIDLockFile\n"
+            "with PIDLockFile(sys.argv[1]) as lock:\n"
+            "    pid = os.fork()\n"
+            "    if pid == 0:\n"
+            "        sys.exit(0)\n"
+            "    os.waitpid(pid, 0)\n"
+            "    print(lock.read_pid() == os.getpid())\n"
+        )
+        proc = self._run_python(script, lockdir)
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        self.assertEqual("True", proc.stdout.strip())
+        self.assertFalse(os.path.exists(lockdir))
+
+    def test_child_acquire_records_child_pid(self):
+        # A forked child that acquires through an inherited object must record
+        # its own PID, and so be able to release the lock again.
+        self.addCleanup(shutil.rmtree, self.lockfile, True)
+        pid = os.fork()
+        if pid == 0:
+            code = 1
+            try:
+                self.lock.acquire()
+                code = 2 if self.lock.read_pid() != os.getpid() else 0
+                self.lock.release()
+                if code == 0 and os.path.exists(self.lockfile):
+                    code = 3
+            finally:
+                os._exit(code)
+        _, status = os.waitpid(pid, 0)
+        self.assertEqual(0, os.WEXITSTATUS(status))
+
+    def test_acquire_replaces_empty_lock_dir(self):
+        self.addCleanup(shutil.rmtree, self.lockfile, True)
+        os.makedirs(self.lockfile)
+        self.lock.acquire()
+        self.assertEqual(self.ppid, self.lock.read_pid())
+        self.lock.release()
+        self.assertFalse(os.path.exists(self.lockfile))
+
+    def test_acquire_failure_leaves_no_lock_dir(self):
+        # If writing the PID fails (e.g. ENOSPC), neither the lock directory
+        # nor the temporary one may be left behind.
+        self.addCleanup(shutil.rmtree, self.lockfile, True)
+        with patch('gppylib.mainUtils.open', create=True,
+                   side_effect=OSError(errno.ENOSPC, "No space left on device")):
+            with self.assertRaises(OSError) as cm:
+                self.lock.acquire()
+        self.assertNotIsInstance(cm.exception, PIDLockHeld)
+        self.assertFalse(os.path.exists(self.lockfile))
+        self.assertFalse(os.path.exists("%s.%d.tmp" % (self.lockfile, self.ppid)))
+
+    def _simple_main_lock(self):
+        sml = SimpleMainLock({})
+        sml.ppath = self.lockfile
+        sml.pidlockfile = self.lock
+        return sml
+
+    def _assert_simple_main_lock_acquired(self, sml):
+        self.assertIsNone(sml.acquire())
+        self.assertIs(self.lock, sml.locktorelease)
+        self.assertEqual(self.ppid, self.lock.read_pid())
+        sml.release()
+        self.assertFalse(os.path.exists(self.lockfile))
+
+    def test_simple_main_lock_acquires_empty_lock_dir(self):
+        self.addCleanup(shutil.rmtree, self.lockfile, True)
+        os.makedirs(self.lockfile)
+        self._assert_simple_main_lock_acquired(self._simple_main_lock())
+
+    def test_simple_main_lock_acquires_lock_dir_without_pid_file(self):
+        self.addCleanup(shutil.rmtree, self.lockfile, True)
+        os.makedirs(self.lockfile)
+        open(os.path.join(self.lockfile, "stray"), 'w').close()
+        self._assert_simple_main_lock_acquired(self._simple_main_lock())
+
+    def test_simple_main_lock_acquires_lock_dir_with_empty_pid_file(self):
+        self.addCleanup(shutil.rmtree, self.lockfile, True)
+        os.makedirs(self.lockfile)
+        open(os.path.join(self.lockfile, "PID"), 'w').close()
+        self._assert_simple_main_lock_acquired(self._simple_main_lock())
+
+    def test_simple_main_lock_reports_live_owner(self):
+        self.addCleanup(shutil.rmtree, self.lockfile, True)
+        owner = os.getppid()
+        os.makedirs(self.lockfile)
+        with open(os.path.join(self.lockfile, "PID"), 'w') as p:
+            p.write(str(owner))
+        sml = self._simple_main_lock()
+        self.assertEqual(owner, sml.acquire())
+        self.assertIsNone(sml.locktorelease)
+        sml.release()
+        self.assertTrue(os.path.exists(self.lockfile))
+
+    def test_simple_main_lock_never_reports_ownerless_lock_as_acquired(self):
+        # Even if the lock directory cannot be taken over, a directory without
+        # a PID file must not be reported as acquired.
+        self.addCleanup(shutil.rmtree, self.lockfile, True)
+        os.makedirs(self.lockfile)
+        sml = self._simple_main_lock()
+        with patch('gppylib.mainUtils.PIDLockFile.acquire',
+                   side_effect=PIDLockHeld("held", self.lockfile)):
+            self.assertEqual("unknown", sml.acquire())
+        self.assertIsNone(sml.locktorelease)
+
+    def _run_python(self, script, *args):
+        pylib = os.path.dirname(os.path.dirname(os.path.abspath(mainUtils.__file__)))
+        env = dict(os.environ)
+        env['PYTHONPATH'] = os.pathsep.join([pylib] + [p for p in sys.path if p])
+        return subprocess.run([sys.executable, '-c', script] + list(args),
+                              env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              universal_newlines=True, timeout=60)
 
 
 
