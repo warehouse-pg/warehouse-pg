@@ -13,22 +13,44 @@ ic-proxy is developed with libuv, the minimal supported libuv version is
 ic-proxy is disabled by default, we could enable it with `configure
 --enable-ic-proxy`.
 
-After the installation we also need to setup the ic-proxy network, it is done
-by setting the GUC `gp_interconnect_proxy_addresses`, for example if a cluster
-has one coordinator, one standby coordinator, one primary segment and one mirror segment,
-we could set it like below:
+After the installation we also need to setup the ic-proxy network, it is
+described by the GUC `gp_interconnect_proxy_addresses`.  It contains one
+entry for every coordinator, standby, primary and mirror segment, the syntax
+is as below:
 
-    gpconfig --skipvalidation -c gp_interconnect_proxy_addresses -v "'1:-1:localhost:2000,2:0:localhost:2002,3:0:localhost:2003,4:-1:localhost:2001'"
+    dbid:segid:hostname:port[,dbid:segid:hostname:port]
 
-It contains information for all the coordinator, standby, primary and mirror
-segments, the syntax is as below:
+The hostname field is the segment's `address` in `gp_segment_configuration`
+(the interface name from the hostfile), the column the UDPIFC and TCP
+interconnects resolve, so on a multi-NIC host each proxy listens on its own
+segment's interface.  The easiest way to get it is to let `gpinitsystem` write it: set
+`PROXY_PORT_BASE`, `COORDINATOR_PROXY_PORT`, with mirrors
+`MIRROR_PROXY_PORT_BASE` and optionally `STANDBY_PROXY_PORT` in the cluster
+config file.  The proxy ports are then assigned per host like `PORT_BASE` /
+`MIRROR_PORT_BASE`, checked the way the postmaster ports are (no overlap
+between the proxy ranges, the postmaster ranges and the coordinator ports,
+nothing already listening on them on any host), and the GUC is set and
+reloaded at the end of the initialization, with the standby's entry taken
+from the catalog.  A partial set of these settings is rejected, since the
+resulting mesh could not be used.  `gpexpand` and `gpinitstandby` keep the
+GUC up to date afterwards, see "Cluster Expansion" below.  The demo cluster
+does the same with `WITH_PROXY=true`:
 
-    dbid:segid:hostname:port[,dbid:segid:ip:port]
+    WITH_PROXY=true make -C gpAux/gpdemo create-demo-cluster
 
-It is important to specify the value as a single-quoted string, otherwise it
-will be parsed as an interger with invalid format.
+The GUC can also be set by hand with `gpconfig`, for example for a cluster
+with one coordinator, one standby coordinator, one primary segment and one
+mirror segment:
 
-An example script to setup this GUC automatically:
+    gpconfig -c gp_interconnect_proxy_addresses -v '1:-1:localhost:2000,2:0:localhost:2002,3:0:localhost:2003,4:-1:localhost:2001'
+
+The value is validated by the GUC's check hook (format, dbid / content / port
+range, hostname length, no blanks inside a hostname), so a typo is rejected at
+`ALTER SYSTEM`, at reload and at startup instead of being silently dropped by
+the proxy; blanks around the entries and a trailing comma are accepted, as
+they always were.
+
+An example script to set the GUC from the catalog:
 
     #!/bin/sh
     
@@ -40,7 +62,7 @@ An example script to setup this GUC automatically:
           FROM gp_segment_configuration
          ORDER BY 1" \
     | xargs -rI'{}' \
-        gpconfig --skipvalidation -c gp_interconnect_proxy_addresses -v "'{}'"
+        gpconfig -c gp_interconnect_proxy_addresses -v '{}'
 
 Reload the setting with `gpstop -u` for it to take effect.
 
@@ -581,6 +603,14 @@ The solution can handle mirror promotion and recover from proxy crash
 automatically with a low enough latency, the only bad part is that it needs to
 retry to mirror connections again and again.
 
+One consequence of those retries: a connect to a port on the same host that
+nobody listens on can succeed by connecting the socket to itself, when the
+kernel picks the destination port as the ephemeral source port (TCP
+simultaneous open; the proxy ports normally lie inside `ip_local_port_range`).
+The proxy compares the local and the remote address right after the connect
+and drops such a connection, otherwise it would read its own HELLO back as
+the HELLO ACK.
+
 ### Standby and Mirror
 
 The ic-proxy bgworker processes are launched on all the coordinator and primary
@@ -613,12 +643,36 @@ stages:
 1. the cluster expansion (adding new segments to the cluster);
 2. the data expansion (expand the data to the new segments);
 
-When ic-proxy is enabled we need a stage 1.5 between them:
+When the GUC `gp_interconnect_proxy_addresses` is set, `gpexpand` extends it
+with the new segments before stage 1.  The value extended is the one in the
+configuration files (`pg_file_settings`), not the running one: `gpconfig`
+does not reload, so a value written by `gpinitstandby` or by the operator and
+not yet reloaded would otherwise be lost.  Each new segment's proxy port is derived
+from the existing entries of the same role (primary / mirror) at the same
+offset as its data port, i.e. the `PROXY_PORT_BASE` pattern written by
+`gpinitsystem`.  When the existing mesh does not follow that pattern, or a
+derived port collides with another proxy or a postmaster on the same host,
+`gpexpand` stops with an error and the GUC has to be set by hand before
+rerunning it.  The GUC is updated whenever it is set, also when the cluster
+does not currently run in proxy mode, because an incomplete mesh would break
+the next switch to it.  The running proxies are not reloaded: the new
+segments have the highest content ids and initiate every peer connection
+themselves, and the existing proxies register a peer from the dbid in its
+HELLO rather than from the mesh.
 
-1.5. update the GUC `gp_interconnect_proxy_addresses` to include the new
-     segments, then reload with SIGHUP by `gpstop -u`;
+`gpinitstandby` likewise adds (or, with `-r`, removes) the standby's entry,
+editing the configured value the same way.  The standby's port is
+`--standby-proxy-port` when given, otherwise the coordinator's proxy port,
+which needs the standby on another host; the two are compared by their
+resolved addresses, not only by name, and a standby on the coordinator's host
+without the option is reported and left out of the mesh.  `gpinitsystem -O`
+dumps `STANDBY_PROXY_PORT` so that an `-I` run reproduces the same mesh.
 
-TODO: we may want to introduce a hook in `gpexpand` to automate this job.
+Once the mesh is written the proxy bgworkers of the coordinator and the
+primaries start and bind their ports whether or not `gp_interconnect_type`
+is `proxy` (the bgworker is registered with `BgWorkerStart_RecoveryFinished`,
+so a mirror or the standby starts its proxy when promoted); the mesh decides
+whether the proxies run, the type whether motion uses them.
  
 ## Misc
 
