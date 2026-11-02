@@ -11,12 +11,7 @@ The topics in this section help to ensure that you are prepared to perform a sys
 -   [Planning New Segment Initialization](#topic6) provides information about planning to initialize new segment hosts with `gpexpand`.
 -   [Planning Table Redistribution](#topic10) provides information about planning the data redistribution after the new segment hosts have been initialized.
 
-> **Important** When expanding a Greenplum Database system, you must deactivate Greenplum interconnect proxies before adding new hosts and segment instances to the system, and you must update the `gp_interconnect_proxy_addresses` parameter with the newly-added segment instances before you re-enable interconnect proxies. For example, these commands deactivate Greenplum interconnect proxies by setting the interconnect to the default \(`UDPIFC`\) and reloading the `postgresql.conf` file to update the Greenplum system configuration.
-
-```
-gpconfig -r gp_interconnect_type
-gpstop -u
-```
+> **Note** When the `gp_interconnect_proxy_addresses` parameter is set, `gpexpand` adds an entry for every new segment instance to it before the segments are created, deriving each proxy port from the existing entries of the same role \(primary or mirror\). Greenplum interconnect proxies do not need to be deactivated for the expansion. `gpexpand` stops with an error when a derived port is already used on the host, or when the existing entries do not follow the pattern `gpinitsystem` writes; set the parameter by hand in that case and rerun `gpexpand`.
 
 For information about Greenplum interconnect proxies, see [Configuring Proxies for the Greenplum Interconnect](../managing/proxy-ic.html).
 
