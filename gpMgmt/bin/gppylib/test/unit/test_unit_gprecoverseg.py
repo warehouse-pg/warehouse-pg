@@ -200,6 +200,18 @@ class GpRecoversegTestCase(GpTestCase):
 
         self.subject.logger.info.assert_any_call('The rebalance operation has completed successfully.')
 
+    def test_rebalance_operation_gets_hba_hostnames(self):
+        from gppylib.programs.clsRecoverSegment import GpRecoverSegmentProgram
+        for hba_hostnames in (False, True):
+            options = Options()
+            options.rebalanceSegments = True
+            options.hba_hostnames = hba_hostnames
+            options.showProgressInplace = True
+            program = GpRecoverSegmentProgram(options)
+            operation = program.getRecoveryActionsBasedOnOptions(Mock(), self.gpArrayMock)
+            self.assertIsInstance(operation, GpSegmentRebalanceOperation)
+            self.assertEqual(operation.hba_hostnames, hba_hostnames)
+
     @patch.object(TableLogger, "info")
     @patch.object(GpSegmentRebalanceOperation, "rebalance", return_value=False)
     @patch("os._exit")
