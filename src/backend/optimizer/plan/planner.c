@@ -565,8 +565,9 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 
 	/*
 	 * primary planning entry point (may recurse for subqueries).  An UPDATE
-	 * or DELETE whose ctid use is proven located is exempt from the planner's
-	 * ctid check, as it is planned by GPORCA (see cdbmutate_ctid_proof_begin()).
+	 * or DELETE whose ctid use the rule shared with GPORCA accepts is exempt
+	 * from the planner's ctid check, so the planner accepts every statement
+	 * GPORCA would plan (see cdbmutate_ctid_proof_begin()).
 	 */
 	{
 		bool		save_ctid_proof = cdbmutate_ctid_proof_begin(parse);

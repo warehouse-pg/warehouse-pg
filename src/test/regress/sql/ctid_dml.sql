@@ -209,8 +209,9 @@ DELETE FROM t USING s WHERE t.ctid = s.tid AND s.sid IS NOT NULL;
 UPDATE t SET note = 'y' FROM s WHERE t.ctid = s.tid;
 WITH x AS (SELECT tid FROM s) DELETE FROM t WHERE ctid IN (SELECT tid FROM x);
 
--- More statements that changed rows on other segments (or partitions) under
--- GPORCA in 7.6.0, all rejected now.  Other SQL forms:
+-- More statements that do not pin the row.  Except where noted, each changed
+-- rows on other segments (or partitions) under GPORCA in 7.6.0 with this
+-- data; all are rejected now.  Other SQL forms:
 UPDATE t SET note = 'y' FROM (VALUES ('(0,1)'::tid), ('(0,2)'::tid)) v(c) WHERE t.ctid = v.c;
 DELETE FROM t WHERE ctid IS NOT DISTINCT FROM '(0,1)';
 DELETE FROM t WHERE (ctid = '(0,1)') IS TRUE;
@@ -226,11 +227,18 @@ DO $$ BEGIN EXECUTE format('DELETE FROM ctid_dml.t WHERE ctid = %L', '(0,1)'); E
 CREATE TEMP TABLE tt AS SELECT * FROM t DISTRIBUTED BY (id);
 DELETE FROM tt WHERE ctid = '(0,1)';
 DROP TABLE tt;
--- A key condition that does not fix the key to values:
+-- A condition that does not pin the row: ctid IS NOT NULL in an OR, and
+-- another table's ctid matched through a third table.
+DELETE FROM t WHERE ctid IS NOT NULL OR ctid = '(0,1)';
+CREATE TABLE s1 (tid tid) DISTRIBUTED RANDOMLY;
+INSERT INTO s1 VALUES ('(0,1)');
+DELETE FROM t USING d, s1 WHERE d.ctid = s1.tid AND t.id = d.id;
+DROP TABLE s1;
+-- The rule counts a distribution key fixed with =, IN, = ANY or an OR of =
+-- only, so these are rejected although each can reach a single segment only
+-- (a cast of the key; IS NULL, all NULL keys being on one segment).
 DELETE FROM t WHERE ctid = '(0,1)' AND id::text = '1';
 DELETE FROM t WHERE ctid = '(0,1)' AND id IS NULL;
-DELETE FROM t WHERE ctid IS NOT NULL OR ctid = '(0,1)';
-DELETE FROM t USING d, s WHERE d.ctid = s.tid AND t.id = d.id;
 -- A gp_segment_id condition that filters nothing after simplification, or
 -- does not reach the statement's rows:
 DELETE FROM t WHERE ctid = '(0,1)' AND CASE WHEN true THEN true ELSE gp_segment_id = 0 END;
@@ -245,11 +253,12 @@ DELETE FROM pt WHERE ctid = '(0,1)' AND tableoid = 'pt_1_prt_2'::regclass;
 DELETE FROM pt WHERE ctid = '(0,1)' AND k = 1;
 UPDATE pt SET k = 3 WHERE ctid = '(0,1)' AND k < 2;
 DELETE FROM lp WHERE ctid = '(0,1)' AND id = 1;
-DELETE FROM pao WHERE ctid = '(33554432,1)' AND id = 1;
+SELECT ctid AS pao_ctid FROM pao WHERE id = 1 AND k = 0 \gset
+DELETE FROM pao WHERE ctid = :'pao_ctid' AND id = 1;
 SET plan_cache_mode = force_generic_plan;
-PREPARE del_pt(int, tid) AS DELETE FROM pt WHERE id = $1 AND ctid = $2;
-EXECUTE del_pt(1, '(0,1)');
-DEALLOCATE del_pt;
+PREPARE del_lp(int, tid) AS DELETE FROM lp WHERE id = $1 AND ctid = $2;
+EXECUTE del_lp(1, '(0,1)');
+DEALLOCATE del_lp;
 RESET plan_cache_mode;
 
 -- Nothing was changed.

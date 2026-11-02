@@ -226,8 +226,12 @@ static bool ctid_dml_proven = false;
  * A ctid is unique only within one segment.  The rel counts as having its
  * segment named when gp_segment_id is referenced, or when its restriction
  * clauses fix every distribution key column to values, so that each row's
- * key names its segment (see ctid_rel_located_by_key()).  A ctid that is
- * only tested with IS [NOT] NULL does not pick rows and is not counted.
+ * key names its segment (see ctid_rel_located_by_key()); the latter not for
+ * a table with partitions or inheritance children, where one segment holds a
+ * set of ctids per member (ctid_rel_is_member_set()).  A ctid that is only
+ * tested with IS [NOT] NULL does not pick rows and is not counted.  An UPDATE
+ * or DELETE that cdbmutate_dml_ctid_unlocated() accepts is not checked here
+ * at all (cdbmutate_ctid_proof_begin()).
  * ----------------------------------------------------------------------- *
  */
 typedef struct ctid_inventory_context
@@ -377,8 +381,8 @@ ctid_rte_has_members(RangeTblEntry *rte)
  * The planner's view of the same: a rel whose table has partitions or
  * inheritance children, or one member of the target table of an UPDATE or
  * DELETE on such a table, which inheritance_planner() plans one member at a
- * time (it marks those with inhTargetKind, as relation_excluded_by_constraints()
- * relies on).
+ * time (it marks those with inhTargetKind, as
+ * relation_excluded_by_constraints() relies on).
  */
 static bool
 ctid_rel_is_member_set(PlannerInfo *root, RelOptInfo *rel)
@@ -399,10 +403,10 @@ ctid_rel_is_member_set(PlannerInfo *root, RelOptInfo *rel)
  * or an OR of such equalities.  Each row the statement can reach then has a
  * key that names its segment, so the ctid identifies at most one row per key
  * -- the row is located, as with gp_segment_id.  A range, a cast of the
- * column, another column of the same row, a column of another rel, a list read
- * by a sub-select, a randomly distributed rel, or a table with partitions or
- * inheritance children (ctid_rel_is_member_set(), checked by the caller) does
- * not qualify.
+ * column, IS NULL, another column of the same row, a column of another rel, a
+ * list read by a sub-select, a randomly distributed rel, or a table with
+ * partitions or inheritance children (ctid_rel_is_member_set(), checked by
+ * the caller) does not qualify.
  */
 static bool
 ctid_rel_located_by_key(RelOptInfo *rel)
@@ -445,7 +449,7 @@ cdbmutate_warn_ctid_without_segid(struct PlannerInfo *root, struct RelOptInfo *r
 	AttrNumber	attno;
 	int			ndx;
 
-	/* the statement's ctid use is proven located (see cdbmutate_ctid_proof_begin()) */
+	/* the statement's ctid use is accepted; see cdbmutate_ctid_proof_begin() */
 	if (ctid_dml_proven)
 		return;
 
@@ -554,11 +558,11 @@ cdbmutate_warn_ctid_without_segid(struct PlannerInfo *root, struct RelOptInfo *r
  *
  *	- fixes every distribution key column of the relation to values (as in
  *	  ctid_rel_located_by_key()), at any level from the reference up to the
- *	  relation's own: the key then names the segment, so the ctid names at most
- *	  one row per key value.  A table with partitions or inheritance children
- *	  has a set of ctids per member, so the member must be named as well:
- *	  tableoid fixed to values, or the partition keys fixed to values at every
- *	  level (ctid_frames_pin_member()); or
+ *	  relation's own: the key then names the segment, so the ctid names at
+ *	  most one row per key value.  A table with partitions or inheritance
+ *	  children has a set of ctids per member, so the member must be named as
+ *	  well: tableoid fixed to values, or the partition keys fixed to values at
+ *	  every level (ctid_frames_pin_member()); or
  *	- puts a condition on the relation's gp_segment_id: the bare column
  *	  compared with an expression that does not contain it, = ANY or IS [NOT]
  *	  NULL, at any level from the reference up to the relation's own; an OR
@@ -629,7 +633,10 @@ ctid_and_members(Node *node, List *members)
 	return lappend(members, node);
 }
 
-/* Is node, seen in frame 'level', the column 'attno' of relation 'varno' of frame 'target'? */
+/*
+ * Is node, seen in frame 'level', the column 'attno' of relation 'varno' of
+ * frame 'target'?
+ */
 static bool
 ctid_is_column_of(Node *node, int level, int target, Index varno, AttrNumber attno)
 {
@@ -667,7 +674,10 @@ ctid_contains_column_walker(Node *node, ctid_col_search *s)
 	return expression_tree_walker(node, ctid_contains_column_walker, s);
 }
 
-/* Is member m, seen in frame 'level', a condition on gp_segment_id of relation varno of frame 'target'? */
+/*
+ * Is member m, seen in frame 'level', a condition on gp_segment_id of relation
+ * varno of frame 'target'?
+ */
 static bool
 ctid_is_segid_condition(Node *m, int level, int target, Index varno)
 {
@@ -708,7 +718,10 @@ ctid_has_var_or_subselect_walker(Node *node, void *context)
 	return expression_tree_walker(node, ctid_has_var_or_subselect_walker, context);
 }
 
-/* A value the statement supplies (parse-tree form): no column, no volatile function, no sub-select. */
+/*
+ * A value the statement supplies (parse-tree form): no column, no volatile
+ * function, no sub-select.
+ */
 static bool
 ctid_is_parse_key_value(Node *node)
 {
@@ -948,7 +961,10 @@ ctid_may_fold_walker(Node *node, ctid_foldable_context *fc)
 	return expression_tree_walker(node, ctid_may_fold_walker, fc);
 }
 
-/* Is member m, seen in frame 'level', a condition on gp_segment_id that the planner keeps? */
+/*
+ * Is member m, seen in frame 'level', a condition on gp_segment_id that the
+ * planner keeps?
+ */
 static bool ctid_member_keeps_segid(Node *m, int level, int target, Index varno,
 									ctid_keep_context *cxt);
 
@@ -1051,8 +1067,9 @@ ctid_or_keeps_segid(Node *m, int level, int target, Index varno,
 
 /*
  * A sub-select (EXISTS, IN, ALL, scalar, ...) AND-ed with the ctid reference,
- * whose WHERE clause has a condition on gp_segment_id among its AND-members.  The planner keeps the reference: as a join qualifier when it
- * pulls the sub-select up, as an argument of the SubPlan when it does not.
+ * whose WHERE clause has a condition on gp_segment_id among its AND-members.
+ * The planner keeps the reference: as a join qualifier when it pulls the
+ * sub-select up, as an argument of the SubPlan when it does not.
  * (Constant folding could remove it only by turning that whole WHERE clause
  * into false or null, and then the sub-select chooses no rows.)
  */
@@ -1084,10 +1101,10 @@ ctid_sublink_keeps_segid(SubLink *sl, int level, int target, Index varno,
 
 /*
  * m is such a sub-select, NOT of one, or a strict operator with a sub-select
- * as a direct argument.  Constant folding
- * can remove a sub-select from a strict operator only by turning the operator
- * into null, which chooses no rows; it could remove one from other
- * expressions (CASE, COALESCE, a non-strict function), so those do not count.
+ * as a direct argument.  Constant folding can remove a sub-select from a
+ * strict operator only by turning the operator into null, which chooses no
+ * rows; it could remove one from other expressions (CASE, COALESCE, a
+ * non-strict function), so those do not count.
  */
 static bool
 ctid_sublink_member_keeps_segid(Node *m, int level, int target, Index varno,
@@ -1141,7 +1158,10 @@ ctid_reference_proven(Var *var, ctid_keep_context *cxt)
 			return false;
 	}
 
-	/* a condition on gp_segment_id in an enclosing AND-list, at any level up to the relation's */
+	/*
+	 * a condition on gp_segment_id in an enclosing AND-list, at any level up
+	 * to the relation's
+	 */
 	for (i = 0; i <= target; i++)
 	{
 		ctid_frame *frame = (ctid_frame *) list_nth(cxt->frames, i);
