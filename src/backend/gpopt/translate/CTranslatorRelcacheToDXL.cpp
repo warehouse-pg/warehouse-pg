@@ -659,8 +659,10 @@ CTranslatorRelcacheToDXL::RetrieveRel(CMemoryPool *mp, CMDAccessor *md_accessor,
 		}
 	}
 
-	// get key sets
-	BOOL should_add_default_keys = RelHasSystemColumns(rel->rd_rel->relkind);
+	// get key sets. A table an extension reads itself has no ctid or
+	// gp_segment_id to deduplicate its rows by.
+	BOOL should_add_default_keys =
+		!extension_rel && RelHasSystemColumns(rel->rd_rel->relkind);
 	keyset_array = RetrieveRelKeysets(mp, oid, should_add_default_keys,
 									  is_partitioned, attno_mapping, dist);
 
