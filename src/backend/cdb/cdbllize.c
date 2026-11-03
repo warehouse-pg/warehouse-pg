@@ -143,7 +143,7 @@ typedef struct decorate_subplans_with_motions_context
 	 * Motion-free Entry path (a catalog scan) to OuterQuery locus on the
 	 * assumption that a catalog reads the same everywhere, so such a scan
 	 * node claims Entry while it runs wherever the SubPlan runs.  The slice
-	 * itself is known for certain: the main plan's top slice from top_slice,
+	 * itself is known for certain: the main plan's top slice from root->curSlice,
 	 * a Motion's sending slice from the Motion, and a SubPlan's slice from
 	 * the one that references it.  Only those change this flag.
 	 */
@@ -769,7 +769,10 @@ cdbllize_adjust_init_plan_path(PlannerInfo *root, Path *best_path)
  * tree can contain outer-query Motions, even if there are no SubPlans, if it
  * contains subquery RTEs.
  *
- * The input is a Plan tree, from create_plan().
+ * The input is a Plan tree, from create_plan(). create_plan() leaves the
+ * top slice in root->curSlice, and cdbllize_adjust_top_path() has already
+ * decided its gang type; we read it from there rather than taking it as an
+ * argument, so that the signature of this exported function is unchanged.
  *
  * Outline of processing:
  *
@@ -797,12 +800,15 @@ cdbllize_adjust_init_plan_path(PlannerInfo *root, Path *best_path)
  * too, so we need to scan the tree even if there are no SubPlans.
  */
 Plan *
-cdbllize_decorate_subplans_with_motions(PlannerInfo *root, Plan *plan,
-										PlanSlice *top_slice)
+cdbllize_decorate_subplans_with_motions(PlannerInfo *root, Plan *plan)
 {
 	Plan	   *result;
 	decorate_subplans_with_motions_context context;
 	int			nsubplans;
+	PlanSlice  *top_slice = root->curSlice;
+
+	/* create_plan() must have run on this root with the top slice. */
+	Assert(top_slice != NULL && top_slice->parentIndex == -1);
 
 	/* Initialize mutator context. */
 	planner_init_plan_tree_base(&context.base, root);
