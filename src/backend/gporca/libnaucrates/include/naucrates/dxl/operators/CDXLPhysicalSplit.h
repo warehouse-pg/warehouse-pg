@@ -49,7 +49,7 @@ private:
 	ULONG m_segid_colid;
 
 	// special field for resjunk flag assignment
-	BOOL m_needsResJunk;
+	BOOL m_computeTargetSegment;
 
 public:
 	CDXLPhysicalSplit(const CDXLPhysicalSplit &) = delete;
@@ -57,7 +57,7 @@ public:
 	// ctor
 	CDXLPhysicalSplit(CMemoryPool *mp, ULongPtrArray *delete_colid_array,
 					  ULongPtrArray *insert_colid_array, ULONG action_colid,
-					  ULONG ctid_colid, ULONG segid_colid, BOOL needsResJunk);
+					  ULONG ctid_colid, ULONG segid_colid, BOOL computeTargetSegment);
 
 	// dtor
 	~CDXLPhysicalSplit() override;
@@ -105,9 +105,9 @@ public:
 
 	// resjunk flag
 	BOOL
-	GetNeedsResJunk() const
+	GetComputeTargetSegment() const
 	{
-		return m_needsResJunk;
+		return m_computeTargetSegment;
 	}
 
 #ifdef GPOS_DEBUG

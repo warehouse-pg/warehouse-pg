@@ -386,7 +386,7 @@ enum Edxltoken
 	EdxltokenGpSegmentIdColId,
 	EdxltokenTupleOidColId,
 	EdxltokenSplitUpdate,
-	EdxltokenNeedsResJunk,
+	EdxltokenComputeTargetSegment,
 
 	EdxltokenInputSegments,
 	EdxltokenOutputSegments,

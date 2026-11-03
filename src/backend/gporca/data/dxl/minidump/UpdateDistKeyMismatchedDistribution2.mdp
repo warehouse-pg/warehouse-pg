@@ -536,7 +536,7 @@
           </dxl:ProjList>
           <dxl:Filter/>
           <dxl:SortingColumnList/>
-          <dxl:Split DeleteColumns="0,1,2" InsertColumns="20,1,2" ActionCol="21" CtidCol="3" SegmentIdCol="9" NeedsResJunk="true">
+          <dxl:Split DeleteColumns="0,1,2" InsertColumns="20,1,2" ActionCol="21" CtidCol="3" SegmentIdCol="9" ComputeTargetSegment="true">
             <dxl:Properties>
               <dxl:Cost StartupCost="0" TotalCost="1324066.182429" Rows="2.000000" Width="26"/>
             </dxl:Properties>

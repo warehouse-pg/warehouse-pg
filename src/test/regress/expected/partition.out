@@ -7072,12 +7072,17 @@ EXPLAIN (COSTS OFF) UPDATE rank6_1_prt_2 SET year = 2007 WHERE id = 50;
  Optimizer: Postgres-based planner
 (4 rows)
 
--- A BEFORE UPDATE trigger must not prevent such an UPDATE.
+-- Test out behavior of triggers and different updates on partitioning column.
 CREATE FUNCTION rank6_trg() RETURNS trigger LANGUAGE plpgsql AS
 $$ BEGIN RETURN NEW; END $$;
 CREATE TRIGGER rank6_tr BEFORE UPDATE ON rank6_1_prt_2
 FOR EACH ROW EXECUTE FUNCTION rank6_trg();
+-- A BEFORE UPDATE trigger must not prevent such an UPDATE.
 UPDATE rank6_1_prt_2 SET year = 2007 WHERE id = 50;
+-- But it should prevent this one.
+UPDATE rank6 SET year = 2006 WHERE id = 50;
+ERROR:  UPDATE that may move tuples across segments is not allowed on a relation with update triggers
+DETAIL:  Leaf partitions of updated table have different distributions, so update on partitioning column may force tuple routing across segments.
 DROP TRIGGER rank6_tr ON rank6_1_prt_2;
 DROP FUNCTION rank6_trg();
 SELECT gp_debug_reset_create_table_default_numsegments();

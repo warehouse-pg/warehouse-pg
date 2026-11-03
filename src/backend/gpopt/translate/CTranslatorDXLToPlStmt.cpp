@@ -5140,7 +5140,7 @@ CTranslatorDXLToPlStmt::TranslateDXLSplit(
 
 	// If we're updating hash-distributed table we need to fill hash-related
 	// fields.
-	if (phy_split_dxlop->GetNeedsResJunk())
+	if (phy_split_dxlop->GetComputeTargetSegment())
 	{
 		SetSplitUpdateHashInfo(split, output_context, deletion_colid_array);
 		// Junk flag setting for child and output plans.

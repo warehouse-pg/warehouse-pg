@@ -50,7 +50,7 @@ private:
 	CColRefSet *m_pcrsRequiredLocal;
 
 	// special field for resjunk flag assignment
-	BOOL m_needsResJunk;
+	BOOL m_computeTargetSegment;
 
 public:
 	CPhysicalSplit(const CPhysicalSplit &) = delete;
@@ -59,7 +59,7 @@ public:
 	CPhysicalSplit(CMemoryPool *mp, CColRefArray *pdrgpcrDelete,
 				   CColRefArray *pdrgpcrInsert, CColRef *pcrCtid,
 				   CColRef *pcrSegmentId, CColRef *pcrAction,
-				   BOOL needsResJunk);
+				   BOOL computeTargetSegment);
 
 	// dtor
 	~CPhysicalSplit() override;
@@ -115,9 +115,9 @@ public:
 
 	// resjunk flag
 	BOOL
-	NeedsResJunk() const
+	ComputeTargetSegment() const
 	{
-		return m_needsResJunk;
+		return m_computeTargetSegment;
 	}
 
 	// match function
