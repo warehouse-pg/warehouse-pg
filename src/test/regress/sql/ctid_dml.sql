@@ -269,7 +269,8 @@ RESET plan_cache_mode;
 -- inlined into the statement; an inheritance child distributed by another
 -- column, where fixing the parent's key does not fix the segment.  An OR
 -- whose gp_segment_id condition is absorbed only after an inner OR is
--- simplified.
+-- simplified.  An OR arm that is always true through a constant larger than
+-- GPORCA's constant folding (fold_constants()) handles.
 CREATE FUNCTION ctid_dml_true(int, bigint) RETURNS bool LANGUAGE sql IMMUTABLE AS 'SELECT true';
 CREATE OPERATOR >>> (LEFTARG = int, RIGHTARG = bigint, FUNCTION = ctid_dml_true);
 DELETE FROM t WHERE ctid = '(0,1)' AND gp_segment_id >>> 0::bigint;
@@ -277,6 +278,7 @@ DROP OPERATOR >>> (int, bigint);
 DROP FUNCTION ctid_dml_true(int, bigint);
 DELETE FROM t WHERE ctid = '(0,1)' AND (id > 0 OR (gp_segment_id = 0 AND NULL::boolean));
 DELETE FROM t WHERE ctid = '(0,1)' AND (((id > 0 OR (id > 0 AND v > 0)) AND gp_segment_id = 0) OR id > 0);
+DELETE FROM t WHERE ctid = '(0,1)' AND (gp_segment_id = 0 OR length(repeat('x', 200000)) > 0);
 DELETE FROM t WHERE ctid = '(0,1)' AND NOT EXISTS (SELECT 1 FROM s WHERE s.sid = t.gp_segment_id AND false);
 DELETE FROM t WHERE ctid = '(0,1)' AND EXISTS (SELECT count(*) FROM s WHERE s.sid = t.gp_segment_id);
 DELETE FROM t WHERE ctid = '(0,1)' AND NOT EXISTS (SELECT 1 FROM s WHERE s.sid = t.gp_segment_id LIMIT 0);
@@ -338,6 +340,25 @@ BEGIN;
 -- J1: paired in a join qualifier, one query level down.
 DELETE FROM t WHERE id IN (SELECT b.id FROM t b JOIN s ON b.ctid = s.tid AND b.gp_segment_id = s.sid);
 SELECT count(*) AS left_rows, sum(CASE WHEN id = 7 THEN 1 ELSE 0 END) AS id_7 FROM t;
+ROLLBACK;
+BEGIN;
+-- A parameter in an OR arm, generic plan: GPORCA does not count the
+-- gp_segment_id condition (the parameter can make the OR true) and hands the
+-- statement over; the planner runs it.
+SET LOCAL plan_cache_mode = force_generic_plan;
+PREPARE del_or(bool) AS DELETE FROM t WHERE ctid = '(0,1)' AND (gp_segment_id = 0 OR $1);
+EXECUTE del_or(false);
+DEALLOCATE del_or;
+SELECT count(*) AS left_rows, sum(CASE WHEN id = 2 THEN 1 ELSE 0 END) AS id_2 FROM t;
+ROLLBACK;
+BEGIN;
+-- A sub-select under a non-strict operator: GPORCA does not count its
+-- gp_segment_id condition (such an operator can be true when the sub-select
+-- returns nothing) and hands the statement over; the planner runs it.
+CREATE FUNCTION ctid_dml_more(int, bigint) RETURNS bool LANGUAGE plpgsql IMMUTABLE AS 'BEGIN RETURN $2 > $1; END';
+CREATE OPERATOR >>> (LEFTARG = int, RIGHTARG = bigint, FUNCTION = ctid_dml_more);
+DELETE FROM t WHERE ctid = '(0,1)' AND 0 >>> (SELECT count(*) FROM s WHERE s.sid = t.gp_segment_id);
+SELECT count(*) AS left_rows FROM t;
 ROLLBACK;
 -- A distribution key fixed to values names each row's segment, so the ctid
 -- locates at most one row per key value, as with gp_segment_id.

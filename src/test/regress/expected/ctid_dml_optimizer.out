@@ -686,7 +686,8 @@ RESET plan_cache_mode;
 -- inlined into the statement; an inheritance child distributed by another
 -- column, where fixing the parent's key does not fix the segment.  An OR
 -- whose gp_segment_id condition is absorbed only after an inner OR is
--- simplified.
+-- simplified.  An OR arm that is always true through a constant larger than
+-- GPORCA's constant folding (fold_constants()) handles.
 CREATE FUNCTION ctid_dml_true(int, bigint) RETURNS bool LANGUAGE sql IMMUTABLE AS 'SELECT true';
 CREATE OPERATOR >>> (LEFTARG = int, RIGHTARG = bigint, FUNCTION = ctid_dml_true);
 DELETE FROM t WHERE ctid = '(0,1)' AND gp_segment_id >>> 0::bigint;
@@ -702,6 +703,11 @@ DETAIL:  Falling back to Postgres-based planner because GPORCA does not support 
 ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
 HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
 DELETE FROM t WHERE ctid = '(0,1)' AND (((id > 0 OR (id > 0 AND v > 0)) AND gp_segment_id = 0) OR id > 0);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
+ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
+HINT:  To uniquely identify a row within a distributed table, use the "gp_segment_id" column together with the "ctid" column.
+DELETE FROM t WHERE ctid = '(0,1)' AND (gp_segment_id = 0 OR length(repeat('x', 200000)) > 0);
 INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
 DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
 ERROR:  DELETE uses system-defined column "t.ctid" without the necessary companion column "t.gp_segment_id" (cdbmutate.c:558)
@@ -885,6 +891,39 @@ SELECT count(*) AS left_rows, sum(CASE WHEN id = 7 THEN 1 ELSE 0 END) AS id_7 FR
  left_rows | id_7 
 -----------+------
         19 |    0
+(1 row)
+
+ROLLBACK;
+BEGIN;
+-- A parameter in an OR arm, generic plan: GPORCA does not count the
+-- gp_segment_id condition (the parameter can make the OR true) and hands the
+-- statement over; the planner runs it.
+SET LOCAL plan_cache_mode = force_generic_plan;
+PREPARE del_or(bool) AS DELETE FROM t WHERE ctid = '(0,1)' AND (gp_segment_id = 0 OR $1);
+EXECUTE del_or(false);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
+DEALLOCATE del_or;
+SELECT count(*) AS left_rows, sum(CASE WHEN id = 2 THEN 1 ELSE 0 END) AS id_2 FROM t;
+ left_rows | id_2 
+-----------+------
+        19 |    0
+(1 row)
+
+ROLLBACK;
+BEGIN;
+-- A sub-select under a non-strict operator: GPORCA does not count its
+-- gp_segment_id condition (such an operator can be true when the sub-select
+-- returns nothing) and hands the statement over; the planner runs it.
+CREATE FUNCTION ctid_dml_more(int, bigint) RETURNS bool LANGUAGE plpgsql IMMUTABLE AS 'BEGIN RETURN $2 > $1; END';
+CREATE OPERATOR >>> (LEFTARG = int, RIGHTARG = bigint, FUNCTION = ctid_dml_more);
+DELETE FROM t WHERE ctid = '(0,1)' AND 0 >>> (SELECT count(*) FROM s WHERE s.sid = t.gp_segment_id);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: UPDATE or DELETE using ctid without a segment condition
+SELECT count(*) AS left_rows FROM t;
+ left_rows 
+-----------
+        19
 (1 row)
 
 ROLLBACK;
