@@ -50,7 +50,7 @@ private:
 	ULONG m_segid_colid;
 
 	// special field for resjunk flag assignment
-	BOOL m_needsResJunk;
+	BOOL m_computeTargetSegment;
 
 	// process the start of an element
 	void StartElement(

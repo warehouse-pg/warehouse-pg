@@ -40,7 +40,7 @@ CParseHandlerPhysicalSplit::CParseHandlerPhysicalSplit(
 	  m_action_colid(0),
 	  m_ctid_colid(0),
 	  m_segid_colid(0),
-	  m_needsResJunk(false)
+	  m_computeTargetSegment(false)
 {
 }
 
@@ -90,13 +90,13 @@ CParseHandlerPhysicalSplit::StartElement(const XMLCh *const,  // element_uri,
 		m_parse_handler_mgr->GetDXLMemoryManager(), attrs,
 		EdxltokenGpSegmentIdColId, EdxltokenPhysicalSplit);
 
-	const XMLCh *needsResJunk =
-		attrs.getValue(CDXLTokens::XmlstrToken(EdxltokenNeedsResJunk));
-	if (nullptr != needsResJunk)
+	const XMLCh *computeTargetSegment =
+		attrs.getValue(CDXLTokens::XmlstrToken(EdxltokenComputeTargetSegment));
+	if (nullptr != computeTargetSegment)
 	{
-		m_needsResJunk = CDXLOperatorFactory::ConvertAttrValueToBool(
-			m_parse_handler_mgr->GetDXLMemoryManager(), needsResJunk,
-			EdxltokenNeedsResJunk, EdxltokenPhysicalSplit);
+		m_computeTargetSegment = CDXLOperatorFactory::ConvertAttrValueToBool(
+			m_parse_handler_mgr->GetDXLMemoryManager(), computeTargetSegment,
+			EdxltokenComputeTargetSegment, EdxltokenPhysicalSplit);
 	}
 
 	// parse handler for physical operator
@@ -164,7 +164,7 @@ CParseHandlerPhysicalSplit::EndElement(const XMLCh *const,	// element_uri,
 
 	CDXLPhysicalSplit *dxl_op = GPOS_NEW(m_mp) CDXLPhysicalSplit(
 		m_mp, m_deletion_colid_array, m_insert_colid_array, m_action_colid,
-		m_ctid_colid, m_segid_colid, m_needsResJunk);
+		m_ctid_colid, m_segid_colid, m_computeTargetSegment);
 
 	m_dxl_node = GPOS_NEW(m_mp) CDXLNode(m_mp, dxl_op);
 

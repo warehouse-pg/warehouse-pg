@@ -87,7 +87,7 @@ CXformUpdate2DML::Transform(CXformContext *pxfctxt, CXformResult *pxfres,
 	CColRef *pcrSegmentId = popUpdate->PcrSegmentId();
 	BOOL fSplit = popUpdate->FSplit();
 
-	BOOL needsResJunk = false;
+	BOOL computeTargetSegment = false;
 	if (fSplit)
 	{
 		CDistributionSpec *pdsTable =
@@ -95,7 +95,7 @@ CXformUpdate2DML::Transform(CXformContext *pxfctxt, CXformResult *pxfres,
 
 		if (CDistributionSpec::EdtHashed == pdsTable->Edt() &&
 			ptabdesc->ConvertHashToRandom())
-			needsResJunk = true;
+			computeTargetSegment = true;
 
 		pdsTable->Release();
 	}
@@ -126,7 +126,7 @@ CXformUpdate2DML::Transform(CXformContext *pxfctxt, CXformResult *pxfres,
 			mp,
 			GPOS_NEW(mp)
 				CLogicalSplit(mp, pdrgpcrDelete, pdrgpcrInsert, pcrCtid,
-							  pcrSegmentId, pcrAction, needsResJunk),
+							  pcrSegmentId, pcrAction, computeTargetSegment),
 			pexprChild, pexprProjList);
 	}
 	else

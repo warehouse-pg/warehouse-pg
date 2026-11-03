@@ -4466,12 +4466,15 @@ SELECT count(*), count(DISTINCT id) FROM rank6;
 -- keeping distribution the same.
 EXPLAIN (COSTS OFF) UPDATE rank6_1_prt_2 SET year = 2007 WHERE id = 50;
 
--- A BEFORE UPDATE trigger must not prevent such an UPDATE.
+-- Test out behavior of triggers and different updates on partitioning column.
 CREATE FUNCTION rank6_trg() RETURNS trigger LANGUAGE plpgsql AS
 $$ BEGIN RETURN NEW; END $$;
 CREATE TRIGGER rank6_tr BEFORE UPDATE ON rank6_1_prt_2
 FOR EACH ROW EXECUTE FUNCTION rank6_trg();
+-- A BEFORE UPDATE trigger must not prevent such an UPDATE.
 UPDATE rank6_1_prt_2 SET year = 2007 WHERE id = 50;
+-- But it should prevent this one.
+UPDATE rank6 SET year = 2006 WHERE id = 50;
 DROP TRIGGER rank6_tr ON rank6_1_prt_2;
 DROP FUNCTION rank6_trg();
 

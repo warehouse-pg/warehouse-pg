@@ -2666,6 +2666,45 @@ turn_volatile_seggen_to_singleqe(PlannerInfo *root, Path *path, Node *node)
 		return path;
 }
 
+/*
+ * is_dist_key_updated
+ *
+ * Determine whether any distribution key column of the target relation is
+ * among the columns being updated by the statement. This mirrors the check
+ * done in expand_targetlist() in preptlist.c, but derives the set of changed
+ * columns from rte->updatedCols instead of walking the target list.
+ */
+static bool
+is_dist_key_updated(RangeTblEntry *rte)
+{
+	GpPolicy   *targetPolicy;
+	bool		key_col_updated = false;
+
+	targetPolicy = GpPolicyFetch(rte->relid);
+
+	if (targetPolicy->ptype == POLICYTYPE_PARTITIONED)
+	{
+		int			i;
+
+		for (i = 0; i < targetPolicy->nattrs; i++)
+		{
+			AttrNumber	attnum = targetPolicy->attrs[i];
+
+			if (bms_is_member(attnum - FirstLowInvalidHeapAttributeNumber,
+							   rte->updatedCols))
+			{
+				key_col_updated = true;
+				break;
+			}
+		}
+	}
+
+	if (targetPolicy)
+		pfree(targetPolicy);
+
+	return key_col_updated;
+}
+
 static SplitUpdatePath *
 make_splitupdate_path(PlannerInfo *root, Path *subpath, Index rti)
 {
@@ -2696,9 +2735,18 @@ make_splitupdate_path(PlannerInfo *root, Path *subpath, Index rti)
 	 * distribution key or partition key.
 	 */
 	if (has_update_triggers(rte->relid, false))
-		ereport(ERROR,
-				(errcode(ERRCODE_GP_FEATURE_NOT_YET),
-				 errmsg("UPDATE that may move tuples across segments is not allowed on a relation with update triggers")));
+	{
+		if (is_dist_key_updated(rte))
+			ereport(ERROR,
+					(errcode(ERRCODE_GP_FEATURE_NOT_YET),
+					 errmsg("UPDATE on distributed key column not allowed on relation with update triggers")));
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_GP_FEATURE_NOT_YET),
+					 errmsg("UPDATE that may move tuples across segments is not allowed on a relation with update triggers"),
+					 errdetail("Leaf partitions of updated table have different distributions, so update on partitioning "
+							   "column may force tuple routing across segments.")));
+	}
 
 	/* Add action column at the end of targetlist */
 	actionExpr = makeNode(DMLActionExpr);
