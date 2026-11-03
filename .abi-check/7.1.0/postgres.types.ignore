@@ -14,3 +14,4 @@ struct AppendRelInfo
 struct CdbComponentDatabaseInfo
 struct DtxContextInfo
 struct MotionConn
+struct CdbCopy

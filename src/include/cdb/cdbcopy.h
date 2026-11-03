@@ -22,6 +22,7 @@
 #include "cdb/cdbgang.h"
 
 #define COPYOUT_CHUNK_SIZE 16 * 1024
+#define COPYIN_CHUNK_SIZE (1024 * 1024)
 
 struct CdbDispatcherState;
 struct CopyStateData;
@@ -38,6 +39,10 @@ typedef struct CdbCopy
 								 * for copy out, once a segment gave away all it's
 								 * data rows, it is taken out of the list */
 	struct CdbDispatcherState *dispatcherState;
+
+	char	   *large_row;		/* a row too large to add to copy_out_buf,
+								 * as returned by libpq, or NULL */
+	int			large_row_len;
 } CdbCopy;
 
 

@@ -155,6 +155,7 @@ StringInfo makeStringInfoFromData(char *data,int len) {
 	sinfo->len    = len;
 	sinfo->maxlen = len;
 	sinfo->cursor = 0;
+	sinfo->allow_huge = false;
 	return sinfo;
 }
 /*------------------------------------------------------------------------------

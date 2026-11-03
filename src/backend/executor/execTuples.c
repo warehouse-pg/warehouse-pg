@@ -212,8 +212,13 @@ tts_virtual_materialize(TupleTableSlot *slot)
 	if (sz == 0)
 		return;
 
-	/* allocate memory */
-	vslot->data = data = MemoryContextAlloc(slot->tts_mcxt, sz);
+	/*
+	 * Allocate memory.  Each datum is limited to 1GB, but the row as a whole
+	 * may be larger, e.g. a row loaded by COPY into a column-oriented table,
+	 * so allow a huge allocation.
+	 */
+	vslot->data = data = MemoryContextAllocExtended(slot->tts_mcxt, sz,
+													MCXT_ALLOC_HUGE);
 	slot->tts_flags |= TTS_FLAG_SHOULDFREE;
 
 	/* and copy all attributes into the pre-allocated space */
