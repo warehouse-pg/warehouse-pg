@@ -310,11 +310,16 @@ ctid_is_key_value(Node *node, bool one_value)
 }
 
 /*
- * May an equality with input collation inputcollid count as fixing a column
- * (or partition key) of collation colcoll?  With a nondeterministic
- * collation (for example case-insensitive) other than the column's own,
- * equal values can be stored as different strings, which hash to different
- * segments and fall into different partitions.
+ * May an equality with input collation inputcollid count as fixing a key of
+ * collation colcoll?  Under a nondeterministic collation (for example
+ * case-insensitive) equal values can be stored as different strings.
+ *
+ * A partition key passes its own collation as colcoll: partition bounds are
+ * compared under it, so values equal under it fall into one partition.  A
+ * distribution key passes InvalidOid, so that only a deterministic collation
+ * counts: cdbhash() hashes every value with the default collation, not the
+ * column's, so values equal under a nondeterministic collation, even the
+ * column's own, can hash to different segments.
  */
 static bool
 ctid_collation_ok(Oid inputcollid, Oid colcoll)
@@ -413,7 +418,8 @@ ctid_rel_is_member_set(PlannerInfo *root, RelOptInfo *rel)
  * whole distribution key to values?
  *
  * True when the rel is hash-distributed and every distribution key column is
- * fixed, with the equality operator of its distribution opclass, to a value or
+ * fixed, with the equality operator of its distribution opclass under a
+ * deterministic collation (ctid_collation_ok()), to a value or
  * a list of values the statement supplies: a constant, a parameter, an
  * expression of those, a single-valued sub-select, an IN list, = ANY (array),
  * or an OR of such equalities.  Each row the statement can reach then has a
@@ -428,7 +434,6 @@ static bool
 ctid_rel_located_by_key(PlannerInfo *root, RelOptInfo *rel)
 {
 	GpPolicy   *policy = rel->cdbpolicy;
-	Oid			relid = root->simple_rte_array[rel->relid]->relid;
 	int			i;
 
 	if (!GpPolicyIsHashPartitioned(policy) || policy->nattrs == 0)
@@ -438,18 +443,15 @@ ctid_rel_located_by_key(PlannerInfo *root, RelOptInfo *rel)
 	{
 		AttrNumber	attno = policy->attrs[i];
 		Oid			opfamily = get_opclass_family(policy->opclasses[i]);
-		Oid			coltype;
-		int32		coltypmod;
-		Oid			colcoll;
 		bool		found = false;
 		ListCell   *lc;
 
-		get_atttypetypmodcoll(relid, attno, &coltype, &coltypmod, &colcoll);
 		foreach(lc, rel->baserestrictinfo)
 		{
 			RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
 
-			if (ctid_clause_fixes_key((Node *) rinfo->clause, rel, attno, opfamily, colcoll))
+			/* InvalidOid: a deterministic collation only, see ctid_collation_ok() */
+			if (ctid_clause_fixes_key((Node *) rinfo->clause, rel, attno, opfamily, InvalidOid))
 			{
 				found = true;
 				break;
@@ -939,17 +941,11 @@ ctid_frames_fix_key(ctid_keep_context *cxt, int target, Index varno)
 		pfree(policy);
 		return false;
 	}
+	/* InvalidOid: a deterministic collation only, see ctid_collation_ok() */
 	for (k = 0; k < policy->nattrs && all; k++)
-	{
-		Oid			coltype;
-		int32		coltypmod;
-		Oid			colcoll;
-
-		get_atttypetypmodcoll(rte->relid, policy->attrs[k], &coltype, &coltypmod, &colcoll);
 		all = ctid_frames_fix_column(cxt, target, varno, policy->attrs[k],
 									 get_opclass_family(policy->opclasses[k]),
-									 HTEqualStrategyNumber, colcoll);
-	}
+									 HTEqualStrategyNumber, InvalidOid);
 	pfree(policy);
 	return all && (!ctid_rte_has_members(rte) ||
 				   ctid_frames_pin_member(cxt, target, varno, rte));
