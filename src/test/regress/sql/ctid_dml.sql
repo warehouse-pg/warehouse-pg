@@ -267,13 +267,16 @@ RESET plan_cache_mode;
 -- an EXISTS over an aggregate (always true), a LIMIT 0.  A row-level security
 -- policy that picks rows by ctid; a SQL set-returning function that does,
 -- inlined into the statement; an inheritance child distributed by another
--- column, where fixing the parent's key does not fix the segment.
+-- column, where fixing the parent's key does not fix the segment.  An OR
+-- whose gp_segment_id condition is absorbed only after an inner OR is
+-- simplified.
 CREATE FUNCTION ctid_dml_true(int, bigint) RETURNS bool LANGUAGE sql IMMUTABLE AS 'SELECT true';
 CREATE OPERATOR >>> (LEFTARG = int, RIGHTARG = bigint, FUNCTION = ctid_dml_true);
 DELETE FROM t WHERE ctid = '(0,1)' AND gp_segment_id >>> 0::bigint;
 DROP OPERATOR >>> (int, bigint);
 DROP FUNCTION ctid_dml_true(int, bigint);
 DELETE FROM t WHERE ctid = '(0,1)' AND (id > 0 OR (gp_segment_id = 0 AND NULL::boolean));
+DELETE FROM t WHERE ctid = '(0,1)' AND (((id > 0 OR (id > 0 AND v > 0)) AND gp_segment_id = 0) OR id > 0);
 DELETE FROM t WHERE ctid = '(0,1)' AND NOT EXISTS (SELECT 1 FROM s WHERE s.sid = t.gp_segment_id AND false);
 DELETE FROM t WHERE ctid = '(0,1)' AND EXISTS (SELECT count(*) FROM s WHERE s.sid = t.gp_segment_id);
 DELETE FROM t WHERE ctid = '(0,1)' AND NOT EXISTS (SELECT 1 FROM s WHERE s.sid = t.gp_segment_id LIMIT 0);
@@ -522,10 +525,15 @@ DELETE FROM t WHERE 0 < (SELECT count(*) FROM s WHERE s.tid = t.ctid AND t.id = 
 SELECT count(*) AS left_rows, sum(CASE WHEN id = 7 THEN 1 ELSE 0 END) AS id_7 FROM t;
 ROLLBACK;
 -- An OR whose arms share the gp_segment_id condition: the planner reduces it
--- to that condition, and GPORCA plans it.
+-- to that condition, and GPORCA plans it.  Also when an inner OR has to be
+-- simplified first.
 BEGIN;
 DELETE FROM t WHERE ctid = '(0,1)' AND ((gp_segment_id = 0 AND v = 1) OR gp_segment_id = 0);
 SELECT count(*) AS left_rows FROM t;
+ROLLBACK;
+BEGIN;
+DELETE FROM t WHERE ctid = '(0,1)' AND ((gp_segment_id = 0 AND (v = 2 OR (v = 2 AND id > 0))) OR (gp_segment_id = 0 AND id = 7));
+SELECT count(*) AS left_rows, sum(CASE WHEN id = 2 THEN 1 ELSE 0 END) AS id_2 FROM t;
 ROLLBACK;
 -- An OR with a sub-select in an arm is left to the planner, which plans it.
 BEGIN;

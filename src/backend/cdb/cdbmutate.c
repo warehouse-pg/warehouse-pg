@@ -995,13 +995,16 @@ static bool ctid_member_keeps_segid(Node *m, int level, int target, Index varno,
 
 /*
  * An OR keeps a condition on gp_segment_id when the planner's simplification
- * cannot remove it.  The planner folds constants (an arm that becomes true
- * makes the OR true, an arm that becomes false or null is dropped) and then,
- * in canonicalize_qual(), factors out the AND-members common to every arm:
- * (A AND B) OR (A AND C) becomes A AND (B OR C), and when an arm consists of
- * common members only, A OR (A AND B) becomes A and the rest is dropped.
- * The same steps are applied here to a copy of the OR, which must contain
- * nothing the planner could fold further.
+ * cannot remove it.  The planner folds constants and then simplifies the
+ * qualifier with canonicalize_qual(): at every level of the AND/OR tree it
+ * drops an OR arm that is false or null, factors out the AND-members common
+ * to every arm ((A AND B) OR (A AND C) becomes A AND (B OR C)), and when an
+ * arm consists of common members only reduces the OR to them (A OR (A AND B)
+ * becomes A).  The same two functions are applied here to a copy of the OR,
+ * which must contain nothing the planner could fold further; the condition
+ * counts if it is still an AND-member of the result, or of an arm of an OR
+ * left in it.  (canonicalize_qual() is meant for a whole qualifier; applied
+ * to an OR nested deeper it can only drop more, which counts less.)
  */
 static bool
 ctid_or_keeps_segid(Node *m, int level, int target, Index varno,
@@ -1009,9 +1012,8 @@ ctid_or_keeps_segid(Node *m, int level, int target, Index varno,
 {
 	ctid_foldable_context fc = {cxt, level};
 	Node	   *folded;
-	List	   *arms = NIL;
-	List	   *winners = NIL;
-	bool		reduced = false;
+	Node	   *canon;
+	List	   *members;
 	ListCell   *lc;
 
 	if (ctid_may_fold_walker(m, &fc))
@@ -1025,87 +1027,27 @@ ctid_or_keeps_segid(Node *m, int level, int target, Index varno,
 	 */
 	if (!is_orclause(folded))
 		return false;
-	/*
-	 * In a qualifier a null is as good as false, and canonicalize_qual()
-	 * drops an arm that is, or AND-s in, a null or false constant.
-	 */
-	foreach(lc, ((BoolExpr *) folded)->args)
+
+	canon = (Node *) canonicalize_qual((Expr *) folded, false);
+	members = is_orclause(canon) ? list_make1(canon) : ctid_and_members(canon, NIL);
+	foreach(lc, members)
 	{
-		List	   *members = ctid_and_members((Node *) lfirst(lc), NIL);
-		ListCell   *lm;
-		bool		dropped = false;
-
-		foreach(lm, members)
-		{
-			Node	   *mm = (Node *) lfirst(lm);
-
-			if (IsA(mm, Const) &&
-				(((Const *) mm)->constisnull || !DatumGetBool(((Const *) mm)->constvalue)))
-				dropped = true;
-		}
-		if (!dropped)
-			arms = lappend(arms, members);
-	}
-	if (arms == NIL)
-		return false;
-
-	/* AND-members common to every arm */
-	foreach(lc, (List *) linitial(arms))
-	{
-		Node	   *cand = (Node *) lfirst(lc);
-		bool		everywhere = true;
+		Node	   *mm = (Node *) lfirst(lc);
 		ListCell   *la;
 
-		for_each_cell(la, lnext(list_head(arms)))
+		if (ctid_is_segid_condition(mm, level, target, varno))
+			return true;
+		if (!is_orclause(mm))
+			continue;
+		foreach(la, ((BoolExpr *) mm)->args)
 		{
-			if (!list_member((List *) lfirst(la), cand))
+			ListCell   *lm;
+
+			foreach(lm, ctid_and_members((Node *) lfirst(la), NIL))
 			{
-				everywhere = false;
-				break;
+				if (ctid_is_segid_condition((Node *) lfirst(lm), level, target, varno))
+					return true;
 			}
-		}
-		if (everywhere)
-			winners = list_append_unique(winners, cand);
-	}
-
-	/* is some arm made of common members only?  then only those survive */
-	foreach(lc, arms)
-	{
-		ListCell   *lm;
-		bool		all_common = true;
-
-		foreach(lm, (List *) lfirst(lc))
-		{
-			if (!list_member(winners, lfirst(lm)))
-			{
-				all_common = false;
-				break;
-			}
-		}
-		if (all_common)
-		{
-			reduced = true;
-			break;
-		}
-	}
-
-	if (reduced)
-	{
-		foreach(lc, winners)
-		{
-			if (ctid_is_segid_condition((Node *) lfirst(lc), level, target, varno))
-				return true;
-		}
-		return false;
-	}
-	foreach(lc, arms)
-	{
-		ListCell   *lm;
-
-		foreach(lm, (List *) lfirst(lc))
-		{
-			if (ctid_is_segid_condition((Node *) lfirst(lm), level, target, varno))
-				return true;
 		}
 	}
 	return false;
