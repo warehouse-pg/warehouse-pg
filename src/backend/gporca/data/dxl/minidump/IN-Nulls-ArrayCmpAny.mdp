@@ -8,6 +8,8 @@
     explain select * from foo where a in (5, 10, NULL);
 
     Should return around 50 rows (for the 50 5s in the table)
+    and dispatch only to the segments of 5 and 10: a = NULL is never
+    true, so the NULL rows' segment is not needed.
     ]]> </dxl:Comment>
   <dxl:Thread Id="0">
     <dxl:OptimizerConfig>
@@ -250,9 +252,6 @@
         </dxl:TableScan>
       </dxl:GatherMotion>
       <dxl:DirectDispatchInfo>
-        <dxl:KeyValue>
-          <dxl:Datum TypeMdid="0.23.1.0" IsNull="true"/>
-        </dxl:KeyValue>
         <dxl:KeyValue>
           <dxl:Datum TypeMdid="0.23.1.0" Value="5"/>
         </dxl:KeyValue>

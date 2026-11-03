@@ -933,6 +933,46 @@ CConstraintTest::EresUnittest_CConstraintIntervalFromArrayExpr()
 	GPOS_UNITTEST_ASSERT(6 == pcnstNotInRepeats->Pdrgprng()->Size());
 	pexprNotInRepeatsSelect->Release();
 	pcnstNotInRepeats->Release();
+
+	// "<> ANY" holds for any non-NULL value and "= ALL" for none, so
+	// neither may be read as NOT IN / IN
+	CScalarArrayCmp::EArrCmpType rgearrcmpt[] = {CScalarArrayCmp::EarrcmpAny,
+												 CScalarArrayCmp::EarrcmpAll};
+	IMDType::ECmpType rgecmpt[] = {IMDType::EcmptNEq, IMDType::EcmptEq};
+	for (ULONG ul = 0; ul < GPOS_ARRAY_SIZE(rgearrcmpt); ul++)
+	{
+		CExpression *pexprSelect = CTestUtils::PexprLogicalSelectArrayCmp(
+			mp, rgearrcmpt[ul], rgecmpt[ul], pdrgpi);
+		CColRef *pcr = pexprSelect->DeriveOutputColumns()->PcrAny();
+		CExpression *pexprArrayCmp = (*pexprSelect)[1];
+		GPOS_UNITTEST_ASSERT(nullptr ==
+							 CConstraintInterval::PciIntervalFromScalarExpr(
+								 mp, pexprArrayCmp, pcr));
+
+		CColRefSetArray *pdrgpcrs = nullptr;
+		CConstraint *pcnstr =
+			CConstraint::PcnstrFromScalarExpr(mp, pexprArrayCmp, &pdrgpcrs);
+		CConstraintInterval *pci =
+			CConstraintInterval::PciIntervalFromConstraint(mp, pcnstr, pcr);
+		if (CScalarArrayCmp::EarrcmpAny == rgearrcmpt[ul])
+		{
+			// (-inf, inf), NULL excluded
+			GPOS_UNITTEST_ASSERT(1 == pci->Pdrgprng()->Size());
+			GPOS_UNITTEST_ASSERT(nullptr ==
+								 (*pci->Pdrgprng())[0]->PdatumLeft());
+			GPOS_UNITTEST_ASSERT(nullptr ==
+								 (*pci->Pdrgprng())[0]->PdatumRight());
+			GPOS_UNITTEST_ASSERT(!pci->FIncludesNull());
+		}
+		else
+		{
+			GPOS_UNITTEST_ASSERT(pci->FContradiction());
+		}
+		pci->Release();
+		CRefCount::SafeRelease(pcnstr);
+		CRefCount::SafeRelease(pdrgpcrs);
+		pexprSelect->Release();
+	}
 	pdrgpi->Release();
 
 	return GPOS_OK;

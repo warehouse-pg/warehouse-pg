@@ -15216,3 +15216,311 @@ select * from dep_estimated_rows('select * from dep_t where a = 1 and b = 1');
 reset optimizer;
 drop function dep_estimated_rows(text);
 drop table dep_t;
+-- WHPG: the interval derived from "col op ANY/ALL (array)" under
+-- optimizer_array_constraints read "<> ANY" as NOT IN and "= ALL" as IN.
+-- "<> ANY" over two or more distinct values holds for every non-NULL
+-- value, so partition pruning dropped leaves holding matching rows and a
+-- CHECK constraint turned a satisfiable predicate into a contradiction.
+set optimizer_array_constraints = on;
+create table arrcmp_part (k int, v int) distributed by (v)
+  partition by list (k);
+create table arrcmp_part_1 partition of arrcmp_part for values in (1);
+NOTICE:  table has parent, setting distribution columns to match parent table
+create table arrcmp_part_2 partition of arrcmp_part for values in (2);
+NOTICE:  table has parent, setting distribution columns to match parent table
+create table arrcmp_part_3 partition of arrcmp_part for values in (3);
+NOTICE:  table has parent, setting distribution columns to match parent table
+insert into arrcmp_part select 1 + i % 3, i from generate_series(1, 30) i;
+analyze arrcmp_part;
+explain (costs off)
+select count(*) from arrcmp_part where k <> any (array[1, 2]);
+                           QUERY PLAN                           
+----------------------------------------------------------------
+ Finalize Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Partial Aggregate
+               ->  Dynamic Seq Scan on arrcmp_part
+                     Number of partitions to scan: 3 (out of 3)
+                     Filter: (k <> ANY ('{1,2}'::integer[]))
+ Optimizer: GPORCA
+(7 rows)
+
+select count(*) from arrcmp_part where k <> any (array[1, 2]);
+ count 
+-------
+    30
+(1 row)
+
+explain (costs off)
+select count(*) from arrcmp_part where not (k = all (array[1, 2]));
+                           QUERY PLAN                           
+----------------------------------------------------------------
+ Finalize Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Partial Aggregate
+               ->  Dynamic Seq Scan on arrcmp_part
+                     Number of partitions to scan: 3 (out of 3)
+                     Filter: (k <> ANY ('{1,2}'::integer[]))
+ Optimizer: GPORCA
+(7 rows)
+
+select count(*) from arrcmp_part where not (k = all (array[1, 2]));
+ count 
+-------
+    30
+(1 row)
+
+explain (costs off)
+select count(*) from arrcmp_part where k <> any (array[1, 1]);
+                           QUERY PLAN                           
+----------------------------------------------------------------
+ Finalize Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Partial Aggregate
+               ->  Dynamic Seq Scan on arrcmp_part
+                     Number of partitions to scan: 2 (out of 3)
+                     Filter: (k <> ANY ('{1,1}'::integer[]))
+ Optimizer: GPORCA
+(7 rows)
+
+select count(*) from arrcmp_part where k <> any (array[1, 1]);
+ count 
+-------
+    20
+(1 row)
+
+explain (costs off)
+select count(*) from arrcmp_part where k = all (array[1, 2]);
+           QUERY PLAN           
+--------------------------------
+ Aggregate
+   ->  Result
+         One-Time Filter: false
+ Optimizer: GPORCA
+(4 rows)
+
+select count(*) from arrcmp_part where k = all (array[1, 2]);
+ count 
+-------
+     0
+(1 row)
+
+explain (costs off)
+select count(*) from arrcmp_part where k = all (array[2, 2]);
+                           QUERY PLAN                           
+----------------------------------------------------------------
+ Finalize Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Partial Aggregate
+               ->  Dynamic Seq Scan on arrcmp_part
+                     Number of partitions to scan: 1 (out of 3)
+                     Filter: (k = ALL ('{2,2}'::integer[]))
+ Optimizer: GPORCA
+(7 rows)
+
+select count(*) from arrcmp_part where k = all (array[2, 2]);
+ count 
+-------
+    10
+(1 row)
+
+explain (costs off)
+select count(*) from arrcmp_part where k < all (array[2, 3]);
+                           QUERY PLAN                           
+----------------------------------------------------------------
+ Finalize Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Partial Aggregate
+               ->  Dynamic Seq Scan on arrcmp_part
+                     Number of partitions to scan: 1 (out of 3)
+                     Filter: (k < ALL ('{2,3}'::integer[]))
+ Optimizer: GPORCA
+(7 rows)
+
+select count(*) from arrcmp_part where k < all (array[2, 3]);
+ count 
+-------
+    10
+(1 row)
+
+explain (costs off)
+select count(*) from arrcmp_part where k <> all (array[null::int, null]);
+           QUERY PLAN           
+--------------------------------
+ Aggregate
+   ->  Result
+         One-Time Filter: false
+ Optimizer: GPORCA
+(4 rows)
+
+select count(*) from arrcmp_part where k <> all (array[null::int, null]);
+ count 
+-------
+     0
+(1 row)
+
+-- NOT IN with a NULL element is never true; its negation still is
+explain (costs off)
+select count(*) from arrcmp_part where k not in (1, null);
+           QUERY PLAN           
+--------------------------------
+ Aggregate
+   ->  Result
+         One-Time Filter: false
+ Optimizer: GPORCA
+(4 rows)
+
+select count(*) from arrcmp_part where k not in (1, null);
+ count 
+-------
+     0
+(1 row)
+
+explain (costs off)
+select count(*) from arrcmp_part where not (k not in (1, null));
+                           QUERY PLAN                           
+----------------------------------------------------------------
+ Finalize Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Partial Aggregate
+               ->  Dynamic Seq Scan on arrcmp_part
+                     Number of partitions to scan: 1 (out of 3)
+                     Filter: (k = ANY ('{1,NULL}'::integer[]))
+ Optimizer: GPORCA
+(7 rows)
+
+select count(*) from arrcmp_part where not (k not in (1, null));
+ count 
+-------
+    10
+(1 row)
+
+explain (costs off)
+delete from arrcmp_part where k <> any (array[1, 2]);
+                     QUERY PLAN                     
+----------------------------------------------------
+ Delete on arrcmp_part
+   ->  Dynamic Seq Scan on arrcmp_part
+         Number of partitions to scan: 3 (out of 3)
+         Filter: (k <> ANY ('{1,2}'::integer[]))
+ Optimizer: GPORCA
+(5 rows)
+
+begin;
+delete from arrcmp_part where k <> any (array[1, 2]);
+select count(*) from arrcmp_part;
+ count 
+-------
+     0
+(1 row)
+
+rollback;
+create table arrcmp_chk (a int check (a <> any (array[1, 2])))
+  distributed by (a);
+insert into arrcmp_chk values (1), (2), (3);
+explain (costs off) select * from arrcmp_chk where a = 1;
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 1:1  (slice1; segments: 1)
+   ->  Seq Scan on arrcmp_chk
+         Filter: (a = 1)
+ Optimizer: GPORCA
+(4 rows)
+
+select * from arrcmp_chk where a = 1;
+ a 
+---
+ 1
+(1 row)
+
+-- a comparison with a NULL element (or a NULL constant) is NULL, which a
+-- CHECK constraint accepts: the row (2, 1, 2, 2, 2) passes every CHECK
+create table arrcmp_chk_null (
+  a int check (a = any (array[1, null])),
+  b int check (b = all (array[1, null])),
+  c int check (c <> all (array[null::int, null])),
+  d int check (d < any (array[1, null])),
+  e int check (e = null::int)) distributed by (a);
+insert into arrcmp_chk_null values (2, 1, 2, 2, 2);
+explain (costs off) select count(*) from arrcmp_chk_null where a = 2;
+                   QUERY PLAN                   
+------------------------------------------------
+ Aggregate
+   ->  Gather Motion 1:1  (slice1; segments: 1)
+         ->  Seq Scan on arrcmp_chk_null
+               Filter: (a = 2)
+ Optimizer: GPORCA
+(5 rows)
+
+select count(*) from arrcmp_chk_null where a = 2;
+ count 
+-------
+     1
+(1 row)
+
+explain (costs off) select count(*) from arrcmp_chk_null where b = 1;
+                   QUERY PLAN                   
+------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Seq Scan on arrcmp_chk_null
+               Filter: (b = 1)
+ Optimizer: GPORCA
+(5 rows)
+
+select count(*) from arrcmp_chk_null where b = 1;
+ count 
+-------
+     1
+(1 row)
+
+explain (costs off) select count(*) from arrcmp_chk_null where c = 2;
+                   QUERY PLAN                   
+------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Seq Scan on arrcmp_chk_null
+               Filter: (c = 2)
+ Optimizer: GPORCA
+(5 rows)
+
+select count(*) from arrcmp_chk_null where c = 2;
+ count 
+-------
+     1
+(1 row)
+
+explain (costs off) select count(*) from arrcmp_chk_null where d = 2;
+                   QUERY PLAN                   
+------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Seq Scan on arrcmp_chk_null
+               Filter: (d = 2)
+ Optimizer: GPORCA
+(5 rows)
+
+select count(*) from arrcmp_chk_null where d = 2;
+ count 
+-------
+     1
+(1 row)
+
+explain (costs off) select count(*) from arrcmp_chk_null where e = 2;
+                   QUERY PLAN                   
+------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Seq Scan on arrcmp_chk_null
+               Filter: (e = 2)
+ Optimizer: GPORCA
+(5 rows)
+
+select count(*) from arrcmp_chk_null where e = 2;
+ count 
+-------
+     1
+(1 row)
+
+drop table arrcmp_part, arrcmp_chk, arrcmp_chk_null;
+reset optimizer_array_constraints;
