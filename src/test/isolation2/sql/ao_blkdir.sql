@@ -514,3 +514,75 @@ FROM gp_segment_configuration WHERE content = 0 AND role = 'p';
 RESET enable_seqscan;
 RESET enable_indexonlyscan;
 RESET optimizer;
+
+--
+-- WHPG (PTT-2077): fetch a missing-mode column across segment files
+--
+-- The block directory keeps one cached minipage per column but one current
+-- segment file for all of them, and a lookup reloads only the columns that
+-- hold a value for the probed row. A column added in missing-value mode is
+-- skipped for the rows it serves from attmissingval, so its cache must not be
+-- taken for the new segment file's once the fetch reaches rows that do have a
+-- value there. Two segment files with different block layouts of the added
+-- column make a stale entry resolve to the wrong block or past the end of the
+-- smaller file, which lost rows from index and bitmap scans, TABLESAMPLE and
+-- the block-directory sampling of ANALYZE.
+--
+-- All rows go to seg0 (j = 2). Two concurrent sessions create segfiles 1 and 2;
+-- the later appends pick the segfile with the fewest tuples, so the large one
+-- (several 8 KB blocks of the added column) lands in segfile 1 and the small
+-- one (a single block) in segfile 2, at row numbers that fall inside segfile
+-- 1's entries. The index is on the constant j: equal keys are returned in TID
+-- order, so a scan walks each segment file's missing rows before its present
+-- ones, the order in which the cache goes stale.
+CREATE TABLE aoco_blkdir_missing(i int, j int) USING ao_column WITH (blocksize=8192) DISTRIBUTED BY (j);
+CREATE INDEX aoco_blkdir_missing_idx ON aoco_blkdir_missing(j);
+
+1: BEGIN;
+1: INSERT INTO aoco_blkdir_missing SELECT i, 2 FROM generate_series(1, 1000) i;
+2: BEGIN;
+2: INSERT INTO aoco_blkdir_missing SELECT i, 2 FROM generate_series(1001, 10000) i;
+1: COMMIT;
+2: COMMIT;
+
+ALTER TABLE aoco_blkdir_missing ADD COLUMN c0 int DEFAULT 42;
+INSERT INTO aoco_blkdir_missing SELECT i, 2, i FROM generate_series(10001, 20000) i;
+ALTER TABLE aoco_blkdir_missing ADD COLUMN c1 int DEFAULT 7;
+INSERT INTO aoco_blkdir_missing SELECT i, 2, i, i FROM generate_series(20001, 20100) i;
+
+SELECT segno, tupcount FROM gp_toolkit.__gp_aocsseg('aoco_blkdir_missing') WHERE column_num = 0 ORDER BY 1;
+
+-- Reference through the seq scan, which does not use the block directory.
+SET optimizer TO off;
+SET enable_indexonlyscan TO off;
+SELECT count(*), sum(c0), sum(c1) FROM aoco_blkdir_missing WHERE j = 2;
+
+-- Each added column alone, then both, through an index scan and a bitmap
+-- scan. A lookup that misses the cache reloads every projected column that
+-- has a value for the row, so a second added column in the projection can
+-- refresh the first one's cache by accident; the single-column probes are
+-- the ones that depend on the cache being tied to the segment file.
+SET enable_seqscan TO off;
+SET enable_bitmapscan TO off;
+EXPLAIN (COSTS OFF) SELECT count(*), sum(c0) FROM aoco_blkdir_missing WHERE j = 2;
+SELECT count(*), sum(c0) FROM aoco_blkdir_missing WHERE j = 2;
+SELECT count(*), sum(c1) FROM aoco_blkdir_missing WHERE j = 2;
+SELECT count(*), sum(c0), sum(c1) FROM aoco_blkdir_missing WHERE j = 2;
+SET enable_indexscan TO off;
+SET enable_bitmapscan TO on;
+EXPLAIN (COSTS OFF) SELECT count(*), sum(c0) FROM aoco_blkdir_missing WHERE j = 2;
+SELECT count(*), sum(c0) FROM aoco_blkdir_missing WHERE j = 2;
+SELECT count(*), sum(c1) FROM aoco_blkdir_missing WHERE j = 2;
+SELECT count(*), sum(c0), sum(c1) FROM aoco_blkdir_missing WHERE j = 2;
+RESET enable_seqscan;
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+
+-- TABLESAMPLE and the block sampling of ANALYZE locate their rows through the
+-- block directory too, projecting every column.
+SELECT count(*), sum(c0), sum(c1) FROM aoco_blkdir_missing TABLESAMPLE SYSTEM (100);
+ANALYZE aoco_blkdir_missing;
+
+RESET enable_indexonlyscan;
+RESET optimizer;
+DROP TABLE aoco_blkdir_missing;

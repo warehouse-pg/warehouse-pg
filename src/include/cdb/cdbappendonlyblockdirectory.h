@@ -85,6 +85,18 @@ typedef struct MinipagePerColumnGroup
 	ItemPointerData tupleTid;
 	/* cached entry number from last call to find_minipage_entry() */
 	int cached_entry_no;
+
+	/*
+	 * The segment file the cached minipage was read for, or
+	 * InvalidFileSegNumber when nothing is cached. The cache is per column
+	 * group while the directory's currentSegmentFileNum is shared by all of
+	 * them, and a lookup reloads only the columns that hold a value for the
+	 * row it probes: a column added in missing-value mode is left alone for
+	 * rows served from attmissingval, so its cache can lag behind the other
+	 * columns' by a segment file. Lookups compare this against the row's
+	 * segment file before trusting the cached entries.
+	 */
+	int segmentFileNum;
 } MinipagePerColumnGroup;
 
 /*
