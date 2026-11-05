@@ -282,6 +282,8 @@ test: autovacuum-temp-table
 
 test: copy_progress
 
+test: dropdb_segment_abort
+
 # Tests for FTS
 test: fts_errors
 test: segwalrep/replication_keeps_crash
@@ -291,6 +293,7 @@ test: segwalrep/recoverseg_from_file
 test: segwalrep/mirror_promotion
 test: segwalrep/cancel_commit_pending_replication
 test: segwalrep/twophase_tolerance_with_mirror_promotion
+test: segwalrep/dropdb_commit_prepared_promotion
 test: segwalrep/startup_rename_prepared_xlog
 test: segwalrep/failover_with_many_records
 test: segwalrep/dtm_recovery_on_standby
