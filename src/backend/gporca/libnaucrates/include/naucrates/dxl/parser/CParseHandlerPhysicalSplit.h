@@ -49,7 +49,7 @@ private:
 	// segmentId column id
 	ULONG m_segid_colid;
 
-	// special field for resjunk flag assignment
+	// whether inserted rows need hash-based segment routing
 	BOOL m_computeTargetSegment;
 
 	// process the start of an element

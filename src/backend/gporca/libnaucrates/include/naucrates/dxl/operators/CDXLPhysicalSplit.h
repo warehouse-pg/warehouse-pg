@@ -48,7 +48,7 @@ private:
 	// segmentid column id
 	ULONG m_segid_colid;
 
-	// special field for resjunk flag assignment
+	// whether inserted rows need hash-based segment routing
 	BOOL m_computeTargetSegment;
 
 public:
@@ -103,7 +103,7 @@ public:
 		return m_segid_colid;
 	}
 
-	// resjunk flag
+	// whether inserted rows need hash-based segment routing
 	BOOL
 	GetComputeTargetSegment() const
 	{
