@@ -144,6 +144,9 @@ SELECT disable_xform('CXformLeftSemiJoin2NLJoin');
 SELECT disable_xform('CXformLeftSemiJoin2InnerJoin');
 EXPLAIN (COSTS OFF, VERBOSE) SELECT count(*) FROM e WHERE b IN (SELECT d FROM u);
 SELECT count(*) FROM e WHERE b IN (SELECT d FROM u);
+-- and its scan inside a subplan, translated on its own, gets its region
+EXPLAIN (COSTS OFF) SELECT count(*) FROM t WHERE a = 7 OR a IN (SELECT a FROM e WHERE b = 1);
+SELECT count(*) FROM t WHERE a = 7 OR a IN (SELECT a FROM e WHERE b = 1);
 SELECT enable_xform('CXformLeftSemiJoin2HashJoin');
 SELECT enable_xform('CXformLeftSemiJoin2NLJoin');
 SELECT enable_xform('CXformLeftSemiJoin2InnerJoin');

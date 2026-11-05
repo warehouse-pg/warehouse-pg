@@ -548,6 +548,32 @@ SELECT count(*) FROM e WHERE b IN (SELECT d FROM u);
     20
 (1 row)
 
+-- and its scan inside a subplan, translated on its own, gets its region
+EXPLAIN (COSTS OFF) SELECT count(*) FROM t WHERE a = 7 OR a IN (SELECT a FROM e WHERE b = 1);
+                                    QUERY PLAN                                     
+-----------------------------------------------------------------------------------
+ Finalize Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Partial Aggregate
+               ->  Result
+                     Filter: ((t.a = 7) OR (hashed SubPlan 1))
+                     ->  Seq Scan on t
+                     SubPlan 1
+                       ->  Result
+                             ->  Materialize
+                                   ->  Broadcast Motion 3:3  (slice2; segments: 3)
+                                         ->  Custom Scan (TestOrcaRegion)
+                                               Filter: (b = 1)
+                                               Region: read
+ Optimizer: GPORCA
+(14 rows)
+
+SELECT count(*) FROM t WHERE a = 7 OR a IN (SELECT a FROM e WHERE b = 1);
+ count 
+-------
+     4
+(1 row)
+
 SELECT enable_xform('CXformLeftSemiJoin2HashJoin');
               enable_xform              
 ----------------------------------------

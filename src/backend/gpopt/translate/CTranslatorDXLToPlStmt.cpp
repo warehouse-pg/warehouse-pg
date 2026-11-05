@@ -143,6 +143,11 @@ CTranslatorDXLToPlStmt::CTranslatorDXLToPlStmt(
 {
 	m_translator_dxl_to_scalar = GPOS_NEW(m_mp)
 		CTranslatorDXLToScalar(m_mp, m_md_accessor, m_num_of_segments);
+	// a subplan's translator: the plan's regions cover the subplan's
+	// operators too
+	m_ext_regions = dxl_to_plstmt_context->m_ext_regions;
+	m_ext_ops = dxl_to_plstmt_context->m_ext_ops;
+	m_ext_nops = dxl_to_plstmt_context->m_ext_nops;
 }
 
 //---------------------------------------------------------------------------
@@ -156,7 +161,10 @@ CTranslatorDXLToPlStmt::CTranslatorDXLToPlStmt(
 CTranslatorDXLToPlStmt::~CTranslatorDXLToPlStmt()
 {
 	GPOS_DELETE(m_translator_dxl_to_scalar);
-	GPOS_DELETE_ARRAY(m_ext_ops);
+	if (m_owns_ext_ops)
+	{
+		GPOS_DELETE_ARRAY(m_ext_ops);
+	}
 }
 
 //---------------------------------------------------------------------------
@@ -702,6 +710,7 @@ CTranslatorDXLToPlStmt::FindExtensionRegions(const CDXLNode *plan_dxlnode)
 	CollectPhysicalOps(plan_dxlnode, nullptr, nullptr, &nops);
 	// freed by the destructor
 	m_ext_ops = GPOS_NEW_ARRAY(m_mp, const CDXLNode *, nops);
+	m_owns_ext_ops = true;
 	CAutoRg<ULONG> ends(GPOS_NEW_ARRAY(m_mp, ULONG, nops));
 	nops = 0;
 	CollectPhysicalOps(plan_dxlnode, m_ext_ops, ends.Rgt(), &nops);
@@ -743,6 +752,9 @@ CTranslatorDXLToPlStmt::FindExtensionRegions(const CDXLNode *plan_dxlnode)
 	}
 	m_ext_regions = regions;
 	m_ext_nops = nops;
+	m_dxl_to_plstmt_context->m_ext_regions = regions;
+	m_dxl_to_plstmt_context->m_ext_ops = m_ext_ops;
+	m_dxl_to_plstmt_context->m_ext_nops = nops;
 }
 
 // whether the operator is a leaf of an extension region: a PG input the

@@ -142,6 +142,9 @@ private:
 	const OrcaPlanRegions *m_ext_regions{nullptr};
 	const CDXLNode **m_ext_ops{nullptr};
 	ULONG m_ext_nops{0};
+	// whether this translator found the regions, rather than taking those
+	// of the plan whose subplan it translates
+	BOOL m_owns_ext_ops{false};
 	// a region root being translated as its own leaf
 	const CDXLNode *m_ext_root_leaf{nullptr};
 
