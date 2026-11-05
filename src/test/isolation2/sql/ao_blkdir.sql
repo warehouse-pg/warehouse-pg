@@ -579,8 +579,17 @@ RESET enable_indexscan;
 RESET enable_bitmapscan;
 
 -- TABLESAMPLE and the block sampling of ANALYZE locate their rows through the
--- block directory too, projecting every column.
+-- block directory too, projecting every column. ANALYZE completes either way
+-- (it only records skewed statistics for the lost rows), so draw its sample
+-- through gp_acquire_sample_rows() as ANALYZE does: the per-segment target is
+-- larger than the table, so the sample holds every row and its count is
+-- deterministic. count(i) leaves out the per-segment summary rows, whose table
+-- columns are NULL.
 SELECT count(*), sum(c0), sum(c1) FROM aoco_blkdir_missing TABLESAMPLE SYSTEM (100);
+SELECT count(i), sum(c0), sum(c1)
+FROM gp_acquire_sample_rows('aoco_blkdir_missing'::regclass, 30000, false)
+AS (totalrows float8, totaldeadrows float8, oversized_cols_length float8[],
+    i int, j int, c0 int, c1 int);
 ANALYZE aoco_blkdir_missing;
 
 RESET enable_indexonlyscan;
