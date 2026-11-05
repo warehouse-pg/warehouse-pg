@@ -15,8 +15,18 @@
  * below it as an ipc region. The scan's rows cross the motion encoded as
  * (segment, payload) rows, and the CustomScan above the motion decodes them.
  *
+ * ext_scan: every table scan of an extension table (below), as a region
+ * with pg_filter: the CustomScan reads the table itself, and the executor
+ * evaluates the scan's filter and projection over its rows.
+ *
  * The remaining modes return malformed regions, which ORCA rejects: the
  * query falls back to the PG planner.
+ *
+ * Tables of the test_orca_ext table AM stand for tables an extension reads
+ * itself. test_orca_regions.ext_relation is what orca_relation_hook says of
+ * them, test_orca_regions.ext_rows their row count for
+ * orca_relation_size_hook, and test_orca_regions.ext_stats_from the table
+ * whose column statistics orca_att_stats_hook gives for them.
  *
  * Only regions of int4 columns are claimed, which keeps the encoding of the
  * ipc rows trivial.
@@ -30,7 +40,13 @@
  */
 #include "postgres.h"
 
+#include "access/htup_details.h"
+#include "access/tableam.h"
+#include "catalog/namespace.h"
+#include "catalog/pg_class.h"
+#include "catalog/pg_statistic.h"
 #include "catalog/pg_type.h"
+#include "commands/defrem.h"
 #include "commands/explain.h"
 #include "executor/executor.h"
 #include "fmgr.h"
@@ -38,6 +54,7 @@
 #include "optimizer/orca.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
+#include "utils/syscache.h"
 
 PG_MODULE_MAGIC;
 
@@ -50,6 +67,7 @@ typedef enum TestMode
 	MODE_OFF,
 	MODE_SCAN,
 	MODE_IPC,
+	MODE_EXT_SCAN,
 	MODE_BAD_VERSION,
 	MODE_NO_METHODS,
 	MODE_BAD_ROOT,
@@ -63,6 +81,7 @@ static const struct config_enum_entry mode_options[] = {
 	{"off", MODE_OFF, false},
 	{"scan", MODE_SCAN, false},
 	{"ipc", MODE_IPC, false},
+	{"ext_scan", MODE_EXT_SCAN, false},
 	{"bad_version", MODE_BAD_VERSION, false},
 	{"no_methods", MODE_NO_METHODS, false},
 	{"bad_root", MODE_BAD_ROOT, false},
@@ -75,10 +94,85 @@ static const struct config_enum_entry mode_options[] = {
 
 static int	test_mode = MODE_OFF;
 
+static const struct config_enum_entry relation_options[] = {
+	{"none", ORCA_RELATION_NONE, false},
+	{"planner", ORCA_RELATION_PLANNER, false},
+	{"random", ORCA_RELATION_RANDOM, false},
+	{NULL, 0, false}
+};
+
+static int	ext_relation = ORCA_RELATION_NONE;
+static int	ext_rows = -1;
+static char *ext_stats_from = NULL;
+
+/* the table AM of the tables an extension reads itself */
+#define EXT_AM "test_orca_ext"
+
 /* what a region's CustomScan does, its custom_private payload */
 #define REGION_PASS "pass"		/* passes its leaf's rows on */
 #define REGION_ENCODE "encode"	/* encodes them as (segment, payload) rows */
 #define REGION_DECODE "decode"	/* decodes (segment, payload) rows */
+#define REGION_READ "read"		/* reads its leaf's table itself */
+
+/* Metadata side: the extension's tables */
+
+static bool
+is_ext_relation(Oid relid)
+{
+	HeapTuple	tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(relid));
+	Oid			relam;
+
+	if (!HeapTupleIsValid(tuple))
+		return false;
+	relam = ((Form_pg_class) GETSTRUCT(tuple))->relam;
+	ReleaseSysCache(tuple);
+	return OidIsValid(relam) && strcmp(get_am_name(relam), EXT_AM) == 0;
+}
+
+/* ORCA runs the statistics hooks with itself off: it isn't reentrant */
+static void
+check_planner_only(const char *hook)
+{
+	if (optimizer)
+		elog(ERROR, "%s runs with the optimizer on", hook);
+}
+
+static OrcaRelation
+test_relation(Oid relid)
+{
+	return is_ext_relation(relid) ? ext_relation : ORCA_RELATION_NONE;
+}
+
+static bool
+test_relation_size(Oid relid, double *tuples, BlockNumber *pages)
+{
+	check_planner_only("orca_relation_size_hook");
+	if (ext_rows < 0 || !is_ext_relation(relid))
+		return false;
+	*tuples = ext_rows;
+	*pages = ext_rows / 100 + 1;
+	return true;
+}
+
+static HeapTuple
+test_att_stats(Oid relid, AttrNumber attnum)
+{
+	Oid			from;
+	HeapTuple	tuple;
+
+	check_planner_only("orca_att_stats_hook");
+	if (ext_stats_from == NULL || ext_stats_from[0] == '\0' ||
+		!is_ext_relation(relid))
+		return NULL;
+	from = RelnameGetRelid(ext_stats_from);
+	if (!OidIsValid(from))
+		elog(ERROR, "no table \"%s\"", ext_stats_from);
+	tuple = SearchSysCacheCopy3(STATRELATTINH, ObjectIdGetDatum(from),
+								Int16GetDatum(attnum), BoolGetDatum(false));
+	if (HeapTupleIsValid(tuple))
+		((Form_pg_statistic) GETSTRUCT(tuple))->starelid = relid;
+	return tuple;
+}
 
 /* Plan side: finding regions in the DXL */
 
@@ -156,6 +250,76 @@ op_columns(const char *p, int *ncols, OrcaPlanRegionCol **cols)
 		(*cols)[n].type = INT4OID;
 		(*cols)[n].typmod = -1;
 		(*cols)[n].name = attr_value(elem, "Alias");
+		n++;
+	}
+	*ncols = n;
+	return n > 0;
+}
+
+/*
+ * The user columns of the table the scan whose element starts at p reads,
+ * from its table descriptor, if it is an extension table of int4 columns.
+ */
+static bool
+ext_scan_columns(const char *p, int *ncols, OrcaPlanRegionCol **cols)
+{
+	const char *close = p + 1;
+	const char *descr = NULL;
+	const char *end;
+	int			depth = 1;
+
+	/*
+	 * The scan's own descriptor is its last child: its filter may hold
+	 * subplans scanning other tables
+	 */
+	while (depth > 0)
+	{
+		const char *open = strstr(close, "<dxl:TableScan");
+
+		/* the element, which may have no attributes */
+		while (open != NULL && open[14] != ' ' && open[14] != '>')
+			open = strstr(open + 1, "<dxl:TableScan");
+
+		close = strstr(close, "</dxl:TableScan>");
+		if (close == NULL)
+			return false;
+		if (open != NULL && open < close)
+		{
+			depth++;
+			close = open + 1;
+		}
+		else if (--depth > 0)
+			close++;
+	}
+	for (const char *d = strstr(p, "<dxl:TableDescriptor "); d != NULL && d < close;
+		 d = strstr(d + 1, "<dxl:TableDescriptor "))
+		descr = d;
+	end = descr ? strstr(descr, "</dxl:Columns>") : NULL;
+	char	   *mdid;
+	const char *col;
+	int			n = 0;
+
+	if (end == NULL)
+		return false;
+	/* a relation's mdid is <type>.<oid>.<major>.<minor> */
+	mdid = attr_value(descr, "Mdid");
+	if (mdid == NULL || strchr(mdid, '.') == NULL ||
+		!is_ext_relation((Oid) strtoul(strchr(mdid, '.') + 1, NULL, 10)))
+		return false;
+	*cols = palloc0(sizeof(OrcaPlanRegionCol) * 64);
+	for (col = strstr(descr, "<dxl:Column "); col != NULL && col < end;
+		 col = strstr(col + 1, "<dxl:Column "))
+	{
+		char	   *type = attr_value(col, "TypeMdid");
+
+		if (atoi(attr_value(col, "Attno")) <= 0)
+			continue;
+		if (n == 64 || type == NULL || strcmp(type, "0.23.1.0") != 0)
+			return false;
+		(*cols)[n].colid = (uint32) atoi(attr_value(col, "ColId"));
+		(*cols)[n].type = INT4OID;
+		(*cols)[n].typmod = -1;
+		(*cols)[n].name = attr_value(col, "ColName");
 		n++;
 	}
 	*ncols = n;
@@ -241,6 +405,17 @@ test_plan_regions(const char *plan_dxl, int nops, const char *const *opnames)
 				}
 				break;
 
+			case MODE_EXT_SCAN:
+				if (strcmp(opnames[op], "TableScan") == 0 &&
+					ext_scan_columns(p, &ncols, &cols))
+				{
+					region = add_region(regions, &nregions, op, REGION_READ);
+					region->ncols = ncols;
+					region->cols = cols;
+					region->pg_filter = true;
+				}
+				break;
+
 			case MODE_SORTED_MOTION:
 				/* an ipc region below a gather that merges sorted rows */
 				if (op + 1 < nops && strcmp(opnames[op], "GatherMotion") == 0 &&
@@ -320,15 +495,40 @@ test_plan_regions(const char *plan_dxl, int nops, const char *const *opnames)
 typedef struct RegionScanState
 {
 	CustomScanState css;
-	const char *what;			/* REGION_PASS, _ENCODE or _DECODE */
+	const char *what;			/* REGION_PASS, _ENCODE, _DECODE or _READ */
+	TableScanDesc scan;			/* REGION_READ's scan of its table */
+	TupleTableSlot *table_slot;
+	AttrNumber *attnos;			/* the table's attribute of each column */
 } RegionScanState;
 
 static void
 region_begin(CustomScanState *node, EState *estate, int eflags)
 {
+	RegionScanState *state = (RegionScanState *) node;
 	CustomScan *cscan = (CustomScan *) node->ss.ps.plan;
 	ListCell   *lc;
 
+	if (strcmp(state->what, REGION_READ) == 0)
+	{
+		/* the leaf only names the table */
+		Scan	   *leaf = linitial(cscan->custom_plans);
+		Relation	rel = ExecOpenScanRelation(estate, leaf->scanrelid, eflags);
+		int			i = 0;
+
+		/*
+		 * The region's columns, those of the table the query uses: the scan
+		 * tuple's entries are Vars of them
+		 */
+		state->attnos = palloc(sizeof(AttrNumber) *
+							   list_length(cscan->custom_scan_tlist));
+		foreach(lc, cscan->custom_scan_tlist)
+			state->attnos[i++] = castNode(Var, ((TargetEntry *) lfirst(lc))->expr)->varattno;
+
+		state->table_slot = table_slot_create(rel, &estate->es_tupleTable);
+		if (!(eflags & EXEC_FLAG_EXPLAIN_ONLY))
+			state->scan = table_beginscan(rel, estate->es_snapshot, 0, NULL);
+		return;
+	}
 	foreach(lc, cscan->custom_plans)
 		node->custom_ps = lappend(node->custom_ps,
 								  ExecInitNode(lfirst(lc), estate, eflags));
@@ -340,10 +540,25 @@ region_next(ScanState *ss)
 {
 	RegionScanState *state = (RegionScanState *) ss;
 	TupleTableSlot *out = ss->ss_ScanTupleSlot;
-	TupleTableSlot *in = ExecProcNode(linitial(state->css.custom_ps));
+	TupleTableSlot *in;
 	int			natts;
 
 	ExecClearTuple(out);
+	if (state->scan != NULL)
+	{
+		/* this segment's rows of the table */
+		if (!table_scan_getnextslot(state->scan, ForwardScanDirection,
+									state->table_slot))
+			return out;
+		slot_getallattrs(state->table_slot);
+		for (int i = 0; i < out->tts_tupleDescriptor->natts; i++)
+		{
+			out->tts_values[i] = state->table_slot->tts_values[state->attnos[i] - 1];
+			out->tts_isnull[i] = state->table_slot->tts_isnull[state->attnos[i] - 1];
+		}
+		return ExecStoreVirtualTuple(out);
+	}
+	in = ExecProcNode(linitial(state->css.custom_ps));
 	if (TupIsNull(in))
 		return out;
 	slot_getallattrs(in);
@@ -418,8 +633,11 @@ region_exec(CustomScanState *node)
 static void
 region_end(CustomScanState *node)
 {
+	RegionScanState *state = (RegionScanState *) node;
 	ListCell   *lc;
 
+	if (state->scan != NULL)
+		table_endscan(state->scan);
 	foreach(lc, node->custom_ps)
 		ExecEndNode(lfirst(lc));
 }
@@ -427,8 +645,11 @@ region_end(CustomScanState *node)
 static void
 region_rescan(CustomScanState *node)
 {
+	RegionScanState *state = (RegionScanState *) node;
 	ListCell   *lc;
 
+	if (state->scan != NULL)
+		table_rescan(state->scan, NULL);
 	foreach(lc, node->custom_ps)
 		ExecReScan(lfirst(lc));
 }
@@ -479,7 +700,36 @@ _PG_init(void)
 							 PGC_USERSET,
 							 0,
 							 NULL, NULL, NULL);
+	DefineCustomEnumVariable("test_orca_regions.ext_relation",
+							 "What orca_relation_hook says of extension tables.",
+							 NULL,
+							 &ext_relation,
+							 ORCA_RELATION_NONE,
+							 relation_options,
+							 PGC_USERSET,
+							 0,
+							 NULL, NULL, NULL);
+	DefineCustomIntVariable("test_orca_regions.ext_rows",
+							"The row count of extension tables, or -1.",
+							NULL,
+							&ext_rows,
+							-1,
+							-1, INT_MAX,
+							PGC_USERSET,
+							0,
+							NULL, NULL, NULL);
+	DefineCustomStringVariable("test_orca_regions.ext_stats_from",
+							   "The table whose column statistics extension tables have.",
+							   NULL,
+							   &ext_stats_from,
+							   "",
+							   PGC_USERSET,
+							   0,
+							   NULL, NULL, NULL);
 	RegisterCustomScanMethods(&region_scan_methods);
 	orca_plan_regions_hook = test_plan_regions;
+	orca_relation_hook = test_relation;
+	orca_relation_size_hook = test_relation_size;
+	orca_att_stats_hook = test_att_stats;
 #endif
 }
