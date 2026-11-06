@@ -246,6 +246,44 @@ WITH RECURSIVE subdept(id, parent_department, name) AS
 SELECT count(*) FROM subdept;
 
 
+-- Test rescannable multi-batch hashjoin whose outer side has skewed join keys.
+-- The skew optimization keeps the inner tuples matching the outer MCVs in
+-- separate skew buckets, which are never written to the batch files that a
+-- reused hash table is reloaded from, so every rescan after the first pass
+-- used to lose the matches for a = 1.  from_collapse_limit keeps the subquery
+-- as the unparameterized (hence rewindable) inner side of the nested loop.
+create table hj_skew_build(a int, pad text) distributed replicated;
+insert into hj_skew_build select i, repeat('x', 200) from generate_series(1, 20000) i;
+create table hj_skew_probe(a int) distributed replicated;
+insert into hj_skew_probe select case when i % 2 = 0 then 1 else i end from generate_series(1, 20000) i;
+create table hj_skew_outer(k int) distributed by (k);
+insert into hj_skew_outer select i from generate_series(0, 5) i;
+analyze hj_skew_build;
+analyze hj_skew_probe;
+analyze hj_skew_outer;
+
+set optimizer to off;
+set enable_nestloop to on;
+set enable_material to off;
+set from_collapse_limit to 1;
+set statement_mem to '1000kB';
+explain (costs off)
+select count(*) from hj_skew_outer o,
+  (select p.a from hj_skew_probe p join hj_skew_build b on p.a = b.a) s
+where s.a <> o.k + 100000;
+select count(*) from hj_skew_outer o,
+  (select p.a from hj_skew_probe p join hj_skew_build b on p.a = b.a) s
+where s.a <> o.k + 100000;
+reset statement_mem;
+reset from_collapse_limit;
+reset enable_material;
+set enable_nestloop to off;
+reset optimizer;
+drop table hj_skew_build;
+drop table hj_skew_probe;
+drop table hj_skew_outer;
+
+
 -- MPP-29458
 -- When we join on a clause with two different types. If one table distribute by one type, the query plan
 -- will redistribute data on another type. But the has values of two types would not be equal. The data will
