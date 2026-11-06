@@ -25,18 +25,28 @@ class CJoinOrderHintsPreprocessor
 {
 private:
 	// Return list of all the children of naryJoinPexpr that are not referenced in
-	// binaryJoinExpr.
+	// binaryJoinExpr, plus binaryJoinExpr itself. *sourceChildIndexes receives,
+	// for every returned child, the index of the naryJoinPexpr child it came
+	// from, or gpos::ulong_max for binaryJoinExpr.
 	static CExpressionArray *ConstructNAryJoinChildren(
 		CMemoryPool *mp, CExpression *naryJoinPexpr,
-		CExpression *binaryJoinExpr, gpos::set<ULONG> &usedChildrenIndexes);
+		CExpression *binaryJoinExpr, gpos::set<ULONG> &usedChildrenIndexes,
+		ULongPtrArray **sourceChildIndexes);
 
 	// Recursively constructs CLogicalInnerJoin expressions using the children
 	// of a CLogicalNAryJoin.
+	//
+	// usedPredicateIndexes collects the indexes into the CScalarNAryJoinPredList
+	// of the LOJ ON predicates the hint consumed; usedInnerConjuncts the
+	// conjuncts of its inner-join predicate (index
+	// GPOPT_ZERO_INNER_JOIN_PRED_INDEX) the hint consumed, by expression.
 	static CExpression *RecursiveApplyJoinOrderHintsOnNAryJoin(
 		CMemoryPool *mp, CExpression *pexpr,
 		const CJoinHint::JoinNode *joinnode,
 		gpos::set<ULONG> &usedChildrenIndexes,
-		gpos::set<ULONG> &usedPredicateIndexes, ULONG *joinChildPredIndex);
+		gpos::set<ULONG> &usedPredicateIndexes,
+		gpos::set<CExpression *> &usedInnerConjuncts,
+		ULONG *joinChildPredIndex);
 
 public:
 	CJoinOrderHintsPreprocessor(const CJoinOrderHintsPreprocessor &) = delete;
