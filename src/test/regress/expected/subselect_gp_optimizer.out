@@ -4895,16 +4895,361 @@ order by o.x;
  3
 (3 rows)
 
--- A correlated scan of the Entry catalog with no join (no Motion in the
--- subplan) must keep working unchanged.
+-- WHPG: a correlated scan of the catalog with no join.  Nothing
+-- forces this SubPlan to the coordinator (force_entry needs a distributed
+-- rel in the subquery), so it is evaluated on the segments, reading their
+-- empty copies of gp_segment_configuration: this returned 0 for both rows,
+-- although the second row holds dbid 1's real hostname.  Refused now.
 select (select count(*)
         from gp_segment_configuration s
         where s.hostname = gp_segment.b) from gp_segment;
- count 
--------
-     0
-(1 row)
-
+ERROR:  correlated subquery over coordinator-only relation "gp_segment_configuration" is not supported
+DETAIL:  The rows of relation "gp_segment_configuration" exist on the coordinator only, but the subquery would be evaluated on the segments.
 drop table gp_entry_outer;
 drop table gp_segment;
 drop table gp_tmp;
+--
+-- WHPG: correlated SubPlans over a relation whose rows exist on
+-- the coordinator only (gp_segment_configuration and the other coordinator-
+-- only catalogs, a DISTRIBUTED COORDINATOR ONLY table, an EXECUTE ON
+-- COORDINATOR external table or function).  A SubPlan is evaluated in the
+-- slice that references it, and the planner lets a Motion-free catalog scan
+-- run there as if every process read the same rows; for these relations a
+-- segment reads an empty copy, so the queries silently returned wrong
+-- results, or planned a correlated qual below a Motion (illegal rescan,
+-- frozen parameter).  Until the planner builds a correct plan for them,
+-- cdbllize_decorate_subplans_with_motions() refuses such a plan with a clear
+-- error.  The shapes that force_entry already runs on the coordinator keep
+-- working (see above).  The Postgres planner is used throughout: GPORCA
+-- falls back to it for these catalogs, and the checks are planner-side.
+--
+set optimizer = off;
+create table co_outer (id int, k int) distributed by (id);
+create table co_mid (k int, w int, d int) distributed by (k);
+create table co_dim (a int, b int) distributed by (a);
+create table co_join (k int, w int) distributed by (k);
+create table co_rep (a int) distributed replicated;
+create table co_only (a int, b int) distributed coordinator only;
+insert into co_outer select i, i % 20 from generate_series(1, 20) i;
+insert into co_mid select i % 20, i, (i % 3) + 1 from generate_series(1, 200) i;
+insert into co_dim select i, i from generate_series(1, 10) i;
+insert into co_join select i, i from generate_series(0, 19) i;
+insert into co_rep select generate_series(1, 3);
+insert into co_only select i, i from generate_series(1, 10) i;
+analyze co_outer;
+analyze co_mid;
+analyze co_dim;
+analyze co_join;
+analyze co_rep;
+analyze co_only;
+-- The shape a DBA writes: no distributed rel in the SubPlan.  Returned NULL
+-- for every row (the segments' copies are empty).
+select t.gp_segment_id,
+       (select hostname from gp_segment_configuration s
+        where s.content = t.gp_segment_id and s.role = 'p') as host
+from co_outer t where t.id <= 3 order by 1;
+ERROR:  correlated subquery over coordinator-only relation "gp_segment_configuration" is not supported
+DETAIL:  The rows of relation "gp_segment_configuration" exist on the coordinator only, but the subquery would be evaluated on the segments.
+select e.id, (select count(*) from gp_segment_configuration s
+              where s.dbid = e.id) as cnt
+from co_outer e where e.id <= 3 or e.id = 15 order by 1;
+ERROR:  correlated subquery over coordinator-only relation "gp_segment_configuration" is not supported
+DETAIL:  The rows of relation "gp_segment_configuration" exist on the coordinator only, but the subquery would be evaluated on the segments.
+-- (a) the correlation parameter is an aggregate: force_entry pins nothing
+-- for it, so the SubPlan runs on the segments and reads their empty copy.
+-- Failed with "unexpected gang size" before.
+select o.id, (select count(*) from gp_segment_configuration s
+              join co_dim t on s.dbid = t.b
+              where s.dbid = sum(o.k)) as cnt
+from co_outer o where o.id <= 3 group by o.id order by 1;
+ERROR:  correlated subquery over coordinator-only relation "gp_segment_configuration" is not supported
+DETAIL:  The rows of relation "gp_segment_configuration" exist on the coordinator only, but the subquery would be evaluated on the segments.
+-- (b) nested two levels: force_entry pins only the middle level, and the
+-- inner SubPlan still runs on the segments.  Returned 200 for every row.
+select o.id, (select count(*) from co_mid m
+              where m.w > o.k
+                and (select count(*) from gp_segment_configuration s
+                     join co_dim t on s.dbid = t.b
+                     where s.dbid = m.d) > 0) as cnt
+from co_outer o where o.id <= 3 order by 1;
+ERROR:  correlated subquery parameter cannot be passed across a Motion
+DETAIL:  A value of the outer query is referenced below a Motion node, in a slice that does not have it.
+-- (c)/(d) the parameter is a PlaceHolderVar from the nullable side of an
+-- outer join, in the target list and in WHERE.
+select e.id, (select count(*) from gp_segment_configuration s
+              join co_dim t on s.dbid = t.b where s.dbid = ss.y) as cnt
+from co_outer e
+left join (select k, coalesce(k, 0) % 3 + 1 as y from co_join) ss on e.id = ss.k
+where e.id <= 3 order by 1;
+ERROR:  correlated subquery over coordinator-only relation "gp_segment_configuration" is not supported
+DETAIL:  The rows of relation "gp_segment_configuration" exist on the coordinator only, but the subquery would be evaluated on the segments.
+select e.id from co_outer e
+left join (select k, coalesce(k, 0) % 3 + 1 as y from co_join) ss on e.id = ss.k
+where e.id <= 3
+  and (select count(*) from gp_segment_configuration s
+       join co_dim t on s.dbid = t.b where s.dbid = ss.y) > 0
+order by 1;
+ERROR:  correlated subquery over coordinator-only relation "gp_segment_configuration" is not supported
+DETAIL:  The rows of relation "gp_segment_configuration" exist on the coordinator only, but the subquery would be evaluated on the segments.
+-- a PlaceHolderVar with no Var inside
+select o.id, (select count(*) from gp_segment_configuration s
+              join co_dim t on s.dbid = t.b where s.dbid = ss.one) as cnt
+from co_outer o left join (select 1 as one) ss on o.id = 1
+where o.id <= 3 order by 1;
+ERROR:  correlated subquery over coordinator-only relation "gp_segment_configuration" is not supported
+DETAIL:  The rows of relation "gp_segment_configuration" exist on the coordinator only, but the subquery would be evaluated on the segments.
+-- (e) an aggregate over a rel joined in the outer query
+select e.id, (select count(*) from gp_segment_configuration s
+              join co_dim t on s.dbid = t.b
+              where s.dbid = max(co_join.w) % 3 + 1) as cnt
+from co_outer e left join co_join on e.id = co_join.k
+where e.id <= 3 group by e.id order by 1;
+ERROR:  correlated subquery over coordinator-only relation "gp_segment_configuration" is not supported
+DETAIL:  The rows of relation "gp_segment_configuration" exist on the coordinator only, but the subquery would be evaluated on the segments.
+-- (f) a plain Var of a rel joined in the outer query: force_entry gathers
+-- co_join to the coordinator and the join then redistributes it, a Motion
+-- directly on a Motion.  This tripped an assertion in make_motion().
+select e.id, (select count(*) from gp_segment_configuration s
+              join co_dim t on s.dbid = t.b
+              where s.dbid = co_join.w % 3 + 1) as cnt
+from co_outer e join co_join on e.id = co_join.k where e.id <= 3 order by 1;
+ERROR:  cannot create a Motion directly on top of another Motion
+DETAIL:  The planner produced a plan that moves the same rows twice in a row, which cannot be executed.
+-- (g) a skip-level reference through an OFFSET 0 subquery.  Silently wrong
+-- before.
+select o.id, (select count(*) from
+                (select * from co_mid m where m.w > o.k
+                   and (select count(*) from gp_segment_configuration s
+                        join co_dim t on s.dbid = t.b where s.dbid = m.d) > 0
+                 offset 0) ss) as cnt
+from co_outer o where o.id <= 3 order by 1;
+ERROR:  correlated subquery over coordinator-only relation "gp_segment_configuration" is not supported
+DETAIL:  The rows of relation "gp_segment_configuration" exist on the coordinator only, but the subquery would be evaluated on the segments.
+-- (h) the correlation sits on the distributed rel only: nothing is forced,
+-- and the catalog scan is placed in the segment slice as is.
+select o.id, (select count(*) from gp_segment_configuration s
+              join co_dim t on s.dbid = t.b
+              where t.a > o.k - 100 and s.dbid <= 3) as cnt
+from co_outer o where o.id <= 3 order by 1;
+ERROR:  correlated subquery over coordinator-only relation "gp_segment_configuration" is not supported
+DETAIL:  The rows of relation "gp_segment_configuration" exist on the coordinator only, but the subquery would be evaluated on the segments.
+-- the catalog behind a MATERIALIZED CTE, an OFFSET 0 subquery and a UNION ALL
+select e.id, (with c as materialized (select dbid from gp_segment_configuration)
+              select count(*) from c join co_dim t on c.dbid = t.b
+              where c.dbid = e.id) as cnt
+from co_outer e where e.id <= 3 order by 1;
+ERROR:  correlated subquery over coordinator-only relation "gp_segment_configuration" is not supported
+DETAIL:  The rows of relation "gp_segment_configuration" exist on the coordinator only, but the subquery would be evaluated on the segments.
+select e.id, (select count(*) from
+                (select dbid from gp_segment_configuration offset 0) s
+              where s.dbid = e.id) as cnt
+from co_outer e where e.id <= 3 order by 1;
+ERROR:  correlated subquery over coordinator-only relation "gp_segment_configuration" is not supported
+DETAIL:  The rows of relation "gp_segment_configuration" exist on the coordinator only, but the subquery would be evaluated on the segments.
+select e.id, (select count(*) from
+                (select dbid from gp_segment_configuration
+                 union all
+                 select dbid from gp_segment_configuration) s
+              where s.dbid = e.id) as cnt
+from co_outer e where e.id <= 3 order by 1;
+ERROR:  correlated subquery over coordinator-only relation "gp_segment_configuration" is not supported
+DETAIL:  The rows of relation "gp_segment_configuration" exist on the coordinator only, but the subquery would be evaluated on the segments.
+-- = ANY / NOT IN over a set holding a NULL, ORDER BY ... LIMIT 1, EXISTS in
+-- the target list, and a catalog filtered down to no rows: on a segment the
+-- set was always empty.
+select e.id,
+       e.id - 2 = any (select nullif(s.dbid, 2) from gp_segment_configuration s
+                       where s.dbid <= 3 and s.dbid < e.id) as eq_any
+from co_outer e where e.id <= 3 or e.id = 15 order by 1;
+ERROR:  correlated subquery over coordinator-only relation "gp_segment_configuration" is not supported
+DETAIL:  The rows of relation "gp_segment_configuration" exist on the coordinator only, but the subquery would be evaluated on the segments.
+select e.id,
+       e.id - 2 not in (select nullif(s.dbid, 2) from gp_segment_configuration s
+                        where s.dbid <= 3 and s.dbid < e.id) as not_in
+from co_outer e where e.id <= 3 or e.id = 15 order by 1;
+ERROR:  correlated subquery over coordinator-only relation "gp_segment_configuration" is not supported
+DETAIL:  The rows of relation "gp_segment_configuration" exist on the coordinator only, but the subquery would be evaluated on the segments.
+select e.id, (select s.dbid from gp_segment_configuration s
+              where s.dbid > e.id and s.dbid <= 3
+              order by s.dbid limit 1) as next_dbid
+from co_outer e where e.id <= 3 order by 1;
+ERROR:  correlated subquery over coordinator-only relation "gp_segment_configuration" is not supported
+DETAIL:  The rows of relation "gp_segment_configuration" exist on the coordinator only, but the subquery would be evaluated on the segments.
+select e.id, exists (select 1 from gp_segment_configuration s
+                     where s.dbid = e.id) as found
+from co_outer e where e.id <= 3 or e.id = 15 order by 1;
+ERROR:  correlated subquery over coordinator-only relation "gp_segment_configuration" is not supported
+DETAIL:  The rows of relation "gp_segment_configuration" exist on the coordinator only, but the subquery would be evaluated on the segments.
+select e.id, (select count(*) from gp_segment_configuration s
+              where s.dbid < 0 and s.dbid <> e.id) as cnt
+from co_outer e where e.id <= 3 order by 1;
+ERROR:  correlated subquery over coordinator-only relation "gp_segment_configuration" is not supported
+DETAIL:  The rows of relation "gp_segment_configuration" exist on the coordinator only, but the subquery would be evaluated on the segments.
+-- DML and CTAS whose SubPlan reads the catalog
+begin;
+update co_outer set k = (select count(*) from gp_segment_configuration s
+                         where s.dbid = co_outer.id)
+where id <= 3 or id = 15;
+ERROR:  correlated subquery over coordinator-only relation "gp_segment_configuration" is not supported
+DETAIL:  The rows of relation "gp_segment_configuration" exist on the coordinator only, but the subquery would be evaluated on the segments.
+rollback;
+begin;
+create table co_ctas as
+select e.id, (select count(*) from gp_segment_configuration s
+              where s.dbid = e.id) as cnt
+from co_outer e where (e.id <= 3 or e.id = 15) distributed by (id);
+ERROR:  correlated subquery over coordinator-only relation "gp_segment_configuration" is not supported
+DETAIL:  The rows of relation "gp_segment_configuration" exist on the coordinator only, but the subquery would be evaluated on the segments.
+rollback;
+-- a LATERAL subquery of the main query: the planner evaluates it on the
+-- coordinator, so it keeps working
+select e.id, l.cnt from co_outer e,
+  lateral (select count(*) as cnt from gp_segment_configuration s
+           where s.dbid = e.id) l
+where e.id <= 3 order by 1;
+ id | cnt 
+----+-----
+  1 |   1
+  2 |   1
+  3 |   1
+(3 rows)
+
+-- The outer query joins a writable CTE over a replicated table, or reads a
+-- recursive CTE.  The planner cannot plan either shape here ("could not
+-- devise a query plan", "Passing parameters across motion"), independently
+-- of the checks above; recorded as they are.
+begin;
+with w as (insert into co_rep values (1), (2), (3) returning a)
+select e.id, (select count(*) from gp_segment_configuration s
+              join co_dim t on s.dbid = t.b where s.dbid = e.id) as cnt
+from co_outer e join w on w.a = e.id order by 1;
+ERROR:  could not devise a query plan for the given query (pathnode.c:275)
+rollback;
+with recursive r(n) as (
+  select 1
+  union all
+  select r.n + 1 from r join co_dim t on t.a = r.n + 1 where r.n < 3)
+select r.n, (select count(*) from gp_segment_configuration s
+             join co_dim t on s.dbid = t.b where s.dbid = r.n) as cnt
+from r order by 1;
+ERROR:  Passing parameters across motion is not supported. (cdbmutate.c:1995)
+-- A LATERAL reference and a skip-level reference in one subquery: the
+-- catalog scan is placed on the segments and refused.
+select o.id, (select count(*) from (values (1), (2), (3)) v(x),
+              lateral (select s.dbid from gp_segment_configuration s
+                       join co_dim t on s.dbid = t.b
+                       where s.dbid = v.x and s.dbid <= o.k offset 0) l) as cnt
+from co_outer o where o.id <= 3 order by 1;
+ERROR:  correlated subquery over coordinator-only relation "gp_segment_configuration" is not supported
+DETAIL:  The rows of relation "gp_segment_configuration" exist on the coordinator only, but the subquery would be evaluated on the segments.
+-- The outer query on the coordinator: a General (function scan) or an Entry
+-- (catalog) outer relation.  The SubPlan runs in the coordinator's process
+-- and reads the coordinator's rows: dbids 1, 2 and 3 exist on any cluster.
+select g, (select count(*) from gp_segment_configuration s
+           where s.dbid = g) as cnt
+from generate_series(1, 3) g order by 1;
+ g | cnt 
+---+-----
+ 1 |   1
+ 2 |   1
+ 3 |   1
+(3 rows)
+
+select c.relname, (select count(*) from gp_segment_configuration s
+                   where s.dbid = c.relnatts) as cnt
+from pg_class c where c.relname in ('co_outer', 'co_mid') order by 1;
+ relname  | cnt 
+----------+-----
+ co_mid   |   1
+ co_outer |   1
+(2 rows)
+
+-- A replicated outer relation is read on one segment, so the SubPlan runs
+-- there.
+select r.a, (select count(*) from gp_segment_configuration s
+             where s.dbid = r.a) as cnt
+from co_rep r order by 1;
+ERROR:  correlated subquery over coordinator-only relation "gp_segment_configuration" is not supported
+DETAIL:  The rows of relation "gp_segment_configuration" exist on the coordinator only, but the subquery would be evaluated on the segments.
+-- Other relations with coordinator-only rows: the metadata tracking catalog,
+-- a DISTRIBUTED COORDINATOR ONLY table, an EXECUTE ON COORDINATOR external
+-- table, an EXECUTE ON COORDINATOR function in FROM and in the target list
+-- of a subquery without FROM, and an EXECUTE ON INITPLAN function.
+-- The external table and the functions report where they ran (-1 on the
+-- coordinator), so a run on a segment could not pass for the right answer.
+create table co_ops (name text, relid oid) distributed randomly;
+insert into co_ops
+  select a, 'co_outer'::regclass from unnest(array['CREATE', 'ANALYZE']) a;
+select o.name, (select count(*) from pg_stat_last_operation l
+                where l.staactionname = o.name
+                  and l.objid = o.relid) as cnt
+from co_ops o order by 1;
+ERROR:  correlated subquery over coordinator-only relation "pg_stat_last_operation" is not supported
+DETAIL:  The rows of relation "pg_stat_last_operation" exist on the coordinator only, but the subquery would be evaluated on the segments.
+select e.id, (select count(*) from co_only x where x.a = e.id) as cnt
+from co_outer e where e.id <= 3 order by 1;
+ERROR:  correlated subquery over coordinator-only relation "co_only" is not supported
+DETAIL:  The rows of relation "co_only" exist on the coordinator only, but the subquery would be evaluated on the segments.
+create external web table co_ext (a int)
+  execute 'echo $GP_SEGMENT_ID' on coordinator format 'text';
+select e.id, (select count(*) from co_ext x where x.a = e.id - 2) as cnt
+from co_outer e where e.id <= 3 order by 1;
+ERROR:  correlated subquery over coordinator-only relation "co_ext" is not supported
+DETAIL:  The rows of relation "co_ext" exist on the coordinator only, but the subquery would be evaluated on the segments.
+create function co_contentid() returns setof int as
+  $$ select current_setting('gp_contentid')::int $$
+  language sql execute on coordinator;
+select e.id, (select count(*) from co_contentid() f(c)
+              join co_dim t on t.b = f.c + 2
+              where t.a = e.id) as cnt
+from co_outer e where e.id <= 3 order by 1;
+ERROR:  correlated subquery over coordinator-only function "co_contentid" is not supported
+DETAIL:  The rows of function "co_contentid" exist on the coordinator only, but the subquery would be evaluated on the segments.
+select e.id, (select count(*) from (select co_contentid() c) f
+              where f.c = e.id - 2) as cnt
+from co_outer e where e.id <= 3 order by 1;
+ERROR:  correlated subquery over a coordinator-only function is not supported
+DETAIL:  The function produces its rows on the coordinator only, but the subquery would be evaluated on the segments.
+create function co_contentid_i() returns setof int as
+  $$ select current_setting('gp_contentid')::int $$
+  language sql execute on initplan;
+select e.id, (select count(*) from co_contentid_i() f(c)
+              join co_dim t on t.b = f.c + 2
+              where t.a = e.id) as cnt
+from co_outer e where e.id <= 3 order by 1;
+ERROR:  correlated subquery over coordinator-only function "co_contentid_i" is not supported
+DETAIL:  The rows of function "co_contentid_i" exist on the coordinator only, but the subquery would be evaluated on the segments.
+-- A catalog that every segment carries keeps being read in place, and a
+-- correlated subquery over a distributed table is not affected.
+select e.id, (select count(*) from pg_class c
+              join co_dim t on t.a = e.id
+              where c.relname = 'co_dim') as cnt
+from co_outer e where e.id <= 3 order by 1;
+ id | cnt 
+----+-----
+  1 |   1
+  2 |   1
+  3 |   1
+(3 rows)
+
+select e.id, (select count(*) from co_dim t where t.b = e.id) as cnt
+from co_outer e where e.id <= 3 or e.id = 15 order by 1;
+ id | cnt 
+----+-----
+  1 |   1
+  2 |   1
+  3 |   1
+ 15 |   0
+(4 rows)
+
+drop function co_contentid();
+drop function co_contentid_i();
+drop external table co_ext;
+drop table co_ops;
+drop table co_only;
+drop table co_rep;
+drop table co_join;
+drop table co_dim;
+drop table co_mid;
+drop table co_outer;
+reset optimizer;
