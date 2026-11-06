@@ -62,6 +62,12 @@ typedef struct CdbExplain_StatInst
 	bool		workfileCreated;	/* workfile created in this node */
 	instr_time	firststart;		/* Start time of first iteration of node */
 	int			numPartScanned; /* Number of part tables scanned */
+	double		stagedRowsScanned;	/* Staged Scan: rows Phase A scanned */
+	double		stagedSurvivors;		/* Staged Scan: rows Phase A kept */
+	double		stagedFallbacks;		/* Staged Scan: segment files that fell back */
+	double		stagedBlocksDecompressed;	/* Staged Scan: Phase B blocks decompressed */
+	double		stagedBlocksSkipped;	/* Staged Scan: Phase B blocks skipped */
+	double		stagedBlocksSeeked;	/* Staged Scan: Phase B block-directory seeks */
 
 	BufferUsage bufusage;	/* buffer usage by plan node */
 	TuplesortInstrumentation sortstats; /* Sort stats, if this is a Sort node */
@@ -130,6 +136,13 @@ typedef struct CdbExplain_NodeSummary
 	CdbExplain_Agg totalWorkfileCreated;
 	/* Used for DynamicSeqScan, DynamicIndexScan, DynamicBitmapHeapScan, and DynamicForeignScan */
 	CdbExplain_Agg totalPartTableScanned;
+	/* staged scans: Phase A rows scanned and kept, summed over workers */
+	CdbExplain_Agg stagedRowsScanned;
+	CdbExplain_Agg stagedSurvivors;
+	CdbExplain_Agg stagedFallbacks;
+	CdbExplain_Agg stagedBlocksDecompressed;
+	CdbExplain_Agg stagedBlocksSkipped;
+	CdbExplain_Agg stagedBlocksSeeked;
 
 	/* Summary of buffer usage over node's workers */
 	CdbExplain_Agg shared_blks_hit;
@@ -871,6 +884,12 @@ cdbexplain_collectStatsFromNode(PlanState *planstate, CdbExplain_SendStatCtx *ct
 	si->workfileCreated = instr->workfileCreated;
 	si->firststart = instr->firststart;
 	si->numPartScanned = instr->numPartScanned;
+	si->stagedRowsScanned = instr->stagedRowsScanned;
+	si->stagedSurvivors = instr->stagedSurvivors;
+	si->stagedFallbacks = instr->stagedFallbacks;
+	si->stagedBlocksDecompressed = instr->stagedBlocksDecompressed;
+	si->stagedBlocksSkipped = instr->stagedBlocksSkipped;
+	si->stagedBlocksSeeked = instr->stagedBlocksSeeked;
 
 	si->bufusage = instr->bufusage;
 
@@ -1019,6 +1038,12 @@ cdbexplain_depositStatsToNode(PlanState *planstate, CdbExplain_RecvStatCtx *ctx)
 	CdbExplain_DepStatAcc peakmemused;
 	CdbExplain_DepStatAcc vmem_reserved;
 	CdbExplain_DepStatAcc totalPartTableScanned;
+	CdbExplain_DepStatAcc stagedRowsScanned;
+	CdbExplain_DepStatAcc stagedSurvivors;
+	CdbExplain_DepStatAcc stagedFallbacks;
+	CdbExplain_DepStatAcc stagedBlocksDecompressed;
+	CdbExplain_DepStatAcc stagedBlocksSkipped;
+	CdbExplain_DepStatAcc stagedBlocksSeeked;
 
 	/* Buffer usage counters */
 	CdbExplain_DepStatAcc shared_blks_hit;
@@ -1059,6 +1084,12 @@ cdbexplain_depositStatsToNode(PlanState *planstate, CdbExplain_RecvStatCtx *ctx)
 	cdbexplain_depStatAcc_init0(&workmemwanted);
 	cdbexplain_depStatAcc_init0(&totalWorkfileCreated);
 	cdbexplain_depStatAcc_init0(&totalPartTableScanned);
+	cdbexplain_depStatAcc_init0(&stagedRowsScanned);
+	cdbexplain_depStatAcc_init0(&stagedSurvivors);
+	cdbexplain_depStatAcc_init0(&stagedFallbacks);
+	cdbexplain_depStatAcc_init0(&stagedBlocksDecompressed);
+	cdbexplain_depStatAcc_init0(&stagedBlocksSkipped);
+	cdbexplain_depStatAcc_init0(&stagedBlocksSeeked);
 	cdbexplain_depStatAcc_init0(&shared_blks_hit);
 	cdbexplain_depStatAcc_init0(&shared_blks_read);
 	cdbexplain_depStatAcc_init0(&shared_blks_written);
@@ -1110,6 +1141,12 @@ cdbexplain_depositStatsToNode(PlanState *planstate, CdbExplain_RecvStatCtx *ctx)
 		cdbexplain_depStatAcc_upd(&workmemwanted, rsi->workmemwanted, rsh, rsi, nsi);
 		cdbexplain_depStatAcc_upd(&totalWorkfileCreated, (rsi->workfileCreated ? 1 : 0), rsh, rsi, nsi);
 		cdbexplain_depStatAcc_upd(&totalPartTableScanned, rsi->numPartScanned, rsh, rsi, nsi);
+		cdbexplain_depStatAcc_upd(&stagedRowsScanned, rsi->stagedRowsScanned, rsh, rsi, nsi);
+		cdbexplain_depStatAcc_upd(&stagedSurvivors, rsi->stagedSurvivors, rsh, rsi, nsi);
+		cdbexplain_depStatAcc_upd(&stagedFallbacks, rsi->stagedFallbacks, rsh, rsi, nsi);
+		cdbexplain_depStatAcc_upd(&stagedBlocksDecompressed, rsi->stagedBlocksDecompressed, rsh, rsi, nsi);
+		cdbexplain_depStatAcc_upd(&stagedBlocksSkipped, rsi->stagedBlocksSkipped, rsh, rsi, nsi);
+		cdbexplain_depStatAcc_upd(&stagedBlocksSeeked, rsi->stagedBlocksSeeked, rsh, rsi, nsi);
 		cdbexplain_depStatAcc_upd(&shared_blks_hit, rsi->bufusage.shared_blks_hit, rsh, rsi, nsi);
 		cdbexplain_depStatAcc_upd(&shared_blks_read, rsi->bufusage.shared_blks_read, rsh, rsi, nsi);
 		cdbexplain_depStatAcc_upd(&shared_blks_written, rsi->bufusage.shared_blks_written, rsh, rsi, nsi);
@@ -1135,6 +1172,12 @@ cdbexplain_depositStatsToNode(PlanState *planstate, CdbExplain_RecvStatCtx *ctx)
 	ns->workmemwanted = workmemwanted.agg;
 	ns->totalWorkfileCreated = totalWorkfileCreated.agg;
 	ns->totalPartTableScanned = totalPartTableScanned.agg;
+	ns->stagedRowsScanned = stagedRowsScanned.agg;
+	ns->stagedSurvivors = stagedSurvivors.agg;
+	ns->stagedFallbacks = stagedFallbacks.agg;
+	ns->stagedBlocksDecompressed = stagedBlocksDecompressed.agg;
+	ns->stagedBlocksSkipped = stagedBlocksSkipped.agg;
+	ns->stagedBlocksSeeked = stagedBlocksSeeked.agg;
 
 	/* Roll up summary over all nodes of slice into RecvStatCtx. */
 	ctx->workmemused_max = Max(ctx->workmemused_max, workmemused.agg.vmax);
@@ -1142,6 +1185,18 @@ cdbexplain_depositStatsToNode(PlanState *planstate, CdbExplain_RecvStatCtx *ctx)
 
 	instr->total = ntuples.max_total;
 	INSTR_TIME_ASSIGN(instr->firststart, ntuples.firststart_of_max_total);
+
+	/*
+	 * Staged Scan counters are cluster-wide sums, not the winner's, and a
+	 * scan that emitted no row still read its Phase A column: record them
+	 * whether or not any worker produced a tuple.
+	 */
+	instr->stagedRowsScanned = ns->stagedRowsScanned.vsum;
+	instr->stagedSurvivors = ns->stagedSurvivors.vsum;
+	instr->stagedFallbacks = ns->stagedFallbacks.vsum;
+	instr->stagedBlocksDecompressed = ns->stagedBlocksDecompressed.vsum;
+	instr->stagedBlocksSkipped = ns->stagedBlocksSkipped.vsum;
+	instr->stagedBlocksSeeked = ns->stagedBlocksSeeked.vsum;
 
 	/*
 	 * Put winner's stats into QD PlanState's Instrument node.

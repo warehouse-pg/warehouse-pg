@@ -58,9 +58,9 @@ ExecInitDynamicSeqScan(DynamicSeqScan *node, EState *estate, int eflags)
 
 	/* Initialize child expressions. This is needed to find subplans. */
 	state->ss.ps.qual =
-		ExecInitQual(node->seqscan.plan.qual, (PlanState *) state);
+		ExecInitQual(node->seqscan.scan.plan.qual, (PlanState *) state);
 
-	Relation scanRel = ExecOpenScanRelation(estate, node->seqscan.scanrelid, eflags);
+	Relation scanRel = ExecOpenScanRelation(estate, node->seqscan.scan.scanrelid, eflags);
 	ExecInitScanTupleSlot(estate, &state->ss, RelationGetDescr(scanRel), table_slot_callbacks(scanRel));
 
 	/* Initialize result tuple type. */
@@ -73,13 +73,13 @@ ExecInitDynamicSeqScan(DynamicSeqScan *node, EState *estate, int eflags)
 		state->partOids[i] = lfirst_oid(lc);
 	state->whichPart = -1;
 
-	reloid = exec_rt_fetch(node->seqscan.scanrelid, estate)->relid;
+	reloid = exec_rt_fetch(node->seqscan.scan.scanrelid, estate)->relid;
 	Assert(OidIsValid(reloid));
 
 	/* lastRelOid is used to remap varattno for heterogeneous partitions */
 	state->lastRelOid = reloid;
 
-	state->scanrelid = node->seqscan.scanrelid;
+	state->scanrelid = node->seqscan.scan.scanrelid;
 
 	state->as_prune_state = NULL;
 
@@ -114,6 +114,7 @@ initNextTableToScan(DynamicSeqScanState *node)
 	TupleDesc	partTupDesc;
 	TupleDesc	lastTupDesc;
 	AttrNumber *attMap;
+	int			attMapLen;
 	Oid		   *pid;
 	Relation	currentRelation;
 
@@ -145,6 +146,7 @@ initNextTableToScan(DynamicSeqScanState *node)
 	 * higher level abstraction that fits the bill
 	 */
 	attMap = convert_tuples_by_name_map_if_req(partTupDesc, lastTupDesc, "unused msg");
+	attMapLen = lastTupDesc->natts;
 	table_close(lastScannedRel, AccessShareLock);
 
 	/* If attribute remapping is not necessary, then do not change the varattno */
@@ -154,6 +156,32 @@ initNextTableToScan(DynamicSeqScanState *node)
 		change_varattnos_of_a_varno((Node*)scanState->ps.plan->targetlist, attMap, node->scanrelid);
 
 		/*
+		 * Staged Scan names its stage columns by attribute number too; they
+		 * move with the quals. A stage column the partition does not have
+		 * would be a partition missing a column the qual references, which
+		 * the qual mapping above has already refused.
+		 */
+		if (plan->seqscan.staged.enabled && plan->seqscan.staged.filterAttnos != NIL)
+		{
+			MemoryContext oldcxt =
+				MemoryContextSwitchTo(GetMemoryChunkContext(plan->seqscan.staged.filterAttnos));
+			List	   *mapped = NIL;
+			ListCell   *lc;
+
+			foreach(lc, plan->seqscan.staged.filterAttnos)
+			{
+				int			attno = lfirst_int(lc);
+
+				if (attno <= 0 || attno > attMapLen || attMap[attno - 1] == 0)
+					elog(ERROR, "staged scan: stage column %d has no counterpart in partition \"%s\"",
+						 attno, RelationGetRelationName(currentRelation));
+				mapped = lappend_int(mapped, attMap[attno - 1]);
+			}
+			plan->seqscan.staged.filterAttnos = mapped;
+			MemoryContextSwitchTo(oldcxt);
+		}
+
+		/*
 		 * Now that the varattno mapping has been changed, change the relation that
 		 * the new varnos correspond to
 		 */
@@ -161,8 +189,14 @@ initNextTableToScan(DynamicSeqScanState *node)
 		pfree(attMap);
 	}
 
+	/*
+	 * WHPG: the partition's scan is initialized outside ExecInitNode() and
+	 * gets no instrumentation of its own; a staged scan reports its
+	 * counts into this node's (SeqScanSyncStagedInstrumentation()).
+	 */
 	node->seqScanState = ExecInitSeqScanForPartition(&plan->seqscan, estate,
 													 currentRelation);
+	node->seqScanState->staged_instr = scanState->ps.instrument;
 	return true;
 }
 

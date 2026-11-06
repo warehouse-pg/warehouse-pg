@@ -93,6 +93,12 @@ extern bool gp_enable_predicate_propagation;
 
 extern double index_pages_fetched(double tuples_fetched, BlockNumber pages,
 								  double index_pages, PlannerInfo *root);
+extern bool cost_aocs_stagedscan(PlannerInfo *root, RelOptInfo *rel,
+								 List *clauses, List **filterAttnos,
+								 int *phaseAWidth, double *phaseASel);
+extern void stagedscan_decide_orca_plan(PlannerGlobal *glob,
+										struct PlannedStmt *stmt,
+										bool hasRowSecurity);
 extern void cost_seqscan(Path *path, PlannerInfo *root, RelOptInfo *baserel,
 						 ParamPathInfo *param_info);
 extern void cost_samplescan(Path *path, PlannerInfo *root, RelOptInfo *baserel,

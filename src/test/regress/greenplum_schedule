@@ -38,6 +38,26 @@ test: dsm_vmem
 
 test: disable_autovacuum
 
+# staged scan tests run with autovacuum off: several assertions are planner
+# decisions on cost estimates that a concurrent auto-ANALYZE of a freshly
+# loaded table would move (a coordinator auto-ANALYZE landed 6 s after the
+# test's own ANALYZE and flipped two of them once).
+# staged scan: datumstream header/content split (uses fault injection)
+test: staged_scan_datumstream_split
+# staged scan: two-phase AOCO scan (uses fault injection)
+test: staged_scan_aoco
+# staged scan: Phase A fast path on the raw datum array (uses fault injection)
+test: staged_scan_fastpath
+# staged scan: planner decision, EXPLAIN output, on/off equivalence
+test: staged_scan_planner
+# staged scan: OR / multi-column clauses leading a wide Phase A (uses fault injection)
+test: staged_scan_or
+
+# staged scan: stage order, OR bypass and run-time reordering (uses fault injection)
+test: staged_scan_ordering
+
+test: staged_scan_orca
+
 test: motion_deadlock
 
 # test gp_fastsequence allocation (early in schedule as log grepping is expensive)

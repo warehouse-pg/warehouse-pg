@@ -3404,6 +3404,7 @@ create_seqscan_plan(PlannerInfo *root, Path *best_path,
 {
 	SeqScan    *scan_plan;
 	Index		scan_relid = best_path->parent->relid;
+	List	   *ordered_rinfos;
 
 	/* it should be a base rel... */
 	Assert(scan_relid > 0);
@@ -3411,6 +3412,7 @@ create_seqscan_plan(PlannerInfo *root, Path *best_path,
 
 	/* Sort clauses into best execution order */
 	scan_clauses = order_qual_clauses(root, scan_clauses);
+	ordered_rinfos = scan_clauses;
 
 	/* Reduce RestrictInfo list to bare expressions; ignore pseudoconstants */
 	scan_clauses = extract_actual_clauses(scan_clauses, false);
@@ -3426,7 +3428,33 @@ create_seqscan_plan(PlannerInfo *root, Path *best_path,
 							 scan_clauses,
 							 scan_relid);
 
-	copy_generic_path_info(&scan_plan->plan, best_path);
+	copy_generic_path_info(&scan_plan->scan.plan, best_path);
+
+	/*
+	 * Decide here whether this AOCO scan should run as a Staged Scan two-phase
+	 * scan. The cost model needs the selectivity estimate and the filter
+	 * column's correlation statistic, neither of which the executor can see.
+	 *
+	 * A parameterized scan is out: its clauses were just rewritten to read
+	 * exec-params, which the stage quals cannot evaluate. The stage order
+	 * must respect the qual's execution order for clauses that can fail, so
+	 * the model is handed the clauses in that order.
+	 */
+	if (best_path->param_info == NULL)
+	{
+		List	   *stagedAttnos;
+		int			stagedWidth;
+		double		stagedSel;
+
+		if (cost_aocs_stagedscan(root, best_path->parent, ordered_rinfos,
+								 &stagedAttnos, &stagedWidth, &stagedSel))
+		{
+			scan_plan->staged.enabled = true;
+			scan_plan->staged.phaseAWidth = stagedWidth;
+			scan_plan->staged.filterAttnos = stagedAttnos;
+			scan_plan->staged.phaseASel = stagedSel;
+		}
+	}
 
 	return scan_plan;
 }
@@ -6240,13 +6268,13 @@ make_seqscan(List *qptlist,
 			 Index scanrelid)
 {
 	SeqScan    *node = makeNode(SeqScan);
-	Plan	   *plan = &node->plan;
+	Plan	   *plan = &node->scan.plan;
 
 	plan->targetlist = qptlist;
 	plan->qual = qpqual;
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
-	node->scanrelid = scanrelid;
+	node->scan.scanrelid = scanrelid;
 
 	return node;
 }

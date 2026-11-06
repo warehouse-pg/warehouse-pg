@@ -14,6 +14,9 @@
 
 set optimizer_trace_fallback=on;
 set enable_seqscan=off;
+-- Staged Scan would annotate the AOCO seq scans below and hide their Filter
+-- counts; this test is about the index paths, so keep the scans plain.
+set whpg_enable_staged_scan=off;
 
 -- Basic scenario
 CREATE TABLE test_basic_cover_index_@amname@(a int, b int, c int) USING @amname@;
