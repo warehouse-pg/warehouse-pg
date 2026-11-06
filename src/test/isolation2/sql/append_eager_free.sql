@@ -136,5 +136,37 @@ ANALYZE ef_part;
 	FROM generate_series(1, 200, 7) o(k) JOIN ef_part ON a = o.k;
 0Uq:
 
+-- WHPG: a released leaf is marked squelched, so squelching the Append
+-- later skips it; the Append must still squelch the SubPlans in the leaf's
+-- quals, and the Motions under them.  Here only the first branch's qual has
+-- a SubPlan, and the per-segment Limit stops the Append in the second
+-- branch, after the first one was released.  The queries must finish
+-- normally.
+CREATE TABLE ef_sq_a1 (x int, z int) USING ao_row DISTRIBUTED BY (x);
+CREATE TABLE ef_sq_a2 (x int, z int) USING ao_row DISTRIBUTED BY (x);
+CREATE TABLE ef_sq_b (y int, z int) DISTRIBUTED BY (y);
+INSERT INTO ef_sq_a1 SELECT i, 1 FROM generate_series(1, 30) i;
+INSERT INTO ef_sq_a2 SELECT i, 1 FROM generate_series(1, 30000) i;
+INSERT INTO ef_sq_b SELECT i, 1 FROM generate_series(1, 1000) i;
+ANALYZE ef_sq_a1, ef_sq_a2, ef_sq_b;
+
+1: SET optimizer = off;
+-- A hashed SubPlan, with the Motion right under it.
+1: EXPLAIN (COSTS OFF) SELECT count(x) FROM (SELECT x FROM ef_sq_a1
+	WHERE x > 1000 OR x IN (SELECT y FROM ef_sq_b)
+	UNION ALL SELECT x FROM ef_sq_a2 LIMIT 100) s;
+1: SELECT count(x) FROM (SELECT x FROM ef_sq_a1
+	WHERE x > 1000 OR x IN (SELECT y FROM ef_sq_b)
+	UNION ALL SELECT x FROM ef_sq_a2 LIMIT 100) s;
+-- A correlated SubPlan, with a Materialize over the Motion.
+1: EXPLAIN (COSTS OFF) SELECT count(x) FROM (SELECT x FROM ef_sq_a1
+	WHERE x >= (SELECT y FROM ef_sq_b WHERE ef_sq_b.z = ef_sq_a1.z LIMIT 1)
+	UNION ALL SELECT x FROM ef_sq_a2 LIMIT 100) s;
+1: SELECT count(x) FROM (SELECT x FROM ef_sq_a1
+	WHERE x >= (SELECT y FROM ef_sq_b WHERE ef_sq_b.z = ef_sq_a1.z LIMIT 1)
+	UNION ALL SELECT x FROM ef_sq_a2 LIMIT 100) s;
+1q:
+
 DROP TABLE ef_part;
+DROP TABLE ef_sq_a1, ef_sq_a2, ef_sq_b;
 DROP FUNCTION ef_executor_kb(text);
