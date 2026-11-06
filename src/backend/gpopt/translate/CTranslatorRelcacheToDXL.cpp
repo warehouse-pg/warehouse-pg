@@ -25,6 +25,8 @@ extern "C" {
 #include "catalog/pg_statistic_ext.h"
 #include "catalog/pg_type.h"
 #include "cdb/cdbhash.h"
+#include "nodes/plannodes.h"
+#include "optimizer/orca.h"
 #include "partitioning/partdesc.h"
 #include "utils/array.h"
 #include "utils/datum.h"
@@ -533,7 +535,11 @@ CTranslatorRelcacheToDXL::RetrieveRel(CMemoryPool *mp, CMDAccessor *md_accessor,
 
 	CheckUnsupportedRelation(rel.get());
 
-	if (!GpPolicyIsEntry(rel->rd_cdbpolicy) &&
+	// a table an extension reads itself, in random slices
+	// (orca_relation_hook): its own policy doesn't matter
+	BOOL extension_rel = ORCA_RELATION_RANDOM == gpdb::ExtensionRelation(oid);
+
+	if (!extension_rel && !GpPolicyIsEntry(rel->rd_cdbpolicy) &&
 		gpdb::GetGPSegmentCount() != rel->rd_cdbpolicy->numsegments)
 	{
 		// GPORCA does not support partially distributed tables yet
@@ -588,6 +594,10 @@ CTranslatorRelcacheToDXL::RetrieveRel(CMemoryPool *mp, CMDAccessor *md_accessor,
 		// then mapped to Orca's distribution spec
 		ForeignTable *ft = GetForeignTable(rel->rd_id);
 		dist = GetDistributionFromForeignRelExecLocation(ft);
+	}
+	else if (extension_rel)
+	{
+		dist = IMDRelation::EreldistrRandom;
 	}
 	else
 	{
@@ -649,8 +659,10 @@ CTranslatorRelcacheToDXL::RetrieveRel(CMemoryPool *mp, CMDAccessor *md_accessor,
 		}
 	}
 
-	// get key sets
-	BOOL should_add_default_keys = RelHasSystemColumns(rel->rd_rel->relkind);
+	// get key sets. A table an extension reads itself has no ctid or
+	// gp_segment_id to deduplicate its rows by.
+	BOOL should_add_default_keys =
+		!extension_rel && RelHasSystemColumns(rel->rd_rel->relkind);
 	keyset_array = RetrieveRelKeysets(mp, oid, should_add_default_keys,
 									  is_partitioned, attno_mapping, dist);
 
@@ -1856,7 +1868,13 @@ CTranslatorRelcacheToDXL::RetrieveRelStats(CMemoryPool *mp, IMDId *mdid)
 	// CMDName ctor created a copy of the string
 	GPOS_DELETE(relname_str);
 
-	num_rows = gpdb::CdbEstimatePartitionedNumTuples(rel.get());
+	// one call for an extension's table: its size can be costly to find
+	PageEstimate pages;
+	if (!gpdb::ExtensionRelationSize(rel.get(), &num_rows, &pages))
+	{
+		num_rows = gpdb::CdbEstimatePartitionedNumTuples(rel.get());
+		pages = gpdb::CdbEstimatePartitionedNumPages(rel.get());
+	}
 
 	m_rel_stats_mdid->AddRef();
 
@@ -1869,8 +1887,6 @@ CTranslatorRelcacheToDXL::RetrieveRelStats(CMemoryPool *mp, IMDId *mdid)
 	{
 		relation_empty = true;
 	}
-
-	PageEstimate pages = gpdb::CdbEstimatePartitionedNumPages(rel.get());
 
 	ULONG relpages = pages.totalpages;
 	ULONG relallvisible = pages.totalallvisiblepages;
@@ -2635,6 +2651,14 @@ CTranslatorRelcacheToDXL::RetrieveRelStorageType(Relation rel)
 			}
 			break;
 		default:
+			// a table an extension reads itself: only its scans matter to
+			// ORCA, which the extension executes
+			if (ORCA_RELATION_RANDOM ==
+				gpdb::ExtensionRelation(RelationGetRelid(rel)))
+			{
+				rel_storage_type = IMDRelation::ErelstorageHeap;
+				break;
+			}
 			GPOS_RAISE(gpdxl::ExmaMD, gpdxl::ExmiMDObjUnsupported,
 					   GPOS_WSZ_LIT("Unsupported table AM"));
 	}

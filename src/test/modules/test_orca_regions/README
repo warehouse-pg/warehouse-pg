@@ -1,0 +1,10 @@
+test_orca_regions tests orca_plan_regions_hook (src/include/optimizer/orca.h),
+through which an extension executes regions of the plan ORCA chose with its
+own CustomScan.
+
+The test sets session_preload_libraries for the test database, since the
+segments must load the module too: they look up its CustomScan methods in the
+plans they are sent.
+
+The module's regions only pass rows on, or encode and decode them across a
+motion: see the comment at the top of test_orca_regions.c.
