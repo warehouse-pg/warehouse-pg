@@ -104,7 +104,11 @@ DROP TABLE fkeys;
 DROP TABLE fkeys2;
 
 -- Check behavior when trigger returns unmodified trigtuple
-create table trigtest (f1 int, f2 text);
+-- WHPG: f1 is the default distribution key, but the f1_times_10 trigger
+-- below rewrites it; WHPG refuses a BEFORE ROW trigger that changes a
+-- hash-distribution key (it would misplace the row).  Distribute randomly so
+-- this test of trigger firing order keeps exercising upstream behavior.
+create table trigtest (f1 int, f2 text) distributed randomly;
 
 create trigger trigger_return_old
 	before insert or delete or update on trigtest
@@ -1307,7 +1311,12 @@ drop function trigger_ddl_func();
 -- Verify behavior of before and after triggers with INSERT...ON CONFLICT
 -- DO UPDATE
 --
-create table upsert (key int4 primary key, color text);
+-- WHPG: the before-insert trigger rewrites "key" (the primary key, hence
+-- the default distribution key) for even values; WHPG refuses a BEFORE ROW
+-- trigger that changes a hash-distribution key.  A replicated table keeps the
+-- primary key and ON CONFLICT while storing the row on every segment, so the
+-- trigger's key change does not move it.
+create table upsert (key int4 primary key, color text) distributed replicated;
 
 create function upsert_before_func()
   returns trigger language plpgsql as
@@ -1350,11 +1359,17 @@ insert into upsert values(1, 'black') on conflict (key) do update set color = 'u
 insert into upsert values(2, 'red') on conflict (key) do update set color = 'updated ' || upsert.color;
 insert into upsert values(3, 'orange') on conflict (key) do update set color = 'updated ' || upsert.color;
 insert into upsert values(4, 'green') on conflict (key) do update set color = 'updated ' || upsert.color;
+-- WHPG: on the replicated table "key" is globally unique, so the trigger
+-- rewriting an even key into an existing odd key now takes the ON CONFLICT DO
+-- UPDATE path (before/after UPDATE triggers fire) instead of the
+-- per-segment-local duplicate INSERT the hash-distributed form produced.
 insert into upsert values(5, 'purple') on conflict (key) do update set color = 'updated ' || upsert.color;
 insert into upsert values(6, 'white') on conflict (key) do update set color = 'updated ' || upsert.color;
 insert into upsert values(7, 'pink') on conflict (key) do update set color = 'updated ' || upsert.color;
 insert into upsert values(8, 'yellow') on conflict (key) do update set color = 'updated ' || upsert.color;
 
+-- WHPG: global uniqueness dedups the trigger-rewritten keys, so 5 rows here
+-- instead of the 7 (with duplicate keys 5 and 7) the hash form left.
 select * from upsert;
 
 drop table upsert;

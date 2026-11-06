@@ -4396,7 +4396,11 @@ SELECT pos, token, class, mod FROM plvlex.tokens('select * from a.b.c join d on 
 --
 -- trigger functions
 --
-CREATE TABLE trg_test(a varchar, b int, c varchar, d date, e int);
+-- WHPG: the triggers below rewrite column a ('' -> NULL and back), which
+-- would be the default distribution key; WHPG refuses a BEFORE ROW trigger
+-- that changes a hash-distribution key, so distribute randomly.
+CREATE TABLE trg_test(a varchar, b int, c varchar, d date, e int)
+  DISTRIBUTED RANDOMLY;
 CREATE TRIGGER trg_test_xx BEFORE INSERT OR UPDATE
   ON trg_test FOR EACH ROW EXECUTE PROCEDURE oracle.replace_empty_strings(true);
 \pset null ***

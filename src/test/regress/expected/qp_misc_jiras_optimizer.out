@@ -4740,22 +4740,27 @@ alter table qp_misc_jiras.r
 drop table if exists qp_misc_jiras.r cascade;
 -- Triggers are applied AFTER the row has been routed per the distribution
 -- policy. However, a trigger can change the value of the distribution column.
--- This means, we have an unexpected row in a segment, which can lead to wrong
--- results. Including gp_segment_id in below queries allows us to ensure that
--- no redistribution has occurred.
+-- WHPG: such a trigger used to leave the row on the segment it
+-- was routed to, where direct dispatch and co-located joins miss it; WHPG now
+-- refuses the statement instead.  Multi-row statements make at least one row
+-- change segment whatever the hash, so the refusal is deterministic, and the
+-- replicated witness copy of each row's segment shows that nothing moved.
 CREATE TABLE qp_misc_jiras.test_trig(id int, aaa text) DISTRIBUTED BY (id);
-INSERT INTO qp_misc_jiras.test_trig VALUES (1, 'before creating trigger');
-SELECT gp_segment_id, * FROM qp_misc_jiras.test_trig;
- gp_segment_id | id |           aaa           
----------------+----+-------------------------
-             1 |  1 | before creating trigger
+INSERT INTO qp_misc_jiras.test_trig
+    SELECT i, 'before creating trigger' FROM generate_series(1, 20) i;
+CREATE TABLE qp_misc_jiras.test_trig_w AS
+    SELECT id, gp_segment_id AS seg FROM qp_misc_jiras.test_trig
+    DISTRIBUTED REPLICATED;
+SELECT count(*) FROM qp_misc_jiras.test_trig;
+ count 
+-------
+    20
 (1 row)
 
 CREATE OR REPLACE FUNCTION fn_trig() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
    NEW.aaa = NEW.aaa || '1';
    NEW.id = NEW.id + 1;
-   RAISE NOTICE '%', NEW.id;
 RETURN NEW;
 END
 $$;
@@ -4763,31 +4768,41 @@ CREATE TRIGGER test_trig_1
 BEFORE INSERT OR UPDATE ON qp_misc_jiras.test_trig
 FOR EACH ROW
     EXECUTE PROCEDURE fn_trig();
-INSERT INTO qp_misc_jiras.test_trig VALUES (0, 'after creating trigger');
-NOTICE:  1  (seg1 127.0.0.1:40001 pid=16301)
-INSERT INTO qp_misc_jiras.test_trig VALUES (1, 'aaa');
-NOTICE:  2  (seg1 127.0.0.1:40001 pid=16301)
-SELECT gp_segment_id, * FROM qp_misc_jiras.test_trig;
- gp_segment_id | id |           aaa           
----------------+----+-------------------------
-             1 |  1 | before creating trigger
-             1 |  1 | after creating trigger1
-             1 |  2 | aaa1
-(3 rows)
-
+INSERT INTO qp_misc_jiras.test_trig
+    SELECT i, 'after creating trigger' FROM generate_series(1, 20) i;
+ERROR:  INSERT cannot store a row of relation "test_trig" that belongs to another segment
+DETAIL:  The row's distribution key hashes to segment N, but the row is being stored on segment N.  Either the statement or a BEFORE ROW trigger changed a distribution-key column, or the row was already stored on the wrong segment.
+HINT:  Assign distribution-key columns in the statement, or with a column DEFAULT or an identity column, which the coordinator evaluates before routing the row -- not in a BEFORE ROW trigger.  Redistribute a table that already holds misplaced rows with ALTER TABLE ... SET WITH (REORGANIZE=true).
+-- A no-op SET of the key keeps the UPDATE in place (no SplitUpdate), so the
+-- trigger's rewrite is what would move the row.
 UPDATE qp_misc_jiras.test_trig SET id = id;
-NOTICE:  2  (seg1 127.0.0.1:40001 pid=16301)
-NOTICE:  2  (seg1 127.0.0.1:40001 pid=16301)
-NOTICE:  3  (seg1 127.0.0.1:40001 pid=16301)
-SELECT gp_segment_id, * FROM qp_misc_jiras.test_trig;
- gp_segment_id | id |           aaa            
----------------+----+--------------------------
-             1 |  2 | before creating trigger1
-             1 |  2 | after creating trigger11
-             1 |  3 | aaa11
-(3 rows)
+ERROR:  UPDATE cannot store a row of relation "test_trig" that belongs to another segment
+DETAIL:  The row's distribution key hashes to segment N, but the row is being stored on segment N.  Either the statement or a BEFORE ROW trigger changed a distribution-key column, or the row was already stored on the wrong segment.
+HINT:  Assign distribution-key columns in the statement, or with a column DEFAULT or an identity column, which the coordinator evaluates before routing the row -- not in a BEFORE ROW trigger.  Redistribute a table that already holds misplaced rows with ALTER TABLE ... SET WITH (REORGANIZE=true).
+UPDATE qp_misc_jiras.test_trig SET aaa = aaa || 'x';
+ERROR:  UPDATE cannot store a row of relation "test_trig" that belongs to another segment
+DETAIL:  The row's distribution key hashes to segment N, but the row is being stored on segment N.  Either the statement or a BEFORE ROW trigger changed a distribution-key column, or the row was already stored on the wrong segment.
+HINT:  Assign distribution-key columns in the statement, or with a column DEFAULT or an identity column, which the coordinator evaluates before routing the row -- not in a BEFORE ROW trigger.  Redistribute a table that already holds misplaced rows with ALTER TABLE ... SET WITH (REORGANIZE=true).
+-- Nothing was inserted, updated, or moved.
+SELECT count(*) AS rows_total,
+       count(*) FILTER (WHERE aaa = 'before creating trigger') AS rows_untouched
+FROM qp_misc_jiras.test_trig;
+ rows_total | rows_untouched 
+------------+----------------
+         20 |             20
+(1 row)
+
+SELECT (SELECT array_agg(id::text || ':' || gp_segment_id::text ORDER BY id)
+          FROM qp_misc_jiras.test_trig)
+     = (SELECT array_agg(id::text || ':' || seg::text ORDER BY id)
+          FROM qp_misc_jiras.test_trig_w) AS placement_ok;
+ placement_ok 
+--------------
+ t
+(1 row)
 
 DROP TABLE qp_misc_jiras.test_trig;
+DROP TABLE qp_misc_jiras.test_trig_w;
 DROP FUNCTION fn_trig();
 set gp_select_invisible=false;
 create table qp_misc_jiras.tbl1_tbl_11257 (

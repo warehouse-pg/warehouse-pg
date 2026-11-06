@@ -529,8 +529,11 @@ CREATE FUNCTION trig1234() RETURNS trigger LANGUAGE plpythonu AS $$
     TD["new"]["data"] = '1234'
     return 'MODIFY'
 $$;
-CREATE TABLE a(data text);
-CREATE TABLE b(data int); -- different type conversion
+-- WHPG: trig1234 rewrites "data", the only column and hence the default
+-- distribution key; WHPG refuses a BEFORE ROW trigger that changes a
+-- hash-distribution key, so distribute randomly to keep the conversion test.
+CREATE TABLE a(data text) DISTRIBUTED RANDOMLY;
+CREATE TABLE b(data int) DISTRIBUTED RANDOMLY; -- different type conversion
 CREATE TRIGGER a_t BEFORE INSERT ON a FOR EACH ROW EXECUTE PROCEDURE trig1234();
 CREATE TRIGGER b_t BEFORE INSERT ON b FOR EACH ROW EXECUTE PROCEDURE trig1234();
 INSERT INTO a DEFAULT VALUES;
