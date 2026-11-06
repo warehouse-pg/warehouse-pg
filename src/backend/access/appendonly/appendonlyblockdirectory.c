@@ -155,6 +155,7 @@ init_internal(AppendOnlyBlockDirectory *blockDirectory)
 		minipageInfo->numMinipageEntries = 0;
 		ItemPointerSetInvalid(&minipageInfo->tupleTid);
 		minipageInfo->cached_entry_no = InvalidEntryNum;
+		minipageInfo->segmentFileNum = InvalidFileSegNumber;
 	}
 
 	MemoryContextSwitchTo(oldcxt);
@@ -744,8 +745,17 @@ AppendOnlyBlockDirectory_GetEntry(
 	 * contain such an entry. We search the in-memory minipage first. If such
 	 * an entry can not be found, we search for the appropriate minipage by
 	 * using the block directory btree index.
+	 *
+	 * The in-memory minipage of this column group must have been read for
+	 * this segment file, which currentSegmentFileNum alone does not
+	 * guarantee: the btree search below reloads only the column groups that
+	 * hold a value for the probed row, so a column added in missing-value
+	 * mode can still cache another segment file's minipage. Its entries
+	 * describe offsets in a different file, so neither a hit nor the
+	 * inter-entry-hole conclusion below would be valid.
 	 */
 	if (segmentFileNum == blockDirectory->currentSegmentFileNum &&
+		segmentFileNum == minipageInfo->segmentFileNum &&
 		minipageInfo->numMinipageEntries > 0)
 	{
 		Assert(blockDirectory->currentSegmentFileInfo != NULL);
@@ -1179,7 +1189,8 @@ blkdir_entry_exists(AppendOnlyBlockDirectory *blockDirectory,
 		MinipagePerColumnGroup *minipageInfo =
 			&blockDirectory->minipages[columnGroupNo];
 
-		if (minipageInfo && minipageInfo->minipage)
+		if (minipageInfo && minipageInfo->minipage &&
+			minipageInfo->segmentFileNum == segmentFileNum)
 		{
 			int entry_no = find_minipage_entry(minipageInfo, rowNum);
 			if (entry_no != InvalidEntryNum)
@@ -1562,6 +1573,8 @@ extract_minipage(AppendOnlyBlockDirectory *blockDirectory,
 					  nulls[Anum_pg_aoblkdir_minipage - 1]);
 
 	ItemPointerCopy(&tuple->t_self, &minipageInfo->tupleTid);
+	minipageInfo->segmentFileNum =
+		DatumGetInt32(values[Anum_pg_aoblkdir_segno - 1]);
 }
 
 /*
@@ -1804,6 +1817,7 @@ clear_minipage(MinipagePerColumnGroup *minipagePerColumnGroup)
 	minipagePerColumnGroup->numMinipageEntries = 0;
 	ItemPointerSetInvalid(&minipagePerColumnGroup->tupleTid);
 	minipagePerColumnGroup->cached_entry_no = InvalidEntryNum;
+	minipagePerColumnGroup->segmentFileNum = InvalidFileSegNumber;
 }
 
 /*
