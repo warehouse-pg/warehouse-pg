@@ -1,3 +1,5 @@
+import sys
+
 from mock import *
 
 from .gp_unittest import *
@@ -52,6 +54,27 @@ class RebalanceSegmentsTestCase(GpTestCase):
         result = self.subject.rebalance()
 
         self.assertTrue(result)
+
+    def _inner_recovery_argv(self):
+        captured = []
+        def parse_args():
+            captured.append(sys.argv[:])
+            return (Mock(), Mock())
+        self.mock_parser.parse_args.side_effect = parse_args
+        self.pool.getCompletedItems.return_value = [self.success_command_mock]
+
+        self.assertTrue(self.subject.rebalance())
+        self.assertEqual(len(captured), 1)
+        return captured[0]
+
+    def test_rebalance_inner_recovery_without_hba_hostnames(self):
+        self.assertEqual(self._inner_recovery_argv(),
+                         ['gprecoverseg', '-a', '-B', '1', '-b', '1'])
+
+    def test_rebalance_inner_recovery_passes_hba_hostnames(self):
+        self.subject.hba_hostnames = True
+        self.assertEqual(self._inner_recovery_argv(),
+                         ['gprecoverseg', '-a', '-B', '1', '-b', '1', '--hba-hostnames'])
 
     def test_rebalance_raises(self):
         self.pool.getCompletedItems.return_value = [self.failure_command_mock]
