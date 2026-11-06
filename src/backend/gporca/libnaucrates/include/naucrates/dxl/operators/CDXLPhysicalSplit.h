@@ -48,13 +48,16 @@ private:
 	// segmentid column id
 	ULONG m_segid_colid;
 
+	// whether inserted rows need hash-based segment routing
+	BOOL m_computeTargetSegment;
+
 public:
 	CDXLPhysicalSplit(const CDXLPhysicalSplit &) = delete;
 
 	// ctor
 	CDXLPhysicalSplit(CMemoryPool *mp, ULongPtrArray *delete_colid_array,
 					  ULongPtrArray *insert_colid_array, ULONG action_colid,
-					  ULONG ctid_colid, ULONG segid_colid);
+					  ULONG ctid_colid, ULONG segid_colid, BOOL computeTargetSegment);
 
 	// dtor
 	~CDXLPhysicalSplit() override;
@@ -98,6 +101,13 @@ public:
 	GetSegmentIdColId() const
 	{
 		return m_segid_colid;
+	}
+
+	// whether inserted rows need hash-based segment routing
+	BOOL
+	GetComputeTargetSegment() const
+	{
+		return m_computeTargetSegment;
 	}
 
 #ifdef GPOS_DEBUG

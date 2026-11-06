@@ -49,6 +49,9 @@ private:
 	// segmentId column id
 	ULONG m_segid_colid;
 
+	// whether inserted rows need hash-based segment routing
+	BOOL m_computeTargetSegment;
+
 	// process the start of an element
 	void StartElement(
 		const XMLCh *const element_uri,			// URI of element's namespace
