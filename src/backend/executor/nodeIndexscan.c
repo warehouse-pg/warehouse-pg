@@ -59,6 +59,8 @@ typedef struct
 
 static TupleTableSlot *IndexNext(IndexScanState *node);
 static TupleTableSlot *IndexNextWithReorder(IndexScanState *node);
+static void IndexSetFetchProjection(IndexScanState *node,
+									IndexScanDesc scandesc);
 static void EvalOrderByExpressions(IndexScanState *node, ExprContext *econtext);
 static bool IndexRecheck(IndexScanState *node, TupleTableSlot *slot);
 static int	cmp_orderbyvals(const Datum *adist, const bool *anulls,
@@ -119,9 +121,7 @@ IndexNext(IndexScanState *node)
 		 * GPDB: Allow the table AM a chance to set up column projection
 		 * information.
 		 */
-		table_index_fetch_set_projection(scandesc->xs_heapfetch,
-										 node->ss.ps.plan->targetlist,
-										 node->ss.ps.plan->qual);
+		IndexSetFetchProjection(node, scandesc);
 
 		node->iss_ScanDesc = scandesc;
 
@@ -221,9 +221,7 @@ IndexNextWithReorder(IndexScanState *node)
 		 * GPDB: Allow the table AM a chance to set up column projection
 		 * information.
 		 */
-		table_index_fetch_set_projection(scandesc->xs_heapfetch,
-										 node->ss.ps.plan->targetlist,
-										 node->ss.ps.plan->qual);
+		IndexSetFetchProjection(node, scandesc);
 
 		node->iss_ScanDesc = scandesc;
 
@@ -369,6 +367,41 @@ next_indextuple:
 	 * the scan..
 	 */
 	return ExecClearTuple(slot);
+}
+
+/*
+ * WHPG: Tell the table AM which columns the scan needs from each fetched
+ * tuple, so that it can skip reading the others.
+ *
+ * Besides the columns used by the targetlist and qual, a lossy index asks
+ * for the original index quals and ORDER BY expressions to be rechecked
+ * against the fetched tuple, so their columns are needed as well.  btree and
+ * bitmap indexes are always exact and never ask for a recheck.
+ */
+static void
+IndexSetFetchProjection(IndexScanState *node, IndexScanDesc scandesc)
+{
+	IndexScan  *plan = (IndexScan *) node->ss.ps.plan;
+	List	   *qual = plan->scan.plan.qual;
+	Oid			relam = node->iss_RelationDesc->rd_rel->relam;
+
+	if (relam != BTREE_AM_OID && relam != BITMAP_AM_OID)
+	{
+		qual = list_concat(list_copy(qual), list_copy(plan->indexqualorig));
+
+		/*
+		 * The ORDER BY expressions are normally in the targetlist already,
+		 * because the planner keeps ordering columns in the scan's output,
+		 * so adding them here reads no extra columns.  This is defensive
+		 * coding, so that rechecking the ORDER BY values never depends on
+		 * that.
+		 */
+		qual = list_concat(qual, list_copy(plan->indexorderbyorig));
+	}
+
+	table_index_fetch_set_projection(scandesc->xs_heapfetch,
+									 plan->scan.plan.targetlist,
+									 qual);
 }
 
 /*

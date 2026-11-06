@@ -947,3 +947,34 @@ SELECT gp_inject_fault('AppendOnlyStorageRead_ReadNextBlock_success', 'status', 
 
 SELECT gp_inject_fault('AppendOnlyStorageRead_ReadNextBlock_success', 'reset', dbid)
     FROM gp_segment_configuration WHERE content = 1 AND role = 'p';
+
+-- Index Scans with a lossy index must also read the columns of the original
+-- index quals, because each fetched tuple is rechecked against them. Here the
+-- indexed column is not otherwise used by the query.
+CREATE TABLE aoco_idx_recheck(i int, k int, p polygon) USING ao_column;
+INSERT INTO aoco_idx_recheck
+    SELECT a, a % 100, polygon(box(point(a % 50, a % 50), point(a % 50 + 1, a % 50 + 1)))
+    FROM generate_series(1, 20000) a;
+CREATE INDEX aoco_idx_recheck_hash ON aoco_idx_recheck USING hash (k);
+CREATE INDEX aoco_idx_recheck_gist ON aoco_idx_recheck USING gist (p);
+ANALYZE aoco_idx_recheck;
+
+SET enable_seqscan TO off;
+SET enable_bitmapscan TO off;
+
+-- hash: always lossy
+EXPLAIN (COSTS OFF) SELECT count(i) FROM aoco_idx_recheck WHERE k = 7;
+SELECT count(i) FROM aoco_idx_recheck WHERE k = 7;
+
+-- gist: lossy for polygon overlap
+EXPLAIN (COSTS OFF) SELECT count(i) FROM aoco_idx_recheck WHERE p && polygon '((3.2,3.2),(3.8,3.8))';
+SELECT count(i) FROM aoco_idx_recheck WHERE p && polygon '((3.2,3.2),(3.8,3.8))';
+
+-- spgist: lossy for polygon overlap
+DROP INDEX aoco_idx_recheck_gist;
+CREATE INDEX aoco_idx_recheck_spgist ON aoco_idx_recheck USING spgist (p);
+EXPLAIN (COSTS OFF) SELECT count(i) FROM aoco_idx_recheck WHERE p && polygon '((3.2,3.2),(3.8,3.8))';
+SELECT count(i) FROM aoco_idx_recheck WHERE p && polygon '((3.2,3.2),(3.8,3.8))';
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
