@@ -4659,6 +4659,41 @@ CopyFrom(CopyState cstate)
 			 */
 			if (!skip_tuple && !ExecBRInsertTriggers(estate, resultRelInfo, myslot))
 				skip_tuple = true;	/* "do nothing" */
+
+			/*
+			 * The QD chose this segment from the row as it arrived (and the
+			 * ON SEGMENT distribution-key check above ran on that same
+			 * pre-trigger row).  If the trigger rewrote a distribution-key
+			 * column the row now belongs elsewhere, so refuse it rather
+			 * than store it here.  Raised as a data exception so that
+			 * single-row error handling (LOG ERRORS ... SEGMENT REJECT
+			 * LIMIT) can reject and log the row instead of aborting the
+			 * load.  A COPY ... ON SEGMENT with
+			 * gp_enable_segment_copy_checking off asked for no placement
+			 * check at all, so none is done here either.
+			 */
+			if (!skip_tuple &&
+				!(cstate->on_segment && !gp_enable_segment_copy_checking))
+			{
+				int			row_seg;
+
+				if (ExecDistKeyMisplaced(resultRelInfo, estate, myslot,
+										 &row_seg))
+				{
+					PG_TRY();
+					{
+						ExecReportDistKeyMisplaced(resultRelInfo, "COPY",
+												   row_seg,
+												   ERRCODE_DATA_EXCEPTION);
+					}
+					PG_CATCH();
+					{
+						HandleCopyError(cstate);
+					}
+					PG_END_TRY();
+					skip_tuple = true;
+				}
+			}
 		}
 
 		if (!skip_tuple)

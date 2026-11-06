@@ -1,21 +1,19 @@
 -- start_ignore
 create extension if not exists gp_debug_numsegments;
-create language plpython3u;
 -- end_ignore
 drop schema if exists test_expand_table_regression cascade;
 create schema test_expand_table_regression;
 set search_path=test_expand_table_regression,public;
 --
--- derived from src/pl/plpython/sql/plpython_trigger.sql
+-- Rows can end up on the wrong segment (e.g. a load that bypassed the
+-- distribution-key check); data expansion should tolerate this.
 --
--- with some hacks we could insert data into incorrect segments, data expansion
--- should tolerant this.
+-- WHPG: this used to seed the misplaced rows with a BEFORE ROW
+-- trigger that rewrote the distribution key after the row had been routed.
+-- WHPG now refuses such a trigger, so the misplaced rows are loaded with
+-- COPY ... ON SEGMENT instead, which stores each segment's input where it
+-- lands once gp_enable_segment_copy_checking is off.
 --
--- with this trigger the inserted data is always hacked to '345'
-create function trig345() returns trigger language plpython3u as $$
-    TD["new"]["data"] = '345'
-    return 'modify'
-$$;
 select gp_debug_set_create_table_default_numsegments(2);
  gp_debug_set_create_table_default_numsegments 
 -----------------------------------------------
@@ -40,22 +38,24 @@ select gp_segment_id, * from b;
 (1 row)
 
 truncate b;
-create trigger b_t before insert on b for each row execute procedure trig345();
--- however with the trigger it is inserted on seg1
-insert into b select i from generate_series(1, 10) i;
+-- however loaded ON SEGMENT without the check, '345' lands on both segments
+-- (ON SEGMENT requires a <SEGID> placeholder in the command; it is unused here)
+set gp_enable_segment_copy_checking = off;
+copy b from program 'yes 345 | head -n 5 # <SEGID>' on segment;
+reset gp_enable_segment_copy_checking;
 select gp_segment_id, * from b;
  gp_segment_id | data 
 ---------------+------
+             0 |  345
+             0 |  345
+             0 |  345
+             0 |  345
+             0 |  345
              1 |  345
              1 |  345
-             0 |  345
-             0 |  345
-             0 |  345
-             0 |  345
-             0 |  345
-             0 |  345
-             0 |  345
-             0 |  345
+             1 |  345
+             1 |  345
+             1 |  345
 (10 rows)
 
 -- data expansion should tolerant it
