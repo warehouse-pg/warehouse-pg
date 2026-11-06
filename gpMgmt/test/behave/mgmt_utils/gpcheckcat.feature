@@ -36,6 +36,22 @@ Feature: gpcheckcat tests
         And verify that the schema "good_schema" exists in "leak_db"
         And the user runs "dropdb leak_db"
 
+    # Utility-mode temp schemas are named pg_temp_0<backend id>.  Right after
+    # a restart, background processes on the coordinator hold small session
+    # ids, which must not keep such a schema from being dropped.
+    Scenario: gpcheckcat should drop leaked utility-mode temp schemas
+        Given database "leak_db" is dropped and recreated
+        When the user runs "gpstop -ar"
+        Then gpstart should return a return code of 0
+        When the user runs sql "SET allow_system_table_mods = on; DO 'BEGIN FOR i IN 1..20 LOOP EXECUTE format(''CREATE SCHEMA pg_temp_0%s'', i); END LOOP; END'" in "leak_db" on primary segment with content 0
+        And the user runs "gpcheckcat leak_db"
+        Then gpcheckcat should return a return code of 0
+        And gpcheckcat should print "Found and dropped 20 unbound temporary schemas" to stdout
+        When the user runs "psql leak_db -c "SELECT nspname FROM gp_dist_random('pg_namespace') WHERE nspname ~ '^pg_temp_0'""
+        Then psql should return a return code of 0
+        And psql should print "(0 rows)" to stdout
+        And the user runs "dropdb leak_db"
+
     Scenario: gpcheckcat should report unique index violations
         Given database "unique_index_db" is dropped and recreated
         And the user runs "psql unique_index_db -f 'test/behave/mgmt_utils/steps/data/gpcheckcat/create_unique_index_violation.sql'"
