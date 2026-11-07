@@ -3379,7 +3379,19 @@ appendonly_insert(AppendOnlyInsertDesc aoInsertDesc,
 		Assert(aoInsertDesc->nonCompressedData == NULL);
 		Assert(!AppendOnlyStorageWrite_IsBufferAllocated(&aoInsertDesc->storageWrite));
 
-		setupNextWriteBlock(aoInsertDesc);
+		/*
+		 * WHPG: The large content was numbered by the varblock set up for
+		 * it, so blockFirstRowNum is this row's number.  Give it a block
+		 * directory entry of its own, like datumstreamwrite_lob() does for
+		 * AOCS, or an index fetch of this row cannot find it.
+		 */
+		Assert(aoInsertDesc->blockFirstRowNum == aoInsertDesc->lastSequence + 1);
+		AppendOnlyBlockDirectory_InsertEntry(
+			&aoInsertDesc->blockDirectory,
+			0,
+			aoInsertDesc->blockFirstRowNum,
+			AppendOnlyStorageWrite_LogicalBlockStartOffset(&aoInsertDesc->storageWrite),
+			1);
 	}
 
 	aoInsertDesc->insertCount++;
@@ -3388,6 +3400,16 @@ appendonly_insert(AppendOnlyInsertDesc aoInsertDesc,
 		(aoInsertDesc->numSequences)--;
 
 	Assert(aoInsertDesc->numSequences >= 0);
+
+	/*
+	 * WHPG: Set up the varblock for the rows after a large one only now that
+	 * lastSequence counts the large row.  Setting it up before the increment
+	 * gave that varblock the large row's number as its firstRowNum, so its
+	 * rows were read back one too low: the first one shared the large row's
+	 * ctid, and the block directory sent index fetches to the wrong rows.
+	 */
+	if (isLargeContent)
+		setupNextWriteBlock(aoInsertDesc);
 
 	AOTupleIdInit(aoTupleId, aoInsertDesc->cur_segno, aoInsertDesc->lastSequence);
 
