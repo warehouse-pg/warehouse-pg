@@ -173,6 +173,7 @@ test: vacuum_gp
 test: pg_stat
 test: bfv_partition qp_misc_rio
 test: bfv_partition_plans
+test: dynamic_scan_heterogeneous_leaves
 # 'gp_covering_index' concurrent vacuum (e.g. autovacuum) can effect plan due
 # to race-condition fetching relallvisible.
 test: gp_covering_index
