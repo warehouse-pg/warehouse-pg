@@ -25,6 +25,11 @@ CREATE FUNCTION tied_classes() RETURNS int AS $$
 	sub TIESCALAR { my $s; bless \$s, $_[0] }
 	sub STORE     { ${$_[0]} = $_[1] }
 	sub FETCH     { ${$_[0]} }
+
+	package PLPerlTiedReturnNext;
+	sub TIESCALAR { my $n = 0; bless \$n, $_[0] }
+	sub FETCH     { main::return_next({f1 => 2, f2 => 'inner'})
+	                  unless ${$_[0]}++; 'outer' }
 }
 return 1;
 $$ LANGUAGE plperl;
@@ -93,6 +98,18 @@ CREATE FUNCTION tied_scalar_int_array() RETURNS integer[] AS $$
 $$ LANGUAGE plperl;
 
 SELECT tied_scalar_int_array();
+
+-- Artificial: tied scalar whose FETCH recursively calls return_next
+-- while the outer return_next is still converting the row containing it.
+CREATE FUNCTION tied_reentrant_setof() RETURNS SETOF tiedrowperl AS $$
+	my %h;
+	$h{f1} = 1;
+	tie $h{f2}, 'PLPerlTiedReturnNext';
+	return_next(\%h);
+	return undef;
+$$ LANGUAGE plperl;
+
+SELECT * FROM tied_reentrant_setof();
 
 -- Artificial: $_TD->{new} and the trigger return value are tied scalars.
 CREATE TABLE tied_trigger_test (i int, v text);
