@@ -177,8 +177,12 @@ SV_to_JsonbValue(SV *in, JsonbParseState **jsonb_state, bool is_elem)
 	JsonbValue	out;			/* result */
 
 	/* Dereference references recursively. */
+	plperl_materialize_sv(in);
 	while (in && SvROK(in))
+	{
 		in = SvRV(in);
+		plperl_materialize_sv(in);
+	}
 
 	if (!in)
 	{
