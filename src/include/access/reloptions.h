@@ -285,6 +285,10 @@ extern void add_string_reloption(bits32 kinds, const char *name, const char *des
 								 const char *default_val, validate_string_relopt validator,
 								 LOCKMODE lockmode);
 
+extern XLogRecPtr attoptions_get_version(Datum attoptions, bool isnull);
+extern Datum attoptions_set_version(Datum attoptions, bool isnull,
+									XLogRecPtr version);
+
 extern Datum transformRelOptions(Datum oldOptions, List *defList,
 								 const char *namspace, char *validnsps[],
 								 bool acceptOidsOff, bool isReset);

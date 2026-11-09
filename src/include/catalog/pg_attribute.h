@@ -212,6 +212,15 @@ typedef FormData_pg_attribute *Form_pg_attribute;
 
 #define		  ATTRIBUTE_GENERATED_STORED	's'
 
+/*
+ * Reserved attoptions key used, in the back branches, to store the attribute
+ * version.  See attoptions_get_version() and
+ * src/backend/catalog/README.attver.md.
+ *
+ * This is defined here to make it visible to pg_dump.c.
+ */
+#define ATTRIBUTE_VERSION_ATTOPTION "pg_attver"
+
 #endif							/* EXPOSE_TO_CLIENT_CODE */
 
 #endif							/* PG_ATTRIBUTE_H */

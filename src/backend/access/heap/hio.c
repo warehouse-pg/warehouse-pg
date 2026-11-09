@@ -47,6 +47,9 @@ RelationPutHeapTuple(Relation relation pg_attribute_unused(),
 	 */
 	Assert(!token || HeapTupleHeaderIsSpeculative(tuple->t_data));
 
+	/* caller should have cleared the flag */
+	Assert(!HeapTupleHeaderIsDatum(tuple->t_data));
+
 	/* Add the tuple to the page */
 	pageHeader = BufferGetPage(buffer);
 

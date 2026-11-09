@@ -16,6 +16,7 @@
 #include "greenplum/pg_upgrade_greenplum.h"
 
 static void check_new_cluster_is_empty(void);
+static void check_new_cluster_attribute_version_support(void);
 static void check_databases_are_compatible(void);
 static void check_locale_and_encoding(DbInfo *olddb, DbInfo *newdb);
 static bool equivalent_locale(int category, const char *loca, const char *locb);
@@ -210,6 +211,36 @@ check_new_cluster(void)
 	check_for_prepared_transactions(&new_cluster);
 
 	check_for_new_tablespace_dir(&new_cluster);
+
+	check_new_cluster_attribute_version_support();
+}
+
+/*
+ * The schema restore passes attribute versions to the new cluster through a
+ * support function.  A cluster initialized by binaries that predate the
+ * function does not have it in its catalog; say so now instead of failing in
+ * the middle of the restore.
+ */
+static void
+check_new_cluster_attribute_version_support(void)
+{
+	PGconn	   *conn = connectToServer(&new_cluster, "template1");
+	PGresult   *res;
+
+	prep_status("Checking for attribute version support in new cluster");
+
+	res = executeQueryOrDie(conn,
+							"SELECT 1 FROM pg_catalog.pg_proc "
+							"WHERE proname = 'binary_upgrade_set_next_attribute_versions' "
+							"AND pronamespace = 'pg_catalog'::regnamespace");
+	if (PQntuples(res) == 0)
+		pg_fatal("The new cluster was initialized by an older minor release and lacks\n"
+				 "pg_catalog.binary_upgrade_set_next_attribute_versions().\n"
+				 "Initialize the new cluster again with the current binaries.\n");
+
+	PQclear(res);
+	PQfinish(conn);
+	check_ok();
 }
 
 

@@ -233,6 +233,7 @@ BlockIdData
 BlockInfoRecord
 BlockNumber
 BlockSampler
+BinaryUpgradeAttributeVersions
 BlockSamplerData
 BlockedProcData
 BlockedProcsData
@@ -380,6 +381,7 @@ CommonTableExpr
 CompareScalarsContext
 CompiledExprState
 CompositeIOData
+CompositeTypeMismatchOptions
 CompositeTypeStmt
 CompoundAffixFlag
 CompressionAlgorithm
@@ -2497,6 +2499,7 @@ TupStoreStatus
 TupleConstr
 TupleConversionMap
 TupleDesc
+TupleDescVersionData
 TupleHashEntry
 TupleHashEntryData
 TupleHashIterator

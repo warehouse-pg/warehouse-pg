@@ -69,6 +69,14 @@ typedef ItemPointerData *ItemPointer;
 #define MovedPartitionsOffsetNumber 0xfffd
 #define MovedPartitionsBlockNumber	InvalidBlockNumber
 
+/*
+ * A versioned composite datum (see HEAP_IS_DATUM in htup_details.h) has
+ * ip_posid set to VersionedDatumOffsetNumber.
+ */
+#define VersionedDatumOffsetNumber	0xfffc
+
+/* must be larger than MaxOffsetNumber, checked in heap_datum_check() */
+
 
 /* ----------------
  *		support macros

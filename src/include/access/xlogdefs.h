@@ -29,6 +29,15 @@ typedef uint64 XLogRecPtr;
 #define XLogRecPtrIsInvalid(r)	((r) == InvalidXLogRecPtr)
 
 /*
+ * Handy macro for printing XLogRecPtr in conventional format, e.g.,
+ *
+ * printf("%X/%X", LSN_FORMAT_ARGS(lsn));
+ */
+#ifndef LSN_FORMAT_ARGS
+#define LSN_FORMAT_ARGS(lsn) ((uint32) ((lsn) >> 32)), ((uint32) (lsn))
+#endif
+
+/*
  * First LSN to use for "fake" LSNs.
  *
  * Values smaller than this can be used for special per-AM purposes.

@@ -114,6 +114,7 @@ extern void RememberPreassignedIndexNameForChildIndex(Oid parentIdxOid, Oid chil
 
 
 /* Functions used in coordinator and QE nodes */
+extern uint64 GetNewOrPreassignedAttributeVersion(Oid relid, AttrNumber attnum);
 extern void PreserveOidAssignmentsOnCommit(void);
 extern void ClearOidAssignmentsOnCommit(void);
 extern List * SaveOidAssignments(void);
