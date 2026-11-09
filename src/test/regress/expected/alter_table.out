@@ -148,6 +148,24 @@ SELECT * from attmp2;
 (1 row)
 
 DROP TABLE attmp2, attmp;
+-- Adding a column with a DEFAULT is not allowed when the rowtype is
+-- used in expressions in catalogs.  With the current implementation,
+-- we won't rewrite the values stored in catalogs, so they would still
+-- be missing the value, which gets interpreted as NULL or the "fast
+-- default value", if that mechanism can be used.
+CREATE TABLE attmp (initial int4);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'initial' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+CREATE VIEW attmpv AS SELECT '(1)'::attmp AS c;
+ALTER TABLE attmp ADD COLUMN b int; -- allowed
+ALTER TABLE attmp ADD COLUMN c int DEFAULT 0; -- fails
+ERROR:  cannot alter table "attmp" because rule _RETURN on view attmpv uses its row type
+-- Generated columns have similar problems.  It's not clear what
+-- should happen to existing datums if the expression is changed.
+alter table attmp add column e int generated always as (initial) stored; -- fails
+ERROR:  cannot alter table "attmp" because rule _RETURN on view attmpv uses its row type
+DROP VIEW attmpv;
+DROP TABLE attmp;
 --
 -- WarehousePG: the other rewrites that keep the row type as it is are
 -- allowed too while another table uses the row type in a column.

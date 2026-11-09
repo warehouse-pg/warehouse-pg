@@ -183,6 +183,23 @@ SELECT * from attmp2;
 
 DROP TABLE attmp2, attmp;
 
+-- Adding a column with a DEFAULT is not allowed when the rowtype is
+-- used in expressions in catalogs.  With the current implementation,
+-- we won't rewrite the values stored in catalogs, so they would still
+-- be missing the value, which gets interpreted as NULL or the "fast
+-- default value", if that mechanism can be used.
+CREATE TABLE attmp (initial int4);
+CREATE VIEW attmpv AS SELECT '(1)'::attmp AS c;
+ALTER TABLE attmp ADD COLUMN b int; -- allowed
+ALTER TABLE attmp ADD COLUMN c int DEFAULT 0; -- fails
+
+-- Generated columns have similar problems.  It's not clear what
+-- should happen to existing datums if the expression is changed.
+alter table attmp add column e int generated always as (initial) stored; -- fails
+
+DROP VIEW attmpv;
+DROP TABLE attmp;
+
 --
 -- WarehousePG: the other rewrites that keep the row type as it is are
 -- allowed too while another table uses the row type in a column.
