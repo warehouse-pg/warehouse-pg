@@ -37,9 +37,12 @@
  * dispatch connections with "waiting for distributed transaction
  * recovery"); the global deadlock detector does not check; the autovacuum
  * launcher starts no worker (a coordinator worker runs in dispatch role
- * and would be refused at its first component-table build).  With the DTM
- * unstarted, every background worker that waits for it (the deadlock
- * detector, sweepers, extension workers) does not start at all
+ * and would be refused at its first component-table build).  FTS and dtx
+ * recovery, which start the moment recovery ends, do not even connect
+ * while the GUC is set: connecting binds the interconnect to the catalog's
+ * coordinator address (see dispatch_topology_bgworker_gate_before_connect).
+ * With the DTM unstarted, every background worker that waits for it (the
+ * deadlock detector, sweepers, extension workers) does not start at all
  * (bgworker_should_start_mpp), so the deadlock detector's own gate only
  * matters for a GUC set on a running primary.  None of them runs in
  * recovery anyway; the gate covers the window right after a promotion,
@@ -56,6 +59,8 @@
  */
 #ifndef CDBDISPATCHTOPOLOGY_H
 #define CDBDISPATCHTOPOLOGY_H
+
+#include <signal.h>
 
 typedef struct DispatchTopologyEntry
 {
@@ -90,6 +95,12 @@ extern const char *show_whpg_dispatch_topology_state(void);
 extern bool dispatch_topology_bgworker_gated(bool *gated, const char *worker,
 											 const char *activity);
 extern void dispatch_topology_bgworker_wait(long timeout_ms, uint32 wait_event);
+extern void dispatch_topology_bgworker_gate_before_connect(const char *worker,
+														   const char *activity,
+														   volatile sig_atomic_t *got_sighup,
+														   const int *interval_s,
+														   uint32 wait_event,
+														   void (*cycle) (void));
 extern void dispatch_topology_bgworker_discard_components(void);
 
 #endif   /* CDBDISPATCHTOPOLOGY_H */

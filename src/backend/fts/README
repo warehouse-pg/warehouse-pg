@@ -198,3 +198,18 @@ that reload, because the first ungated cycle reads whatever is committed
 at that moment; the transitions are logged once each ("FTS: probing
 suspended while whpg_dispatch_topology_file is set" / "FTS: probing
 resumed after whpg_dispatch_topology_file was cleared").
+
+FTS and dtx recovery start the moment recovery ends, and while the GUC is
+set they wait before connecting to a database, not only in their loops
+(dispatch_topology_bgworker_gate_before_connect). Connecting runs
+cdb_setup(), which binds the interconnect to the address of the catalog's
+coordinator row; on a promoted replica that row is the source
+coordinator's, an address this host does not have (or none, when the
+source's names do not resolve here), and the bind failure would restart
+the worker at once in a loop that never reaches the in-loop gate. FTS keeps
+its start and done counters moving in that wait too, so a dispatch
+connection refused while the GUC is set gets its error instead of waiting
+in FtsNotifyProber() for a cycle that never completes. Both connect once
+the GUC is cleared, by which time the catalog has been fixed. The wait
+rereads the configuration once on entry: a reload signalled between the
+worker's fork and its installing a SIGHUP handler is otherwise lost.
