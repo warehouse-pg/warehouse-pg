@@ -82,6 +82,7 @@
 #include "access/distributedlog.h"
 #include "catalog/catalog.h"
 #include "catalog/pg_tablespace.h"
+#include "cdb/cdbdispatchtopology.h"
 #include "cdb/cdbtm.h"
 #include "cdb/cdbvars.h"
 #include "postmaster/postmaster.h"
@@ -8518,8 +8519,27 @@ StartupXLOG(void)
 	if (fast_promoted)
 		RequestCheckpoint(CHECKPOINT_FORCE);
 
+	/*
+	 * Ask dtx recovery to terminate the QEs on the segments before it
+	 * recovers the DTM (recoverTM): after a standby coordinator takes over,
+	 * or a coordinator restarts after a crash, the QEs still running there
+	 * belong to sessions of a coordinator that is gone.
+	 *
+	 * Not when this coordinator was a hot standby dispatching through a
+	 * topology file (whpg_dispatch_topology_file) and is being promoted in
+	 * place: it reached only the nodes the file names, so every QE there
+	 * was started by one of its own sessions, which outlive the promotion.
+	 * Terminating them would fail every transaction open across the
+	 * promotion and every statement running on the segments at that
+	 * moment.  The request is withdrawn too if a restart while in recovery
+	 * made it (an unclean shutdown, earlier in StartupXLOG): the sessions
+	 * of before that restart are gone, and their QEs, idle read-only ones
+	 * of a hot standby, exit once they read their closed connection; the
+	 * QEs there now belong to this coordinator's live sessions.
+	 */
 	if (Gp_role == GP_ROLE_DISPATCH)
-		*shmCleanupBackends = true;
+		*shmCleanupBackends = !(ArchiveRecoveryRequested && EnableHotStandby &&
+								dispatch_topology_enabled());
 }
 
 /*
