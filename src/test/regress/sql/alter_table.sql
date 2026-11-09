@@ -161,6 +161,109 @@ DROP TABLE attmp;
 
 
 --
+-- add attribute when the row type is in use
+--
+CREATE TABLE attmp (initial int4);
+CREATE TABLE attmp2 (t text, tbl attmp);
+INSERT INTO attmp2 VALUES ('foo', '(1)');
+
+-- Adding a column to 'attmp' is allowed, even though it's used as the
+-- column type in another table.
+ALTER TABLE attmp ADD COLUMN a int4;
+
+-- XXX: With a DEFAULT, it is currently not allowed, but there's no
+-- good reason not to.  The presence of the DEFAULT doesn't make any
+-- difference to what's stored in 'attmp2'.
+ALTER TABLE attmp ADD COLUMN b int4 DEFAULT 100; -- fails
+
+-- Changing between LOGGED and UNLOGGED is allowed
+ALTER TABLE attmp SET UNLOGGED;
+
+SELECT * from attmp2;
+
+DROP TABLE attmp2, attmp;
+
+--
+-- WarehousePG: the other rewrites that keep the row type as it is are
+-- allowed too while another table uses the row type in a column.
+--
+create table at_rw_heap (a int, b text) distributed by (a);
+create table at_rw_ao (a int, b text) with (appendonly=true) distributed by (a);
+create table at_rw_user (id int, h at_rw_heap, o at_rw_ao) distributed by (id);
+insert into at_rw_heap select g, 'h' || g from generate_series(1, 10) g;
+insert into at_rw_ao select g, 'o' || g from generate_series(1, 10) g;
+insert into at_rw_user select a, row(a, b)::at_rw_heap, row(a, b)::at_rw_ao from at_rw_heap;
+
+-- change of persistence
+alter table at_rw_heap set unlogged;
+alter table at_rw_heap set logged;
+-- change of access method
+alter table at_rw_heap set access method ao_row;
+alter table at_rw_heap set access method heap;
+-- change of storage options
+alter table at_rw_ao set (compresstype=zlib, compresslevel=1);
+-- repack
+alter table at_rw_ao repack by columns (a desc);
+
+select count(*), min((h).b), max((o).b) from at_rw_user;
+select count(*) from at_rw_heap;
+select count(*) from at_rw_ao;
+
+-- A rewrite that changes the row type is still rejected
+alter table at_rw_heap alter column b type varchar(10); -- fails
+alter table at_rw_heap add column c int default 1; -- fails
+alter table at_rw_ao alter column b type varchar(10); -- fails
+alter table at_rw_ao add column c int default 1; -- fails
+
+drop table at_rw_user, at_rw_heap, at_rw_ao;
+
+--
+-- WarehousePG: a column-oriented table has to write a column that is added
+-- without a default, or whose encoding changes.  Neither changes what the
+-- row type looks like, so they are allowed where a heap table allows them.
+--
+create table at_co_heap (a int, b text) distributed by (a);
+create table at_co_aoco (a int, b text) with (appendonly=true, orientation=column) distributed by (a);
+create table at_co_user (id int, h at_co_heap, c at_co_aoco) distributed by (id);
+insert into at_co_aoco select g, 'c' || g from generate_series(1, 10) g;
+insert into at_co_user select a, row(a, b)::at_co_heap, row(a, b)::at_co_aoco from at_co_aoco;
+
+alter table at_co_heap add column c int;
+alter table at_co_aoco add column c int;
+alter table at_co_aoco alter column b set encoding (compresstype=zlib, compresslevel=1);
+select count(*), count(c), min(b) from at_co_aoco;
+select count(*), min((h).b), count((h).c), min((c).b), count((c).c) from at_co_user;
+
+-- A default, a generated column and a type change are still rejected
+alter table at_co_heap add column d int default 1; -- fails
+alter table at_co_aoco add column d int default 1; -- fails
+alter table at_co_aoco add column d int generated always as (a + 1) stored; -- fails
+alter table at_co_aoco alter column b type varchar(10); -- fails
+alter table at_co_aoco alter column b type varchar(10), alter column b set encoding (compresstype=zlib, compresslevel=1); -- fails
+alter table at_co_aoco add column d int, add column e int default 1; -- fails
+
+drop table at_co_user, at_co_heap, at_co_aoco;
+
+--
+-- WarehousePG: on a column-oriented table a change of collation alone is
+-- planned like SET ENCODING, a rewrite of the column from itself.  It
+-- changes how values of the row type compare and must be rejected.
+--
+create table at_cl_aoco (a int, b text collate "C") with (appendonly=true, orientation=column) distributed by (a);
+create table at_cl_heap (a int, b text collate "C") distributed by (a);
+create table at_cl_user (id int, x at_cl_aoco, y at_cl_heap) distributed by (id);
+alter table at_cl_heap alter column b type text collate "POSIX"; -- fails
+alter table at_cl_aoco alter column b type text collate "POSIX"; -- fails
+alter table at_cl_aoco add column c int, alter column b type text collate "POSIX"; -- fails
+alter table at_cl_aoco alter column b type text collate "POSIX", alter column b set encoding (compresstype=zlib, compresslevel=1); -- fails
+alter table at_cl_aoco alter column b type varchar(10); -- fails
+-- the same type, type modifier and collation again is no change
+alter table at_cl_aoco alter column b type text collate "C";
+alter table at_cl_aoco alter column b set encoding (compresstype=zlib, compresslevel=1);
+alter table at_cl_aoco add column c int;
+drop table at_cl_user, at_cl_aoco, at_cl_heap;
+
+--
 -- rename - check on both non-temp and temp tables
 --
 CREATE TABLE attmp (regtable int);
