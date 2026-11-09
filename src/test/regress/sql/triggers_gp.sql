@@ -253,3 +253,35 @@ reset client_min_messages;
 drop table refint_f4, refint_p4, refint_f3, refint_p3, refint_f2, refint_p2;
 drop table refint_rf;
 drop table refint_rp;
+
+--
+-- A cursor opened in a trigger function over a transition table must not
+-- outlive the trigger function's SPI connection: the query environment that
+-- holds the transition table is freed at SPI_finish(). (CVE-2026-120143)
+--
+-- WHPG: statement-level triggers are not supported, so use a row-level
+-- trigger. All rows go to the same segment, so the second and third firings
+-- run in the same backend as the first one and would find the portal it
+-- left behind; it must be gone, so every firing opens a fresh cursor.
+--
+create table trans_cursor_tab (a int, b text) distributed by (a);
+create function trans_cursor_trig() returns trigger language plpgsql as $$
+declare
+  c refcursor := 'trans_cursor_portal';
+  r record;
+begin
+  if exists (select 1 from pg_cursors where name = 'trans_cursor_portal') then
+    fetch c into r;
+    raise notice 'fetched leftover cursor: %', r;
+  else
+    open c for select * from newtab order by b;
+    raise notice 'opened cursor for row %', new.b;
+  end if;
+  return null;
+end $$;
+create trigger trans_cursor_ins after insert on trans_cursor_tab
+  referencing new table as newtab
+  for each row execute function trans_cursor_trig();
+insert into trans_cursor_tab values (1, 'r1'), (1, 'r2'), (1, 'r3');
+drop table trans_cursor_tab;
+drop function trans_cursor_trig();
