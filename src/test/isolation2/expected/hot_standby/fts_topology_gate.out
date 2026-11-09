@@ -20,13 +20,19 @@
 -- BLAST RADIUS -- this test must stay last in the schedule and must never
 -- run concurrently with anything: the promoted node is a clone of the
 -- coordinator, so once its gate lifts its dtx recovery dispatches into this
--- cluster's live primaries: gp_terminate_mpp_backends() (every QE of every
--- session) and ROLLBACK PREPARED of every prepared transaction it does not
--- know.  While the gate holds none of that happens, which is what the
--- first half asserts; the second half deliberately lets it happen while
--- nothing else is running.  Not observable here: the deadlock detector
--- (off in gpdemo, and it waits for the DTM the gate keeps unstarted) and
--- the autovacuum launcher's gate (autovacuum is off in this suite).
+-- cluster's live primaries: ROLLBACK PREPARED of every prepared transaction
+-- it does not know.  While the gate holds none of that happens, which is
+-- what the first half asserts; the second half deliberately lets it happen
+-- while nothing else is running.  What it no longer does is terminate
+-- every QE there first (gp_terminate_mpp_backends()): a coordinator that
+-- ends recovery with the GUC set reached only its own sessions' QEs, which
+-- survive an in-place promotion.  A transaction of this cluster held open
+-- across the promotion and the gate lifting (session 1) proves it: its
+-- QEs on the primaries are still there for its next statement, although
+-- the standby was restarted uncleanly before (which asks for the cleanup
+-- at startup).  Not observable here: the deadlock detector (off in gpdemo,
+-- and it waits for the DTM the gate keeps unstarted) and the autovacuum
+-- launcher's gate (autovacuum is off in this suite).
 --
 -- The workers must not even connect while the gate holds: connecting
 -- binds the interconnect to the address of the catalog's coordinator row,
@@ -61,6 +67,23 @@ server signaled
 -- end_ignore
 (exited with code 0)
 
+-- Restart the standby uncleanly: a coordinator that starts after an unclean
+-- shutdown asks for the QE cleanup at startup, and its promotion with the
+-- GUC set must withdraw that request too (session 1's QEs below).  Before
+-- any fault is injected: the restart clears them.  The log mark is taken
+-- again after it, so the log checks below see only what the promotion
+-- wrote.
+!\retcode sdir=$(psql -X -d postgres -Atc "select datadir from gp_segment_configuration where content = -1 and role = 'm'"); pg_ctl restart -D "$sdir" -m immediate -w -t 600 > /dev/null && cat "$sdir"/log/*.csv | wc -l > "$sdir/hs_fts_gate_logmark";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+select wait_until_standby_in_state('streaming');
+ wait_until_standby_in_state 
+-----------------------------
+ streaming                   
+(1 row)
+
 -1S: show whpg_dispatch_topology_state;
  whpg_dispatch_topology_state 
 ------------------------------
@@ -87,6 +110,16 @@ select gp_inject_fault_infinite('qd_interconnect_address_not_local', 'skip', dbi
  gp_inject_fault_infinite 
 --------------------------
  Success:                 
+(1 row)
+
+-- open a transaction with QEs on every primary, held across the promotion
+-- and the gate lifting
+1: begin;
+BEGIN
+1: select count(*) from gp_dist_random('gp_id');
+ count 
+-------
+ 3     
 (1 row)
 
 ----------------------------------------------------------------
@@ -208,6 +241,16 @@ select gp_wait_until_triggered_fault('fts_probe', 1, dbid) from gp_segment_confi
  t                         
 (1 row)
 -1Sq: ... <quitting>
+
+-- the DTM of the promoted node has started (recoverTM ran), and the open
+-- transaction's QEs were not terminated: its next statement reuses them
+1: select count(*) from gp_dist_random('gp_id');
+ count 
+-------
+ 3     
+(1 row)
+1: commit;
+COMMIT
 
 -- a coordinator row whose address did not resolve fails the connection
 -- with an error; it does not crash the backend (which would reset the

@@ -20,13 +20,19 @@
 -- BLAST RADIUS -- this test must stay last in the schedule and must never
 -- run concurrently with anything: the promoted node is a clone of the
 -- coordinator, so once its gate lifts its dtx recovery dispatches into this
--- cluster's live primaries: gp_terminate_mpp_backends() (every QE of every
--- session) and ROLLBACK PREPARED of every prepared transaction it does not
--- know.  While the gate holds none of that happens, which is what the
--- first half asserts; the second half deliberately lets it happen while
--- nothing else is running.  Not observable here: the deadlock detector
--- (off in gpdemo, and it waits for the DTM the gate keeps unstarted) and
--- the autovacuum launcher's gate (autovacuum is off in this suite).
+-- cluster's live primaries: ROLLBACK PREPARED of every prepared transaction
+-- it does not know.  While the gate holds none of that happens, which is
+-- what the first half asserts; the second half deliberately lets it happen
+-- while nothing else is running.  What it no longer does is terminate
+-- every QE there first (gp_terminate_mpp_backends()): a coordinator that
+-- ends recovery with the GUC set reached only its own sessions' QEs, which
+-- survive an in-place promotion.  A transaction of this cluster held open
+-- across the promotion and the gate lifting (session 1) proves it: its
+-- QEs on the primaries are still there for its next statement, although
+-- the standby was restarted uncleanly before (which asks for the cleanup
+-- at startup).  Not observable here: the deadlock detector (off in gpdemo,
+-- and it waits for the DTM the gate keeps unstarted) and the autovacuum
+-- launcher's gate (autovacuum is off in this suite).
 --
 -- The workers must not even connect while the gate holds: connecting
 -- binds the interconnect to the address of the catalog's coordinator row,
@@ -56,6 +62,15 @@
 -- configuration dump file.
 !\retcode sdir=$(psql -X -d postgres -Atc "select datadir from gp_segment_configuration where content = -1 and role = 'm'"); psql -X -At -d postgres -c "select content, dbid, hostname, address, port, datadir from gp_segment_configuration where role = 'm' order by content" | tr '|' ' ' > "$sdir/whpg_fts_gate_topology" && echo "whpg_dispatch_topology_file = 'whpg_fts_gate_topology'" >> "$sdir/postgresql.conf" && echo "gp_fts_probe_interval = 10" >> "$sdir/postgresql.conf" && touch "$sdir/hs_fts_gate_marker" && cat "$sdir"/log/*.csv | wc -l > "$sdir/hs_fts_gate_logmark" && pg_ctl reload -D "$sdir";
 
+-- Restart the standby uncleanly: a coordinator that starts after an unclean
+-- shutdown asks for the QE cleanup at startup, and its promotion with the
+-- GUC set must withdraw that request too (session 1's QEs below).  Before
+-- any fault is injected: the restart clears them.  The log mark is taken
+-- again after it, so the log checks below see only what the promotion
+-- wrote.
+!\retcode sdir=$(psql -X -d postgres -Atc "select datadir from gp_segment_configuration where content = -1 and role = 'm'"); pg_ctl restart -D "$sdir" -m immediate -w -t 600 > /dev/null && cat "$sdir"/log/*.csv | wc -l > "$sdir/hs_fts_gate_logmark";
+select wait_until_standby_in_state('streaming');
+
 -1S: show whpg_dispatch_topology_state;
 -1Sq:
 
@@ -63,6 +78,11 @@ select gp_inject_fault_infinite('fts_probe', 'skip', dbid) from gp_segment_confi
 select gp_inject_fault_infinite('ftsLoop_topology_gated', 'skip', dbid) from gp_segment_configuration where content = -1 and role = 'm';
 select gp_inject_fault_infinite('dtx_recovery_topology_gated', 'skip', dbid) from gp_segment_configuration where content = -1 and role = 'm';
 select gp_inject_fault_infinite('qd_interconnect_address_not_local', 'skip', dbid) from gp_segment_configuration where content = -1 and role = 'm';
+
+-- open a transaction with QEs on every primary, held across the promotion
+-- and the gate lifting
+1: begin;
+1: select count(*) from gp_dist_random('gp_id');
 
 ----------------------------------------------------------------
 -- Promote the standby: recovery ends, the workers start, gated
@@ -118,6 +138,11 @@ select gp_wait_until_triggered_fault('fts_probe', 1, dbid) from gp_segment_confi
 -- loop's counters kept moving.
 -1S: select gp_request_fts_probe_scan();
 -1Sq:
+
+-- the DTM of the promoted node has started (recoverTM ran), and the open
+-- transaction's QEs were not terminated: its next statement reuses them
+1: select count(*) from gp_dist_random('gp_id');
+1: commit;
 
 -- a coordinator row whose address did not resolve fails the connection
 -- with an error; it does not crash the backend (which would reset the
