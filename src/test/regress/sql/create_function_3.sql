@@ -24,6 +24,34 @@ SELECT proname, prorettype::regtype, proargtypes::regtype[] FROM pg_proc
                      'functest_A_2'::regproc,
                      'functest_A_3'::regproc) ORDER BY proname;
 
+-- pseudo-types are rejected as parameter types, output parameters included
+CREATE FUNCTION functest_A_4(x "any") RETURNS int LANGUAGE 'sql'
+       AS 'SELECT 1';
+CREATE FUNCTION functest_A_5(OUT a "any", OUT b int) LANGUAGE 'sql'
+       AS 'SELECT 1, 2';
+CREATE FUNCTION functest_A_6() RETURNS TABLE(a "any", b int) LANGUAGE 'sql'
+       AS 'SELECT 1, 2';
+-- the check does not depend on the function body being validated
+SET check_function_bodies = off;
+CREATE FUNCTION functest_A_7(OUT a cstring, OUT b int) LANGUAGE 'sql'
+       AS 'SELECT ''x'', 2';
+RESET check_function_bodies;
+
+-- polymorphic parameters and record/record[] output columns are allowed
+CREATE FUNCTION functest_A_8(x anyelement, OUT a anyelement, OUT b int)
+       LANGUAGE 'sql' AS 'SELECT $1, 2';
+SELECT * FROM functest_A_8(42);
+CREATE FUNCTION functest_A_9(OUT a record, OUT b int) LANGUAGE 'sql'
+       AS 'SELECT ROW(1, 2), 3';
+SELECT * FROM functest_A_9();
+CREATE FUNCTION functest_A_10(OUT a record[], OUT b int) LANGUAGE 'sql'
+       AS 'SELECT ARRAY[ROW(1, 2)], 3';
+SELECT * FROM functest_A_10();
+-- record is accepted as an output column type, but, unlike in PL/pgSQL, it is
+-- rejected as an input parameter type, for historical reasons
+CREATE FUNCTION functest_A_11(x record) RETURNS int LANGUAGE 'sql'
+       AS 'SELECT 1';
+
 --
 -- IMMUTABLE | STABLE | VOLATILE
 --
