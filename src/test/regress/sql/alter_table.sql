@@ -1885,3 +1885,14 @@ alter table at_rw_heap add column d int default 1;  -- fail
 alter table at_rw_ao alter column b type varchar;  -- fail
 alter table at_rw_co alter column b type varchar;  -- fail
 drop table at_rw_user, at_rw_ao, at_rw_co, at_rw_heap;
+
+-- Adding a column with a DEFAULT is not allowed when the rowtype is
+-- used in expressions in catalogs.  With the current implementation,
+-- we won't rewrite the values stored in catalogs, so they would still
+-- be missing the value, which gets interpreted as NULL.
+CREATE TABLE attmp (initial int4);
+CREATE VIEW attmpv AS SELECT '(1)'::attmp AS c;
+ALTER TABLE attmp ADD COLUMN b int; -- allowed
+ALTER TABLE attmp ADD COLUMN c int DEFAULT 0; -- fails
+DROP VIEW attmpv;
+DROP TABLE attmp;
