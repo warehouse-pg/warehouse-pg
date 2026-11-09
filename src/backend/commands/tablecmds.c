@@ -7329,8 +7329,8 @@ find_composite_type_dependencies(Oid typeOid, Relation origRelation,
 											 visited);
 
 	/*
-	 * XXX: We don't record pg_depend entries in some cases where we really
-	 * should.  Scan the catalog tables for those, too.
+	 * We used to not record pg_depend entries in some cases where we really
+	 * should have.  Scan the catalog tables for those, too.
 	 */
 	find_missing_composite_type_dependencies(visited, origRelation, origTypeName);
 
@@ -7553,15 +7553,16 @@ check_composite_type_dependency(ObjectAddress *depobj, Oid typeOid,
 				/*
 				 * We treat a whole-row dependency the same as a dependency
 				 * from a specific column, if the relation also has a column
-				 * of the given type.  This is because we have a gap:
-				 * expression indexes don't store a dependency on the indexed
-				 * type returned by the expression.  That's a bug, but in many
-				 * typical cases, the expression will have a dependency on the
-				 * row type, so we can often still catch it here.  Treat it as
-				 * if the dependency was on the column.  (It could also be
-				 * that the target type is embedded in some container type
-				 * that is stored in an index column, but the previous
-				 * recursion should catch such cases.)
+				 * of the given type.  This is because we used to have a gap
+				 * in dependency tracking: expression indexes didn't store a
+				 * dependency on the indexed type returned by the expression.
+				 * That was a bug, but in many typical cases, the expression
+				 * still had a dependency on the row type, so we can often
+				 * still catch it here.  Treat it as if the dependency was on
+				 * the column.  (It could also be that the target type is
+				 * embedded in some container type that is stored in an index
+				 * column, but the previous recursion should catch such
+				 * cases.)
 				 *
 				 * Any cases of missing dependencies not caught here are
 				 * handled by find_missing_composite_type_dependencies().
@@ -7780,7 +7781,7 @@ get_node_tree_attr(enum SysCacheIdentifier cacheId, HeapTuple tup, AttrNumber at
 /*
  * find_missing_composite_type_dependencies
  *
- * Currently, we don't record pg_depend entries for a few cases that
+ * In the past, we failed to record pg_depend entries for a few cases that
  * clearly form a dependency and should prevent you from ALTERing a rowtype.
  * This function scans the catalogs for the missing dependencies.
  * Unfortunately, these need to resort to sequential scans, which is slow.
@@ -7795,8 +7796,8 @@ find_missing_composite_type_dependencies(HTAB *types, Relation origRelation,
 
 	/*
 	 * An expression index whose expression returns the target type stores
-	 * datums of that type in the index, but we don't record a pg_depend entry
-	 * for that.  Often an expression depends on its result type for other
+	 * datums of that type in the index, but we used to not record a pg_depend
+	 * entry for that.  Often an expression depends on its result type for other
 	 * reasons, for example a Const does record a dependency on its type, but
 	 * as a counter-example, a function call records a dependency only on the
 	 * function, not on its return type.  The pg_depend scan in

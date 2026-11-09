@@ -888,6 +888,7 @@ CREATE TABLE test_tbl_with_idx (c int, d text);
 NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'c' as the Greenplum Database data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 CREATE INDEX ON test_tbl_with_idx ((cons_testtype1(c, d)));
+ERROR:  permission denied for type testtype1
 DROP TABLE test_tbl_with_idx;
 SET SESSION AUTHORIZATION regressuser2;
 -- commands that should succeed
