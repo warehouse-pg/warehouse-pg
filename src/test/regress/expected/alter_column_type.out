@@ -96,7 +96,6 @@ select atref_func();
 drop function atref_func;
 drop table attbl;
 -- in column default
--- FIXME: This is currently allowed, but it's broken
 create table attbl(a bytea);
 NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Greenplum Database data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
@@ -104,13 +103,7 @@ create table atref(b text default '(\\x4649584d45)'::attbl);
 NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'b' as the Greenplum Database data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 alter table attbl alter column a type text;  -- someday this should work
-insert into atref (b) values (default);
-select * from atref;
-    b    
----------
- (FIXME)
-(1 row)
-
+ERROR:  cannot alter table "attbl" because default value for column b of table atref uses its row type
 drop table atref;
 drop table attbl;
 -- in PARTITION BY clause, when the type is the expression's return type, but
@@ -417,14 +410,8 @@ NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 create view atrefview as
   select '1' as a, (('(\\x4649584d45)'::attbl = '(\\x4649584d45)'::attbl)) as b;
-alter table attbl alter column a type text; -- FIXME: should fail
-select pg_get_viewdef('atrefview'::regclass);
-                 pg_get_viewdef                  
--------------------------------------------------
-  SELECT '1'::text AS a,                        +
-     ('(FIXME)'::attbl = '(FIXME)'::attbl) AS b;
-(1 row)
-
+alter table attbl alter column a type text; -- fails
+ERROR:  cannot alter table "attbl" because rule _RETURN on view atrefview uses its row type
 drop view atrefview;
 drop table attbl;
 -- Adding a domain constraint changes nothing on disk, so a stored Const of a
@@ -441,8 +428,10 @@ create table at_pt (x int, y varchar(10)) partition by range (x);
 NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'x' as the Greenplum Database data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 create view at_ptv as select '(1,hi)'::at_pt;
-alter table at_pt alter column y type varchar(20); -- FIXME: should fail
-alter table at_pt alter column y type bytea using y::bytea; -- FIXME: should fail
+alter table at_pt alter column y type varchar(20); -- fails
+ERROR:  cannot alter table "at_pt" because rule _RETURN on view at_ptv uses its row type
+alter table at_pt alter column y type bytea using y::bytea; -- fails
+ERROR:  cannot alter table "at_pt" because rule _RETURN on view at_ptv uses its row type
 drop view at_ptv;
 drop table at_pt;
 -- A partition key producing the row type has bound constants of it
