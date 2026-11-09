@@ -52,6 +52,9 @@ private:
 	// check if a scalar predicate can be pushed through a logical expression
 	static BOOL FPushable(CExpression *pexprLogical, CExpression *pexprPred);
 
+	// is the given expression a GbAgg with no grouping columns?
+	static BOOL FScalarGbAgg(CExpression *pexprLogical);
+
 	// check if a scalar predicate can be pushed through the child of a sequence project expression
 	static BOOL FPushableThruSeqPrjChild(CExpression *pexprSeqPrj,
 										 CExpression *pexprPred);
