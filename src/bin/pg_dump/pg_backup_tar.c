@@ -1296,6 +1296,18 @@ _tarPositionTo(ArchiveHandle *AH, const char *filename)
 	{
 		ahlog(AH, 4, "skipping tar member %s\n", th->targetFile);
 
+		/*
+		 * If anything precedes toc.dat, we get here before the TOC has been
+		 * read.  pg_dump never writes such an archive, and calling
+		 * TocIDRequired() now would build the dump ID lookup arrays from an
+		 * empty TOC (they are never rebuilt, so later lookups would index
+		 * past their ends), so treat it as corruption.
+		 */
+		if (AH->toc->next == AH->toc)
+			exit_horribly(modulename,
+						  "tar member \"%s\" precedes \"%s\" -- perhaps a corrupt archive\n",
+						  th->targetFile, filename);
+
 		id = atoi(th->targetFile);
 		if ((TocIDRequired(AH, id) & REQ_DATA) != 0)
 			exit_horribly(modulename, "restoring data out of order is not supported in this archive format: "
@@ -1399,6 +1411,23 @@ _tarGetHeader(ArchiveHandle *AH, TAR_MEMBER *th)
 					  "corrupt tar header found in %s "
 					  "(expected %d, computed %d) file position %s\n",
 					  tag, sum, chk, posbuf);
+	}
+
+	/*
+	 * read_tar_number() can return a value too large for a pgoff_t.  Reject a
+	 * negative result, because tarRead() would then compute a huge number of
+	 * bytes remaining and overrun its caller's buffer.
+	 */
+	if (len < 0)
+	{
+		char		posbuf[32];
+
+		snprintf(posbuf, sizeof(posbuf), UINT64_FORMAT,
+				 (uint64) ftello(ctx->tarFH));
+		exit_horribly(modulename,
+					  "corrupt tar header found in %s "
+					  "(invalid file length) file position %s\n",
+					  tag, posbuf);
 	}
 
 	th->targetFile = pg_strdup(tag);

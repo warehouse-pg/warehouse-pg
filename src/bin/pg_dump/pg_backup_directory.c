@@ -302,6 +302,9 @@ _ReadExtraToc(ArchiveHandle *AH, TocEntry *te)
 		free(tctx->filename);
 		tctx->filename = NULL;
 	}
+	else if (first_dir_separator(tctx->filename) != NULL)
+		exit_horribly(modulename, "invalid file name in archive: \"%s\"\n",
+					  tctx->filename);
 }
 
 /*
@@ -464,6 +467,9 @@ _LoadBlobs(ArchiveHandle *AH, RestoreOptions *ropt)
 		if (sscanf(line, "%u %s\n", &oid, fname) != 2)
 			exit_horribly(modulename, "invalid line in large object TOC file \"%s\": \"%s\"\n",
 						  fname, line);
+		if (first_dir_separator(fname) != NULL)
+			exit_horribly(modulename, "invalid file name in archive: \"%s\"\n",
+						  fname);
 
 		StartRestoreBlob(AH, oid, ropt->dropSchema);
 		snprintf(path, MAXPGPATH, "%s/%s", ctx->directory, fname);

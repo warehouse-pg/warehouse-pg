@@ -1815,8 +1815,8 @@ buildTocEntryArrays(ArchiveHandle *AH)
 	DumpId		maxDumpId = AH->maxDumpId;
 	TocEntry   *te;
 
-	AH->tocsByDumpId = (TocEntry **) pg_malloc0((maxDumpId + 1) * sizeof(TocEntry *));
-	AH->tableDataId = (DumpId *) pg_malloc0((maxDumpId + 1) * sizeof(DumpId));
+	AH->tocsByDumpId = pg_malloc0_array(TocEntry *, (maxDumpId + 1));
+	AH->tableDataId = pg_malloc0_array(DumpId, (maxDumpId + 1));
 
 	for (te = AH->toc->next; te != AH->toc; te = te->next)
 	{
@@ -2612,7 +2612,28 @@ ReadToc(ArchiveHandle *AH)
 					depSize *= 2;
 					deps = (DumpId *) pg_realloc(deps, sizeof(DumpId) * depSize);
 				}
-				sscanf(tmp, "%d", &deps[depIdx]);
+
+				/*
+				 * Sanity check.  Dependencies are used as subscripts into
+				 * arrays indexed by dump ID, so we can't let a corrupt TOC
+				 * hand us a value that isn't a valid dump ID.  Pre-8.0
+				 * archives record OIDs here instead, which needn't fit in a
+				 * DumpId.  Those are only ever used with bounds checks, since
+				 * such archives can't be restored in parallel, so leave them
+				 * be.
+				 *
+				 * WHPG: unlike upstream, accept zero.  dumpNamespace() records
+				 * a dependency on binary_upgrade_dumpid for every schema, and
+				 * that is 0 when not in binary-upgrade mode, so every archive
+				 * holds such entries.  Zero is a valid subscript, and no TOC
+				 * entry or table data item is ever registered under it, so it
+				 * is harmless.
+				 */
+				if (sscanf(tmp, "%d", &deps[depIdx]) != 1 ||
+					(AH->version >= K_VERS_1_8 && deps[depIdx] < 0))
+					exit_horribly(modulename,
+								  "dependency ID \"%s\" out of range -- perhaps a corrupt TOC\n",
+								  tmp);
 				free(tmp);
 				depIdx++;
 			}
@@ -3319,9 +3340,16 @@ _getObjectDescription(PQExpBuffer buf, TocEntry *te, ArchiveHandle *AH)
 		strcmp(type, "OPERATOR FAMILY") == 0 ||
 		strcmp(type, "PROTOCOL") == 0)
 	{
-		/* Chop "DROP " off the front and make a modifiable copy */
-		char	   *first = pg_strdup(te->dropStmt + 5);
+		char	   *first;
 		char	   *last;
+
+		if (strncmp(te->dropStmt, "DROP ", 5) != 0)
+			exit_horribly(modulename,
+						  "unexpected DROP statement for object type \"%s\" -- perhaps a corrupt TOC\n",
+						  type);
+
+		/* Chop "DROP " off the front and make a modifiable copy */
+		first = pg_strdup(te->dropStmt + 5);
 
 		/* point to last character in string */
 		last = first + strlen(first) - 1;
