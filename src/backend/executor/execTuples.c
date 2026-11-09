@@ -185,6 +185,7 @@ tts_virtual_materialize(TupleTableSlot *slot)
 	{
 		Form_pg_attribute att = TupleDescAttr(desc, natt);
 		Datum		val;
+		bool		ovfl;
 
 		if (att->attbyval || slot->tts_isnull[natt])
 			continue;
@@ -199,13 +200,26 @@ tts_virtual_materialize(TupleTableSlot *slot)
 			 * slot doesn't depend on it.
 			 */
 			sz = att_align_nominal(sz, att->attalign);
-			sz += EOH_get_flat_size(DatumGetEOHP(val));
+			ovfl = pg_add_size_overflow(sz,
+										EOH_get_flat_size(DatumGetEOHP(val)),
+										&sz);
 		}
 		else
 		{
 			sz = att_align_nominal(sz, att->attalign);
-			sz = att_addlength_datum(sz, att->attlen, val);
+			sz = att_addlength_datum_overflow(sz, att->attlen, val, &ovfl);
 		}
+
+		/*
+		 * WHPG: upstream limits the row to MaxAllocSize here.  We allocate it
+		 * with MCXT_ALLOC_HUGE below (a row loaded by COPY into a
+		 * column-oriented table may exceed 1GB), so instead reject a size
+		 * that wrapped around or that even a huge allocation can't satisfy.
+		 */
+		if (ovfl || !AllocHugeSizeIsValid(sz))
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("tuple is too big")));
 	}
 
 	/* all data is byval */
