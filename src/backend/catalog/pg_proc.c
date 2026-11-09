@@ -37,6 +37,7 @@
 #include "nodes/nodeFuncs.h"
 #include "parser/parse_expr.h"
 #include "parser/parse_type.h"
+#include "storage/lmgr.h"
 #include "tcop/pquery.h"
 #include "tcop/tcopprot.h"
 #include "utils/acl.h"
@@ -408,6 +409,18 @@ ProcedureCreate(const char *procedureName,
 					(errcode(ERRCODE_DUPLICATE_FUNCTION),
 			errmsg("function \"%s\" already exists with same argument types",
 				   procedureName)));
+
+		/*
+		 * The row-locking on the pg_proc row is generally enough protection
+		 * from concurrently DROPping the function, but acquire a heavy-weight
+		 * lock on the function anyway, so that other DDL commands that depend
+		 * on the details of the function can prevent the function from being
+		 * concurrently modified.  And you get nicer error message on
+		 * conflicting ALTER FUNCTION commands than "row concurrently
+		 * updated".
+		 */
+		LockDatabaseObject(ProcedureRelationId, oldOid, 0, AccessExclusiveLock);
+
 		if (!pg_proc_ownercheck(oldOid, proowner))
 			aclcheck_error(ACLCHECK_NOT_OWNER, ACL_KIND_PROC,
 						   procedureName);
