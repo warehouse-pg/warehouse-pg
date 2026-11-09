@@ -73,6 +73,22 @@ CREATE FUNCTION test_support_func(internal)
     AS '@libdir@/regress@DLSUFFIX@', 'test_support_func'
     LANGUAGE C STRICT;
 
+-- For testing make_expanded_record_from_datum()
+CREATE FUNCTION expanded_record_identity(anyelement)
+    RETURNS anyelement
+    AS '@libdir@/regress@DLSUFFIX@', 'expanded_record_identity'
+    LANGUAGE C STRICT;
+
+CREATE FUNCTION expanded_record_info(anyelement)
+    RETURNS text
+    AS '@libdir@/regress@DLSUFFIX@', 'expanded_record_info'
+    LANGUAGE C STRICT;
+
+CREATE FUNCTION expanded_record_field_text(anyelement, int)
+    RETURNS text
+    AS '@libdir@/regress@DLSUFFIX@', 'expanded_record_field_text'
+    LANGUAGE C STRICT;
+
 -- Things that shouldn't work:
 
 CREATE FUNCTION test1 (int) RETURNS int LANGUAGE SQL CONTAINS SQL
