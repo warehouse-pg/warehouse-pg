@@ -68,6 +68,11 @@ retain_tempdir=0
 # TODO: what about the pg_upgrade precheck for upgrade?
 perf_test=0
 
+# Set when the old cluster has the objects of
+# test_gpdb_pre_attribute_versions.sql, whose attribute versions and stored
+# composite values are checked after the upgrade.
+attribute_versions=0
+
 # Not all platforms have a realpath binary in PATH, most notably macOS doesn't,
 # so provide an alternative implementation. Returns an absolute path in the
 # variable reference passed as the first parameter.  Code inspired by:
@@ -251,6 +256,78 @@ check_distinct_system_ids()
 	fi
 }
 
+# The old cluster can run test_gpdb_pre_attribute_versions.sql if its
+# regression database has the helper functions of the regress library, which
+# only a build with attribute versioning creates.
+has_attribute_versions()
+{
+	local nfuncs=$(${OLD_BINDIR}/psql -X -At -c "SELECT count(*) FROM pg_proc WHERE proname IN ('make_tuple_unversioned', 'clear_attribute_versions')" regression 2>/dev/null)
+
+	[ "$nfuncs" = "2" ]
+}
+
+# Checks what pg_dump emits for the objects of
+# test_gpdb_pre_attribute_versions.sql in binary upgrade mode, the way
+# pg_upgrade runs it, and in a plain dump.
+check_attribute_version_dumps()
+{
+	if ! PGOPTIONS='-c gp_session_role=utility' ${NEW_BINDIR}/pg_dump --binary-upgrade --schema-only -n upgrade_attver -f "$temp_root/attver_binary_upgrade.sql" regression ||
+	   ! ${NEW_BINDIR}/pg_dump --schema-only -n upgrade_attver -f "$temp_root/attver_plain.sql" regression; then
+		echo "ERROR: unable to dump the attribute version test schema"
+		exit 1
+	fi
+
+	if ! perl test_gpdb_attribute_versions_dump.pl "$temp_root/attver_binary_upgrade.sql" "$temp_root/attver_plain.sql"; then
+		echo "ERROR: unexpected pg_dump output for attribute versions"
+		exit 1
+	fi
+}
+
+# Queries the upgraded cluster for the attribute version checks. The cluster
+# has to be running; $1 is the PGOPTIONS to connect with.
+collect_attribute_versions()
+{
+	PGOPTIONS="$1" ${NEW_BINDIR}/psql -X -At -f test_gpdb_attribute_versions.sql regression > "$temp_root/attver2.txt"
+
+	# Versions assigned after the upgrade have to exceed all restored ones.
+	PGOPTIONS="$1" ${NEW_BINDIR}/psql -X -At regression > "$temp_root/attver_precede.txt" <<-EOF
+		SELECT max(substr(o, length('pg_attver=') + 1)::numeric) <
+		       pg_current_xlog_insert_location() - '0/0'::pg_lsn
+		FROM pg_attribute a, unnest(a.attoptions) o
+		WHERE a.attrelid >= 16384 AND o LIKE 'pg_attver=%';
+	EOF
+
+	# Reading the stored values needs the segments.
+	if (( ! $smoketest )); then
+		${NEW_BINDIR}/psql -X -a -f test_gpdb_post_attribute_versions.sql regression > "$temp_root/attver_post.out" 2>&1
+	fi
+}
+
+# Compares what collect_attribute_versions() gathered with the state before
+# the upgrade and with the expected output.
+check_attribute_versions()
+{
+	if ! diff "$temp_root/attver1.txt" "$temp_root/attver2.txt" > "$temp_root/attver.diffs"; then
+		head -50 "$temp_root/attver.diffs"
+		echo "Error: attribute versions before and after the upgrade differ"
+		exit 1
+	fi
+
+	if [ "$(cat "$temp_root/attver_precede.txt")" != "t" ]; then
+		echo "Error: restored attribute versions do not precede new versions"
+		exit 1
+	fi
+
+	if (( ! $smoketest )); then
+		if ! diff -u test_gpdb_post_attribute_versions.out "$temp_root/attver_post.out"; then
+			echo "Error: composite values read differently after the upgrade"
+			exit 1
+		fi
+	fi
+
+	echo "Attribute versions preserved: $(wc -l < "$temp_root/attver2.txt") attributes"
+}
+
 # Diffs the dump1.sql and dump2.sql files in the $temp_root, and exits
 # accordingly (exit code 1 if they differ, 0 otherwise).
 diff_and_exit() {
@@ -275,6 +352,10 @@ diff_and_exit() {
 	PGOPTIONS="${pgopts}" ${NEW_BINDIR}/pg_dumpall ${DUMP_OPTS} -f "$temp_root/dump2.sql"
 	echo done
 
+	if (( $attribute_versions )) ; then
+		collect_attribute_versions "${pgopts}"
+	fi
+
 	${NEW_BINDIR}/gpstop -a ${args}
 	MASTER_DATA_DIRECTORY=""; unset MASTER_DATA_DIRECTORY
 	PGPORT=""; unset PGPORT
@@ -290,6 +371,10 @@ diff_and_exit() {
 		diff -wdu "$temp_root/dump1.sql" "$temp_root/dump2.sql" | tee regression.diffs
 		echo "Error: before and after dumps differ"
 		exit 1
+	fi
+
+	if (( $attribute_versions )) ; then
+		check_attribute_versions
 	fi
 
 	# Final sanity checks.
@@ -398,6 +483,23 @@ main() {
 		fi
 	fi
 	
+	# Create composite values with attribute versions of all kinds, and
+	# remember the versions of every relation with a row type, to verify
+	# that the upgrade preserves them. A plain dump does not contain them.
+	if (( !$perf_test )) ; then
+		if has_attribute_versions; then
+			attribute_versions=1
+			if ! ${OLD_BINDIR}/psql -X -q -f test_gpdb_pre_attribute_versions.sql -v ON_ERROR_STOP=1 regression >/dev/null; then
+				echo "ERROR: unable to create the attribute version test objects"
+				exit 1
+			fi
+			check_attribute_version_dumps
+			${OLD_BINDIR}/psql -X -At -f test_gpdb_attribute_versions.sql regression > "$temp_root/attver1.txt"
+		else
+			echo "Skipping the attribute version checks: the regression database of the old cluster lacks the helper functions"
+		fi
+	fi
+
 	# Ensure that the catalog is sane before attempting an upgrade. While there is
 	# (limited) catalog checking inside pg_upgrade, it won't catch all issues, and
 	# upgrading a faulty catalog won't work.
