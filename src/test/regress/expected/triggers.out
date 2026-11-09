@@ -3092,3 +3092,69 @@ for each statement execute function trigger_function1();
 ERROR:  Triggers for statements are not yet supported
 delete from convslot_test_parent;
 drop table convslot_test_child, convslot_test_parent;
+--
+-- Test a trigger on a partition table where a columns NOT NULLness differs
+-- between parent and child. In a WIP patch, this mismatch caused a spurious
+-- error that was not detected by any existing tests. Therefore a test seems
+-- appropriate.
+--
+CREATE TABLE trignulldiff_parent (key int, childnotnull int, parentnotnull int NOT NULL)
+  PARTITION BY LIST (key);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'key' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+CREATE TABLE trignulldiff_child PARTITION OF trignulldiff_parent
+  FOR VALUES IN (1, 2);
+NOTICE:  table has parent, setting distribution columns to match parent table
+ALTER TABLE trignulldiff_child ALTER COLUMN childnotnull SET NOT NULL;
+CREATE FUNCTION trignulldiff_return_parent() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  -- Returns a row of the parent type (which is not NOT NULL), even when
+  -- invoked on the child table. This verifies we handle that difference
+  -- correctly.
+  RETURN ROW(NEW.key, NEW.childnotnull, NEW.parentnotnull)::trignulldiff_parent;
+END $$;
+-- WHPG: a partitioned table cannot have a BEFORE ROW trigger in this
+-- version, so the trigger is created on the partition.  Rows inserted
+-- through the parent are routed to the partition and fire it as well.
+CREATE TRIGGER trignulldiff_return_parent BEFORE INSERT ON trignulldiff_child
+  FOR EACH ROW EXECUTE FUNCTION trignulldiff_return_parent();
+-- test not inserting NULLs
+INSERT INTO trignulldiff_parent VALUES (1,11, 111) RETURNING *;
+ key | childnotnull | parentnotnull 
+-----+--------------+---------------
+   1 |           11 |           111
+(1 row)
+
+INSERT INTO trignulldiff_child VALUES (1,22, 222) RETURNING *;
+ key | childnotnull | parentnotnull 
+-----+--------------+---------------
+   1 |           22 |           222
+(1 row)
+
+INSERT INTO trignulldiff_parent VALUES (1,33, 333) RETURNING *;
+ key | childnotnull | parentnotnull 
+-----+--------------+---------------
+   1 |           33 |           333
+(1 row)
+
+INSERT INTO trignulldiff_child VALUES (1,44, 444) RETURNING *;
+ key | childnotnull | parentnotnull 
+-----+--------------+---------------
+   1 |           44 |           444
+(1 row)
+
+-- test inserting NULLs
+INSERT INTO trignulldiff_parent VALUES (2, NULL, 111) RETURNING *;
+ERROR:  null value in column "childnotnull" violates not-null constraint  (seg0 slice1 127.0.0.1:8902 pid=4090259)
+DETAIL:  Failing row contains (2, null, 111).
+INSERT INTO trignulldiff_child VALUES (2, NULL, 222) RETURNING *;
+ERROR:  null value in column "childnotnull" violates not-null constraint  (seg0 slice1 127.0.0.1:8902 pid=4090259)
+DETAIL:  Failing row contains (2, null, 222).
+INSERT INTO trignulldiff_parent VALUES (2, 33, NULL) RETURNING *;
+ERROR:  null value in column "parentnotnull" violates not-null constraint  (seg0 slice1 127.0.0.1:8902 pid=4090259)
+DETAIL:  Failing row contains (2, 33, null).
+INSERT INTO trignulldiff_child VALUES (2, 444, NULL) RETURNING *;
+ERROR:  null value in column "parentnotnull" violates not-null constraint  (seg0 slice1 127.0.0.1:8902 pid=4090259)
+DETAIL:  Failing row contains (2, 444, null).
+DROP TABLE IF EXISTS trignulldiff_parent CASCADE;
+DROP FUNCTION IF EXISTS trignulldiff_return_parent();
