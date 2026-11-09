@@ -79,16 +79,32 @@ CREATE OR REPLACE FUNCTION fn_op2(boolean, boolean)
 RETURNS boolean AS $$
     SELECT NULL::BOOLEAN;
 $$ LANGUAGE sql IMMUTABLE;
-CREATE OPERATOR === (
+CREATE OPERATOR ===== (
     LEFTARG = boolean,
     RIGHTARG = boolean,
     PROCEDURE = fn_op2,
-    COMMUTATOR = ===,
-    NEGATOR = !==,
+    COMMUTATOR = =====,
+    NEGATOR = !====,
     RESTRICT = contsel,
     JOIN = contjoinsel,
     SORT1, SORT2, LTCMP, GTCMP, HASHES, MERGES
 );
+-- Verify that oprcom/oprnegate links are set up correctly
+SELECT oprname, oprcode, oprresult::regtype,
+       oprcom::regoper, oprnegate::regoper
+FROM pg_operator WHERE oprname IN ('=====', '!====') ORDER BY 1;
+-- Now fill in the shell operator
+CREATE OPERATOR !==== (
+    LEFTARG = boolean,
+    RIGHTARG = boolean,
+    PROCEDURE = fn_op2,
+    COMMUTATOR = !====
+    -- notice we leave NEGATOR to be inferred from the prior command
+);
+-- Verify that oprcom/oprnegate links are still set up correctly
+SELECT oprname, oprcode, oprresult::regtype,
+       oprcom::regoper, oprnegate::regoper
+FROM pg_operator WHERE oprname IN ('=====', '!====') ORDER BY 1;
 ROLLBACK;
 
 -- Should fail. Invalid attribute
@@ -211,5 +227,213 @@ CREATE OPERATOR @!@ (
    procedure = int4eq,
    RESTRICT = eqsel,
    JOIN = fn_join_op8
+);
+ROLLBACK;
+
+-- Should fail. An operator cannot be its own negator.
+BEGIN TRANSACTION;
+CREATE OPERATOR === (
+    leftarg = integer,
+    rightarg = integer,
+    procedure = int4eq,
+    negator = ===
+);
+ROLLBACK;
+
+-- Should fail. An operator cannot be its own negator. Here we check that
+-- this error is detected when replacing a shell operator.
+BEGIN TRANSACTION;
+-- create a shell operator for ===!!! by referencing it as a commutator
+CREATE OPERATOR === (
+    leftarg = integer,
+    rightarg = integer,
+    procedure = int4eq,
+    commutator = ===!!!
+);
+CREATE OPERATOR ===!!! (
+    leftarg = integer,
+    rightarg = integer,
+    procedure = int4ne,
+    negator = ===!!!
+);
+ROLLBACK;
+
+-- Should fail. A commutator operator must return the same datatype.
+BEGIN TRANSACTION;
+CREATE OPERATOR === (
+    leftarg = integer,
+    rightarg = integer,
+    procedure = int4eq,
+    commutator = <<
+);
+ROLLBACK;
+
+-- The same, detected when replacing a shell operator.
+BEGIN TRANSACTION;
+-- create a shell operator for ===!!! by referencing it as a commutator
+CREATE OPERATOR === (
+    leftarg = integer,
+    rightarg = integer,
+    procedure = int4eq,
+    commutator = ===!!!
+);
+CREATE OPERATOR ===!!! (
+    leftarg = integer,
+    rightarg = integer,
+    procedure = int4pl
+);
+ROLLBACK;
+
+-- Should fail. A negator operator must return the same datatype.
+BEGIN TRANSACTION;
+CREATE OPERATOR === (
+    leftarg = integer,
+    rightarg = integer,
+    procedure = int4eq,
+    negator = <<
+);
+ROLLBACK;
+
+-- The same, detected when replacing a shell operator.
+-- (We actually get a must-be-boolean error, because that's detected first,
+-- but the important point is to reject this.)
+BEGIN TRANSACTION;
+-- create a shell operator for ===!!! by referencing it as a negator
+CREATE OPERATOR === (
+    leftarg = integer,
+    rightarg = integer,
+    procedure = int4eq,
+    negator = ===!!!
+);
+CREATE OPERATOR ===!!! (
+    leftarg = integer,
+    rightarg = integer,
+    procedure = int4pl
+);
+ROLLBACK;
+
+-- test that we can't use part of an existing commutator or negator pair
+-- as a commutator or negator
+CREATE OPERATOR === (
+    leftarg = integer,
+    rightarg = integer,
+    procedure = int4eq,
+    commutator = =
+);
+CREATE OPERATOR === (
+    leftarg = integer,
+    rightarg = integer,
+    procedure = int4eq,
+    negator = <>
+);
+
+-- Test that we can't change a shell operator's existing commutator link
+BEGIN TRANSACTION;
+-- create a shell operator for ===!!! by referencing it as a commutator
+CREATE OPERATOR === (
+    leftarg = integer,
+    rightarg = integer,
+    procedure = int4eq,
+    commutator = ===!!!
+);
+CREATE OPERATOR ===!!! (
+    leftarg = integer,
+    rightarg = integer,
+    procedure = int4eq,
+    commutator = <<
+);
+ROLLBACK;
+
+-- Test that we can't change a shell operator's existing negator link
+BEGIN TRANSACTION;
+-- create a shell operator for ===!!! by referencing it as a negator
+CREATE OPERATOR === (
+    leftarg = integer,
+    rightarg = integer,
+    procedure = int4eq,
+    negator = ===!!!
+);
+CREATE OPERATOR ===!!! (
+    leftarg = integer,
+    rightarg = integer,
+    procedure = int4eq,
+    negator = <<
+);
+ROLLBACK;
+
+-- DROP OPERATOR does not reset the links of the commutator and negator, so
+-- they are left dangling.  Recreating the dropped operator must work, and
+-- must link both operators to each other again.
+BEGIN TRANSACTION;
+CREATE OPERATOR === (
+    leftarg = integer,
+    rightarg = integer,
+    procedure = int4eq,
+    commutator = ===!!!,
+    negator = !===
+);
+CREATE OPERATOR ===!!! (
+    leftarg = integer,
+    rightarg = integer,
+    procedure = int4eq
+);
+CREATE OPERATOR !=== (
+    leftarg = integer,
+    rightarg = integer,
+    procedure = int4ne
+);
+DROP OPERATOR === (integer, integer);
+CREATE OPERATOR === (
+    leftarg = integer,
+    rightarg = integer,
+    procedure = int4eq,
+    commutator = ===!!!,
+    negator = !===
+);
+SELECT oprname, oprcode, oprresult::regtype,
+       oprcom::regoper, oprnegate::regoper
+FROM pg_operator WHERE oprname IN ('===', '===!!!', '!===') ORDER BY 1;
+ROLLBACK;
+
+-- Should fail. The result type is checked when a dangling link is replaced.
+BEGIN TRANSACTION;
+CREATE OPERATOR === (
+    leftarg = integer,
+    rightarg = integer,
+    procedure = int4eq,
+    commutator = ===!!!
+);
+CREATE OPERATOR ===!!! (
+    leftarg = integer,
+    rightarg = integer,
+    procedure = int4eq
+);
+DROP OPERATOR === (integer, integer);
+CREATE OPERATOR === (
+    leftarg = integer,
+    rightarg = integer,
+    procedure = int4pl,
+    commutator = ===!!!
+);
+ROLLBACK;
+
+-- Should fail. A shell operator can only be filled in by the role that
+-- created it, even if the other role is a superuser.
+BEGIN TRANSACTION;
+CREATE ROLE regress_rol_op9;
+CREATE SCHEMA schema_op9;
+GRANT ALL ON SCHEMA schema_op9 TO regress_rol_op9;
+SET ROLE regress_rol_op9;
+CREATE OPERATOR schema_op9.=== (
+    leftarg = integer,
+    rightarg = integer,
+    procedure = int4eq,
+    commutator = OPERATOR(schema_op9.===!!!)
+);
+RESET ROLE;
+CREATE OPERATOR schema_op9.===!!! (
+    leftarg = integer,
+    rightarg = integer,
+    procedure = int4eq
 );
 ROLLBACK;
