@@ -704,6 +704,21 @@ ResetDtxRecoveryEvent(DtxRecoveryEvent event)
 	*shmDtxRecoveryEvents &= ~event;
 }
 
+/* Whether the gate before connecting has shown itself in ps. */
+static bool gated_before_connect = false;
+
+/* One wait of the dispatch topology gate before dtx recovery connects. */
+static void
+DtxRecoveryTopologyGatedCycle(void)
+{
+	if (!gated_before_connect)
+	{
+		set_ps_display("gated by whpg_dispatch_topology_file", false);
+		gated_before_connect = true;
+	}
+	SIMPLE_FAULT_INJECTOR("dtx_recovery_topology_gated");
+}
+
 /*
  * DtxRecoveryMain
  */
@@ -723,6 +738,20 @@ DtxRecoveryMain(Datum main_arg)
 
 	/* We're now ready to receive signals */
 	BackgroundWorkerUnblockSignals();
+
+	/*
+	 * Not while the dispatch topology GUC is set: connecting would bind the
+	 * interconnect to the catalog's coordinator address, which is not this
+	 * host's on a promoted replica (see
+	 * dispatch_topology_bgworker_gate_before_connect).
+	 */
+	dispatch_topology_bgworker_gate_before_connect("dtx recovery", "dispatch",
+												   &got_SIGHUP,
+												   &gp_dtx_recovery_interval,
+												   WAIT_EVENT_DTX_RECOVERY,
+												   DtxRecoveryTopologyGatedCycle);
+	if (gated_before_connect)
+		set_ps_display("", false);
 
 	/* Connect to postgres */
 	BackgroundWorkerInitializeConnection(DB_FOR_COMMON_ACCESS, NULL, 0);

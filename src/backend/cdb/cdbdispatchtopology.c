@@ -37,6 +37,7 @@
 #include "storage/latch.h"
 #include "storage/proc.h"
 #include "utils/builtins.h"
+#include "utils/guc.h"
 
 /* GUC variables; definitions live in guc_gp.c's tables */
 char	   *whpg_dispatch_topology_file = NULL;
@@ -123,9 +124,11 @@ dispatch_topology_bgworker_gated(bool *gated, const char *worker,
 /*
  * One gated iteration of a background worker's loop: sleep on the process
  * latch for the worker's usual period.  SIGHUP sets the latch, and the
- * reload is what lifts the gate; the timeout only bounds the wait when a
- * signal was missed.  Postmaster death ends the worker as it would in its
- * own loop.
+ * reload is what lifts the gate.  A reload signalled before the worker
+ * installed its SIGHUP handler is lost (StartBackgroundWorker ignores
+ * SIGHUP until then); dispatch_topology_bgworker_gate_before_connect()
+ * rereads the configuration once on entry for that reason.  Postmaster
+ * death ends the worker as it would in its own loop.
  */
 void
 dispatch_topology_bgworker_wait(long timeout_ms, uint32 wait_event)
@@ -139,6 +142,62 @@ dispatch_topology_bgworker_wait(long timeout_ms, uint32 wait_event)
 
 	if (rc & WL_POSTMASTER_DEATH)
 		proc_exit(1);
+}
+
+/*
+ * Hold a dispatch-role background worker that has not connected yet for as
+ * long as the dispatch topology GUC is set.  Connecting is not neutral in
+ * this window: InitPostgres() -> cdb_setup() builds the component table
+ * from the catalog's rows (the background-worker exemption in
+ * getCdbComponentInfo) and binds the interconnect to the address of the
+ * content -1 row.  On a promoted replica that row is the source
+ * coordinator's: an address this host does not have (EADDRNOTAVAIL), or
+ * none at all when this site cannot resolve the source's names.  Either
+ * failure is raised while connecting, before the worker reaches its own
+ * gate, and the postmaster restarts the worker at once: a tight crash loop,
+ * and the FtsNotifyProber() waiters (a refused dispatch connection is one)
+ * spin forever because FTS never completes a cycle.  So FTS and dtx
+ * recovery wait here, before BackgroundWorkerInitializeConnection(), and
+ * connect once the GUC is cleared: by then the catalog has been fixed, so
+ * the component table and the interconnect address come from rows that
+ * describe this cluster.
+ *
+ * Nothing here needs a database connection: the GUC is PGC_SIGHUP and is
+ * reread with ProcessConfigFile(), and the wait is on MyProc's latch, which
+ * a worker with BGWORKER_SHMEM_ACCESS has before it connects.  The
+ * configuration is reread once on entry: the worker runs on the values it
+ * inherited when the postmaster forked it, and a reload signalled between
+ * that fork and the worker's installing its SIGHUP handler is ignored (a
+ * promotion and the tool's reload that lifts the gate are seconds apart).
+ * cycle, when given, runs once per gated wait (FTS keeps its probe
+ * counters moving there); interval_s is the worker's own period, read at
+ * every wait so a reload that changes it applies.
+ */
+void
+dispatch_topology_bgworker_gate_before_connect(const char *worker,
+											   const char *activity,
+											   volatile sig_atomic_t *got_sighup,
+											   const int *interval_s,
+											   uint32 wait_event,
+											   void (*cycle) (void))
+{
+	bool		gated = false;
+
+	*got_sighup = false;
+	ProcessConfigFile(PGC_SIGHUP);
+
+	while (dispatch_topology_bgworker_gated(&gated, worker, activity))
+	{
+		if (cycle)
+			cycle();
+		dispatch_topology_bgworker_wait(*interval_s * 1000L, wait_event);
+		CHECK_FOR_INTERRUPTS();
+		if (*got_sighup)
+		{
+			*got_sighup = false;
+			ProcessConfigFile(PGC_SIGHUP);
+		}
+	}
 }
 
 /*

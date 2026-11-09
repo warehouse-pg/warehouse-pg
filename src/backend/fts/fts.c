@@ -108,6 +108,28 @@ FtsProbeStartRule(Datum main_arg)
 }
 
 /*
+ * One probe cycle while the dispatch topology gate holds before FTS has
+ * connected: probe nothing, but move the start/done counters and consume a
+ * pending request, as a gated cycle in FtsLoop does, so a FtsNotifyProber()
+ * waiter returns -- a dispatch connection refused while the GUC is set is
+ * one (cdbcomponent_getCdbComponents notifies FTS on its error path).
+ */
+static void
+FtsTopologyGatedCycle(void)
+{
+	SpinLockAcquire(&ftsProbeInfo->lock);
+	ftsProbeInfo->start_count++;
+	SpinLockRelease(&ftsProbeInfo->lock);
+
+	probe_requested = false;
+	SIMPLE_FAULT_INJECTOR("ftsLoop_topology_gated");
+
+	SpinLockAcquire(&ftsProbeInfo->lock);
+	ftsProbeInfo->done_count = ftsProbeInfo->start_count;
+	SpinLockRelease(&ftsProbeInfo->lock);
+}
+
+/*
  * FtsProbeMain
  */
 void
@@ -124,6 +146,18 @@ FtsProbeMain(Datum main_arg)
 
 	/* We're now ready to receive signals */
 	BackgroundWorkerUnblockSignals();
+
+	/*
+	 * Not while the dispatch topology GUC is set: connecting would bind the
+	 * interconnect to the catalog's coordinator address, which is not this
+	 * host's on a promoted replica (see
+	 * dispatch_topology_bgworker_gate_before_connect).
+	 */
+	dispatch_topology_bgworker_gate_before_connect("FTS", "probing",
+												   &got_SIGHUP,
+												   &gp_fts_probe_interval,
+												   WAIT_EVENT_FTS_PROBE_MAIN,
+												   FtsTopologyGatedCycle);
 
 	/* Connect to our database */
 	BackgroundWorkerInitializeConnection(DB_FOR_COMMON_ACCESS, NULL, 0);

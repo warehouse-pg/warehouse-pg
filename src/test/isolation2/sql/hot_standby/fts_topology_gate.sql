@@ -28,19 +28,33 @@
 -- (off in gpdemo, and it waits for the DTM the gate keeps unstarted) and
 -- the autovacuum launcher's gate (autovacuum is off in this suite).
 --
+-- The workers must not even connect while the gate holds: connecting
+-- binds the interconnect to the address of the catalog's coordinator row,
+-- and on a real replica that row is the source coordinator's -- an address
+-- the promoted host does not have, or none when the source's names do not
+-- resolve at the replica site.  Here the row is the local master, so the
+-- qd_interconnect_address_not_local fault stands in for a remote one: set
+-- before the promotion, FTS or dtx recovery connecting while gated would
+-- fail to bind (and crash-loop), and a refused dispatch connection would
+-- hang waiting for an FTS cycle that never completes.  After the gate lifts,
+-- qd_interconnect_address_unresolved stands in for a row whose address did
+-- not resolve: the connection fails with an error, the postmaster is not
+-- reset.
+--
 -- Sessions: 1: primary QD; -1S: standby QD (dispatch); -1M: standby QD in
 -- utility mode.  The fts_probe fault is only reached by an un-gated FTS
 -- cycle, so its hit count is the proof that no probe was attempted; as a
 -- 'skip' it also keeps a woken FTS from really probing this cluster's
 -- primaries.  ftsLoop_topology_gated / dtx_recovery_topology_gated count
 -- the gated cycles of the two workers.  The faults live in the promoted
--- node's shared memory and die with it, so they are never reset.
+-- node's shared memory and die with it, so they are not reset, except
+-- qd_interconnect_address_not_local, which must not outlive the gate.
 
 -- Stage the topology file: the role='m' rows are what a hot-standby QD
 -- dispatches to (plus itself for content -1).  Set the GUC on the standby
 -- only, with a short probe interval, and record a mtime reference for the
 -- configuration dump file.
-!\retcode sdir=$(psql -X -d postgres -Atc "select datadir from gp_segment_configuration where content = -1 and role = 'm'"); psql -X -At -d postgres -c "select content, dbid, hostname, address, port, datadir from gp_segment_configuration where role = 'm' order by content" | tr '|' ' ' > "$sdir/whpg_fts_gate_topology" && echo "whpg_dispatch_topology_file = 'whpg_fts_gate_topology'" >> "$sdir/postgresql.conf" && echo "gp_fts_probe_interval = 10" >> "$sdir/postgresql.conf" && touch "$sdir/hs_fts_gate_marker" && pg_ctl reload -D "$sdir";
+!\retcode sdir=$(psql -X -d postgres -Atc "select datadir from gp_segment_configuration where content = -1 and role = 'm'"); psql -X -At -d postgres -c "select content, dbid, hostname, address, port, datadir from gp_segment_configuration where role = 'm' order by content" | tr '|' ' ' > "$sdir/whpg_fts_gate_topology" && echo "whpg_dispatch_topology_file = 'whpg_fts_gate_topology'" >> "$sdir/postgresql.conf" && echo "gp_fts_probe_interval = 10" >> "$sdir/postgresql.conf" && touch "$sdir/hs_fts_gate_marker" && cat "$sdir"/log/*.csv | wc -l > "$sdir/hs_fts_gate_logmark" && pg_ctl reload -D "$sdir";
 
 -1S: show whpg_dispatch_topology_state;
 -1Sq:
@@ -48,6 +62,7 @@
 select gp_inject_fault_infinite('fts_probe', 'skip', dbid) from gp_segment_configuration where content = -1 and role = 'm';
 select gp_inject_fault_infinite('ftsLoop_topology_gated', 'skip', dbid) from gp_segment_configuration where content = -1 and role = 'm';
 select gp_inject_fault_infinite('dtx_recovery_topology_gated', 'skip', dbid) from gp_segment_configuration where content = -1 and role = 'm';
+select gp_inject_fault_infinite('qd_interconnect_address_not_local', 'skip', dbid) from gp_segment_configuration where content = -1 and role = 'm';
 
 ----------------------------------------------------------------
 -- Promote the standby: recovery ends, the workers start, gated
@@ -65,20 +80,27 @@ select gp_wait_until_triggered_fault('dtx_recovery_topology_gated', 1, dbid) fro
 -1M: show whpg_dispatch_topology_state;
 -- no FTS cycle reached the probe stage
 select gp_inject_fault('fts_probe', 'status', dbid) like '%num times hit:''0''%' as never_probed from gp_segment_configuration where content = -1 and role = 'm';
+-- neither worker connected: none set up an interconnect, none failed to
+-- bind one, none crashed
+select gp_inject_fault('qd_interconnect_address_not_local', 'status', dbid) like '%num times hit:''0''%' as never_connected from gp_segment_configuration where content = -1 and role = 'm';
+!\retcode sdir=$(psql -X -d postgres -Atc "select datadir from gp_segment_configuration where content = -1 and role = 'm'"); ! cat "$sdir"/log/*.csv | tail -n +$(( $(cat "$sdir/hs_fts_gate_logmark") + 1 )) | grep -q -e 'Could not set up udp interconnect socket' -e 'terminated by signal' -e 'background worker .* exited with exit code 1';
 -- no configuration dump was written; each worker logged its suspension
 -- once
-!\retcode sdir=$(psql -X -d postgres -Atc "select datadir from gp_segment_configuration where content = -1 and role = 'm'"); test ! "$sdir/gpsegconfig_dump" -nt "$sdir/hs_fts_gate_marker" && test "$(cat "$sdir"/log/*.csv | grep -c 'FTS: probing suspended while whpg_dispatch_topology_file is set')" = 1 && test "$(cat "$sdir"/log/*.csv | grep -c 'dtx recovery: dispatch suspended while whpg_dispatch_topology_file is set')" = 1;
+!\retcode sdir=$(psql -X -d postgres -Atc "select datadir from gp_segment_configuration where content = -1 and role = 'm'"); test ! "$sdir/gpsegconfig_dump" -nt "$sdir/hs_fts_gate_marker" && test "$(cat "$sdir"/log/*.csv | tail -n +$(( $(cat "$sdir/hs_fts_gate_logmark") + 1 )) | grep -c 'FTS: probing suspended while whpg_dispatch_topology_file is set')" = 1 && test "$(cat "$sdir"/log/*.csv | tail -n +$(( $(cat "$sdir/hs_fts_gate_logmark") + 1 )) | grep -c 'dtx recovery: dispatch suspended while whpg_dispatch_topology_file is set')" = 1;
 -- a dispatch connection to this node is refused outright while the GUC is
 -- set (the K1a contract; behind it the unstarted DTM would refuse too); the
 -- catalog fix of a promote runs in utility mode.  The refusal is also the
 -- FtsNotifyProber() waiter of the acceptance criteria: the component-table
 -- build notifies FTS on its error path, a gated FTS cycle completes the
 -- wait, otherwise psql would hang here.
-!\retcode shost=$(psql -X -d postgres -Atc "select hostname from gp_segment_configuration where content = -1 and role = 'm'"); sport=$(psql -X -d postgres -Atc "select port from gp_segment_configuration where content = -1 and role = 'm'"); psql -X -h "$shost" -p "$sport" -d postgres -c "select 1" 2>&1 | grep -q "whpg_dispatch_topology_file is set, but this dispatcher is not a hot standby";
+!\retcode shost=$(psql -X -d postgres -Atc "select hostname from gp_segment_configuration where content = -1 and role = 'm'"); sport=$(psql -X -d postgres -Atc "select port from gp_segment_configuration where content = -1 and role = 'm'"); timeout 60 psql -X -h "$shost" -p "$sport" -d postgres -c "select 1" 2>&1 | grep -q "whpg_dispatch_topology_file is set, but this dispatcher is not a hot standby";
 
 ----------------------------------------------------------------
 -- Clear the GUC and reload: the workers wake on their next cycle
 ----------------------------------------------------------------
+-- the catalog of this clone does name a local master: let the workers
+-- bind to it once they connect
+select gp_inject_fault('qd_interconnect_address_not_local', 'reset', dbid) from gp_segment_configuration where content = -1 and role = 'm';
 !\retcode sdir=$(psql -X -d postgres -Atc "select datadir from gp_segment_configuration where content = -1 and role = 'm'"); sed -i '/whpg_dispatch_topology_file/d' "$sdir/postgresql.conf" && pg_ctl reload -D "$sdir";
 
 -- the first un-gated FTS cycle reaches the probe stage (and is skipped
@@ -88,7 +110,7 @@ select gp_wait_until_triggered_fault('fts_probe', 1, dbid) from gp_segment_confi
 -1M: show whpg_dispatch_topology_state;
 -- the un-gated cycle wrote the configuration dump; both workers logged
 -- their resumption
-!\retcode sdir=$(psql -X -d postgres -Atc "select datadir from gp_segment_configuration where content = -1 and role = 'm'"); test "$sdir/gpsegconfig_dump" -nt "$sdir/hs_fts_gate_marker" && grep -q 'FTS: probing resumed after whpg_dispatch_topology_file was cleared' "$sdir"/log/*.csv && grep -q 'dtx recovery: dispatch resumed after whpg_dispatch_topology_file was cleared' "$sdir"/log/*.csv;
+!\retcode sdir=$(psql -X -d postgres -Atc "select datadir from gp_segment_configuration where content = -1 and role = 'm'"); test "$sdir/gpsegconfig_dump" -nt "$sdir/hs_fts_gate_marker" && test "$(cat "$sdir"/log/*.csv | tail -n +$(( $(cat "$sdir/hs_fts_gate_logmark") + 1 )) | grep -c 'FTS: probing resumed after whpg_dispatch_topology_file was cleared')" = 1 && test "$(cat "$sdir"/log/*.csv | tail -n +$(( $(cat "$sdir/hs_fts_gate_logmark") + 1 )) | grep -c 'dtx recovery: dispatch resumed after whpg_dispatch_topology_file was cleared')" = 1;
 -- dtx recovery then ran recoverTM() against this cluster's primaries (see
 -- BLAST RADIUS) and started the DTM: the framework retries this connection
 -- while the node still answers "in recovery mode", so the statement
@@ -96,6 +118,14 @@ select gp_wait_until_triggered_fault('fts_probe', 1, dbid) from gp_segment_confi
 -- loop's counters kept moving.
 -1S: select gp_request_fts_probe_scan();
 -1Sq:
+
+-- a coordinator row whose address did not resolve fails the connection
+-- with an error; it does not crash the backend (which would reset the
+-- postmaster and end the utility session below)
+select gp_inject_fault('qd_interconnect_address_unresolved', 'skip', dbid) from gp_segment_configuration where content = -1 and role = 'm';
+!\retcode shost=$(psql -X -d postgres -Atc "select hostname from gp_segment_configuration where content = -1 and role = 'm'"); sport=$(psql -X -d postgres -Atc "select port from gp_segment_configuration where content = -1 and role = 'm'"); timeout 60 psql -X -h "$shost" -p "$sport" -d postgres -c "select 1" 2>&1 | grep -q "cannot determine the interconnect address of the coordinator";
+-1M: select 1 as still_connected;
+!\retcode sdir=$(psql -X -d postgres -Atc "select datadir from gp_segment_configuration where content = -1 and role = 'm'"); ! cat "$sdir"/log/*.csv | tail -n +$(( $(cat "$sdir/hs_fts_gate_logmark") + 1 )) | grep -q 'terminated by signal';
 -1Mq:
 
 ----------------------------------------------------------------

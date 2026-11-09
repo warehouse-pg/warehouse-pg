@@ -548,31 +548,47 @@ getCdbComponentInfo(void)
 	/*
 	 * With a dispatch topology file active, the catalog rows only supply
 	 * the authoritative content set; every address, port and dbid comes
-	 * from the file.  FTS reads the raw catalog rows, but does not act on
-	 * them while the GUC is set (dispatch_topology_bgworker_gated).
+	 * from the file.  FTS never takes the file (am_ftsprobe): it reads the
+	 * raw catalog rows, and only in an un-gated cycle, once the GUC is
+	 * cleared (dispatch_topology_bgworker_gated).
 	 *
 	 * applyDispatchTopology() refuses (ERROR) when this is not a hot-standby
 	 * dispatcher, which is the intended fail-closed behavior for a user
-	 * query.  But a background worker must never take that ERROR here: the
-	 * dtx-recovery worker builds a component table while it connects, and
+	 * query.  But a background worker must never take that ERROR here: a
+	 * dispatch-role worker builds a component table while it connects, and
 	 * an ERROR there would crash-loop the worker.  So a background worker
-	 * builds from the raw catalog rows.  The kernel's own workers never
-	 * dispatch on them while the GUC is set: dtx recovery and the global
-	 * deadlock detector sleep behind dispatch_topology_bgworker_gated() and
-	 * discard this table when the gate lifts, FTS skips its cycle, the
-	 * autovacuum launcher starts no worker.  A GUC stray-set on a live
-	 * primary therefore refuses user dispatch (applyDispatchTopology) and
-	 * holds *shmDtmStarted unset until the GUC is cleared, with a LOG line
-	 * naming the cause.  One gap remains, pre-existing from the exemption
-	 * itself: a dispatch-role background worker that was already running
-	 * when the GUC was set (an extension's worker, say) keeps dispatching
-	 * on the raw catalog -- its table carries an empty topology signature,
-	 * so every cdbcomponent_updateCdbComponents() rebuilds it through this
-	 * same exemption -- and does so without failover detection or deadlock
-	 * checks until the GUC is cleared.  In the promotion window no such
-	 * worker exists (workers that wait for the DTM never start while the
-	 * gate holds); an ERROR on a non-startup rebuild would close the gap
-	 * for the stray-set case at the price of crash-looping such workers.
+	 * builds from the raw catalog rows.  On a promoted replica that is not
+	 * enough: connecting also binds the interconnect to the coordinator
+	 * row's address, which there is the source coordinator's.  So dtx
+	 * recovery and FTS, the workers that start the moment recovery ends,
+	 * do not connect while the GUC is set
+	 * (dispatch_topology_bgworker_gate_before_connect), and this path serves
+	 * the workers that connect while the GUC is set on a live primary, whose
+	 * coordinator row is this host's: workers already running when it was
+	 * set, and workers started or restarted while it is.  The kernel's own
+	 * workers never dispatch on these rows while the GUC is set: dtx
+	 * recovery and the global deadlock detector sleep behind
+	 * dispatch_topology_bgworker_gated() and discard this table when the
+	 * gate lifts, FTS skips its cycle, the autovacuum launcher starts no
+	 * worker.  A GUC stray-set on a live primary therefore refuses user
+	 * dispatch (applyDispatchTopology) and holds *shmDtmStarted unset until
+	 * the GUC is cleared, with a LOG line naming the cause.
+	 *
+	 * Two gaps remain, both outside the kernel's own workers.  A
+	 * dispatch-role background worker that was already running when the GUC
+	 * was set (an extension's worker, say) keeps dispatching on the raw
+	 * catalog -- its table carries an empty topology signature, so every
+	 * cdbcomponent_updateCdbComponents() rebuilds it through this same
+	 * exemption -- and does so without failover detection or deadlock
+	 * checks until the GUC is cleared; an ERROR on a non-startup rebuild
+	 * would close that gap for the stray-set case at the price of
+	 * crash-looping such workers.  And on a promoted replica, an extension's
+	 * dispatch-role worker that does not wait for the DTM (registered to
+	 * start at BgWorkerStart_DtxRecovering, or a PostmasterStart worker
+	 * restarted after the promotion) connects through this path and fails to
+	 * bind the interconnect, as FTS and dtx recovery did before they waited
+	 * before connecting.  Workers that wait for the DTM never start while
+	 * the gate holds.
 	 */
 	if (Gp_role == GP_ROLE_DISPATCH && !am_ftsprobe &&
 		dispatch_topology_enabled() &&
@@ -1413,8 +1429,39 @@ ensureInterconnectAddress(void)
 		 * from `cdbcomponent*`. We couldn't get it in a way as the QEs.
 		 */
 		CdbComponentDatabaseInfo *qdInfo;
+		const char *hostip;
+
 		qdInfo = cdbcomponent_getComponentInfo(COORDINATOR_CONTENT_ID);
-		interconnect_address = MemoryContextStrdup(TopMemoryContext, qdInfo->config->hostip);
+		hostip = qdInfo->config->hostip;
+#ifdef FAULT_INJECTOR
+		/*
+		 * Stand-ins for a content -1 row that is not this host's, as on a
+		 * promoted replica whose catalog still names the source coordinator
+		 * (tests: hot_standby/fts_topology_gate).
+		 */
+		if (SIMPLE_FAULT_INJECTOR("qd_interconnect_address_not_local") == FaultInjectorTypeSkip)
+			hostip = "192.0.2.1";	/* TEST-NET-1 (RFC 5737): never local */
+		if (SIMPLE_FAULT_INJECTOR("qd_interconnect_address_unresolved") == FaultInjectorTypeSkip)
+			hostip = NULL;
+#endif
+
+		/*
+		 * The row's address may not have resolved: getCdbComponentInfo()
+		 * only LOGs that for FTS, which reads the catalog at whatever state
+		 * it is in.  Fail as a connection error rather than crash on it: a
+		 * crashing background worker resets the whole postmaster.  FTS then
+		 * restarts until the row resolves (a FtsNotifyProber() waiter waits
+		 * as long); with a dispatch topology file that cannot happen before
+		 * the GUC is cleared, and the catalog is fixed by then.
+		 */
+		if (hostip == NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_CONNECTION_FAILURE),
+					 errmsg("cannot determine the interconnect address of the coordinator"),
+					 errdetail("The address of gp_segment_configuration's coordinator row (dbid %d, \"%s\") did not resolve.",
+							   qdInfo->config->dbid,
+							   qdInfo->config->address ? qdInfo->config->address : "")));
+		interconnect_address = MemoryContextStrdup(TopMemoryContext, hostip);
 	}
 	else if (qdHostname && qdHostname[0] != '\0')
 	{

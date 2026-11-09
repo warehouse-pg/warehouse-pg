@@ -273,7 +273,9 @@ checkBgProcessSkipFault(const char* faultName)
 				0 != strcmp("after_orphaned_check", faultName) &&
 				0 != strcmp("post_in_doubt_tx_in_progress", faultName) &&
 				0 != strcmp("post_progress_recovery_comitted", faultName) &&
-				0 != strcmp("dtx_recovery_topology_gated", faultName))
+				0 != strcmp("dtx_recovery_topology_gated", faultName) &&
+				0 != strcmp("qd_interconnect_address_not_local", faultName) &&
+				0 != strcmp("qd_interconnect_address_unresolved", faultName))
 		{
 			elog(LOG, "skipped fault '%s' in dtx recovery process", faultName);
 			return true;
