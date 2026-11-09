@@ -328,6 +328,7 @@ static void setupColumnOnlyRewrite(List **wqueue,
 static void ATRewriteCatalogs(List **wqueue, LOCKMODE lockmode);
 static void ATExecCmd(List **wqueue, AlteredTableInfo *tab, Relation rel,
 					  AlterTableCmd *cmd, LOCKMODE lockmode);
+static bool ATNewValuesKeepRowType(AlteredTableInfo *tab, Relation rel);
 static void ATRewriteTables(AlterTableStmt *parsetree,
 							List **wqueue, LOCKMODE lockmode);
 static void ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode);
@@ -6033,13 +6034,24 @@ ATRewriteTables(AlterTableStmt *parsetree, List **wqueue, LOCKMODE lockmode)
 		 * rewrite, but at the moment a composite type does not enforce any
 		 * constraints, so it's not necessary/appropriate to enforce them just
 		 * during ALTER.)
+		 *
+		 * Rewrites that leave the row type as it is (a change of persistence,
+		 * access method or storage options, a REPACK) need no such check.
+		 * Neither do the column-only rewrites of an append-optimized
+		 * column-oriented table that write a column without changing what the
+		 * row type looks like, see ATNewValuesKeepRowType().
 		 */
-		if (tab->newvals != NIL || tab->rewrite > 0)
+		if (tab->newvals != NIL ||
+			(tab->rewrite & (AT_REWRITE_DEFAULT_VAL |
+							 AT_REWRITE_COLUMN_REWRITE |
+							 AT_REWRITE_NEW_COLUMNS_ONLY |
+							 AT_REWRITE_REWRITE_COLUMNS_ONLY)) != 0)
 		{
 			Relation	rel;
 
 			rel = table_open(tab->relid, NoLock);
-			find_composite_type_dependencies(rel->rd_rel->reltype, rel, NULL);
+			if (!ATNewValuesKeepRowType(tab, rel))
+				find_composite_type_dependencies(rel->rd_rel->reltype, rel, NULL);
 			table_close(rel, NoLock);
 		}
 
@@ -7101,6 +7113,83 @@ ATTypedTableRecursion(List **wqueue, Relation rel, AlterTableCmd *cmd,
 	}
 }
 
+
+/*
+ * ATNewValuesKeepRowType
+ *
+ * Do the values that Phase 3 is going to write for 'rel' leave its row type
+ * as it is, as far as existing values of that row type are concerned?
+ *
+ * An append-optimized column-oriented table has to write every new or
+ * re-encoded column, so it plans a column-only rewrite in two cases in which
+ * a heap table would not rewrite anything, and which therefore need no
+ * dependency check on a heap table either:
+ *
+ * - ADD COLUMN without a default.  The new column is written as NULLs.
+ *   Existing values of the row type simply lack the attribute.
+ *
+ * - ALTER COLUMN SET ENCODING.  The column is written again with its type,
+ *   type modifier and collation unchanged.
+ *
+ * Anything else (a default, a generated column, a type change, a rewrite of
+ * the whole table that changes the row type) returns false.
+ */
+static bool
+ATNewValuesKeepRowType(AlteredTableInfo *tab, Relation rel)
+{
+	ListCell   *lc;
+
+	if (!RelationIsAoCols(rel))
+		return false;
+
+	if ((tab->rewrite & (AT_REWRITE_DEFAULT_VAL | AT_REWRITE_COLUMN_REWRITE)) != 0)
+		return false;
+
+	/* the column-only flags alone do not tell what is being written */
+	if (tab->newvals == NIL)
+		return false;
+
+	foreach(lc, tab->newvals)
+	{
+		NewColumnValue *nv = (NewColumnValue *) lfirst(lc);
+		Node	   *expr = (Node *) nv->expr;
+
+		if (nv->is_generated || expr == NULL)
+			return false;
+
+		if (nv->op == AOCSREWRITECOLUMN)
+		{
+			Form_pg_attribute att;
+			Var		   *var;
+
+			/*
+			 * SET ENCODING reads the column back as it is.  ALTER COLUMN
+			 * TYPE plans the same kind of rewrite; its expression reads the
+			 * column as it was, so compare that with what the column is now.
+			 * A change of collation alone counts as well: it changes how
+			 * values of the row type compare.
+			 */
+			if (!IsA(expr, Var) || nv->attnum <= 0 ||
+				nv->attnum > RelationGetNumberOfAttributes(rel))
+				return false;
+			var = (Var *) expr;
+			att = TupleDescAttr(RelationGetDescr(rel), nv->attnum - 1);
+			if (var->varattno != nv->attnum ||
+				var->vartype != att->atttypid ||
+				var->vartypmod != att->atttypmod ||
+				var->varcollid != att->attcollation)
+				return false;
+		}
+		else
+		{
+			/* ADD COLUMN without a default writes a NULL constant */
+			if (!IsA(expr, Const) || !((Const *) expr)->constisnull)
+				return false;
+		}
+	}
+
+	return true;
+}
 
 /*
  * find_composite_type_dependencies
