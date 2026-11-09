@@ -823,6 +823,8 @@ ERROR:  cannot set privileges of array types
 HINT:  Set the privileges of the element type instead.
 GRANT USAGE ON DOMAIN testtype1 TO regressuser2; -- fail
 ERROR:  "testtype1" is not a domain
+CREATE FUNCTION cons_testtype1(a int, b text) RETURNS testtype1 LANGUAGE SQL
+  AS $$ SELECT row(a, b)::testtype1 $$ IMMUTABLE;
 CREATE DOMAIN testdomain1 AS int;
 REVOKE USAGE on DOMAIN testdomain1 FROM PUBLIC;
 GRANT USAGE ON DOMAIN testdomain1 TO regressuser2;
@@ -882,6 +884,11 @@ CREATE TABLE test12 (c int DEFAULT 0 CHECK (c > 0 AND '(0,1)'::testtype1 IS NOT 
 ERROR:  permission denied for type testtype1
 CREATE TABLE test13 (c int DEFAULT ('(0,1)'::testtype1).a);
 ERROR:  permission denied for type testtype1
+CREATE TABLE test_tbl_with_idx (c int, d text);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'c' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+CREATE INDEX ON test_tbl_with_idx ((cons_testtype1(c, d)));
+DROP TABLE test_tbl_with_idx;
 SET SESSION AUTHORIZATION regressuser2;
 -- commands that should succeed
 CREATE AGGREGATE testagg1b(testdomain1) (sfunc = int4_sum, stype = bigint);
@@ -926,6 +933,11 @@ WARNING:  no privileges could be revoked for "testtype1"
 NOTICE:  no privileges could be revoked
 CREATE TABLE test12 (c int DEFAULT 0 CHECK (c > 0 AND '(0,1)'::testtype1 IS NOT NULL)) DISTRIBUTED RANDOMLY;
 CREATE TABLE test13 (c int DEFAULT ('(0,1)'::testtype1).a);
+CREATE TABLE test_tbl_with_idx (c int, d text);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'c' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+CREATE INDEX ON test_tbl_with_idx ((cons_testtype1(c, d)));
+DROP TABLE test_tbl_with_idx;
 CREATE TABLE test18 (a int, b int DEFAULT ('(0,1)'::testtype1).a)
   DISTRIBUTED BY (a) PARTITION BY RANGE (a) (START (0) END (4) EVERY (2));
 -- new stored expressions require USAGE on types, rebuilds do not
@@ -964,6 +976,7 @@ DROP TABLE test11b;
 DROP TABLE test12;
 DROP TABLE test13;
 DROP TABLE test18;
+DROP FUNCTION cons_testtype1(int, text); -- ok
 DROP TYPE testtype1; -- ok
 DROP DOMAIN testdomain1; -- ok
 -- truncate

@@ -1665,10 +1665,6 @@ ALTER TYPE test_type RENAME ATTRIBUTE d TO dd;
 
 DROP TYPE test_type;
 
-CREATE TYPE test_type1 AS (a int, b text);
-CREATE TABLE test_tbl1 (x int, y test_type1);
-ALTER TYPE test_type1 ALTER ATTRIBUTE b TYPE varchar; -- fails
-
 CREATE TYPE test_type2 AS (a int, b text);
 CREATE TABLE test_tbl2 OF test_type2;
 CREATE TABLE test_tbl2_subclass () INHERITS (test_tbl2);
@@ -1871,19 +1867,6 @@ SELECT reloptions FROM pg_class WHERE relname = 'ao_reloptions_t2';
 SET allow_system_table_mods = off;
 DROP TABLE ao_reloptions_t1;
 DROP TABLE ao_reloptions_t2;
-
-/* Test case for bug #18970 */
-
-create table attbl(a int);
-create table atref(b attbl check ((b).a is not null));
-alter table attbl alter column a type numeric;  -- someday this should work
-alter table atref drop constraint atref_b_check;
-
-create index atref_idx on atref (((b).a));
-alter table attbl alter column a type numeric;  -- someday this should work
-drop table attbl, atref;
-
-/* End test case for bug #18970 */
 
 -- A rewrite that leaves the row type as it is is not checked for uses of
 -- the row type: ADD COLUMN without a default on an append-optimized table

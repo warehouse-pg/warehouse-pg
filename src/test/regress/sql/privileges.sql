@@ -513,6 +513,9 @@ GRANT USAGE ON TYPE testtype1 TO regressuser2;
 GRANT USAGE ON TYPE _testtype1 TO regressuser2; -- fail
 GRANT USAGE ON DOMAIN testtype1 TO regressuser2; -- fail
 
+CREATE FUNCTION cons_testtype1(a int, b text) RETURNS testtype1 LANGUAGE SQL
+  AS $$ SELECT row(a, b)::testtype1 $$ IMMUTABLE;
+
 CREATE DOMAIN testdomain1 AS int;
 REVOKE USAGE on DOMAIN testdomain1 FROM PUBLIC;
 GRANT USAGE ON DOMAIN testdomain1 TO regressuser2;
@@ -565,6 +568,10 @@ REVOKE ALL ON TYPE testtype1 FROM PUBLIC;
 
 CREATE TABLE test12 (c int DEFAULT 0 CHECK (c > 0 AND '(0,1)'::testtype1 IS NOT NULL)) DISTRIBUTED RANDOMLY;
 CREATE TABLE test13 (c int DEFAULT ('(0,1)'::testtype1).a);
+
+CREATE TABLE test_tbl_with_idx (c int, d text);
+CREATE INDEX ON test_tbl_with_idx ((cons_testtype1(c, d)));
+DROP TABLE test_tbl_with_idx;
 
 SET SESSION AUTHORIZATION regressuser2;
 
@@ -622,6 +629,10 @@ REVOKE ALL ON TYPE testtype1 FROM PUBLIC;
 
 CREATE TABLE test12 (c int DEFAULT 0 CHECK (c > 0 AND '(0,1)'::testtype1 IS NOT NULL)) DISTRIBUTED RANDOMLY;
 CREATE TABLE test13 (c int DEFAULT ('(0,1)'::testtype1).a);
+
+CREATE TABLE test_tbl_with_idx (c int, d text);
+CREATE INDEX ON test_tbl_with_idx ((cons_testtype1(c, d)));
+DROP TABLE test_tbl_with_idx;
 CREATE TABLE test18 (a int, b int DEFAULT ('(0,1)'::testtype1).a)
   DISTRIBUTED BY (a) PARTITION BY RANGE (a) (START (0) END (4) EVERY (2));
 
@@ -660,6 +671,7 @@ DROP TABLE test12;
 DROP TABLE test13;
 DROP TABLE test18;
 
+DROP FUNCTION cons_testtype1(int, text); -- ok
 DROP TYPE testtype1; -- ok
 DROP DOMAIN testdomain1; -- ok
 
