@@ -2072,3 +2072,44 @@ SELECT t, r FROM attinh_ref ORDER BY t;
 DROP TABLE attinh_ref;
 DROP TABLE attinh_child;
 DROP TABLE attinh;
+
+-- The reserved attribute option that stores the attribute's version is
+-- maintained internally.  A spuriously supplied value (e.g. emitted by an
+-- older pg_dump that predates the reserved key) is ignored (with a debug
+-- message) rather than rejected, so such dumps still restore; other options
+-- are still applied.
+CREATE TABLE attresv (a int);
+ALTER TABLE attresv ALTER COLUMN a SET (pg_attver = '0/1');
+ALTER TABLE attresv ALTER COLUMN a
+  SET (pg_attver = '0/1', n_distinct = 5); -- keeps n_distinct
+-- the non-reserved option was applied ...
+SELECT o FROM pg_attribute a, unnest(a.attoptions) o
+  WHERE a.attrelid = 'attresv'::regclass AND a.attname = 'a'
+    AND o NOT LIKE 'pg_attver=%';
+-- ... and the spurious version value was not stored
+SELECT count(*) FROM pg_attribute a, unnest(a.attoptions) o
+  WHERE a.attrelid = 'attresv'::regclass AND a.attname = 'a'
+    AND o = 'pg_attver=0/1';
+-- RESET of the reserved option is ignored as well; other options are reset
+ALTER TABLE attresv ALTER COLUMN a RESET (pg_attver, n_distinct);
+SELECT o FROM pg_attribute a, unnest(a.attoptions) o
+  WHERE a.attrelid = 'attresv'::regclass AND a.attname = 'a'
+    AND o NOT LIKE 'pg_attver=%';
+-- A namespace-qualified option should be rejected as an unrecognized
+-- parameter namespace, like any other namespace-qualified attribute option.
+ALTER TABLE attresv ALTER COLUMN a SET (x.pg_attver = '0/1'); -- errors
+-- Option names are matched without regard to case on this branch, so the
+-- reserved one is recognized in any spelling: the version stays, on the
+-- coordinator and on the segments.
+ALTER TABLE attresv ALTER COLUMN a RESET ("PG_ATTVER");
+ALTER TABLE attresv ALTER COLUMN a SET ("Pg_Attver" = 7, n_distinct = 3);
+SELECT gp_segment_id, count(*) AS versions, sum((lower(o) = o)::int) AS lower_case
+  FROM (SELECT gp_segment_id, attoptions FROM pg_attribute
+          WHERE attrelid = 'attresv'::regclass AND attname = 'a'
+        UNION ALL
+        SELECT gp_segment_id, attoptions FROM gp_dist_random('pg_attribute')
+          WHERE attrelid = 'attresv'::regclass AND attname = 'a') a,
+       unnest(a.attoptions) o
+  WHERE lower(o) LIKE 'pg_attver=%' AND o <> 'pg_attver=7'
+  GROUP BY 1 ORDER BY 1;
+DROP TABLE attresv;
