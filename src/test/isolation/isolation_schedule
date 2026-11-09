@@ -53,3 +53,5 @@ test: vacuum-full-permissions
 test: ao-insert-eof create_index_hot udf-insert-deadlock heap-repeatable-read ao-repeatable-read
 test: ddl-dependency-locking
 test: type-ddl-locking
+test: eval-plan-qual-dropped-column
+test: eval-plan-qual-resjunk
