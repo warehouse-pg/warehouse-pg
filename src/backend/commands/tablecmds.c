@@ -353,6 +353,10 @@ static void ATTypedTableRecursion(List **wqueue, Relation rel, AlterTableCmd *cm
 					  LOCKMODE lockmode);
 static List *find_typed_table_dependencies(Oid typeOid, const char *typeName,
 							  DropBehavior behavior);
+static void check_composite_type_dependency(ObjectAddress *depobj, Oid typeOid,
+								Relation origRelation, const char *origTypeName);
+static void report_type_used_in_column(const char *relname, const char *attname,
+						   Relation origRelation, const char *origTypeName);
 static void ATPrepAddColumn(List **wqueue, Relation rel, bool recurse, bool recursing,
 				AlterTableCmd *cmd, LOCKMODE lockmode);
 static void ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
@@ -7281,8 +7285,8 @@ ATTypedTableRecursion(List **wqueue, Relation rel, AlterTableCmd *cmd,
  * Eventually, we'd like to propagate the check or rewrite operation
  * into such tables, but for now, just error out if we find any.
  *
- * Caller should provide either the associated relation of a rowtype,
- * or a type name (not both) for use in the error message, if any.
+ * Caller should provide either the associated relation of a rowtype, or a
+ * type name (not both) for use in the error message, if any.
  *
  * Note that "typeOid" is not necessarily a composite type; it could also be
  * another container type such as an array or range, or a domain over one of
@@ -7325,75 +7329,13 @@ find_composite_type_dependencies(Oid typeOid, Relation origRelation,
 	while (HeapTupleIsValid(depTup = systable_getnext(depScan)))
 	{
 		Form_pg_depend pg_depend = (Form_pg_depend) GETSTRUCT(depTup);
-		Relation	rel;
-		Form_pg_attribute att;
+		ObjectAddress depobj;
 
-		/* Check for directly dependent types */
-		if (pg_depend->classid == TypeRelationId)
-		{
-			/*
-			 * This must be an array, domain, or range containing the given
-			 * type, so recursively check for uses of this type.  Note that
-			 * any error message will mention the original type not the
-			 * container; this is intentional.
-			 */
-			find_composite_type_dependencies(pg_depend->objid,
-											 origRelation, origTypeName);
-			continue;
-		}
+		depobj.classId = pg_depend->classid;
+		depobj.objectId = pg_depend->objid;
+		depobj.objectSubId = pg_depend->objsubid;
 
-		/* Else, ignore dependees that aren't user columns of relations */
-		/* (we assume system columns are never of interesting types) */
-		if (pg_depend->classid != RelationRelationId ||
-			pg_depend->objsubid <= 0)
-			continue;
-
-		rel = relation_open(pg_depend->objid, AccessShareLock);
-		att = rel->rd_att->attrs[pg_depend->objsubid - 1];
-
-		if (rel->rd_rel->relkind == RELKIND_RELATION ||
-			rel->rd_rel->relkind == RELKIND_MATVIEW)
-		{
-			if (origTypeName)
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("cannot alter type \"%s\" because column \"%s.%s\" uses it",
-								origTypeName,
-								RelationGetRelationName(rel),
-								NameStr(att->attname))));
-			else if (origRelation->rd_rel->relkind == RELKIND_COMPOSITE_TYPE)
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("cannot alter type \"%s\" because column \"%s.%s\" uses it",
-								RelationGetRelationName(origRelation),
-								RelationGetRelationName(rel),
-								NameStr(att->attname))));
-			else if (origRelation->rd_rel->relkind == RELKIND_FOREIGN_TABLE)
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("cannot alter foreign table \"%s\" because column \"%s.%s\" uses its row type",
-								RelationGetRelationName(origRelation),
-								RelationGetRelationName(rel),
-								NameStr(att->attname))));
-			else
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("cannot alter table \"%s\" because column \"%s.%s\" uses its row type",
-								RelationGetRelationName(origRelation),
-								RelationGetRelationName(rel),
-								NameStr(att->attname))));
-		}
-		else if (OidIsValid(rel->rd_rel->reltype))
-		{
-			/*
-			 * A view or composite type itself isn't a problem, but we must
-			 * recursively check for indirect dependencies via its rowtype.
-			 */
-			find_composite_type_dependencies(rel->rd_rel->reltype,
-											 origRelation, origTypeName);
-		}
-
-		relation_close(rel, AccessShareLock);
+		check_composite_type_dependency(&depobj, typeOid, origRelation, origTypeName);
 	}
 
 	systable_endscan(depScan);
@@ -7401,6 +7343,154 @@ find_composite_type_dependencies(Oid typeOid, Relation origRelation,
 	relation_close(depRel, AccessShareLock);
 }
 
+/*
+ * check_composite_type_dependency
+ *
+ * Subroutine of find_composite_type_dependencies, to check whether a
+ * dependency from "depobj" makes it unsafe to alter a column of "typeOid".
+ * Some dependencies that would prevent dropping a composite type entirely
+ * don't prevent ALTERing it.  This function is called after we have
+ * established that there is a dependency, to look closer at whether the
+ * dependency prevents ALTER or not.
+ *
+ * Caller should provide either the associated relation of a rowtype, or a
+ * type name (not both) for use in the error message, if any.
+ *
+ * Note that "typeOid" is not necessarily a composite type; it could also be
+ * another container type such as an array or range, or a domain over one of
+ * these things.
+ */
+static void
+check_composite_type_dependency(ObjectAddress *depobj, Oid typeOid,
+								Relation origRelation, const char *origTypeName)
+{
+	Oid			classid = depobj->classId;
+	Oid			objid = depobj->objectId;
+	int32		objsubid = depobj->objectSubId;
+	Relation	rel;
+	TupleDesc	tupleDesc;
+	Form_pg_attribute att;
+	int			attno;
+
+	switch (classid)
+	{
+		case TypeRelationId:
+
+			/*
+			 * This must be an array, domain, or range containing the given
+			 * type, so recursively check for uses of this type.  Note that
+			 * any error message will mention the original type not the
+			 * container; this is intentional.
+			 */
+			find_composite_type_dependencies(objid,
+											 origRelation, origTypeName);
+			break;
+
+		case RelationRelationId:
+			rel = relation_open(objid, AccessShareLock);
+			tupleDesc = RelationGetDescr(rel);
+
+			/*
+			 * If objsubid identifies a specific column, refer to that in
+			 * error messages.  Otherwise, search to see if there's a user
+			 * column of the type.  (We assume system columns are never of
+			 * interesting types.)  The search is needed because an index
+			 * containing an expression column of the target type will just be
+			 * recorded as a whole-relation dependency.  If we do not find a
+			 * column of the type, the dependency must indicate that the type
+			 * is transiently referenced in an index expression but not stored
+			 * on disk, which we assume is OK, just as we do for references in
+			 * views.  (It could also be that the target type is embedded in
+			 * some container type that is stored in an index column, but the
+			 * previous recursion should catch such cases.)
+			 */
+			if (objsubid > 0 && objsubid <= tupleDesc->natts)
+				att = tupleDesc->attrs[objsubid - 1];
+			else
+			{
+				att = NULL;
+				for (attno = 1; attno <= tupleDesc->natts; attno++)
+				{
+					att = tupleDesc->attrs[attno - 1];
+					if (att->atttypid == typeOid && !att->attisdropped)
+						break;
+					att = NULL;
+				}
+				if (att == NULL)
+				{
+					/* No such column, so assume OK */
+					relation_close(rel, AccessShareLock);
+					break;
+				}
+			}
+
+			/*
+			 * We definitely should reject if the relation has storage.
+			 */
+			if (rel->rd_rel->relkind == RELKIND_RELATION ||
+				rel->rd_rel->relkind == RELKIND_MATVIEW ||
+				rel->rd_rel->relkind == RELKIND_INDEX)
+			{
+				report_type_used_in_column(RelationGetRelationName(rel),
+										   NameStr(att->attname),
+										   origRelation, origTypeName);
+			}
+
+			if (OidIsValid(rel->rd_rel->reltype) && rel->rd_rel->reltype != typeOid)
+			{
+				/*
+				 * A view or composite type itself isn't a problem, but we
+				 * must recursively check for indirect dependencies via its
+				 * rowtype.
+				 */
+				find_composite_type_dependencies(rel->rd_rel->reltype,
+												 origRelation, origTypeName);
+			}
+
+			relation_close(rel, AccessShareLock);
+			break;
+
+		default:
+			/* ignore dependees that aren't types or relations */
+			break;
+	}
+}
+
+/*
+ * report_type_used_in_column
+ *
+ * Complain that the ALTER can't proceed because a column uses the type being
+ * altered.
+ */
+static void
+report_type_used_in_column(const char *relname, const char *attname,
+						   Relation origRelation, const char *origTypeName)
+{
+	if (origTypeName)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot alter type \"%s\" because column \"%s.%s\" uses it",
+						origTypeName,
+						relname, attname)));
+	else if (origRelation->rd_rel->relkind == RELKIND_COMPOSITE_TYPE)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot alter type \"%s\" because column \"%s.%s\" uses it",
+						RelationGetRelationName(origRelation),
+						relname, attname)));
+	else if (origRelation->rd_rel->relkind == RELKIND_FOREIGN_TABLE)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot alter foreign table \"%s\" because column \"%s.%s\" uses its row type",
+						RelationGetRelationName(origRelation),
+						relname, attname)));
+	else
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot alter table \"%s\" because column \"%s.%s\" uses its row type",
+						RelationGetRelationName(origRelation),
+						relname, attname)));
+}
 
 /*
  * find_typed_table_dependencies
