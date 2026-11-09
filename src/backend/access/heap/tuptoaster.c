@@ -40,6 +40,7 @@
 #include "miscadmin.h"
 #include "utils/expandeddatum.h"
 #include "utils/fmgroids.h"
+#include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/typcache.h"
@@ -1598,6 +1599,11 @@ toast_compress_datum(Datum value)
 		valsize > PGLZ_strategy_default->max_input_size)
 		return PointerGetDatum(NULL);
 
+	/*
+	 * VARSIZE_ANY_EXHDR's refusal to return values higher than 1GB are what
+	 * protect this addition from wraparound; the PGLZ strategy doesn't
+	 * provide a useful backstop.
+	 */
 	tmp = (struct varlena *) palloc(PGLZ_MAX_OUTPUT(valsize) +
 									TOAST_COMPRESS_HDRSZ);
 
@@ -2164,6 +2170,18 @@ toast_fetch_datum(struct varlena *attr)
 	VARATT_EXTERNAL_GET_POINTER(toast_pointer, attr);
 
 	ressize = toast_pointer.va_extsize;
+
+	/*
+	 * It's critical that the stored size does not allow for toast objects
+	 * bigger than what can be allocated with palloc; otherwise, buffer
+	 * overflows can be caused by adversarial toast objects.
+	 *
+	 * WHPG: upstream guarantees this statically through VARLENA_EXTSIZE_MASK;
+	 * va_extsize is a plain int32 here, so check it at runtime.
+	 */
+	if (ressize < 0 || !AllocSizeIsValid((Size) ressize + VARHDRSZ))
+		elog(ERROR, "invalid toast value size %d", ressize);
+
 	numchunks = ((ressize - 1) / actual_max_chunk_size) + 1;
 
 	result = (struct varlena *) palloc(ressize + VARHDRSZ);
@@ -2380,6 +2398,10 @@ toast_fetch_datum_slice(struct varlena *attr, int32 sliceoffset, int32 length)
 
 	attrsize = toast_pointer.va_extsize;
 
+	/* WHPG: see toast_fetch_datum() */
+	if (attrsize < 0 || !AllocSizeIsValid((Size) attrsize + VARHDRSZ))
+		elog(ERROR, "invalid toast value size %d", attrsize);
+
 	if (sliceoffset >= attrsize)
 	{
 		sliceoffset = 0;
@@ -2393,6 +2415,17 @@ toast_fetch_datum_slice(struct varlena *attr, int32 sliceoffset, int32 length)
 	 */
 	else if (((sliceoffset + length) > attrsize) || length < 0)
 		length = attrsize - sliceoffset;
+
+	/*
+	 * WHPG: upstream checks these in table_relation_fetch_toast_slice(),
+	 * which doesn't exist here; the slice-fetching code below is its
+	 * counterpart.
+	 */
+	if (attrsize < 0 || sliceoffset < 0 || length < 0)
+		elog(ERROR, "invalid toast slice: offset %d, length %d, value size %d",
+			 sliceoffset, length, attrsize);
+	if (length > attrsize - sliceoffset)
+		elog(ERROR, "slice length is too big");
 
 	result = (struct varlena *) palloc(length + VARHDRSZ);
 
@@ -2637,6 +2670,15 @@ toast_decompress_datum(struct varlena *attr)
 
 	Assert(VARATT_IS_COMPRESSED(attr));
 
+	/*
+	 * Allocate memory for the uncompressed data.
+	 *
+	 * WHPG: upstream relies on VARLENA_EXTSIZE_MASK to protect this against
+	 * overflow; the raw size is a plain int32 here, so check it.
+	 */
+	if (TOAST_COMPRESS_RAWSIZE(attr) < 0 ||
+		!AllocSizeIsValid((Size) TOAST_COMPRESS_RAWSIZE(attr) + VARHDRSZ))
+		elog(ERROR, "compressed data is corrupted");
 	result = (struct varlena *)
 		palloc(TOAST_COMPRESS_RAWSIZE(attr) + VARHDRSZ);
 	SET_VARSIZE(result, TOAST_COMPRESS_RAWSIZE(attr) + VARHDRSZ);
@@ -2666,6 +2708,12 @@ toast_decompress_datum_slice(struct varlena *attr, int32 slicelength)
 
 	Assert(VARATT_IS_COMPRESSED(attr));
 
+	/*
+	 * Allocate memory for the uncompressed data.  Caller must have checked
+	 * the requested size, but verify.
+	 */
+	if (!AllocSizeIsValid(slicelength))
+		elog(ERROR, "value is too big");
 	result = (struct varlena *) palloc(slicelength + VARHDRSZ);
 
 	rawsize = pglz_decompress(TOAST_COMPRESS_RAWDATA(attr),
