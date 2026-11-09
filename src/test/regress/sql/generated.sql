@@ -408,6 +408,18 @@ ALTER TABLE gtest27
 \d gtest27
 SELECT * FROM gtest27;
 
+-- composite type dependencies
+CREATE TABLE gtest31_1 (a int, b text GENERATED ALWAYS AS ('hello') STORED, c text);
+CREATE TABLE gtest31_2 (x int, y gtest31_1);
+ALTER TABLE gtest31_1 ALTER COLUMN b TYPE varchar;  -- fails
+DROP TABLE gtest31_1, gtest31_2;
+
+-- Check it for a partitioned table, too
+CREATE TABLE gtest31_1 (a int, b text GENERATED ALWAYS AS ('hello') STORED, c text) PARTITION BY LIST (a);
+CREATE TABLE gtest31_2 (x int, y gtest31_1);
+ALTER TABLE gtest31_1 ALTER COLUMN b TYPE varchar;  -- fails
+DROP TABLE gtest31_1, gtest31_2;
+
 -- triggers
 CREATE TABLE gtest26 (
     a int PRIMARY KEY,
