@@ -41,6 +41,8 @@ jobs:
 
     env:
       IMAGE_NAME: ghcr.io/warehouse-pg/whpg-rocky${{ matrix.el_version }}-build
+      # Version of `just` baked into both images.
+      JUST_VERSION: '1.57.0'
 
     steps:
       - name: Checkout source repo
@@ -62,7 +64,9 @@ jobs:
       - name: Docker Build
         run: |
           cd src/dockerfiles
-          docker build -t $IMAGE_NAME --file Dockerfile.el${{ matrix.el_version }} .
+          docker build -t $IMAGE_NAME \
+            --build-arg JUST_VERSION=${JUST_VERSION} \
+            --file Dockerfile.el${{ matrix.el_version }} .
 
       - name: Validate Image
         run: |

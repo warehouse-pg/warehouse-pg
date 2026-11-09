@@ -90,6 +90,19 @@ RUN dnf install -y "https://download.postgresql.org/pub/repos/yum/reporpms/EL-8-
     && dnf install -y postgresql18-server \
     && dnf clean all
 
+# `just` (command runner) pinned in-image from the casey/just release
+# assets, so CI jobs that use it do not download it at job time.
+# JUST_VERSION has no default: build-docker-image.yml pins it and passes
+# it via --build-arg.  meson/ninja are not baked here: rocky8's python3
+# (3.6) is too old for current meson.
+ARG JUST_VERSION
+RUN arch=$(uname -m) \
+    && : "${JUST_VERSION:?pass --build-arg JUST_VERSION=<ver> (see build-docker-image.yml)}" \
+    && curl --proto '=https' --tlsv1.2 -sSfL --retry 5 \
+       "https://github.com/casey/just/releases/download/${JUST_VERSION}/just-${JUST_VERSION}-${arch}-unknown-linux-musl.tar.gz" \
+       | tar -xz -C /usr/local/bin just \
+    && just --version
+
 # add gpadmin user for building the database
 RUN groupadd gpadmin \
     && useradd -m -d /home/gpadmin -s /bin/bash -c "WarehousePG Database" -g gpadmin gpadmin \
