@@ -368,6 +368,7 @@ static void report_type_used_in_column(const char *relname, const char *attname,
 static void report_type_used_in_expr(const ObjectAddress *obj, Relation origRelation,
 						 const char *origTypeName);
 static Node *get_node_tree_attr(enum SysCacheIdentifier cacheId, HeapTuple tup, AttrNumber attnum);
+static void find_missing_composite_type_dependencies(HTAB *types, Relation origRelation, const char *origTypeName);
 static void ATPrepAddColumn(List **wqueue, Relation rel, bool recurse, bool recursing,
 				AlterTableCmd *cmd, LOCKMODE lockmode);
 static void ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
@@ -7326,6 +7327,13 @@ find_composite_type_dependencies(Oid typeOid, Relation origRelation,
 
 	find_composite_type_dependencies_recurse(typeOid, origRelation, origTypeName,
 											 visited);
+
+	/*
+	 * XXX: We don't record pg_depend entries in some cases where we really
+	 * should.  Scan the catalog tables for those, too.
+	 */
+	find_missing_composite_type_dependencies(visited, origRelation, origTypeName);
+
 	hash_destroy(visited);
 }
 
@@ -7554,6 +7562,9 @@ check_composite_type_dependency(ObjectAddress *depobj, Oid typeOid,
 				 * that the target type is embedded in some container type
 				 * that is stored in an index column, but the previous
 				 * recursion should catch such cases.)
+				 *
+				 * Any cases of missing dependencies not caught here are
+				 * handled by find_missing_composite_type_dependencies().
 				 */
 				att = NULL;
 				for (attno = 1; attno <= tupleDesc->natts; attno++)
@@ -7764,6 +7775,71 @@ get_node_tree_attr(enum SysCacheIdentifier cacheId, HeapTuple tup, AttrNumber at
 		return NULL;
 
 	return stringToNode(TextDatumGetCString(val));
+}
+
+/*
+ * find_missing_composite_type_dependencies
+ *
+ * Currently, we don't record pg_depend entries for a few cases that
+ * clearly form a dependency and should prevent you from ALTERing a rowtype.
+ * This function scans the catalogs for the missing dependencies.
+ * Unfortunately, these need to resort to sequential scans, which is slow.
+ */
+static void
+find_missing_composite_type_dependencies(HTAB *types, Relation origRelation,
+										 const char *origTypeName)
+{
+	Relation	catalog_rel;
+	SysScanDesc scan;
+	HeapTuple	tup;
+
+	/*
+	 * An expression index whose expression returns the target type stores
+	 * datums of that type in the index, but we don't record a pg_depend entry
+	 * for that.  Often an expression depends on its result type for other
+	 * reasons, for example a Const does record a dependency on its type, but
+	 * as a counter-example, a function call records a dependency only on the
+	 * function, not on its return type.  The pg_depend scan in
+	 * find_composite_type_dependencies() therefore doesn't find it.
+	 *
+	 * To find such missing dependencies, scan pg_index directly for an
+	 * expression that produces typeOid.
+	 *
+	 * The expression might return the target type directly, or wrapped in a
+	 * container such as an array or a range.  We only check for the direct
+	 * case here, containers are handled by the recursion from
+	 * find_composite_type_dependencies()
+	 *
+	 * The predicate of a partial index always returns a boolean, so we don't
+	 * need to worry about that here.
+	 */
+	catalog_rel = heap_open(IndexRelationId, AccessShareLock);
+	scan = systable_beginscan(catalog_rel, InvalidOid, false, NULL, 0, NULL);
+	while (HeapTupleIsValid(tup = systable_getnext(scan)))
+	{
+		List	   *exprs;
+		ListCell   *lc;
+
+		exprs = (List *) get_node_tree_attr(INDEXRELID, tup, Anum_pg_index_indexprs);
+		foreach(lc, exprs)
+		{
+			Node	   *expr = (Node *) lfirst(lc);
+			Oid			resultType = exprType(expr);
+
+			if (hash_search(types, &resultType, HASH_FIND, NULL))
+			{
+				Form_pg_index index = (Form_pg_index) GETSTRUCT(tup);
+				ObjectAddress obj;
+
+				obj.classId = RelationRelationId;
+				obj.objectId = index->indexrelid;
+				obj.objectSubId = 0;
+				report_type_used_in_expr(&obj, origRelation, origTypeName);
+			}
+		}
+	}
+	systable_endscan(scan);
+	heap_close(catalog_rel, AccessShareLock);
 }
 
 /*
