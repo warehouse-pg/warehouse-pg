@@ -1547,6 +1547,7 @@ select * from another;
 drop table another;
 
 -- We disallow changing table's row type if it's used for storage
+-- (see alter_column_type for more variants of this)
 create table at_tab1 (a int, b text);
 create table at_tab2 (x int, y at_tab1);
 alter table at_tab1 alter column b type varchar; -- fails
@@ -2198,10 +2199,6 @@ ALTER TYPE test_type RENAME ATTRIBUTE d TO dd;
 \d test_type
 
 DROP TYPE test_type;
-
-CREATE TYPE test_type1 AS (a int, b text);
-CREATE TABLE test_tbl1 (x int, y test_type1);
-ALTER TYPE test_type1 ALTER ATTRIBUTE b TYPE varchar; -- fails
 
 CREATE TYPE test_type2 AS (a int, b text);
 CREATE TABLE test_tbl2 OF test_type2;
@@ -3191,19 +3188,6 @@ create trigger xtrig
 update bar1 set a = a + 1;
 
 /* End test case for bug #16242 */
-
-/* Test case for bug #18970 */
-
-create table attbl(a int);
-create table atref(b attbl check ((b).a is not null));
-alter table attbl alter column a type numeric;  -- someday this should work
-alter table atref drop constraint atref_b_check;
-
-create index atref_idx on atref (((b).a));
-alter table attbl alter column a type numeric;  -- someday this should work
-drop table attbl, atref;
-
-/* End test case for bug #18970 */
 
 -- Test that ALTER TABLE rewrite preserves a clustered index
 -- for normal indexes and indexes on constraints.
