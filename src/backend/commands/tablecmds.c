@@ -192,6 +192,7 @@ typedef struct AlteredTableInfo
 	List	   *newvals;		/* List of NewColumnValue */
 	bool		new_notnull;	/* T if we added new NOT NULL constraints */
 	bool		rewrite;		/* T if a rewrite is forced */
+	bool		rowtype_changed;	/* T if what the row type looks like changes */
 	bool		aocs_write_new_columns_only; /* T for ADD COLUMN on AOCS relation */
 	bool		dist_opfamily_changed; /* T if changing datatype of distribution key column and new opclass is in different opfamily than old one */
 	Oid			new_opclass;		/* new opclass, if changing a distribution key column */
@@ -5839,8 +5840,13 @@ ATRewriteTables(List **wqueue, LOCKMODE lockmode)
 		 * rewrite, but at the moment a composite type does not enforce any
 		 * constraints, so it's not necessary/appropriate to enforce them just
 		 * during ALTER.)
+		 *
+		 * A rewrite that leaves the row type as it is needs no such check.
+		 * In this branch that is the rewrite of an append-optimized table
+		 * for ADD COLUMN without a default, which writes NULLs into the new
+		 * column; see ATExecAddColumn().
 		 */
-		if (tab->newvals != NIL || tab->rewrite)
+		if (tab->rowtype_changed)
 		{
 			Relation	rel;
 
@@ -7548,6 +7554,7 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 	Oid			collOid;
 	Form_pg_type tform;
 	Expr	   *defval;
+	bool		null_fill = false;
 	List	   *children;
 	ListCell   *child;
 	AclResult	aclresult;
@@ -7802,6 +7809,7 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 		if (!defval && RelationIsAppendOptimized(rel))
 		{
 			defval = (Expr *) makeNullConst(typeOid, -1, collOid);
+			null_fill = true;
 		}
 
 		if (defval)
@@ -7819,6 +7827,15 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 			Assert(tab);
 			tab->newvals = lappend(tab->newvals, newval);
 			tab->rewrite = true;
+
+			/*
+			 * Writing NULLs into the new column of an append-optimized table
+			 * leaves the row type as a heap table's ADD COLUMN without a
+			 * default leaves it: a value of the row type formed earlier
+			 * yields NULL for the new column either way.
+			 */
+			if (!null_fill)
+				tab->rowtype_changed = true;
 		}
 
 		/*
@@ -7838,7 +7855,10 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 	 * table to fix that.
 	 */
 	if (isOid)
+	{
 		tab->rewrite = true;
+		tab->rowtype_changed = true;
+	}
 
 	/*
 	 * Add needed dependency entries for the new column.
@@ -8895,6 +8915,7 @@ ATExecDropColumn(List **wqueue, Relation rel, const char *colName,
 
 		/* Tell Phase 3 to physically remove the OID column */
 		tab->rewrite = true;
+		tab->rowtype_changed = true;
 	}
 
 	/* MPP-6929: metadata tracking */
@@ -11153,6 +11174,7 @@ ATPrepAlterColumnType(List **wqueue,
 		newval->expr = (Expr *) transform;
 
 		tab->newvals = lappend(tab->newvals, newval);
+		tab->rowtype_changed = true;
 		if (ATColumnChangeRequiresRewrite(transform, attnum))
 			tab->rewrite = true;
 
