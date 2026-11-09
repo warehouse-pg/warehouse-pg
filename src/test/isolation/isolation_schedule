@@ -149,3 +149,5 @@ test: ddl-dependency-locking
 test: type-ddl-locking
 test: eval-plan-qual-dropped-column
 test: eval-plan-qual-resjunk
+test: rowtypes-alter
+test: eval-plan-qual-rowtype-alter
