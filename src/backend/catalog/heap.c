@@ -737,6 +737,11 @@ CheckAttributeType(const char *attname,
 
 		containing_rowtypes = lcons_oid(atttypid, containing_rowtypes);
 
+		/*
+		 * Lock the composite type relation to prevent its attributes from
+		 * being modified in an incompatible way until we record the
+		 * dependency to it and commit.
+		 */
 		relation = relation_open(get_typ_typrelid(atttypid), AccessShareLock);
 
 		tupdesc = RelationGetDescr(relation);
@@ -753,7 +758,7 @@ CheckAttributeType(const char *attname,
 							   flags & ~CHKATYPE_IS_PARTKEY);
 		}
 
-		relation_close(relation, AccessShareLock);
+		relation_close(relation, NoLock);
 
 		containing_rowtypes = list_delete_first(containing_rowtypes);
 	}
