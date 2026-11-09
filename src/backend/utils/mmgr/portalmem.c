@@ -525,6 +525,15 @@ PortalDrop(Portal portal, bool isTopCommit)
 				 errmsg("cannot drop active portal \"%s\"", portal->name)));
 
 	/*
+	 * Don't allow dropping a portal being set up.
+	 */
+	if (portal->status == PORTAL_NEW || portal->status == PORTAL_DEFINED)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_CURSOR_STATE),
+				 errmsg("cannot drop portal \"%s\" while it is being set up",
+						portal->name)));
+
+	/*
 	 * Allow portalcmds.c to clean up the state it knows about, in particular
 	 * shutting down the executor if still active.  This step potentially runs
 	 * user-defined code so failure has to be expected.  It's the cleanup
@@ -646,8 +655,13 @@ PortalHashTableDeleteAll(void)
 	{
 		Portal		portal = hentry->portal;
 
-		/* Can't close the active portal (the one running the command) */
-		if (portal->status == PORTAL_ACTIVE)
+		/*
+		 * Can't close the active portal (the one running the command), or
+		 * portals being set up.
+		 */
+		if (portal->status == PORTAL_ACTIVE ||
+			portal->status == PORTAL_NEW ||
+			portal->status == PORTAL_DEFINED)
 			continue;
 
 		PortalDrop(portal, false);
@@ -836,6 +850,17 @@ AtAbort_Portals(void)
 #endif
 
 		/*
+		 * A portal that was still being set up is also failed here, so that
+		 * PortalDrop() accepts it later.
+		 *
+		 * WHPG: this is kept outside of the disabled READY case above.  Such
+		 * a portal has not been started, so there is no ExecutorEnd() to run.
+		 */
+		if (portal->status == PORTAL_NEW ||
+			portal->status == PORTAL_DEFINED)
+			MarkPortalFailed(portal);
+
+		/*
 		 * Allow portalcmds.c to clean up the state it knows about, if we
 		 * haven't already.
 		 */
@@ -1021,7 +1046,9 @@ AtSubAbort_Portals(SubTransactionId mySubid,
 		 * ExecutorEnd when portalcmds.c tries to close down the portal.
 		 */
 		// GPDB_90_MERGE_FIXME: Not in READY portals. See comment in AtAbort_Portals.
-		if (//portal->status == PORTAL_READY ||
+		if (portal->status == PORTAL_NEW ||
+			portal->status == PORTAL_DEFINED ||
+			//portal->status == PORTAL_READY ||
 			portal->status == PORTAL_ACTIVE)
 			MarkPortalFailed(portal);
 
