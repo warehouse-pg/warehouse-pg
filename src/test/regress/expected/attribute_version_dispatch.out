@@ -1,0 +1,208 @@
+--
+-- Attribute versions (see src/backend/catalog/README.attver.md) are chosen
+-- by the coordinator and dispatched to the segments, so that a composite
+-- datum formed on one node can be checked on any other node.  Verify that
+-- all nodes store the same version for every attribute, whatever statement
+-- created or changed it.
+--
+create schema attver_dispatch;
+set search_path = attver_dispatch;
+-- Attributes of relations in this schema whose stored version differs
+-- between any two nodes, or that have no version at all.
+create view attver_mismatch as
+  with allrows as (
+    select -1 as segid, attrelid, attnum, attoptions::text as opts
+      from pg_attribute
+    union all
+    select gp_segment_id, attrelid, attnum, attoptions::text
+      from gp_dist_random('pg_attribute'))
+  select c.relname, a.attnum
+    from allrows a
+    join pg_class c on c.oid = a.attrelid
+    where c.relnamespace = 'attver_dispatch'::regnamespace
+      and c.reltype <> 0 and a.attnum > 0
+    group by c.relname, a.attnum
+    having count(distinct coalesce(a.opts, '')) <> 1
+        or count(*) <> (select count(*) + 1 from gp_segment_configuration
+                        where role = 'p' and content >= 0)
+        or bool_or(a.opts is null or a.opts not like '%pg_attver=%');
+-- Relations created by initdb are not versioned on any node: each node ran
+-- its own initdb.
+select count(*) from
+  (select attrelid from pg_attribute
+     where attrelid < 16384 and attoptions::text like '%pg_attver=%'
+   union all
+   select attrelid from gp_dist_random('pg_attribute')
+     where attrelid < 16384 and attoptions::text like '%pg_attver=%') s;
+ count 
+-------
+     0
+(1 row)
+
+-- relation creation
+create table t_heap (a int, b text, c bytea) distributed by (a);
+create table t_ao (a int, b text) with (appendonly=true) distributed by (a);
+create table t_aoco (a int, b text) with (appendonly=true, orientation=column) distributed by (a);
+create type ct as (x int, y text);
+create table t_base (a int, b text) distributed by (a);
+create view v as select a, b from t_base;
+create materialized view mv as select a, b from t_base distributed by (a);
+create table t_ctas as select a, b from t_base distributed by (a);
+select a, b into t_into from t_base;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'a' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+create table t_like (like t_heap) distributed by (a);
+create table t_inh (d int) inherits (t_heap) distributed by (a);
+create table p (a int, b int, c text) partition by range (b) distributed by (a);
+create table p1 partition of p for values from (0) to (10);
+NOTICE:  table has parent, setting distribution columns to match parent table
+create table p2 partition of p for values from (10) to (20) partition by list (a);
+NOTICE:  table has parent, setting distribution columns to match parent table
+create table p21 partition of p2 for values in (1, 2, 3);
+NOTICE:  table has parent, setting distribution columns to match parent table
+create table t_legacy (a int, b int) distributed by (a)
+  partition by range (b) (start (0) end (2) every (1));
+create external web table t_ext (a int, b text) execute 'echo 1,a' format 'csv';
+select * from attver_mismatch;
+ relname | attnum 
+---------+--------
+(0 rows)
+
+-- attribute changes
+insert into t_heap select g, 'x', 'y' from generate_series(1, 20) g;
+alter table t_heap add column d int;
+NOTICE:  merging definition of column "d" for child "t_inh"
+alter table t_heap alter column b type varchar(10);
+alter table t_heap alter column c type text, alter column d type bigint;
+alter table t_heap alter column b type text, add column e int,
+  alter column c type bytea using c::bytea;
+alter table t_heap drop column d;
+alter table t_ao add column c int default 5;
+alter table t_ao alter column b type varchar(9);
+alter table t_aoco add column c int;
+alter table t_aoco alter column b type varchar(9);
+alter type ct add attribute z int;
+alter type ct alter attribute x type bigint;
+alter table p add column d int, add column e text;
+alter table p alter column c type varchar(20);
+alter table t_legacy add column c text;
+alter table t_legacy alter column c type varchar(5);
+select * from attver_mismatch;
+ relname | attnum 
+---------+--------
+(0 rows)
+
+-- table rewrites and rollbacks
+alter table t_heap set distributed by (b);
+alter table t_heap set with (reorganize=true);
+vacuum full t_heap;
+create index t_heap_a_idx on t_heap (a);
+cluster t_heap using t_heap_a_idx;
+create table p_ex (like p1) distributed by (a);
+alter table p exchange partition for (5) with table p_ex;
+begin;
+alter table t_heap add column f int;
+alter table t_heap alter column e type bigint;
+rollback;
+alter table t_heap add column g int;
+begin;
+savepoint s;
+alter table t_ao alter column c type bigint;
+rollback to s;
+alter table t_ao alter column c type numeric;
+commit;
+select * from attver_mismatch;
+ relname | attnum 
+---------+--------
+(0 rows)
+
+-- DDL issued from functions
+do $$
+begin
+  create table t_do (a int, b text) distributed by (a);
+  alter table t_do alter column b type varchar(3);
+end $$;
+create function attver_mk() returns void language plpgsql as $$
+begin
+  execute 'create table t_fn (a int, b ct) distributed by (a)';
+  execute 'alter table t_fn add column c int';
+end $$;
+select attver_mk();
+ attver_mk 
+-----------
+ 
+(1 row)
+
+select * from attver_mismatch;
+ relname | attnum 
+---------+--------
+(0 rows)
+
+-- Versions only grow, and attributes after an altered one get its version.
+select bool_and(v1 <= v2) as monotonic
+  from (select substring(attoptions::text from 'pg_attver=(\d+)')::numeric as v1,
+               lead(substring(attoptions::text from 'pg_attver=(\d+)')::numeric)
+                 over (order by attnum) as v2
+          from pg_attribute
+          where attrelid = 't_heap'::regclass and attnum > 0) s;
+ monotonic 
+-----------
+ t
+(1 row)
+
+-- A composite value formed on the segments before the type changed is
+-- rejected on the coordinator, and the other way around.
+create type ht as (id int, b bytea);
+create table hsrc (id int, b bytea) distributed by (id);
+insert into hsrc select g, 'FIXME' from generate_series(1, 100) g;
+begin;
+declare c cursor for select row(id, b)::ht from hsrc;
+fetch 1 from c \gset ignored_
+alter type ht alter attribute b type text;
+fetch all from c;
+ERROR:  row type of datum tuple was altered after the datum's creation
+HINT:  See server log for additional details.
+rollback;
+do $$
+declare v ht := row(1, 'FIXME')::ht; r text;
+begin
+  alter type ht alter attribute b type text;
+  select count(*) into r from hsrc where (v).id = id;
+  raise notice 'not reached: %', r;
+end $$;
+ERROR:  row type of datum tuple was altered after the datum's creation
+HINT:  See server log for additional details.
+CONTEXT:  SQL statement "select count(*)        from hsrc where (v).id = id"
+PL/pgSQL function inline_code_block line 5 at SQL statement
+-- User code that runs between the assignment of a version and its dispatch
+-- may abort a subtransaction; the version must still reach the segments.
+create function evt_rewrite() returns event_trigger language plpgsql as $$
+begin
+  begin
+    perform 1/0;
+  exception when others then null;
+  end;
+end $$;
+create function def_with_exception() returns int stable language plpgsql as $$
+begin
+  begin
+    perform 1/0;
+  exception when others then null;
+  end;
+  return 1;
+end $$;
+create table t_subxact (a int, b int) distributed by (a);
+create event trigger attver_dispatch_rewrite on table_rewrite
+  execute function evt_rewrite();
+alter table t_subxact alter column b type bigint;
+drop event trigger attver_dispatch_rewrite;
+alter table t_subxact add column c int default def_with_exception();
+select * from attver_mismatch;
+ relname | attnum 
+---------+--------
+(0 rows)
+
+reset search_path;
+set client_min_messages = warning;
+drop schema attver_dispatch cascade;
+reset client_min_messages;

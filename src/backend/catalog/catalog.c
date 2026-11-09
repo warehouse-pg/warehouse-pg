@@ -214,6 +214,59 @@ IsCatalogRelationOid(Oid relid)
 }
 
 /*
+ * HasVersionedAttributes
+ *		Return whether the relation has versioned attributes.
+ */
+bool
+HasVersionedAttributes(Relation relation)
+{
+	Assert(RelationGetRelid(relation) != InvalidOid);
+
+	/*
+	 * If the relation does not have a rowtype, its attributes obviously are
+	 * not versioned, since attribute versioning exists to protect against
+	 * deforming composite datums incompatible with the current type
+	 * definition.
+	 */
+	if (!RELKIND_HAS_ROWTYPE(relation->rd_rel->relkind))
+	{
+		Assert(relation->rd_rel->reltype == InvalidOid);
+		return false;
+	}
+
+	/*
+	 * In WarehousePG the internal heap of a bitmap index is a plain relation
+	 * without a rowtype.
+	 */
+	if (relation->rd_rel->reltype == InvalidOid)
+		return false;
+
+	/*
+	 * Bootstrapped relations are not versioned, for two reasons:
+	 *
+	 * First, they can't ever change, i.e. we never need to detect mismatches.
+	 *
+	 * Second, to determine an attribute's version, we might need to do
+	 * syscache lookups, which could lead to recursion dangers (this is not
+	 * the case right now, but might again be at a later point). As there's no
+	 * reason to version, it's not worth analyzing further.
+	 *
+	 * In WarehousePG the same goes for everything else initdb creates (the
+	 * system views, the information schema).  Every node runs its own initdb,
+	 * so versions given there would come from each node's own WAL position
+	 * instead of from the coordinator, and nothing would make them agree.
+	 * Without a version they agree trivially, like the relations of a cluster
+	 * that was initialized before attribute versioning existed.
+	 */
+	if (RelationGetRelid(relation) < FirstNormalObjectId)
+		return false;
+
+	Assert(!IsBootstrapProcessingMode());
+
+	return true;
+}
+
+/*
  * IsToastRelation
  *		True iff relation is a TOAST support relation (or index).
  *

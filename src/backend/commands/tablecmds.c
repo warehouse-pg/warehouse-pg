@@ -6280,9 +6280,20 @@ ATRewriteTables(AlterTableStmt *parsetree, List **wqueue, LOCKMODE lockmode)
 			 * And fire it only once.
 			 */
 			if (parsetree)
+			{
+				/*
+				 * The trigger function runs arbitrary code.  If it aborts a
+				 * subtransaction (an exception block is enough), the OID and
+				 * attribute version assignments collected so far for
+				 * dispatch would be thrown away, so keep them aside.
+				 */
+				List	   *saved_oid_assignments = SaveOidAssignments();
+
 				EventTriggerTableRewrite((Node *) parsetree,
 										 tab->relid,
 										 tab->rewrite);
+				RestoreOidAssignments(saved_oid_assignments);
+			}
 
 			/*
 			 * Create transient table that will receive the modified data.
@@ -8232,6 +8243,7 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 				attrdesc;
 	HeapTuple	reltup;
 	FormData_pg_attribute attribute;
+	Datum		attoption = (Datum) 0;
 	int			newattnum;
 	char		relkind;
 	HeapTuple	typeTuple;
@@ -8387,7 +8399,25 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 
 	ReleaseSysCache(typeTuple);
 
-	InsertPgAttributeTuple(attrdesc, &attribute, NULL);
+	/*
+	 * Set up information to set the new attribute's version, if needed (the
+	 * relation has a versioned rowtype).
+	 */
+	if (HasVersionedAttributes(rel))
+	{
+		XLogRecPtr	attversion = GetNextAttributeVersion(myrelid, newattnum);
+
+		/*
+		 * We rely on the version to be monotonic, so make sure that's true,
+		 * like SetAttributeVersionInTuple() does.
+		 */
+		if (attversion <= TupleDescGetVersion(rel->rd_att))
+			elog(ERROR, "version of attribute is not increasing");
+
+		attoption = attoptions_set_version((Datum) 0, true, attversion);
+	}
+
+	InsertPgAttributeTupleWithOptions(attrdesc, &attribute, attoption, NULL);
 
 	table_close(attrdesc, RowExclusiveLock);
 
@@ -9915,6 +9945,43 @@ ATExecSetOptions(Relation rel, const char *colName, Node *options,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cannot alter system column \"%s\"",
 						colName)));
+
+	/*
+	 * Build the list of column options, ignoring spuriously passed attribute
+	 * versions.
+	 *
+	 * See src/backend/catalog/README.attver.md's "Version storage in the
+	 * catalog" section.
+	 */
+	{
+		List	   *filtered = NIL;
+		ListCell   *lc;
+		bool		found = false;
+
+		foreach(lc, castNode(List, options))
+		{
+			DefElem    *def = lfirst_node(DefElem, lc);
+
+			if (def->defnamespace == NULL &&
+				strcmp(def->defname, ATTRIBUTE_VERSION_ATTOPTION) == 0)
+				found = true;
+			else
+				filtered = lappend(filtered, def);
+		}
+
+		if (found)
+		{
+			/*
+			 * It'd be too verbose to warn every time an option is ignored,
+			 * therefore just use DEBUG1 for now.
+			 */
+			ereport(DEBUG1,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("ignoring reserved attribute option \"%s\"",
+							ATTRIBUTE_VERSION_ATTOPTION)));
+			options = (Node *) filtered;
+		}
+	}
 
 	/* Generate new proposed attoptions (text array) */
 	datum = SysCacheGetAttr(ATTNAME, tuple, Anum_pg_attribute_attoptions,
@@ -14047,6 +14114,7 @@ ATExecAlterColumnType(List **wqueue,
 	SysScanDesc scan;
 	HeapTuple	depTup;
 	ObjectAddress address;
+	XLogRecPtr	attversion = InvalidXLogRecPtr;
 
 	/*
 	 * Leave a flag on tables in the partition hierarchy that can benefit from the
@@ -14492,9 +14560,57 @@ ATExecAlterColumnType(List **wqueue,
 	attTup->attalign = tform->typalign;
 	attTup->attstorage = tform->typstorage;
 
+	/*
+	 * Update the version of this attribute. Together with the update of the
+	 * version of following attributes (see SetAttributeVersions() call
+	 * below), this prevents old datums containing this, or a following
+	 * attribute, from being decoded - that would be unsafe.  See
+	 * src/backend/catalog/README.attver.md for details.
+	 *
+	 * This has to be done as part of the same command as the
+	 * CatalogTupleUpdate() for the type change, the row is not going to be
+	 * visible for a separate update before a CommandCounterIncrement(), and
+	 * we don't want to do the CommandCounterIncrement() before having updated
+	 * the versions of the subsequent columns, as that would be an
+	 * inconsistent view of the catalog.  It also would trigger unnecessarily
+	 * many cache entry rebuilds.
+	 *
+	 * NB: We could potentially skip increasing the version in a few cases,
+	 * e.g. changes with the same (or a binary coercible) source & target
+	 * type. But at the moment we don't allow such changes if there are
+	 * existing composite datums in the catalog, so avoiding the version bump
+	 * to protect non-catalog datums doesn't really seem worthwhile (note that
+	 * we can't rely on ATColumnChangeRequiresRewrite() having run).
+	 *
+	 * XXX: This would look a lot better if we made surrounding code also use
+	 * heap_modify_tuple(), given that we have very similar code above for
+	 * atthasmissing.
+	 */
+	if (HasVersionedAttributes(rel))
+	{
+		HeapTuple	newTup;
+
+		attversion = GetNextAttributeVersion(RelationGetRelid(rel), attnum);
+
+		newTup = SetAttributeVersionInTuple(attrelation,
+											heapTup,
+											attversion);
+		heap_freetuple(heapTup);
+		heapTup = newTup;
+		attTup = (Form_pg_attribute) GETSTRUCT(heapTup);
+	}
+
 	ReleaseSysCache(typeTuple);
 
 	CatalogTupleUpdate(attrelation, &heapTup->t_self, heapTup);
+
+	/*
+	 * Update version of all following columns (if any). See comment above
+	 * SetAttributeVersionInTuple() call for details.
+	 */
+	if (HasVersionedAttributes(rel) &&
+		attnum + 1 <= RelationGetNumberOfAttributes(rel))
+		SetAttributeVersions(rel, attnum + 1, attversion);
 
 	table_close(attrelation, RowExclusiveLock);
 

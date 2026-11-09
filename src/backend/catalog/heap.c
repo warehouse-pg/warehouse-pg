@@ -35,11 +35,11 @@
 #include "access/htup_details.h"
 #include "access/multixact.h"
 #include "access/relation.h"
+#include "access/reloptions.h"
 #include "access/sysattr.h"
 #include "access/table.h"
 #include "access/tableam.h"
 #include "access/transam.h"
-#include "access/reloptions.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "catalog/binary_upgrade.h"
@@ -84,6 +84,7 @@
 #include "partitioning/partdesc.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
+#include "storage/proc.h"
 #include "storage/smgr.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
@@ -111,6 +112,10 @@
 #include "utils/relcache.h"
 #include "utils/timestamp.h"
 
+
+/* Set by a pg_upgrade_support function, for the next relation to be created */
+BinaryUpgradeAttributeVersions *binary_upgrade_next_attribute_versions = NULL;
+uint32		binary_upgrade_unversioned_lxid = 0;	/* InvalidLocalTransactionId */
 
 static void MetaTrackAddUpdInternal(Oid			classid,
 									Oid			objoid,
@@ -1093,6 +1098,24 @@ InsertPgAttributeTuple(Relation pg_attribute_rel,
 					   Form_pg_attribute new_attribute,
 					   CatalogIndexState indstate)
 {
+	InsertPgAttributeTupleWithOptions(pg_attribute_rel, new_attribute,
+									  (Datum) 0, indstate);
+}
+
+/*
+ * InsertPgAttributeTupleWithOptions
+ *
+ * Like InsertPgAttributeTuple(), but attoptions is stored in the attoptions
+ * field, unless it is (Datum) 0.  It is a function of its own so that the
+ * signature of InsertPgAttributeTuple(), which extensions may call, stays as
+ * it is.
+ */
+void
+InsertPgAttributeTupleWithOptions(Relation pg_attribute_rel,
+								  Form_pg_attribute new_attribute,
+								  Datum attoptions,
+								  CatalogIndexState indstate)
+{
 	Datum		values[Natts_pg_attribute];
 	bool		nulls[Natts_pg_attribute];
 	HeapTuple	tup;
@@ -1125,7 +1148,10 @@ InsertPgAttributeTuple(Relation pg_attribute_rel,
 
 	/* start out with empty permissions and empty options */
 	nulls[Anum_pg_attribute_attacl - 1] = true;
-	nulls[Anum_pg_attribute_attoptions - 1] = true;
+	if (attoptions != (Datum) 0)
+		values[Anum_pg_attribute_attoptions - 1] = attoptions;
+	else
+		nulls[Anum_pg_attribute_attoptions - 1] = true;
 	nulls[Anum_pg_attribute_attfdwoptions - 1] = true;
 	nulls[Anum_pg_attribute_attmissingval - 1] = true;
 
@@ -1151,8 +1177,11 @@ static void
 AddNewAttributeTuples(Oid new_rel_oid,
 					  TupleDesc tupdesc,
 					  char relkind,
-					  bool is_append_optimized)
+					  bool is_append_optimized,
+					  XLogRecPtr attversion)
 {
+	Datum		attoption = (Datum) 0;
+
 	Form_pg_attribute attr;
 	int			i;
 	Relation	rel;
@@ -1182,7 +1211,29 @@ AddNewAttributeTuples(Oid new_rel_oid,
 		/* Make sure this is OK, too */
 		attr->attstattarget = -1;
 
-		InsertPgAttributeTuple(rel, attr, indstate);
+		/*
+		 * If asked to, set the version of each new attribute to attversion.
+		 * Binary upgrade supplies a version per attribute instead, already
+		 * set in the descriptor by SetBinaryUpgradeAttributeVersions().
+		 *
+		 * Note that the relcache entry will not be consistent until the next
+		 * CommandCounterIncrement(). That's fine, nobody will form tuples
+		 * before that.
+		 */
+		if (!XLogRecPtrIsInvalid(attversion))
+		{
+			if (attoption == (Datum) 0)
+				attoption = attoptions_set_version((Datum) 0, true, attversion);
+			InsertPgAttributeTupleWithOptions(rel, attr, attoption, indstate);
+		}
+		else if (IsBinaryUpgrade &&
+				 !XLogRecPtrIsInvalid(TupleDescGetAttrVersion(tupdesc, i + 1)))
+			InsertPgAttributeTupleWithOptions(rel, attr,
+											  attoptions_set_version((Datum) 0, true,
+																	 TupleDescGetAttrVersion(tupdesc, i + 1)),
+											  indstate);
+		else
+			InsertPgAttributeTuple(rel, attr, indstate);
 
 		/* A dropped column has no datatype or collation to depend on */
 		if (attr->attisdropped)
@@ -1246,6 +1297,232 @@ AddNewAttributeTuples(Oid new_rel_oid,
 	table_close(rel, RowExclusiveLock);
 }
 
+/*
+ * Stamp the descriptor with the attribute versions pg_dump supplied for this
+ * relation and consume them.
+ *
+ * The versions have to be in the descriptor before AddNewAttributeTuples()
+ * writes the pg_attribute rows, because the same statement can go on to
+ * parse-analyze an expression - a partition key expression, say - embedding a
+ * composite constant of the row type being created.  Such a constant is
+ * stamped with the version in effect at that moment, so a fixup afterwards
+ * would strand the datum.
+ */
+static void
+SetBinaryUpgradeAttributeVersions(TupleDesc tupdesc, const char *relname)
+{
+	BinaryUpgradeAttributeVersions *pending = binary_upgrade_next_attribute_versions;
+
+	if (pending == NULL)
+	{
+		/*
+		 * An old cluster that predates attribute versioning has no versions
+		 * to preserve, and one statement dumped from a cluster based on
+		 * PostgreSQL 9.4 can create a partitioned table together with all its
+		 * partitions.  pg_dump says so by supplying an empty set of versions,
+		 * which holds for every relation created in the same transaction;
+		 * pg_restore sends a dump entry as one command string, i.e. in one
+		 * transaction.
+		 */
+		if (binary_upgrade_unversioned_lxid != InvalidLocalTransactionId &&
+			binary_upgrade_unversioned_lxid == MyProc->lxid)
+			return;
+
+		ereport(ERROR,
+				errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				errmsg("attribute version values not set for \"%s\" when in binary upgrade mode",
+					   relname));
+	}
+	if (pending->natts != tupdesc->natts)
+		ereport(ERROR,
+				errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				errmsg("expected %d attribute version values for \"%s\" when in binary upgrade mode, got %d",
+					   tupdesc->natts, relname, pending->natts));
+
+	for (int i = 0; i < tupdesc->natts; i++)
+		TupleDescSetAttrVersion(tupdesc, i + 1, pending->versions[i]);
+
+	/* like RelationBuildTupleDesc(), the aggregate is the last attribute's */
+	if (tupdesc->natts > 0)
+		TupleDescSetVersion(tupdesc,
+							TupleDescGetAttrVersion(tupdesc, tupdesc->natts));
+
+	/* otherwise we'd error out later, which would be harder to debug */
+	CheckAttributeVersions(tupdesc, relname, ERROR);
+
+	binary_upgrade_next_attribute_versions = NULL;
+	pfree(pending);
+}
+
+/*
+ * Return the next attribute version.
+ *
+ * While it would be attractive to always use the LSN of a catalog
+ * modification related to the DDL being run as the version of an attribute,
+ * that is not always viable: E.g. when altering a column type, there
+ * currently is no catalog update before the update of the pg_attribute row.
+ *
+ * To deal with that case, we use GetXLogInsertRecPtr(), which is guaranteed
+ * to be bigger than any already used attribute version (being the LSN of a
+ * future WAL insertion). Another concurrent ALTER could get the same version,
+ * but due to the per-object locking, that would have to be on a different
+ * object.
+ *
+ * We could sometimes use the LSN of a related WAL record and sometimes
+ * GetXLogInsertRecPtr(), but that does not seem advantageous.
+ *
+ * XLogAssignLSN() would be the more direct way to obtain a distinct LSN, but
+ * it isn't available in the back branches. GetXLogInsertRecPtr() suffices, as
+ * the pg_attribute row storing a version is always WAL-logged, which advances
+ * the insert position before the same attribute can be assigned its next
+ * version.
+ */
+XLogRecPtr
+GetNextAttributeVersion(Oid relid, AttrNumber attnum)
+{
+	/*
+	 * In WarehousePG the coordinator and every segment have their own WAL,
+	 * but a composite datum formed on one node is deformed on others, so all
+	 * nodes must store the same version.  The coordinator picks the version
+	 * (its own WAL insert position) and dispatches it, keyed by relation and
+	 * attribute number, with the same mechanism as pre-assigned OIDs.
+	 */
+	return GetNewOrPreassignedAttributeVersion(relid, attnum);
+}
+
+/*
+ * Return a copy of the pg_attribute tuple with the attribute version updated
+ * to version.
+ *
+ * This is used directly by outside code that needs to set the version of an
+ * attribute as part of a larger catalog update, where we do not want to do a
+ * CommandCounterIncrement() making an intermediary state visible.  It also is
+ * used as an implementation detail of SetAttributeVersions().
+ */
+HeapTuple
+SetAttributeVersionInTuple(Relation attrelation, HeapTuple tuple, XLogRecPtr version)
+{
+	bool		isnull;
+	Datum		attoptions;
+	Datum		valuesAtt[Natts_pg_attribute] = {0};
+	bool		nullsAtt[Natts_pg_attribute] = {0};
+	bool		replacesAtt[Natts_pg_attribute] = {0};
+	XLogRecPtr	oldVersion;
+	HeapTuple	newtuple;
+
+	Assert(version != InvalidXLogRecPtr);
+
+	attoptions = heap_getattr(tuple,
+							  Anum_pg_attribute_attoptions,
+							  attrelation->rd_att,
+							  &isnull);
+	oldVersion = attoptions_get_version(attoptions, isnull);
+
+	/*
+	 * Crucial property, so it seems worth verifying this even in non-assert
+	 * builds.
+	 */
+	if (oldVersion >= version)
+		elog(ERROR, "version of attribute is not increasing");
+
+	attoptions = attoptions_set_version(attoptions, isnull,
+										version);
+
+	valuesAtt[Anum_pg_attribute_attoptions - 1] = attoptions;
+	replacesAtt[Anum_pg_attribute_attoptions - 1] = true;
+	nullsAtt[Anum_pg_attribute_attoptions - 1] = false;
+
+	newtuple = heap_modify_tuple(tuple, RelationGetDescr(attrelation),
+								 valuesAtt, nullsAtt, replacesAtt);
+
+	return newtuple;
+}
+
+/*
+ * Update the attribute version for all attributes between fromAttnum and
+ * rd_rel->relnatts (including dropped columns).
+ *
+ * This is used to maintain the invariant that attribute versions are
+ * monotonic.
+ */
+void
+SetAttributeVersions(Relation rel, AttrNumber fromAttnum, XLogRecPtr version)
+{
+	Relation	attrelation;
+	Oid			relid = RelationGetRelid(rel);
+	int			natts = RelationGetNumberOfAttributes(rel);
+
+	/* the caller should still hold a lock */
+	attrelation = table_open(AttributeRelationId, NoLock);
+	Assert(CheckRelationLockedByMe(attrelation, RowExclusiveLock, true));
+
+	for (AttrNumber attnum = fromAttnum; attnum <= natts; attnum++)
+	{
+		HeapTuple	tuple;
+		HeapTuple	newtuple;
+
+		tuple = SearchSysCache2(ATTNUM,
+								ObjectIdGetDatum(relid),
+								Int16GetDatum(attnum));
+		if (!HeapTupleIsValid(tuple))
+			elog(ERROR, "could not find attribute %d of relation %u",
+				 attnum, relid);
+
+		newtuple = SetAttributeVersionInTuple(attrelation, tuple, version);
+
+		ReleaseSysCache(tuple);
+
+		CatalogTupleUpdate(attrelation, &newtuple->t_self, newtuple);
+		heap_freetuple(newtuple);
+	}
+
+	table_close(attrelation, NoLock);
+}
+
+/*
+ * Verify that the attribute versions are monotonic / non-decreasing.
+ *
+ * This checks, as much as reasonably possible, the assumptions documented in
+ * src/backend/catalog/README.attver.md and warns / errors.
+ *
+ * This accepts a tuple descriptor + relname instead of a Relation, because we
+ * may not yet have built a valid relcache entry when this is called.
+ */
+bool
+CheckAttributeVersions(TupleDesc td, const char *relname, int elevel)
+{
+	XLogRecPtr	prevAttVersion = InvalidXLogRecPtr;
+
+	for (int attnum = 1; attnum <= td->natts; attnum++)
+	{
+		XLogRecPtr	attVersion = TupleDescGetAttrVersion(td, attnum);
+
+		if (attVersion >= prevAttVersion)
+		{
+			prevAttVersion = attVersion;
+			continue;
+		}
+
+		ereport(elevel,
+				errmsg("attribute versions of relation \"%s\" are non-monotonic",
+					   relname),
+				errdetail("Version %X/%X of attribute \"%s\" at position %d is lower than version %X/%X of attribute \"%s\" at position %d.",
+						  LSN_FORMAT_ARGS(attVersion),
+						  NameStr(TupleDescAttr(td, attnum - 1)->attname),
+						  attnum,
+						  LSN_FORMAT_ARGS(prevAttVersion),
+						  NameStr(TupleDescAttr(td, attnum - 2)->attname),
+						  attnum - 1));
+		return false;
+	}
+
+	/* the descriptor's version is the last attribute's, see callers */
+	Assert(td->natts == 0 ||
+		   TupleDescGetVersion(td) == TupleDescGetAttrVersion(td, td->natts));
+
+	return true;
+}
+
 /* --------------------------------
  *		InsertPgClassTuple
  *
@@ -1270,6 +1547,12 @@ InsertPgClassTuple(Relation pg_class_desc,
 	Datum		values[Natts_pg_class];
 	bool		nulls[Natts_pg_class];
 	HeapTuple	tup;
+
+	/*
+	 * Sanity-check RELKIND_HAS_ROWTYPE, quite likely to detect any
+	 * mismatches.
+	 */
+	Assert(RELKIND_HAS_ROWTYPE(rd_rel->relkind) || rd_rel->reltype == InvalidOid);
 
 	/* This is a tad tedious, but way cleaner than what we used to do... */
 	memset(values, 0, sizeof(values));
@@ -1516,6 +1799,7 @@ heap_create_with_catalog(const char *relname,
 	Oid			existing_relid;
 	Oid			old_type_oid;
 	Oid			new_type_oid;
+	XLogRecPtr	attversion = InvalidXLogRecPtr;
 	TransactionId relfrozenxid;
 	MultiXactId relminmxid;
 	char	   *relarrayname = NULL;
@@ -1786,7 +2070,22 @@ heap_create_with_catalog(const char *relname,
 	/*
 	 * now add tuples to pg_attribute for the attributes in our new relation.
 	 */
-	AddNewAttributeTuples(relid, new_rel_desc->rd_att, relkind, RelationIsAppendOptimized(new_rel_desc));
+	/*
+	 * If the relation has versioned attributes, determine that version.
+	 * During binary upgrade the versions have to come from the old cluster,
+	 * so pg_dump supplies them per attribute ahead of the CREATE; stamp them
+	 * into the descriptor instead.
+	 */
+	if (HasVersionedAttributes(new_rel_desc))
+	{
+		if (IsBinaryUpgrade)
+			SetBinaryUpgradeAttributeVersions(new_rel_desc->rd_att, relname);
+		else
+			attversion = GetNextAttributeVersion(relid, 0);
+	}
+
+	AddNewAttributeTuples(relid, new_rel_desc->rd_att, relkind,
+						  RelationIsAppendOptimized(new_rel_desc), attversion);
 
 	/*
 	 * Make a dependency link to force the relation to be deleted if its
@@ -2909,6 +3208,16 @@ StoreAttrDefault(Relation rel, AttrNumber attnum,
 		else if (rel->rd_rel->relkind == RELKIND_RELATION && add_column_mode &&
 				 !attgenerated)
 		{
+			List	   *saved_oid_assignments;
+
+			/*
+			 * Evaluating the default can run a user function.  If that
+			 * aborts a subtransaction (an exception block is enough), the
+			 * OID and attribute version assignments collected so far for
+			 * dispatch would be thrown away, so keep them aside.
+			 */
+			saved_oid_assignments = SaveOidAssignments();
+
 			expr2 = expression_planner(expr2);
 			estate = CreateExecutorState();
 			exprState = ExecPrepareExpr(expr2, estate);
@@ -2916,6 +3225,8 @@ StoreAttrDefault(Relation rel, AttrNumber attnum,
 
 			missingval = ExecEvalExpr(exprState, econtext,
 									  &missingIsNull);
+
+			RestoreOidAssignments(saved_oid_assignments);
 
 			FreeExecutorState(estate);
 

@@ -27,6 +27,7 @@
  */
 #define GP_INTERNAL_AUTO_CONF_FILE_NAME "internal.auto.conf"
 
+extern bool HasVersionedAttributes(Relation relation);
 extern bool IsSystemRelation(Relation relation);
 extern bool IsToastRelation(Relation relation);
 extern bool IsCatalogRelation(Relation relation);

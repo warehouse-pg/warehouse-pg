@@ -33,6 +33,7 @@
 
 #include "access/commit_ts.h"
 #include "access/gin.h"
+#include "access/htup_details.h"
 #include "access/rmgr.h"
 #include "access/tableam.h"
 #include "access/transam.h"
@@ -393,6 +394,13 @@ static const struct config_enum_entry constraint_exclusion_options[] = {
 	{"no", CONSTRAINT_EXCLUSION_OFF, true},
 	{"1", CONSTRAINT_EXCLUSION_ON, true},
 	{"0", CONSTRAINT_EXCLUSION_OFF, true},
+	{NULL, 0, false}
+};
+
+static const struct config_enum_entry composite_type_mismatch_options[] = {
+	{"error", COMPOSITE_TYPE_MISMATCH_ERROR, false},
+	{"warn", COMPOSITE_TYPE_MISMATCH_WARN, false},
+	{"disabled", COMPOSITE_TYPE_MISMATCH_DISABLED, false},
 	{NULL, 0, false}
 };
 
@@ -4659,6 +4667,17 @@ static struct config_enum ConfigureNamesEnum[] =
 		},
 		&plan_cache_mode,
 		PLAN_CACHE_MODE_AUTO, plan_cache_mode_options,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"composite_type_mismatch", PGC_SUSET, DEVELOPER_OPTIONS,
+			gettext_noop("Sets how version mismatches of composite values are handled."),
+			gettext_noop("Reading a composite value whose row type was altered incompatibly after the value was created normally causes the server to report an error. This parameter controls that behavior. Anything other than \"error\", i.e. \"warn\" or \"disabled\", is not safe."),
+			GUC_NOT_IN_SAMPLE
+		},
+		&composite_type_mismatch,
+		COMPOSITE_TYPE_MISMATCH_ERROR, composite_type_mismatch_options,
 		NULL, NULL, NULL
 	},
 
