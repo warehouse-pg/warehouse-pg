@@ -1,0 +1,304 @@
+--
+-- Test altering a column / attribute type, when the rowtype is in use in
+-- different contexts.
+--
+
+-- We disallow changing table's row type if it's used in a column of another
+-- table
+create table at_tab1 (a int, b numeric);
+create table at_tab2 (x int, y at_tab1);
+alter table at_tab1 alter column b type bigint; -- fails
+drop table at_tab1, at_tab2;
+
+-- The column is used in a CHECK constraint (bug #18970)
+create table attbl(a numeric);
+create table atref(b attbl check ((b).a is not null));
+alter table attbl alter column a type bigint;  -- someday this should work
+alter table atref drop constraint atref_b_check;
+
+-- in an index expression
+create index atref_idx on atref (((b).a));
+alter table attbl alter column a type bigint;  -- someday this should work
+drop table atref, attbl;
+
+-- The rowtype is used as a function return type. This is allowed. The function
+-- might no longer work, if the function body doesn't compile sensibly with the
+-- new type, but the body is checked at runtime.
+create table attbl(a bytea);
+create function atref_func(p text) returns attbl immutable
+  language sql AS $$select p::public.attbl;$$;
+alter table attbl alter column a type text;
+select atref_func('(\\x4649584d45)');
+drop function atref_func(text);
+drop table attbl;
+
+-- similarly, if the rowtype is used as the function argument type, it's allowed
+create table attbl(a bytea);
+create function atref_func(p attbl) returns text immutable
+  language sql AS $$select p::text;$$;
+alter table attbl alter column a type text;
+select atref_func('(\\x4649584d45)');
+drop function atref_func(attbl);
+drop table attbl;
+
+-- If it's used in a function's argument DEFAULT expression, however, it's not
+-- allowed. The expression is stored in parse-analyzed format in the catalog,
+-- and would need to be rewritten.
+-- FIXME: This is currently allowed, but it's broken
+create table attbl(a bytea);
+create function atref_func(p attbl default '(\\x4649584d45)') returns attbl
+  immutable language sql AS $$select p;$$;
+alter table attbl alter column a type text;  -- someday this should work
+select atref_func();
+drop function atref_func(attbl);
+drop table attbl;
+
+-- A DEFAULT that doesn't refer the type doesn't prevent altering it. (This
+-- function does have a dependency on the rowtype, because it's used as the
+-- return type; otherwise there'd be no reason to think that this would prevent
+-- altering it.)
+create table attbl(a bytea);
+create function atref_func(p text default '(\\x4649584d45)') returns attbl
+  immutable language sql AS $$select p::public.attbl ;$$;
+alter table attbl alter column a type text;
+select atref_func();
+drop function atref_func(text);
+drop table attbl;
+
+-- in column default
+-- FIXME: This is currently allowed, but it's broken
+create table attbl(a bytea);
+create table atref(b text default '(\\x4649584d45)'::attbl);
+alter table attbl alter column a type text;  -- someday this should work
+insert into atref (b) values (default);
+select * from atref;
+drop table atref;
+drop table attbl;
+
+-- in an index expression, on an index of a different table.
+--
+-- Surprisingly, this is accepted and works. ALTER TABLE command will rebuild
+-- the index since it refers to the altered column, even though the index is on
+-- a different table. It's rather accidental though: if the expression didn't
+-- contain the FieldSelect, it would not have a dependency on the column, would
+-- not get rebuilt, and the Const stored in the index definition would be
+-- broken.
+create table attbl(a numeric);
+create table atref(data text);
+create index atref_idx on atref ((('(1)'::attbl).a + length(data)));
+alter table attbl alter column a type bigint;
+select pg_get_indexdef('atref_idx'::regclass);
+drop table atref, attbl;
+
+-- Similarly, this is accepted. The expression doesn't have a dependency on the
+-- rowtype, only on the function and on the column. ALTER TABLE command will
+-- rebuild the index since it refers to the altered column, even though the
+-- index is on a different table.
+create table attbl(a numeric);
+create table atref(data text);
+create function atconst() RETURNS attbl LANGUAGE sql IMMUTABLE AS $$
+  SELECT '(1)'::public.attbl;
+$$;
+create index atref_idx on atref (((atconst()).a + length(data)));
+alter table attbl alter column a type bigint;
+select pg_get_indexdef('atref_idx'::regclass);
+drop table atref, attbl cascade;
+
+-- in an index expression, but the index expression has a whole-row reference to
+-- the row type, rather than an individual column
+create table attbl(a bytea);
+create table atref(data text);
+insert into atref(data) values ('\x4649584d45');
+create index atref_idx on atref (('(\\x4649584d45)'::attbl = '(\\x4649584d45)'::attbl));
+-- FIXME: This is currently allowed, but it's broken
+alter table attbl alter column a type text; -- someday this should work
+select pg_get_indexdef('atref_idx'::regclass);
+insert into atref(data) VALUES ('\x4649584d45');
+drop table atref, attbl;
+
+-- in an index expression, with a function returning the composite type
+CREATE TYPE atcomp AS (a numeric);
+CREATE TABLE atref (c int);
+CREATE FUNCTION atfunc(numeric) RETURNS atcomp IMMUTABLE LANGUAGE plpgsql AS $$BEGIN RETURN ('('||$1||')')::atcomp; END$$;
+CREATE INDEX atref_idx ON atref(atfunc(c));
+
+insert into atref values (123);
+
+-- FIXME: This is currently allowed, but it's broken
+ALTER TYPE atcomp ALTER ATTRIBUTE a TYPE bigint CASCADE; -- someday this should work
+
+-- Show that the index is broken: seq scan produces different result for the
+-- same query. The query should return the one row in the table.
+begin;
+set local enable_bitmapscan=off;
+
+set local enable_seqscan=off;
+set local enable_indexscan=on;
+explain (costs off) select * from atref where atfunc(c) = '(123)'::atcomp;
+select * from atref where atfunc(c) = '(123)'::atcomp;
+
+set local enable_seqscan=on;
+set local enable_indexscan=off;
+explain (costs off) select * from atref where atfunc(c) < '(123)'::atcomp;
+select * from atref where atfunc(c) < '(123)'::atcomp;
+
+rollback;
+
+DROP TABLE atref;
+DROP FUNCTION atfunc(numeric);
+DROP TYPE atcomp;
+
+
+-- A domain's DEFAULT expression can depend on a composite type. We can't allow
+-- altering the involved composite type in that case, because we'd need to
+-- rewrite the DEFAULT expression.
+CREATE TYPE atcomp AS (a bytea);
+CREATE DOMAIN atdomain AS text DEFAULT '(\\x4649584d45)'::atcomp::text;
+-- FIXME: This is currently allowed, but it's broken
+ALTER TYPE atcomp ALTER ATTRIBUTE a TYPE text CASCADE;
+select pg_catalog.pg_get_expr(t.typdefaultbin, 'pg_catalog.pg_type'::pg_catalog.regclass) AS typdefaultbin from pg_type t where oid='atdomain'::regtype;
+DROP DOMAIN atdomain;
+DROP TYPE atcomp;
+
+-- Same, but the domain is on the rowtype's array type
+CREATE TYPE atcomp AS (a bytea);
+CREATE DOMAIN atdomainarr AS atcomp[] DEFAULT '{(\\x4649584d45)}'::atcomp[];
+-- FIXME: This is currently allowed, but it's broken
+ALTER TYPE atcomp ALTER ATTRIBUTE a TYPE text CASCADE;
+select pg_catalog.pg_get_expr(t.typdefaultbin, 'pg_catalog.pg_type'::pg_catalog.regclass) AS typdefaultbin from pg_type t where oid='atdomainarr'::regtype;
+
+DROP DOMAIN atdomainarr;
+DROP TYPE atcomp;
+
+-- Document that after the upcoming changes, we disallow changing a composite
+-- type even if the dependency is via an expression that does not actually store
+-- a composite type in the parse-analyzed form. That is currently allowed, but
+-- it's bogus because the ROW() expression no longer works.
+CREATE TYPE atcomp AS (a int);
+CREATE DOMAIN atdomain AS text DEFAULT ROW(333)::atcomp::text;
+SELECT pg_get_expr(typdefaultbin, 0) FROM pg_type WHERE oid = 'atdomain'::regtype;
+ALTER TYPE atcomp ALTER ATTRIBUTE a TYPE text; -- should fail
+
+-- FIXME: demonstrate that it's currently broken
+begin;
+create table atab (a atdomain);
+insert into atab values (default);
+rollback;
+
+DROP DOMAIN atdomain;
+DROP TYPE atcomp;
+
+-- If the rowtype is used in a CHECK constraint, cannot allow it. The constraint
+-- expression would need to be rewritten.
+create table at_tab1 (a int, b numeric);
+create table at_tab2 (x int, y text, check((x,y)::at_tab1 = (1,'42')::at_tab1));
+alter table at_tab1 alter column b type bigint; -- FIXME: should fail
+select pg_catalog.pg_get_constraintdef(r.oid, true) from pg_catalog.pg_constraint r
+  where r.conrelid = 'at_tab2'::regclass;
+insert into at_tab2 values (1, '42');
+drop table at_tab1, at_tab2;
+
+-- Rowtype constant appears in the CHECK constraint
+-- FIXME: should fail, but instead, the constant stored in the catalog is corrupted
+create table at_tab1 (a int, b bytea);
+create table at_tab2 (x int, y text, check(y::text = '(1,\\x4649584d45)'::at_tab1::text));
+alter table at_tab1 alter column b type text; -- FIXME: should fail
+select pg_catalog.pg_get_constraintdef(r.oid, true) from pg_catalog.pg_constraint r
+  where r.conrelid = 'at_tab2'::regclass;
+drop table at_tab1, at_tab2;
+
+-- Test using the rowtype in a column of a partitioned table, too
+create table at_tab1 (a int, b text) distributed by (a)
+  partition by list(a) (partition p1 values (1));
+create table at_tab2 (x int, y at_tab1);
+alter table at_tab1 alter column b type varchar; -- fails
+drop table at_tab1, at_tab2;
+
+-- Document that we allow altering a column even if a function depends on it
+create table at_tab1 (a int, b text);
+create function at_tab1_eq(at_tab1, at_tab1)
+returns bool immutable
+language sql as $$ select true $$;
+alter table at_tab1 alter column a type int8;
+
+-- We also allow it even if an operator depends on it
+create operator === (leftarg = at_tab1, rightarg = at_tab1, procedure = at_tab1_eq);
+alter table at_tab1 alter column a type int4;
+drop operator ===(at_tab1, at_tab1);
+drop function at_tab1_eq(at_tab1, at_tab1);
+
+-- We also allow it for casts
+create function at_tab1_cast(text) returns at_tab1
+immutable language sql
+as $$select ('1', $1)::public.at_tab1$$;
+create cast (text as at_tab1) with function at_tab1_cast(text);
+alter table at_tab1 alter column b type varchar;
+drop cast (text as at_tab1);
+drop function at_tab1_cast(text);
+drop table at_tab1;
+
+-- A view that uses the row type as its column type doesn't by itself prevent
+-- altering the rowtype. In this example, the view relation has a dependency on
+-- the 'at_tab1' rowtype because it's the view's column type, but the rewrite
+-- rule does not have a dependency on the type, only on the function.
+create table at_tab1 (a int, b bytea);
+create function at_tab1_const() returns at_tab1 language plpgsql as $$
+  begin return '(1,ok)'::at_tab1; end;
+$$;
+create view at_view1 as select at_tab1_const();
+alter table at_tab1 alter column b type text; -- allowed
+select * from at_view1;
+drop view at_view1;
+drop function at_tab1_const();
+drop table at_tab1;
+
+-- However, if the view expression uses the type in any other way, and hence the
+-- rewrite rule has a dependency on the type, we don't allow altering it as the
+-- rewrite rule would need to be rewritten.
+create table attbl(a bytea);
+create view atrefview as
+  select '1' as a, (('(\\x4649584d45)'::attbl = '(\\x4649584d45)'::attbl)) as b;
+alter table attbl alter column a type text; -- FIXME: should fail
+select pg_get_viewdef('atrefview'::regclass);
+drop view atrefview;
+drop table attbl;
+
+-- A partitioned table follows the same rewrite decision as a plain table
+create table at_pt (x int, y varchar(10)) distributed by (x)
+  partition by range (x) (start (0) end (10));
+create view at_ptv as select '(1,hi)'::at_pt;
+alter table at_pt alter column y type varchar(20); -- FIXME: should fail
+alter table at_pt alter column y type bytea using y::bytea; -- FIXME: should fail
+drop view at_ptv;
+drop table at_pt;
+
+
+--
+-- Tests for ALTER ATTRIBUTE
+--
+CREATE TYPE test_type1 AS (a int, b text);
+CREATE TABLE test_tbl1 (x int, y test_type1);
+ALTER TYPE test_type1 ALTER ATTRIBUTE b TYPE varchar; -- fails
+
+-- Cannot alter composite type if it appears in an index expression.
+-- The index contains datums of the composite type, and would need
+-- to be rebuilt.
+DROP TABLE test_tbl1;
+CREATE TABLE test_tbl1 (x int, y text);
+CREATE INDEX test_tbl1_idx ON test_tbl1((row(x,y)::test_type1));
+ALTER TYPE test_type1 ALTER ATTRIBUTE b TYPE varchar; -- fails
+DROP INDEX test_tbl1_idx;
+
+-- same for its array type
+CREATE FUNCTION construct_test_type_arr(x int, y text) RETURNS test_type1[]
+  LANGUAGE plpgsql IMMUTABLE
+  AS $$ begin return array[row(x, y)::test_type1]; end; $$;
+CREATE INDEX test_tbl1_idx ON test_tbl1(construct_test_type_arr(x, y));
+begin;
+ALTER TYPE test_type1 ALTER ATTRIBUTE b TYPE varchar; -- FIXME: should fail
+rollback;
+DROP INDEX test_tbl1_idx;
+DROP FUNCTION construct_test_type_arr(int, text);
+
+DROP TABLE test_tbl1;
+DROP TYPE test_type1;
