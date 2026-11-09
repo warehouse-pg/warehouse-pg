@@ -1884,3 +1884,21 @@ alter table attbl alter column a type numeric;  -- someday this should work
 drop table attbl, atref;
 
 /* End test case for bug #18970 */
+
+-- A rewrite that leaves the row type as it is is not checked for uses of
+-- the row type: ADD COLUMN without a default on an append-optimized table
+-- writes NULLs into the new column, like the same command on a heap table
+-- that does not rewrite anything.
+create table at_rw_ao (a int, b text) with (appendonly=true) distributed by (a);
+create table at_rw_co (a int, b text) with (appendonly=true, orientation=column) distributed by (a);
+create table at_rw_heap (a int, b text) distributed by (a);
+create table at_rw_user (id int, r at_rw_ao, c at_rw_co, h at_rw_heap) distributed by (id);
+alter table at_rw_ao add column c int;
+alter table at_rw_co add column c int;
+alter table at_rw_heap add column c int;
+alter table at_rw_ao add column d int default 1;  -- fail
+alter table at_rw_co add column d int default 1;  -- fail
+alter table at_rw_heap add column d int default 1;  -- fail
+alter table at_rw_ao alter column b type varchar;  -- fail
+alter table at_rw_co alter column b type varchar;  -- fail
+drop table at_rw_user, at_rw_ao, at_rw_co, at_rw_heap;
