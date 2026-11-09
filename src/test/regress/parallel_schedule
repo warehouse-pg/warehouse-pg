@@ -152,6 +152,10 @@ test: select_views portals_p2 portals_inflight cluster dependency guc bitmapops 
 # ----------
 test: plancache limit plpgsql copy2 temp domain rangefuncs prepare without_oid conversion truncate truncate_gp alter_table alter_extension sequence polymorphism rowtypes returning with xml gp_foreign_data
 
+# rowtypes_alter relies on sessions holding on to descriptors and plans, which
+# concurrent DDL can prevent, so run it by itself
+test: rowtypes_alter
+
 # large objects are not supported by GPDB
 # test: largeobject
 
