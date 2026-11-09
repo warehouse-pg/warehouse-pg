@@ -415,6 +415,9 @@ extern PGDLLIMPORT ErrorContextCallback *error_context_stack;
  * not without taking thought for what will happen during ereport(FATAL).
  * The PG_ENSURE_ERROR_CLEANUP macros provided by storage/ipc.h may be
  * helpful in such cases.
+ *
+ * If you modify these macros, check whether similar modifications are
+ * needed in plperl's PG_PERL_TRY and friends.
  *----------
  */
 #define PG_TRY()  \
@@ -510,6 +513,7 @@ extern void ThrowErrorData(ErrorData *edata);
 extern void pg_re_throw(void) __attribute__((noreturn));
 
 extern char *GetErrorContextStack(void);
+extern bool HaveCompleteError(void);
 
 /* Hook for intercepting messages before they are sent to the server log */
 typedef void (*emit_log_hook_type) (ErrorData *edata);

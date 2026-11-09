@@ -1305,6 +1305,7 @@ extern unsigned long long strtoull(const char *str, char **endptr, int base);
  * When there is no sigsetjmp, its functionality is provided by plain
  * setjmp. Incidentally, nothing provides setjmp's functionality in
  * that case.
+ * If you change this, see also PG_PERL_TRY in plperl.h.
  */
 #ifndef HAVE_SIGSETJMP
 #define sigjmp_buf jmp_buf
