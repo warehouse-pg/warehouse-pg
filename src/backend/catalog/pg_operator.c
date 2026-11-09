@@ -53,13 +53,24 @@ static Oid OperatorShellMake(const char *operatorName,
 				  Oid leftTypeId,
 				  Oid rightTypeId);
 
-static void OperatorUpd(Oid baseId, Oid commId, Oid negId);
+static void OperatorValidateParams(Oid leftTypeId,
+					   Oid rightTypeId,
+					   Oid operResultType,
+					   bool hasCommutator,
+					   bool hasNegator,
+					   bool hasRestrictionSelectivity,
+					   bool hasJoinSelectivity,
+					   bool canMerge,
+					   bool canHash);
+
+static void OperatorUpd(Oid baseId, Oid commId, Oid negId, Oid oprResultId);
 
 static Oid get_other_operator(List *otherOp,
 				   Oid otherLeftTypeId, Oid otherRightTypeId,
 				   const char *operatorName, Oid operatorNamespace,
-				   Oid leftTypeId, Oid rightTypeId,
-				   bool isCommutator);
+				   Oid leftTypeId, Oid rightTypeId);
+
+static Oid	get_opowner(Oid opno);
 
 static void makeOperatorDependencies(HeapTuple tuple, bool isUpdate);
 
@@ -348,11 +359,15 @@ OperatorCreate(const char *operatorName,
 	bool		operatorAlreadyDefined;
 	Oid			operResultType;
 	Oid			commutatorId,
-				negatorId;
+				negatorId,
+				oldCommutatorId,
+				oldNegatorId;
 	bool		selfCommutator = false;
 	NameData	oname;
 	TupleDesc	tupDesc;
 	int			i;
+
+	pg_operator_desc = heap_open(OperatorRelationId, RowExclusiveLock);
 
 	/*
 	 * Sanity checks
@@ -363,53 +378,7 @@ OperatorCreate(const char *operatorName,
 				 errmsg("\"%s\" is not a valid operator name",
 						operatorName)));
 
-	if (!(OidIsValid(leftTypeId) && OidIsValid(rightTypeId)))
-	{
-		/* If it's not a binary op, these things mustn't be set: */
-		if (commutatorName)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
-					 errmsg("only binary operators can have commutators")));
-		if (OidIsValid(joinId))
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
-				 errmsg("only binary operators can have join selectivity")));
-		if (canMerge)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
-					 errmsg("only binary operators can merge join")));
-		if (canHash)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
-					 errmsg("only binary operators can hash")));
-	}
-
 	operResultType = get_func_rettype(procedureId);
-
-	if (operResultType != BOOLOID)
-	{
-		/* If it's not a boolean op, these things mustn't be set: */
-		if (negatorName)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
-					 errmsg("only boolean operators can have negators")));
-		if (OidIsValid(restrictionId))
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
-					 errmsg("only boolean operators can have restriction selectivity")));
-		if (OidIsValid(joinId))
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
-				errmsg("only boolean operators can have join selectivity")));
-		if (canMerge)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
-					 errmsg("only boolean operators can merge join")));
-		if (canHash)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
-					 errmsg("only boolean operators can hash")));
-	}
 
 	operatorObjectId = OperatorGet(operatorName,
 								   operatorNamespace,
@@ -427,11 +396,58 @@ OperatorCreate(const char *operatorName,
 	 * At this point, if operatorObjectId is not InvalidOid then we are
 	 * filling in a previously-created shell.  Insist that the user own any
 	 * such shell.
+	 *
+	 * We used to test pg_oper_ownercheck() here, allowing a superuser to
+	 * overwrite shells created by ordinary users, and also allowing those
+	 * users to mount trojan-horse attacks against the superuser by installing
+	 * unexpected commutator/negator links.  Now we insist that both sides of
+	 * a commutator/negator pair be created by exactly the same role.  They
+	 * can be reassigned to other owners later, however, so the tests below
+	 * are still pg_oper_ownercheck().  This is important to avoid breaking
+	 * pg_dump.
 	 */
 	if (OidIsValid(operatorObjectId) &&
-		!pg_oper_ownercheck(operatorObjectId, GetUserId()))
+		get_opowner(operatorObjectId) != GetUserId())
 		aclcheck_error(ACLCHECK_NOT_OWNER, ACL_KIND_OPER,
 					   operatorName);
+
+	/*
+	 * If we are replacing an operator shell, it's highly likely that it has
+	 * oprcom and/or oprnegate filled in already (else there would have been
+	 * no reason to make the shell).  Fetch a copy of the shell tuple, which
+	 * we'll need below anyway to do heap_modify_tuple, and grab the old
+	 * commutator/negator values out of it.
+	 */
+	if (OidIsValid(operatorObjectId))
+	{
+		Form_pg_operator t;
+
+		tup = SearchSysCacheCopy1(OPEROID,
+								  ObjectIdGetDatum(operatorObjectId));
+		if (!HeapTupleIsValid(tup))
+			elog(ERROR, "cache lookup failed for operator %u",
+				 operatorObjectId);
+		t = (Form_pg_operator) GETSTRUCT(tup);
+		oldCommutatorId = t->oprcom;
+		oldNegatorId = t->oprnegate;
+
+		/*
+		 * In this branch, dropping an operator does not reset the links of
+		 * its commutator and negator, so the shell's links can be dangling.
+		 * A dangling link has no reciprocal link to preserve; forget it.
+		 */
+		if (OidIsValid(oldCommutatorId) &&
+			!SearchSysCacheExists1(OPEROID, ObjectIdGetDatum(oldCommutatorId)))
+			oldCommutatorId = InvalidOid;
+		if (OidIsValid(oldNegatorId) &&
+			!SearchSysCacheExists1(OPEROID, ObjectIdGetDatum(oldNegatorId)))
+			oldNegatorId = InvalidOid;
+	}
+	else
+	{
+		tup = NULL;
+		oldCommutatorId = oldNegatorId = InvalidOid;
+	}
 
 	/*
 	 * Set up the other operators.  If they do not currently exist, create
@@ -444,8 +460,7 @@ OperatorCreate(const char *operatorName,
 		commutatorId = get_other_operator(commutatorName,
 										  rightTypeId, leftTypeId,
 										  operatorName, operatorNamespace,
-										  leftTypeId, rightTypeId,
-										  true);
+										  leftTypeId, rightTypeId);
 
 		/* Permission check: must own other operator */
 		if (OidIsValid(commutatorId) &&
@@ -454,8 +469,9 @@ OperatorCreate(const char *operatorName,
 						   NameListToString(commutatorName));
 
 		/*
-		 * self-linkage to this operator; will fix below. Note that only
-		 * self-linkage for commutation makes sense.
+		 * If self-linkage to the new operator is requested, we'll fix it
+		 * below.  (In case of self-linkage to an existing shell operator, we
+		 * need do nothing special.)
 		 */
 		if (!OidIsValid(commutatorId))
 			selfCommutator = true;
@@ -469,17 +485,71 @@ OperatorCreate(const char *operatorName,
 		negatorId = get_other_operator(negatorName,
 									   leftTypeId, rightTypeId,
 									   operatorName, operatorNamespace,
-									   leftTypeId, rightTypeId,
-									   false);
+									   leftTypeId, rightTypeId);
 
 		/* Permission check: must own other operator */
 		if (OidIsValid(negatorId) &&
 			!pg_oper_ownercheck(negatorId, GetUserId()))
 			aclcheck_error(ACLCHECK_NOT_OWNER, ACL_KIND_OPER,
 						   NameListToString(negatorName));
+
+		/*
+		 * Prevent self negation, as it doesn't make sense.  It's self
+		 * negation if result is InvalidOid (negator would be the same
+		 * operator but it doesn't exist yet) or operatorObjectId (we are
+		 * replacing a shell that would need to be its own negator).
+		 */
+		if (!OidIsValid(negatorId) || negatorId == operatorObjectId)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
+					 errmsg("operator cannot be its own negator")));
 	}
 	else
 		negatorId = InvalidOid;
+
+	/*
+	 * If we had a pre-existing oprcom setting, we must not change it, else
+	 * we'd break the reciprocal linkage to whatever oprcom points at.
+	 */
+	if (OidIsValid(oldCommutatorId))
+	{
+		if (!OidIsValid(commutatorId))
+			commutatorId = oldCommutatorId;
+		else if (oldCommutatorId != commutatorId)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
+					 errmsg("commutator operator %s is already the commutator of operator %s",
+							get_opname(oldCommutatorId), operatorName)));
+	}
+
+	/*
+	 * If we had a pre-existing oprnegate setting, we must not change it, else
+	 * we'd break the reciprocal linkage to whatever oprnegate points at.
+	 */
+	if (OidIsValid(oldNegatorId))
+	{
+		if (!OidIsValid(negatorId))
+			negatorId = oldNegatorId;
+		else if (oldNegatorId != negatorId)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
+					 errmsg("negator operator %s is already the negator of operator %s",
+							get_opname(oldNegatorId), operatorName)));
+	}
+
+	/*
+	 * Now that we know commutatorId and negatorId for sure, we can finish our
+	 * sanity checks.
+	 */
+	OperatorValidateParams(leftTypeId,
+						   rightTypeId,
+						   operResultType,
+						   OidIsValid(commutatorId),
+						   OidIsValid(negatorId),
+						   OidIsValid(restrictionId),
+						   OidIsValid(joinId),
+						   canMerge,
+						   canHash);
 
 	/*
 	 * set up values in the operator tuple
@@ -508,8 +578,6 @@ OperatorCreate(const char *operatorName,
 	values[Anum_pg_operator_oprrest - 1] = ObjectIdGetDatum(restrictionId);
 	values[Anum_pg_operator_oprjoin - 1] = ObjectIdGetDatum(joinId);
 
-	pg_operator_desc = heap_open(OperatorRelationId, RowExclusiveLock);
-
 	/*
 	 * If we are replacing an operator shell, update; else insert
 	 */
@@ -517,12 +585,7 @@ OperatorCreate(const char *operatorName,
 	{
 		isUpdate = true;
 
-		tup = SearchSysCacheCopy1(OPEROID,
-								  ObjectIdGetDatum(operatorObjectId));
-		if (!HeapTupleIsValid(tup))
-			elog(ERROR, "cache lookup failed for operator %u",
-				 operatorObjectId);
-
+		/* tup was fetched above */
 		tup = heap_modify_tuple(tup,
 								RelationGetDescr(pg_operator_desc),
 								values,
@@ -547,11 +610,6 @@ OperatorCreate(const char *operatorName,
 	/* Add dependencies for the entry */
 	makeOperatorDependencies(tup, isUpdate);
 
-	/* Post creation hook for new operator */
-	InvokeObjectPostCreateHook(OperatorRelationId, operatorObjectId, 0);
-
-	heap_close(pg_operator_desc, RowExclusiveLock);
-
 	/*
 	 * If a commutator and/or negator link is provided, update the other
 	 * operator(s) to point at this one, if they don't already have a link.
@@ -567,23 +625,94 @@ OperatorCreate(const char *operatorName,
 		commutatorId = operatorObjectId;
 
 	if (OidIsValid(commutatorId) || OidIsValid(negatorId))
-		OperatorUpd(operatorObjectId, commutatorId, negatorId);
+		OperatorUpd(operatorObjectId, commutatorId, negatorId,
+					operResultType);
+
+	/* Post creation hook for new operator */
+	InvokeObjectPostCreateHook(OperatorRelationId, operatorObjectId, 0);
+
+	heap_close(pg_operator_desc, RowExclusiveLock);
 
 	return operatorObjectId;
 }
 
 /*
- * Try to lookup another operator (commutator, etc)
+ * OperatorValidateParams
  *
- * If not found, check to see if it is exactly the operator we are trying
- * to define; if so, return InvalidOid.  (Note that this case is only
- * sensible for a commutator, so we error out otherwise.)  If it is not
- * the same operator, create a shell operator.
+ * Check that an operator with argument types leftTypeId and rightTypeId,
+ * returning operResultType, can have the attributes that are set to true.
+ * Raise an error for any disallowed attribute.
+ */
+static void
+OperatorValidateParams(Oid leftTypeId,
+					   Oid rightTypeId,
+					   Oid operResultType,
+					   bool hasCommutator,
+					   bool hasNegator,
+					   bool hasRestrictionSelectivity,
+					   bool hasJoinSelectivity,
+					   bool canMerge,
+					   bool canHash)
+{
+	if (!(OidIsValid(leftTypeId) && OidIsValid(rightTypeId)))
+	{
+		/* If it's not a binary op, these things mustn't be set: */
+		if (hasCommutator)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
+					 errmsg("only binary operators can have commutators")));
+		if (hasJoinSelectivity)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
+				 errmsg("only binary operators can have join selectivity")));
+		if (canMerge)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
+					 errmsg("only binary operators can merge join")));
+		if (canHash)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
+					 errmsg("only binary operators can hash")));
+	}
+
+	if (operResultType != BOOLOID)
+	{
+		/* If it's not a boolean op, these things mustn't be set: */
+		if (hasNegator)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
+					 errmsg("only boolean operators can have negators")));
+		if (hasRestrictionSelectivity)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
+					 errmsg("only boolean operators can have restriction selectivity")));
+		if (hasJoinSelectivity)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
+				errmsg("only boolean operators can have join selectivity")));
+		if (canMerge)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
+					 errmsg("only boolean operators can merge join")));
+		if (canHash)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
+					 errmsg("only boolean operators can hash")));
+	}
+}
+
+/*
+ * Try to lookup another operator (commutator, etc); return its OID
+ *
+ * If not found, check to see if it would be the same operator we are trying
+ * to define; if so, return InvalidOid.  (Caller must decide whether
+ * that is sensible.)  If it is not the same operator, create a shell
+ * operator.
  */
 static Oid
 get_other_operator(List *otherOp, Oid otherLeftTypeId, Oid otherRightTypeId,
 				   const char *operatorName, Oid operatorNamespace,
-				   Oid leftTypeId, Oid rightTypeId, bool isCommutator)
+				   Oid leftTypeId, Oid rightTypeId)
 {
 	Oid			other_oid;
 	bool		otherDefined;
@@ -610,14 +739,7 @@ get_other_operator(List *otherOp, Oid otherLeftTypeId, Oid otherRightTypeId,
 		otherLeftTypeId == leftTypeId &&
 		otherRightTypeId == rightTypeId)
 	{
-		/*
-		 * self-linkage to this operator; caller will fix later. Note that
-		 * only self-linkage for commutation makes sense.
-		 */
-		if (!isCommutator)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
-			 errmsg("operator cannot be its own negator or sort operator")));
+		/* self-linkage to new operator; caller must handle this */
 		return InvalidOid;
 	}
 
@@ -638,127 +760,182 @@ get_other_operator(List *otherOp, Oid otherLeftTypeId, Oid otherRightTypeId,
 
 /*
  * OperatorUpd
+ *	Update the commutator and negator back-links for an operator being
+ *	created.
  *
- *	For a given operator, look up its negator and commutator operators.
- *	If they are defined, but their negator and commutator fields
- *	(respectively) are empty, then use the new operator for neg or comm.
+ *	baseId: OID of the operator that is the direct target of the change
+ *	commId: its oprcom value (possibly InvalidOid)
+ *	negId: its oprnegate value (possibly InvalidOid)
+ *	oprResultId: its oprresult value (InvalidOid if a shell)
+ *
+ *	We update the referenced operators to link back to the given operator,
+ *	after checking that they return the same data type as the given operator.
+ *
  *	This solves a problem for users who need to insert two new operators
- *	which are the negator or commutator of each other.
+ *	that are the negator or commutator of each other.
  */
 static void
-OperatorUpd(Oid baseId, Oid commId, Oid negId)
+OperatorUpd(Oid baseId, Oid commId, Oid negId, Oid oprResultId)
 {
-	int			i;
 	Relation	pg_operator_desc;
 	HeapTuple	tup;
-	bool		nulls[Natts_pg_operator];
-	bool		replaces[Natts_pg_operator];
-	Datum		values[Natts_pg_operator];
-
-	for (i = 0; i < Natts_pg_operator; ++i)
-	{
-		values[i] = (Datum) 0;
-		replaces[i] = false;
-		nulls[i] = false;
-	}
 
 	/*
-	 * check and update the commutator & negator, if necessary
-	 *
-	 * We need a CommandCounterIncrement here in case of a self-commutator
-	 * operator: we'll need to update the tuple that we just inserted.
+	 * If we're making an operator into its own commutator, then we need a
+	 * command-counter increment here, since we've just inserted the tuple
+	 * we're about to update.
 	 */
 	CommandCounterIncrement();
 
+	/* Open the relation. */
 	pg_operator_desc = heap_open(OperatorRelationId, RowExclusiveLock);
 
-	tup = SearchSysCacheCopy1(OPEROID, ObjectIdGetDatum(commId));
+	/* Get a writable copy of the commutator's tuple. */
+	if (OidIsValid(commId))
+		tup = SearchSysCacheCopy1(OPEROID, ObjectIdGetDatum(commId));
+	else
+		tup = NULL;
 
-	/*
-	 * if the commutator and negator are the same operator, do one update. XXX
-	 * this is probably useless code --- I doubt it ever makes sense for
-	 * commutator and negator to be the same thing...
-	 */
-	if (commId == negId)
+	/* Check and update the commutator's tuple if need be. */
+	if (HeapTupleIsValid(tup))
 	{
-		if (HeapTupleIsValid(tup))
+		Form_pg_operator t = (Form_pg_operator) GETSTRUCT(tup);
+		bool		update_commutator = false;
+
+		/*
+		 * We can skip doing an update if the commutator's oprcom field is
+		 * already what we want, which is perfectly possible when filling in
+		 * a shell operator.
+		 */
+		if (t->oprcom != baseId)
 		{
-			Form_pg_operator t = (Form_pg_operator) GETSTRUCT(tup);
-
-			if (!OidIsValid(t->oprcom) || !OidIsValid(t->oprnegate))
+			/*
+			 * If commutator's oprcom field is already set to point to some
+			 * third operator, it's an error.  Changing its link would be
+			 * unsafe, and letting the inconsistency stand would not be good
+			 * either.
+			 *
+			 * In this branch, dropping an operator does not reset the links
+			 * of its commutator and negator, so a link to an operator that
+			 * no longer exists is expected.  There is no reciprocal link to
+			 * break in that case, so just overwrite it.
+			 */
+			if (OidIsValid(t->oprcom))
 			{
-				if (!OidIsValid(t->oprnegate))
-				{
-					values[Anum_pg_operator_oprnegate - 1] = ObjectIdGetDatum(baseId);
-					replaces[Anum_pg_operator_oprnegate - 1] = true;
-				}
+				char	   *thirdop = get_opname(t->oprcom);
 
-				if (!OidIsValid(t->oprcom))
-				{
-					values[Anum_pg_operator_oprcom - 1] = ObjectIdGetDatum(baseId);
-					replaces[Anum_pg_operator_oprcom - 1] = true;
-				}
-
-				tup = heap_modify_tuple(tup,
-										RelationGetDescr(pg_operator_desc),
-										values,
-										nulls,
-										replaces);
-
-				simple_heap_update(pg_operator_desc, &tup->t_self, tup);
-
-				CatalogUpdateIndexes(pg_operator_desc, tup);
+				if (thirdop != NULL)
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
+							 errmsg("commutator operator %s is already the commutator of operator %s",
+									NameStr(t->oprname), thirdop)));
 			}
+
+			t->oprcom = baseId;
+			update_commutator = true;
 		}
 
-		heap_close(pg_operator_desc, RowExclusiveLock);
+		/*
+		 * If we are installing an oprcom link, or one is already present,
+		 * verify that the operators return the same data type; unless one or
+		 * both is a shell, in which case we can't check yet.  (We'll check in
+		 * some future pass through this code when both become defined.  Since
+		 * this might indeed be that call, we must check even if not changing
+		 * the tuple.)
+		 */
+		if (t->oprcom == baseId &&
+			OidIsValid(oprResultId) && OidIsValid(t->oprresult) &&
+			oprResultId != t->oprresult)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
+					 errmsg("commutator operator %s does not return the same data type as operator %s",
+							NameStr(t->oprname), get_opname(baseId))));
 
-		return;
+		/* If any columns were found to need modification, update tuple. */
+		if (update_commutator)
+		{
+			simple_heap_update(pg_operator_desc, &tup->t_self, tup);
+
+			CatalogUpdateIndexes(pg_operator_desc, tup);
+
+			/*
+			 * Do CCI to make the updated tuple visible.  We must do this in
+			 * case the commutator is also the negator.  (Which would be a
+			 * logic error on the operator definer's part, but that's not a
+			 * good reason to fail here.)
+			 */
+			CommandCounterIncrement();
+		}
 	}
 
-	/* if commutator and negator are different, do two updates */
+	/*
+	 * Similarly find, check, and update the negator, if any.
+	 */
+	if (OidIsValid(negId))
+		tup = SearchSysCacheCopy1(OPEROID, ObjectIdGetDatum(negId));
+	else
+		tup = NULL;
 
-	if (HeapTupleIsValid(tup) &&
-		!(OidIsValid(((Form_pg_operator) GETSTRUCT(tup))->oprcom)))
+	if (HeapTupleIsValid(tup))
 	{
-		values[Anum_pg_operator_oprcom - 1] = ObjectIdGetDatum(baseId);
-		replaces[Anum_pg_operator_oprcom - 1] = true;
+		Form_pg_operator t = (Form_pg_operator) GETSTRUCT(tup);
+		bool		update_negator = false;
 
-		tup = heap_modify_tuple(tup,
-								RelationGetDescr(pg_operator_desc),
-								values,
-								nulls,
-								replaces);
+		/*
+		 * We can skip doing an update if the negator's oprnegate field is
+		 * already what we want, which is perfectly possible when filling in
+		 * a shell operator.
+		 */
+		if (t->oprnegate != baseId)
+		{
+			/*
+			 * If negator's oprnegate field is already set to point to some
+			 * third operator, it's an error.  Changing its link would be
+			 * unsafe, and letting the inconsistency stand would not be good
+			 * either.  As above, a link to an operator that no longer exists
+			 * is just overwritten.
+			 */
+			if (OidIsValid(t->oprnegate))
+			{
+				char	   *thirdop = get_opname(t->oprnegate);
 
-		simple_heap_update(pg_operator_desc, &tup->t_self, tup);
+				if (thirdop != NULL)
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
+							 errmsg("negator operator %s is already the negator of operator %s",
+									NameStr(t->oprname), thirdop)));
+			}
 
-		CatalogUpdateIndexes(pg_operator_desc, tup);
+			t->oprnegate = baseId;
+			update_negator = true;
+		}
 
-		values[Anum_pg_operator_oprcom - 1] = (Datum) NULL;
-		replaces[Anum_pg_operator_oprcom - 1] = false;
+		/*
+		 * If we are installing an oprnegate link, or one is already present,
+		 * verify that the operators return the same data type; unless one or
+		 * both is a shell, in which case we can't check yet.  (We'll check in
+		 * some future pass through this code when both become defined.  Since
+		 * this might indeed be that call, we must check even if not changing
+		 * the tuple.)
+		 */
+		if (t->oprnegate == baseId &&
+			OidIsValid(oprResultId) && OidIsValid(t->oprresult) &&
+			oprResultId != t->oprresult)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
+					 errmsg("negator operator %s does not return the same data type as operator %s",
+							NameStr(t->oprname), get_opname(baseId))));
+
+		/* If any columns were found to need modification, update tuple. */
+		if (update_negator)
+		{
+			simple_heap_update(pg_operator_desc, &tup->t_self, tup);
+
+			CatalogUpdateIndexes(pg_operator_desc, tup);
+		}
 	}
 
-	/* check and update the negator, if necessary */
-
-	tup = SearchSysCacheCopy1(OPEROID, ObjectIdGetDatum(negId));
-
-	if (HeapTupleIsValid(tup) &&
-		!(OidIsValid(((Form_pg_operator) GETSTRUCT(tup))->oprnegate)))
-	{
-		values[Anum_pg_operator_oprnegate - 1] = ObjectIdGetDatum(baseId);
-		replaces[Anum_pg_operator_oprnegate - 1] = true;
-
-		tup = heap_modify_tuple(tup,
-								RelationGetDescr(pg_operator_desc),
-								values,
-								nulls,
-								replaces);
-
-		simple_heap_update(pg_operator_desc, &tup->t_self, tup);
-
-		CatalogUpdateIndexes(pg_operator_desc, tup);
-	}
-
+	/* Close relation and release catalog lock. */
 	heap_close(pg_operator_desc, RowExclusiveLock);
 }
 
@@ -870,4 +1047,28 @@ makeOperatorDependencies(HeapTuple tuple, bool isUpdate)
 	/* Dependency on extension */
 	recordDependencyOnCurrentExtension(&myself, isUpdate);
 
+}
+
+/*
+ * get_opowner
+ *
+ *		Returns the OID of the owner of a given operator.
+ */
+static Oid
+get_opowner(Oid opno)
+{
+	HeapTuple	tp;
+
+	tp = SearchSysCache1(OPEROID, ObjectIdGetDatum(opno));
+	if (HeapTupleIsValid(tp))
+	{
+		Form_pg_operator optup = (Form_pg_operator) GETSTRUCT(tp);
+		Oid			result;
+
+		result = optup->oprowner;
+		ReleaseSysCache(tp);
+		return result;
+	}
+	else
+		return InvalidOid;
 }
