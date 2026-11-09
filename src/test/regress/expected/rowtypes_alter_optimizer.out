@@ -577,11 +577,9 @@ BEGIN
 END;
 $$;
 SELECT rta_func();
-      rta_func       
----------------------
- (1,"\\x4649584d45")
-(1 row)
-
+ERROR:  row type of datum tuple was altered after the datum's creation
+HINT:  See server log for additional details.
+CONTEXT:  PL/pgSQL function rta_func() while casting return value to function's return type
 DROP FUNCTION rta_func();
 DROP TYPE rta_src, rta_dst;
 -- A variable of the row type
