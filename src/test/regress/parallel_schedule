@@ -153,6 +153,7 @@ test: plancache limit plpgsql copy2 temp domain rangefuncs prepare conversion tr
 # concurrent DDL can prevent, so run it by itself
 test: rowtypes_alter
 test: attribute_version_dispatch
+test: attribute_version
 # large objects are not supported by GPDB
 # test: largeobject
 
