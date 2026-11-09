@@ -104,6 +104,12 @@ install_support_functions_in_new_db(const char *db_name)
 							  "AS '$libdir/pg_upgrade_support' "
 							  "LANGUAGE C STRICT;"));
 	PQclear(executeQueryOrDie(conn,
+							  "CREATE OR REPLACE FUNCTION "
+							  "binary_upgrade.set_next_attribute_versions(OID, pg_catalog.pg_lsn[]) "
+							  "RETURNS VOID "
+							  "AS '$libdir/pg_upgrade_support' "
+							  "LANGUAGE C STRICT;"));
+	PQclear(executeQueryOrDie(conn,
 	                          "CREATE OR REPLACE FUNCTION "
 	                          "binary_upgrade.set_next_preassigned_tablespace_oid(OID, TEXT) "
 	                          "RETURNS VOID "

@@ -2631,6 +2631,8 @@ heap_prepare_insert(Relation relation, HeapTuple tup, TransactionId xid,
 		}
 	}
 
+	/* don't need to unset HEAP_IS_DATUM, it's part of HEAP_XACT_MASK */
+
 	tup->t_data->t_infomask &= ~(HEAP_XACT_MASK);
 	if (isFrozen)
 		tup->t_data->t_infomask |= HEAP_XMIN_COMMITTED;
@@ -3976,6 +3978,8 @@ l2:
 	/*
 	 * Prepare the new tuple with the appropriate initial values of Xmin and
 	 * Xmax, as well as initial infomask bits as computed above.
+	 *
+	 * Don't need to unset HEAP_IS_DATUM, it's part of HEAP_XACT_MASK.
 	 */
 	newtup->t_data->t_infomask &= ~(HEAP_XACT_MASK);
 	newtup->t_data->t_infomask2 &= ~(HEAP2_XACT_MASK);
@@ -7860,6 +7864,9 @@ ExtractReplicaIdentity(Relation relation, HeapTuple tp, bool key_changed, bool *
 		{
 			*copy = true;
 			tp = toast_flatten_tuple(tp, RelationGetDescr(relation));
+
+			/* see below */
+			Assert(!HeapTupleHeaderIsDatum(tp->t_data));
 		}
 		return tp;
 	}
@@ -7938,6 +7945,15 @@ ExtractReplicaIdentity(Relation relation, HeapTuple tp, bool key_changed, bool *
 		key_tuple = toast_flatten_tuple(oldtup, RelationGetDescr(relation));
 		heap_freetuple(oldtup);
 	}
+
+	/*
+	 * Because we only WAL log the tuple data itself, we don't want the tuple
+	 * to be marked as a versioned tuple, as we couldn't verify it due to the
+	 * necessary metadata not having been preserved. We also don't need it, if
+	 * there were a danger of the format changing, we'd be in much bigger
+	 * trouble.
+	 */
+	HeapTupleHeaderClearDatum(key_tuple->t_data);
 
 	return key_tuple;
 }

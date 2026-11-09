@@ -17,6 +17,7 @@
 #include "catalog/namespace.h"
 #include "catalog/oid_dispatch.h"
 #include "catalog/pg_authid.h"
+#include "access/xlogdefs.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_enum.h"
 #include "catalog/pg_namespace.h"
@@ -29,6 +30,8 @@
 #include "rewrite/rewriteHandler.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
+#include "utils/lsyscache.h"
+#include "utils/pg_lsn.h"
 
 /* THIS IS USED ONLY FOR PG >= 9.0 */
 
@@ -58,6 +61,7 @@ PG_FUNCTION_INFO_V1(create_empty_extension);
 PG_FUNCTION_INFO_V1(set_next_pg_namespace_oid);
 
 PG_FUNCTION_INFO_V1(set_preassigned_oids);
+PG_FUNCTION_INFO_V1(set_next_attribute_versions);
 PG_FUNCTION_INFO_V1(set_next_preassigned_tablespace_oid);
 
 PG_FUNCTION_INFO_V1(view_has_anyarray_casts);
@@ -822,4 +826,46 @@ check_node_changed_function_signatures_walker(Node *node, void *context)
 	}
 
 	return expression_tree_walker(node, check_node_changed_function_signatures_walker, context);
+}
+
+/*
+ * Supply the attribute versions the old cluster had for a relation that is
+ * about to be created, see SetBinaryUpgradeAttributeVersions().  An empty
+ * array says that the relation had no versions.
+ */
+Datum
+set_next_attribute_versions(PG_FUNCTION_ARGS)
+{
+	Oid			reloid = PG_GETARG_OID(0);
+	ArrayType  *array = PG_GETARG_ARRAYTYPE_P(1);
+	int16		elmlen;
+	bool		elmbyval;
+	char		elmalign;
+	Datum	   *elems;
+	int			nelems;
+	XLogRecPtr *versions = NULL;
+	int			i;
+
+	if (!IsBinaryUpgrade)
+		ereport(ERROR,
+				(errcode(ERRCODE_CANT_CHANGE_RUNTIME_PARAM),
+				 (errmsg("function can only be called when server is in binary upgrade mode"))));
+
+	if (array_contains_nulls(array))
+		elog(ERROR, "null attribute version value is not allowed");
+
+	get_typlenbyvalalign(LSNOID, &elmlen, &elmbyval, &elmalign);
+	deconstruct_array(array, LSNOID, elmlen, elmbyval, elmalign,
+					  &elems, NULL, &nelems);
+
+	if (nelems > 0)
+	{
+		versions = (XLogRecPtr *) palloc(nelems * sizeof(XLogRecPtr));
+		for (i = 0; i < nelems; i++)
+			versions[i] = DatumGetLSN(elems[i]);
+	}
+
+	AddBinaryUpgradeAttributeVersions(reloid, nelems, versions);
+
+	PG_RETURN_VOID();
 }

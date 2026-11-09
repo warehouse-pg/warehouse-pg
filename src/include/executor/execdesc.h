@@ -227,6 +227,15 @@ typedef struct
 
 } OidAssignment;
 
+/*
+ * Special value stored in OidAssignment.catalog, when the entry carries the
+ * attribute version chosen by the coordinator for a relation's attributes
+ * (keyOid1 = relation OID, keyOid2 = attribute number, or 0 for all the
+ * attributes of a newly created relation).  The 64-bit version is carried in
+ * namespaceOid (high half) and oid (low half).  No catalog has this OID.
+ */
+#define ATTRIBUTE_VERSION_ASSIGNMENT	2
+
 /* ----------------
  *		query descriptor:
  *

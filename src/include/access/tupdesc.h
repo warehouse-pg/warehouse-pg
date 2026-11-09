@@ -15,6 +15,7 @@
 #define TUPDESC_H
 
 #include "access/attnum.h"
+#include "access/xlogdefs.h"
 #include "catalog/pg_attribute.h"
 #include "nodes/pg_list.h"
 
@@ -78,6 +79,14 @@ typedef struct tupleDesc
 	int32		tdtypmod;		/* typmod for tuple type */
 	bool		tdhasoid;		/* tuple has oid attribute in its header */
 	int			tdrefcount;		/* reference count, or -1 if not counting */
+
+	/*
+	 * Attribute versions, see src/backend/catalog/README.attver.md.
+	 * tdversions[0] is the aggregate version, tdversions[1..natts] are the
+	 * per-attribute versions.  The array is part of the descriptor's
+	 * allocation; use the TupleDescGet/SetVersion functions.
+	 */
+	XLogRecPtr *tdversions;
 }	*TupleDesc;
 
 /*
@@ -115,6 +124,12 @@ extern void FreeTupleDesc(TupleDesc tupdesc);
 
 extern void IncrTupleDescRefCount(TupleDesc tupdesc);
 extern void DecrTupleDescRefCount(TupleDesc tupdesc);
+
+extern XLogRecPtr TupleDescGetVersion(TupleDesc tupdesc);
+extern void TupleDescSetVersion(TupleDesc tupdesc, XLogRecPtr version);
+extern XLogRecPtr TupleDescGetAttrVersion(TupleDesc tupdesc, AttrNumber attnum);
+extern void TupleDescSetAttrVersion(TupleDesc tupdesc, AttrNumber attnum,
+									XLogRecPtr version);
 
 #define PinTupleDesc(tupdesc) \
 	do { \

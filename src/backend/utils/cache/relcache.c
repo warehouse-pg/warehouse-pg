@@ -496,6 +496,7 @@ RelationBuildTupleDesc(Relation relation)
 	TupleConstr *constr;
 	AttrDefault *attrdef = NULL;
 	int			ndef = 0;
+	bool		hasVersionedAttrs = HasVersionedAttributes(relation);
 
 	/* copy some fields from pg_class row to rd_att */
 	relation->rd_att->tdtypeid = relation->rd_rel->reltype;
@@ -552,6 +553,20 @@ RelationBuildTupleDesc(Relation relation)
 			   attp,
 			   ATTRIBUTE_FIXED_PART_SIZE);
 
+
+		/* determine the per-attribute version */
+		if (hasVersionedAttrs)
+		{
+			bool		optnull;
+			Datum		attopts;
+			XLogRecPtr	attVersion;
+
+			attopts = heap_getattr(pg_attribute_tuple, Anum_pg_attribute_attoptions,
+								   pg_attribute_desc->rd_att, &optnull);
+
+			attVersion = attoptions_get_version(attopts, optnull);
+			TupleDescSetAttrVersion(relation->rd_att, attp->attnum, attVersion);
+		}
 		/* Update constraint/default info */
 		if (attp->attnotnull)
 			constr->has_not_null = true;
@@ -581,6 +596,43 @@ RelationBuildTupleDesc(Relation relation)
 	if (need != 0)
 		elog(ERROR, "catalog is missing %d attribute(s) for relid %u",
 			 need, RelationGetRelid(relation));
+
+	if (hasVersionedAttrs)
+	{
+		XLogRecPtr	relVersion;
+
+		/*
+		 * The aggregate version is the last attribute's, as versions are
+		 * monotonic across attributes, see
+		 * src/backend/catalog/README.attver.md.
+		 */
+		if (relation->rd_rel->relnatts > 0)
+			relVersion = TupleDescGetAttrVersion(relation->rd_att,
+												 relation->rd_rel->relnatts);
+		else
+			relVersion = InvalidXLogRecPtr;
+		TupleDescSetVersion(relation->rd_att, relVersion);
+
+		/*
+		 * Verify that the attribute versions are monotonic / non-decreasing.
+		 *
+		 * While it may seem attractive to test that attribute versions are
+		 * monotonic as part of the loop above, it's not generally guaranteed
+		 * that attributes are processed in order (mainly due to
+		 * ignore_system_indexes, as we don't compute versions for system
+		 * tables which may be built before criticalRelcachesBuilt). And this
+		 * way we can use the same check function in a bunch of places.
+		 *
+		 * It'd be very nice if we could turn this into an ERROR if the table
+		 * definition has changed in this transaction, but we don't have that
+		 * information here. Even rd_createSubid etc are not accessible here
+		 * in case of a rebuild. Always ERRORing is infeasible as that'd
+		 * prevent the dropping of corrupt tables.
+		 */
+		CheckAttributeVersions(relation->rd_att,
+							   RelationGetRelationName(relation),
+							   WARNING);
+	}
 
 	/*
 	 * The attcacheoff values we read from pg_attribute should all be -1
@@ -5172,6 +5224,10 @@ load_relcache_init_file(bool shared)
 		 */
 		RelationInitLockInfo(rel);
 		RelationInitPhysicalAddr(rel);
+
+		/* system catalogs are not versioned */
+		Assert(!HasVersionedAttributes(rel) &&
+			   TupleDescGetVersion(rel->rd_att) == InvalidXLogRecPtr);
 	}
 
 	/*

@@ -30,6 +30,30 @@
 
 
 /*
+ * Size of the attribute version array of a descriptor with natts attributes:
+ * the aggregate version plus one version per attribute.  See "Version storage
+ * in tuple descriptors" in src/backend/catalog/README.attver.md.
+ */
+#define TupleDescVersionsSize(natts) \
+	(sizeof(XLogRecPtr) * ((natts) + 1))
+
+/*
+ * Address of the attribute version array.  Every descriptor made by
+ * CreateTemplateTupleDesc() or CreateTupleDesc() has one.
+ */
+static inline XLogRecPtr *
+TupleDescVersionArray(TupleDesc tupdesc)
+{
+	if (unlikely(tupdesc->tdversions == NULL))
+		elog(ERROR, "tuple descriptor for type %u lacks attribute versions",
+			 tupdesc->tdtypeid);
+
+	return tupdesc->tdversions;
+}
+
+static void CopyTupleDescVersions(TupleDesc dst, TupleDesc src);
+
+/*
  * CreateTemplateTupleDesc
  *		This function allocates an empty tuple descriptor structure.
  *
@@ -42,6 +66,7 @@ CreateTemplateTupleDesc(int natts, bool hasoid)
 	TupleDesc	desc;
 	char	   *stg;
 	int			attroffset;
+	Size		versoffset;
 
 	/*
 	 * sanity checks
@@ -63,8 +88,17 @@ CreateTemplateTupleDesc(int natts, bool hasoid)
 	 */
 	attroffset = sizeof(struct tupleDesc) + natts * sizeof(Form_pg_attribute);
 	attroffset = MAXALIGN(attroffset);
-	stg = palloc(attroffset + natts * MAXALIGN(ATTRIBUTE_FIXED_PART_SIZE));
+	versoffset = attroffset + natts * MAXALIGN(ATTRIBUTE_FIXED_PART_SIZE);
+	stg = palloc(versoffset + TupleDescVersionsSize(natts));
 	desc = (TupleDesc) stg;
+
+	/*
+	 * Zero-initialize the per-attribute and aggregate versions. RECORD
+	 * descriptors aren't versioned, and we don't know if this is going to be
+	 * used for something else, so we have to zero it here.
+	 */
+	desc->tdversions = (XLogRecPtr *) (stg + versoffset);
+	memset(desc->tdversions, 0, TupleDescVersionsSize(natts));
 
 	if (natts > 0)
 	{
@@ -117,7 +151,12 @@ CreateTupleDesc(int natts, bool hasoid, Form_pg_attribute *attrs)
 	 */
 	AssertArg(natts >= 0);
 
-	desc = (TupleDesc) palloc(sizeof(struct tupleDesc));
+	/* the attribute versions follow the struct in the same allocation */
+	desc = (TupleDesc) palloc(MAXALIGN(sizeof(struct tupleDesc)) +
+							  TupleDescVersionsSize(natts));
+	desc->tdversions = (XLogRecPtr *)
+		((char *) desc + MAXALIGN(sizeof(struct tupleDesc)));
+	memset(desc->tdversions, 0, TupleDescVersionsSize(natts));
 	desc->attrs = attrs;
 	desc->natts = natts;
 	desc->constr = NULL;
@@ -153,6 +192,9 @@ CreateTupleDescCopy(TupleDesc tupdesc)
 
 	desc->tdtypeid = tupdesc->tdtypeid;
 	desc->tdtypmod = tupdesc->tdtypmod;
+
+	if (tupdesc->tdtypeid != RECORDOID)
+		CopyTupleDescVersions(desc, tupdesc);
 
 	return desc;
 }
@@ -213,6 +255,9 @@ CreateTupleDescCopyConstr(TupleDesc tupdesc)
 
 	desc->tdtypeid = tupdesc->tdtypeid;
 	desc->tdtypmod = tupdesc->tdtypmod;
+
+	if (tupdesc->tdtypeid != RECORDOID)
+		CopyTupleDescVersions(desc, tupdesc);
 
 	return desc;
 }
@@ -340,6 +385,72 @@ DecrTupleDescRefCount(TupleDesc tupdesc)
 }
 
 /*
+ * CopyTupleDescVersions
+ *		Copy the attribute versions from src into dst.
+ *
+ * dst may have fewer attributes than src (a truncated copy), in which case
+ * the aggregate version becomes that of dst's last attribute, preserving the
+ * invariant that the aggregate is the last attribute's version.
+ */
+static void
+CopyTupleDescVersions(TupleDesc dst, TupleDesc src)
+{
+	int			i;
+
+	Assert(src->tdtypeid != RECORDOID);
+
+	if (dst->natts == 0)
+	{
+		TupleDescVersionArray(dst)[0] = InvalidXLogRecPtr;
+		return;
+	}
+
+	for (i = 1; i <= dst->natts; i++)
+		TupleDescVersionArray(dst)[i] = TupleDescGetAttrVersion(src, i);
+
+	TupleDescVersionArray(dst)[0] = TupleDescGetAttrVersion(src, dst->natts);
+}
+
+XLogRecPtr
+TupleDescGetVersion(TupleDesc tupdesc)
+{
+	/*
+	 * RECORDOID descriptors are often created by copying the descriptor of a
+	 * named composite type and relabeling the copy. The versions of the named
+	 * type remain in the copy, but don't apply to it.
+	 */
+	if (tupdesc->tdtypeid == RECORDOID)
+		return InvalidXLogRecPtr;
+	return TupleDescVersionArray(tupdesc)[0];
+}
+
+void
+TupleDescSetVersion(TupleDesc tupdesc, XLogRecPtr version)
+{
+	Assert(tupdesc->tdtypeid != RECORDOID);
+
+	TupleDescVersionArray(tupdesc)[0] = version;
+}
+
+XLogRecPtr
+TupleDescGetAttrVersion(TupleDesc tupdesc, AttrNumber attnum)
+{
+	Assert(attnum >= 1 && attnum <= tupdesc->natts);
+	/* see TupleDescGetVersion() */
+	if (tupdesc->tdtypeid == RECORDOID)
+		return InvalidXLogRecPtr;
+	return TupleDescVersionArray(tupdesc)[attnum];
+}
+
+void
+TupleDescSetAttrVersion(TupleDesc tupdesc, AttrNumber attnum, XLogRecPtr version)
+{
+	Assert(attnum >= 1 && attnum <= tupdesc->natts &&
+		   tupdesc->tdtypeid != RECORDOID);
+	TupleDescVersionArray(tupdesc)[attnum] = version;
+}
+
+/*
  * Compare two TupleDesc structures for logical equality
  *
  * Note: we deliberately do not check the attrelid and tdtypmod fields.
@@ -359,6 +470,17 @@ equalTupleDescs(TupleDesc tupdesc1, TupleDesc tupdesc2, bool strict)
 	if (strict && tupdesc1->tdtypeid != tupdesc2->tdtypeid)
 		return false;
 	if (tupdesc1->tdhasoid != tupdesc2->tdhasoid)
+		return false;
+
+	/*
+	 * Need to take the version into account, otherwise
+	 * RelationClearRelation() will consider two tupledescs that differ just
+	 * by version equal and not swap them.  Descriptors of different
+	 * relations (the non-strict case) never share versions, so there the
+	 * comparison would only defeat the purpose.
+	 */
+	if (strict &&
+		TupleDescGetVersion(tupdesc1) != TupleDescGetVersion(tupdesc2))
 		return false;
 
 	for (i = 0; i < tupdesc1->natts; i++)

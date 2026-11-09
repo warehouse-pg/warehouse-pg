@@ -345,3 +345,6 @@ test: copy_insert_utility_mode_hierarchies
 test: free_remapper_fatal
 
 test: spilling_hashagg
+
+# a node that has not seen a committed row type change yet
+test: attribute_version_node_lag

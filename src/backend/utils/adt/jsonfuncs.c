@@ -2098,6 +2098,14 @@ populate_record_worker(FunctionCallInfo fcinfo, const char *funcname,
 		 */
 		if (hash_get_num_entries(json_hash) == 0 && rec)
 		{
+			/*
+			 * XXX: There's currently no guarantee that the default tuple
+			 * matches the tupledesc without this check. But this should
+			 * probably have been enforced much earlier.
+			 */
+			if (HeapTupleHeaderIsVersionedDatum(rec))
+				heap_datum_check(rec, tupdesc);
+
 			hash_destroy(json_hash);
 			ReleaseTupleDesc(tupdesc);
 			PG_RETURN_POINTER(rec);
@@ -2110,6 +2118,10 @@ populate_record_worker(FunctionCallInfo fcinfo, const char *funcname,
 		/* same logic as for json */
 		if (JB_ROOT_COUNT(jb) == 0 && rec)
 		{
+			/* see above */
+			if (HeapTupleHeaderIsVersionedDatum(rec))
+				heap_datum_check(rec, tupdesc);
+
 			ReleaseTupleDesc(tupdesc);
 			PG_RETURN_POINTER(rec);
 		}

@@ -214,6 +214,19 @@ static inline bool relstorage_is_heap(char c)
 	return (c == RELSTORAGE_HEAP);
 }
 
+/*
+ * Relation kinds whose rowtype has versioned attributes, see
+ * src/backend/catalog/README.attver.md.  On this branch sequences, toast
+ * tables and the auxiliary tables of append-optimized tables have a rowtype
+ * as well; their definition cannot be altered, so they are not versioned.
+ */
+#define RELKIND_HAS_ROWTYPE(relkind) \
+	((relkind) == RELKIND_RELATION || \
+	 (relkind) == RELKIND_VIEW || \
+	 (relkind) == RELKIND_MATVIEW || \
+	 (relkind) == RELKIND_COMPOSITE_TYPE || \
+	 (relkind) == RELKIND_FOREIGN_TABLE)
+
 static inline bool relstorage_is_ao(char c)
 {
 	return (c == RELSTORAGE_AOROWS || c == RELSTORAGE_AOCOLS);

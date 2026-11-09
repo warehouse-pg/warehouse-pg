@@ -9,9 +9,7 @@ step s1_upd_alter:
     FROM rta_func() x
     RETURNING s;
 
-s              
-
-(FIXME)        
+ERROR:  row type of datum tuple was altered after the datum's creation  (seg0 slice2 127.0.0.1:6002 pid=12345)
 
 starting permutation: s2_upd s1_upd_alter s2_commit
 WARNING:  creating a table with no columns.
@@ -25,9 +23,7 @@ step s1_upd_alter:
  <waiting ...>
 step s2_commit: COMMIT;
 step s1_upd_alter: <... completed>
-s              
-
-(FIXME)        
+error in steps s2_commit s1_upd_alter: ERROR:  row type of datum tuple was altered after the datum's creation  (seg0 slice2 127.0.0.1:6002 pid=12345)
 
 starting permutation: s2_upd s1_upd_alter_col s2_commit
 WARNING:  creating a table with no columns.

@@ -25,6 +25,7 @@
 #include "cdb/htupfifo.h"
 #include "cdb/ml_ipc.h"
 #include "cdb/tupser.h"
+#include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/typcache.h"
 
@@ -99,6 +100,17 @@ reconstructTuple(MotionNodeEntry *pMNEntry, ChunkSorterEntry *pCSEntry, TupleRem
 
 	if (!tup)
 		return;
+
+	/*
+	 * The tuple may contain composite values that the sender formed with a
+	 * definition of their row type that this node has not seen yet: the
+	 * sender may have started its part of the query after an ALTER TYPE ...
+	 * ADD ATTRIBUTE committed, while this node has taken no lock since.
+	 * Catch up with invalidations before the tuple is used, so that this
+	 * node knows at least the definitions the sender knew.  See
+	 * src/backend/catalog/README.attver.md.
+	 */
+	AcceptInvalidationMessages();
 
 	tup = TRCheckAndRemap(remapper, pSerInfo->tupdesc, tup);
 
