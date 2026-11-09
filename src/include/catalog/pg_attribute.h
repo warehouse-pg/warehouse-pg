@@ -210,6 +210,15 @@ typedef FormData_pg_attribute *Form_pg_attribute;
 #define Anum_pg_attribute_attfdwoptions 21
 
 
+/*
+ * Reserved attoptions key used, in the back branches, to store the attribute
+ * version.  See attoptions_get_version() and
+ * src/backend/catalog/README.attver.md.
+ *
+ * This is defined here to make it visible to pg_dump.c.
+ */
+#define ATTRIBUTE_VERSION_ATTOPTION "pg_attver"
+
 /* ----------------
  *		initial contents of pg_attribute
  *

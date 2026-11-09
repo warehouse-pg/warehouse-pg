@@ -368,6 +368,19 @@ ExecStoreHeapTuple(HeapTuple tuple,
 	Assert(!is_memtuple((GenericTuple) tuple));
 
 	/*
+	 * The tuple later will likely get deformed and/or copied. Validate a
+	 * versioned datum once when it enters the slot, rather than having to
+	 * check on every copy and each incremental deformation
+	 * (slot_deform_tuple() does not check).
+	 *
+	 * A tuple in a buffer is an on-disk tuple that is protected otherwise
+	 * (and will not be marked as versioned).
+	 */
+	if (!BufferIsValid(buffer) &&
+		HeapTupleHeaderIsVersionedDatum(tuple->t_data))
+		heap_datum_check(tuple->t_data, slot->tts_tupleDescriptor);
+
+	/*
 	 * Free any old physical tuple belonging to the slot.
 	 */
 	free_heaptuple_memtuple(slot);

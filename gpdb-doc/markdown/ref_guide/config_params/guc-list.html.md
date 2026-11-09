@@ -86,6 +86,18 @@ Controls which message levels are sent to the client. Each level includes all th
 
 `INFO` level messages are always sent to the client.
 
+## <a id="composite_type_mismatch"></a>composite\_type\_mismatch 
+
+Controls what happens when a composite \(row type\) value is read after its row type was altered in an incompatible way, for example when the data type of one of its attributes was changed after the value was created. With the default `error`, reading such a value fails with SQLSTATE `22P07`. `warn` reports a warning and reads the value anyway; `disabled` turns the check off. Both `warn` and `disabled` are unsafe: the value is interpreted with a definition it was not created with, which can return wrong data or crash the server. Use them only to recover data, and only on the advice of support.
+
+The server keeps the information it needs for this check in the reserved column option `pg_attver`. The option cannot be set or reset with `ALTER TABLE ... ALTER COLUMN ... SET`; a supplied value is ignored.
+
+Only a superuser can change this setting.
+
+|Value Range|Default|Set Classifications|
+|-----------|-------|-------------------|
+|error, warn, disabled|error|coordinator, session, reload, superuser|
+
 ## <a id="cpu_index_tuple_cost"></a>cpu\_index\_tuple\_cost 
 
 For the Postgres Planner, sets the estimate of the cost of processing each index row during an index scan. This is measured as a fraction of the cost of a sequential page fetch.

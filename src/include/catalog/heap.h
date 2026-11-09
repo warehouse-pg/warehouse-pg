@@ -107,6 +107,18 @@ extern List *heap_truncate_find_FKs(List *relationIds);
 extern void InsertPgAttributeTuple(Relation pg_attribute_rel,
 					   Form_pg_attribute new_attribute,
 					   CatalogIndexState indstate);
+extern void InsertPgAttributeTupleWithOptions(Relation pg_attribute_rel,
+								  Form_pg_attribute new_attribute,
+								  Datum attoptions,
+								  CatalogIndexState indstate);
+
+extern XLogRecPtr GetNextAttributeVersion(Oid relid, AttrNumber attnum);
+extern HeapTuple SetAttributeVersionInTuple(Relation attrelation,
+						   HeapTuple tuple,
+						   XLogRecPtr version);
+extern void SetAttributeVersions(Relation rel, AttrNumber fromAttnum,
+					 XLogRecPtr version);
+extern bool CheckAttributeVersions(TupleDesc td, const char *relname, int elevel);
 
 extern void InsertPgClassTuple(Relation pg_class_desc,
 				   Relation new_rel_desc,

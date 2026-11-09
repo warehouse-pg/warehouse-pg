@@ -271,6 +271,10 @@ extern void add_real_reloption(bits32 kinds, char *name, char *desc,
 extern void add_string_reloption(bits32 kinds, char *name, char *desc,
 					 char *default_val, validate_string_relopt validator);
 
+extern XLogRecPtr attoptions_get_version(Datum attoptions, bool isnull);
+extern Datum attoptions_set_version(Datum attoptions, bool isnull,
+									XLogRecPtr version);
+
 extern Datum transformRelOptions(Datum oldOptions, List *defList,
 					char *namspace, char *validnsps[],
 					bool ignoreOids, bool isReset);

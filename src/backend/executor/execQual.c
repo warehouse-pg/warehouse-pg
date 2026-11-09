@@ -1108,9 +1108,12 @@ ExecEvalWholeRowFast(WholeRowVarExprState *wrvstate, ExprContext *econtext,
 
 	/*
 	 * Label the datum with the composite type info we identified before.
+	 * heap_tuple_set_datum() also stamps it with the attribute version of
+	 * that row type; the typmod field must not be written by hand, it holds
+	 * a part of the version.
 	 */
-	HeapTupleHeaderSetTypeId(dtuple, wrvstate->wrv_tupdesc->tdtypeid);
-	HeapTupleHeaderSetTypMod(dtuple, wrvstate->wrv_tupdesc->tdtypmod);
+	heap_tuple_set_datum(dtuple, wrvstate->wrv_tupdesc,
+						 HeapTupleHeaderGetDatumLength(dtuple));
 
 	return PointerGetDatum(dtuple);
 }
@@ -1194,9 +1197,12 @@ ExecEvalWholeRowSlow(WholeRowVarExprState *wrvstate, ExprContext *econtext,
 
 	/*
 	 * Label the datum with the composite type info we identified before.
+	 * heap_tuple_set_datum() also stamps it with the attribute version of
+	 * that row type; the typmod field must not be written by hand, it holds
+	 * a part of the version.
 	 */
-	HeapTupleHeaderSetTypeId(dtuple, wrvstate->wrv_tupdesc->tdtypeid);
-	HeapTupleHeaderSetTypMod(dtuple, wrvstate->wrv_tupdesc->tdtypmod);
+	heap_tuple_set_datum(dtuple, wrvstate->wrv_tupdesc,
+						 HeapTupleHeaderGetDatumLength(dtuple));
 
 	return PointerGetDatum(dtuple);
 }

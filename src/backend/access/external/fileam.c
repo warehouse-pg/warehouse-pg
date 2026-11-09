@@ -757,9 +757,7 @@ external_insert(ExternalInsertDesc extInsertDesc, HeapTuple instup)
 									 NULL);
 
 		/* Mark the correct record type in the passed tuple */
-		HeapTupleHeaderSetDatumLength(instup->t_data, instup->t_len);
-		HeapTupleHeaderSetTypeId(instup->t_data, tupDesc->tdtypeid);
-		HeapTupleHeaderSetTypMod(instup->t_data, tupDesc->tdtypmod);
+		heap_tuple_set_datum(instup->t_data, tupDesc, instup->t_len);
 
 		fcinfo.arg[0] = HeapTupleGetDatum(instup);
 		fcinfo.argnull[0] = false;

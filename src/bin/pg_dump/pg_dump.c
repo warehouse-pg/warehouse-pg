@@ -49,6 +49,7 @@
 #include "access/sysattr.h"
 #include "access/transam.h"
 #include "catalog/pg_cast.h"
+#include "catalog/pg_attribute.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_magic_oid.h"
 #include "catalog/pg_namespace.h"
@@ -132,6 +133,16 @@ static SimpleStringList funcid_string_list = {NULL, NULL};
 static SimpleOidList function_include_oids = {NULL, NULL};
 
 static SimpleOidList preassigned_oids = {NULL, NULL};
+
+/*
+ * Attribute versions of the relations in the old cluster, for binary upgrade:
+ * relation OIDs in ascending order and, for each, the versions of its
+ * attributes as a pg_lsn[] literal.  Only relations that have a version are
+ * listed.  See binary_upgrade_set_attribute_versions().
+ */
+static int	numAttVersionRels = -1;
+static Oid *attVersionRelOids = NULL;
+static char **attVersionArrays = NULL;
 
 /* default, if no "inclusion" switches appear, is to dump everything */
 static bool include_everything = true;
@@ -288,6 +299,9 @@ static void binary_upgrade_set_type_oids_by_type_oid(Archive *fout,
 static void binary_upgrade_set_type_oids_by_rel(Archive *fout,
 													PQExpBuffer upgrade_buffer,
 													const TableInfo *tblinfo);
+static void binary_upgrade_set_attribute_versions(Archive *fout,
+									  PQExpBuffer upgrade_buffer,
+									  const TableInfo *tblinfo);
 static void binary_upgrade_set_pg_class_oids(Archive *fout,
 											 PQExpBuffer upgrade_buffer,
 											 Oid pg_class_oid, bool is_index);
@@ -3361,6 +3375,121 @@ binary_upgrade_set_type_oids_of_child_partition(Archive *fout,
 			tyinfo->dobj.catId.oid, parenttblinfo->dobj.namespace->dobj.catId.oid, tyinfo->dobj.name);
 }
 
+/*
+ * Emit SQL to tell the new cluster the attribute versions of a relation that
+ * is about to be created.
+ *
+ * The versions have to be known when the relation is created, rather than be
+ * fixed up afterwards, as a CREATE statement can contain expressions that
+ * embed a row type constant of the relation being created.  If the attribute
+ * versions were updated subsequently, the embedded datums would be considered
+ * out of date and throw errors on use.
+ *
+ * The server refuses to create a relation with versioned attributes in binary
+ * upgrade mode unless it was told its versions, so this is emitted for every
+ * such relation, including each partition a CREATE TABLE creates along with
+ * its parent; the server matches the versions to the relation by its OID.  A
+ * relation that has no versions in the old cluster (it was created before
+ * versions existed) gets an empty array.
+ */
+static void
+binary_upgrade_set_attribute_versions(Archive *fout,
+									  PQExpBuffer upgrade_buffer,
+									  const TableInfo *tblinfo)
+{
+	const char *versions = "{}";
+	int			low,
+				high;
+
+	/* only these relation kinds have versioned attributes */
+	if (tblinfo->relkind != RELKIND_RELATION &&
+		tblinfo->relkind != RELKIND_VIEW &&
+		tblinfo->relkind != RELKIND_MATVIEW &&
+		tblinfo->relkind != RELKIND_COMPOSITE_TYPE &&
+		tblinfo->relkind != RELKIND_FOREIGN_TABLE)
+		return;
+
+	/* collect the versions of the whole database on first use */
+	if (numAttVersionRels < 0)
+	{
+		numAttVersionRels = 0;
+
+		/* attoptions, and with it any version, exists since 9.0 */
+		if (fout->remoteVersion >= 90000)
+		{
+			PQExpBuffer query = createPQExpBuffer();
+			PGresult   *res;
+			int			keylen = (int) strlen(ATTRIBUTE_VERSION_ATTOPTION) + 1;
+			int			i;
+
+			/*
+			 * One pass over pg_attribute: the version of every attribute of
+			 * a user relation, zero where there is none, and then only the
+			 * relations that have a version at all.
+			 */
+			appendPQExpBuffer(query,
+							  "SELECT s.attrelid,\n"
+							  "  '{' || pg_catalog.array_to_string(pg_catalog.array_agg(\n"
+							  "    pg_catalog.to_hex((s.ver >> 32)::int4) || '/' ||\n"
+							  "    pg_catalog.to_hex((s.ver & 4294967295)::int8)\n"
+							  "    ORDER BY s.attnum), ',') || '}'\n"
+							  "FROM (SELECT a.attrelid, a.attnum,\n"
+							  "        CASE WHEN a.attoptions IS NULL THEN 0::int8\n"
+							  "             ELSE COALESCE((\n"
+							  "               SELECT pg_catalog.substr(o, %d)::int8\n"
+							  "               FROM pg_catalog.unnest(a.attoptions) o\n"
+							  "               WHERE pg_catalog.lower(pg_catalog.substr(o, 1, %d)) = '%s='), 0)\n"
+							  "        END AS ver\n"
+							  "      FROM pg_catalog.pg_attribute a\n"
+							  "      WHERE a.attnum > 0 AND a.attrelid >= %u) s\n"
+							  "GROUP BY s.attrelid HAVING pg_catalog.max(s.ver) > 0\n"
+							  "ORDER BY s.attrelid",
+							  keylen + 1, keylen, ATTRIBUTE_VERSION_ATTOPTION,
+							  FirstNormalObjectId);
+
+			res = ExecuteSqlQuery(fout, query->data, PGRES_TUPLES_OK);
+			numAttVersionRels = PQntuples(res);
+			if (numAttVersionRels > 0)
+			{
+				attVersionRelOids = (Oid *) pg_malloc(numAttVersionRels * sizeof(Oid));
+				attVersionArrays = (char **) pg_malloc(numAttVersionRels * sizeof(char *));
+				for (i = 0; i < numAttVersionRels; i++)
+				{
+					attVersionRelOids[i] = atooid(PQgetvalue(res, i, 0));
+					attVersionArrays[i] = pg_strdup(PQgetvalue(res, i, 1));
+				}
+			}
+			PQclear(res);
+			destroyPQExpBuffer(query);
+		}
+	}
+
+	/* binary search, the OIDs are in ascending order */
+	low = 0;
+	high = numAttVersionRels - 1;
+	while (low <= high)
+	{
+		int			mid = low + (high - low) / 2;
+
+		if (attVersionRelOids[mid] == tblinfo->dobj.catId.oid)
+		{
+			versions = attVersionArrays[mid];
+			break;
+		}
+		else if (attVersionRelOids[mid] < tblinfo->dobj.catId.oid)
+			low = mid + 1;
+		else
+			high = mid - 1;
+	}
+
+	appendPQExpBufferStr(upgrade_buffer,
+						 "\n-- For binary upgrade, must preserve the attribute versions\n");
+	appendPQExpBuffer(upgrade_buffer,
+					  "SELECT binary_upgrade.set_next_attribute_versions('%u'::pg_catalog.oid, "
+					  "'%s'::pg_catalog.pg_lsn[]);\n",
+					  tblinfo->dobj.catId.oid, versions);
+}
+
 static void
 binary_upgrade_set_pg_class_oids(Archive *fout,
 								 PQExpBuffer upgrade_buffer, Oid pg_class_oid,
@@ -3395,6 +3524,8 @@ binary_upgrade_set_pg_class_oids(Archive *fout,
 							  "'%u'::pg_catalog.oid, $_GPDB_$%s$_GPDB_$::text);\n",
 							  tblinfo->dobj.catId.oid, tblinfo->dobj.namespace->dobj.catId.oid, tblinfo->dobj.name);
 		}
+
+		binary_upgrade_set_attribute_versions(fout, upgrade_buffer, tblinfo);
 
 		/* Only tables have toast tables, not indexes */
 		if (OidIsValid(tblinfo->toast_oid))
@@ -6686,9 +6817,19 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 						 "pg_catalog.format_type(t.oid, a.atttypmod) AS atttypname,\n"
 						 "pg_catalog.array_to_string(e.attoptions, ',') AS attencoding,\n");
 
+	/*
+	 * The attribute version is stored as a reserved attoptions entry, which
+	 * must not be dumped as an option.  Binary upgrade transfers it
+	 * separately, see binary_upgrade_set_attribute_versions().
+	 */
 	if (fout->remoteVersion >= 90000)
-		appendPQExpBufferStr(q,
-							 "array_to_string(a.attoptions, ', ') AS attoptions,\n");
+		appendPQExpBuffer(q,
+						  "array_to_string(ARRAY(\n"
+						  "  SELECT o FROM unnest(a.attoptions) o\n"
+						  "  WHERE lower(substr(o, 1, %d)) <> '%s='\n"
+						  "), ', ') AS attoptions,\n",
+						  (int) strlen(ATTRIBUTE_VERSION_ATTOPTION) + 1,
+						  ATTRIBUTE_VERSION_ATTOPTION);
 	else
 		appendPQExpBufferStr(q,
 							 "'' AS attoptions,\n");

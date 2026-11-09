@@ -31,6 +31,7 @@ extern Oid GetPreassignedOidForType(Oid namespaceOid, const char *typname,
 extern Oid GetPreassignedOidForDatabase(const char *datname);
 
 /* Functions used in master and QE nodes */
+extern uint64 GetNewOrPreassignedAttributeVersion(Oid relid, AttrNumber attnum);
 extern void RestoreOidAssignments(List *oid_assignments);
 extern List *SaveOidAssignments(void);
 
