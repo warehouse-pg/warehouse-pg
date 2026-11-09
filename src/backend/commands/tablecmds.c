@@ -7570,10 +7570,18 @@ check_composite_type_dependency(ObjectAddress *depobj, Oid typeOid,
 				 * A column uses the datatype.
 				 *
 				 * We definitely should reject if the relation has storage.
+				 *
+				 * Foreign tables don't have storage as such, but they can
+				 * have statistics stored in the pg_statistic table.  (It
+				 * might be better to remove the statistics than fail the
+				 * operation, but with the current code structure, it'd be
+				 * inconvenient to memorize the need for removing the
+				 * statistics.)
 				 */
 				if (rel->rd_rel->relkind == RELKIND_RELATION ||
 					rel->rd_rel->relkind == RELKIND_MATVIEW ||
-					rel->rd_rel->relkind == RELKIND_INDEX)
+					rel->rd_rel->relkind == RELKIND_INDEX ||
+					rel->rd_rel->relkind == RELKIND_FOREIGN_TABLE)
 				{
 					report_type_used_in_column(RelationGetRelationName(rel),
 											   NameStr(att->attname),
