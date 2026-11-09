@@ -13,7 +13,7 @@
 	      [--hba-hostnames &lt;boolean>] 
              [--no-progress] [-l &lt;logfile_directory>]
 
-gprecoverseg -r 
+gprecoverseg -r [--hba-hostnames]
 
 gprecoverseg -o &lt;output_recover_config_file> 
              [-p &lt;new_recover_host>[,...]]
@@ -201,7 +201,10 @@ newPort|newDataDirectory</codeblock>
             is optimal for top system performance. This option rebalances primary and mirror
             segments by returning them to their preferred roles. All segments must be valid and
             resynchronized before running <codeph>gprecoverseg -r</codeph>. If there are any in
-            progress queries, they will be cancelled and rolled back.</pd>
+            progress queries, they will be cancelled and rolled back. On a cluster initialized with
+              <codeph>HBA_HOSTNAMES=1</codeph>, run <codeph>gprecoverseg -r</codeph> with
+              <codeph>--hba-hostnames</codeph> so that the <codeph>pg_hba.conf</codeph> entries of
+            the re-synchronized segments keep using host names.</pd>
         </plentry>
         <plentry>
           <pt>-s (sequential progress)</pt>
