@@ -12,10 +12,11 @@ gprecoverseg [-p <new_recover_host>[,...]]
              [-d <coordinator_data_directory>]
              [-B <batch_size>] [-b <segment_batch_size>] [--differential]
              [-F] [-a] [-q] [-s] [--no-progress] [-l <logfile_directory>]
-             [--max-rate <max_rate>]
+             [--max-rate <max_rate>] [--hba-hostnames]
 
 
 gprecoverseg -r [--replay-lag <replay_lag>] [--disable-replay-lag]
+                [--hba-hostnames]
 
 
 gprecoverseg -o <output_recover_config_file> 
@@ -268,6 +269,9 @@ This option rebalances primary and mirror segments by returning them to
 their preferred roles. All segments must be valid and synchronized before 
 running gprecoverseg -r. If there are any in progress queries, they will 
 be cancelled and rolled back.
+On a cluster initialized with HBA_HOSTNAMES=1, run gprecoverseg -r with
+--hba-hostnames so that the pg_hba.conf entries of the re-synchronized
+segments keep using hostnames.
 
 --replay-lag
 Replay lag(in GBs) allowed on mirror when rebalancing the segments. Default is 10 GB. If
@@ -294,7 +298,11 @@ file. Defaults to showing the progress.
 
 --hba-hostnames
 
-Optional. use hostnames instead of CIDR in pg_hba.conf
+Optional. Use hostnames instead of CIDR addresses in the pg_hba.conf
+entries that gprecoverseg writes for the recovered or rebalanced
+segments. Use it on clusters initialized with HBA_HOSTNAMES=1, with -r
+as well as with a recovery; without it the entries are written as
+IP addresses.
 
 
 -v

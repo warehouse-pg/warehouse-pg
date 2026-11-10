@@ -2425,6 +2425,26 @@ Feature: gprecoverseg tests
         And all the segments are running
         And user can start transactions
 
+  # "the cluster is rebalanced" runs gprecoverseg -ra without --hba-hostnames,
+  # so the rebalance command is spelled out here.
+  @demo_cluster
+  Scenario: gprecoverseg -r keeps FQDN entries in pg_hba.conf when run with --hba-hostnames
+      Given the cluster config is generated with HBA_HOSTNAMES "1"
+       When generate cluster config file "/tmp/output_config_file"
+        And initialize a cluster using "/tmp/output_config_file"
+       Then verify that the file "../gpAux/gpdemo/datadirs/dbfast1/demoDataDir0/pg_hba.conf" contains FQDN only for trusted host
+       When the primary on content 0 is stopped with the immediate flag
+        And user can start transactions
+        And the user runs "gprecoverseg -a --hba-hostnames"
+       Then gprecoverseg should return a return code of 0
+        And the segments are synchronized
+        And verify that the file "../gpAux/gpdemo/datadirs/dbfast_mirror1/demoDataDir0/pg_hba.conf" contains FQDN only for trusted host
+       When the user runs "gprecoverseg -ar --hba-hostnames"
+       Then gprecoverseg should return a return code of 0
+        And all the segments are running
+        And the segments are synchronized
+        And verify that the file "../gpAux/gpdemo/datadirs/dbfast1/demoDataDir0/pg_hba.conf" contains FQDN only for trusted host
+
     @demo_cluster
     @concourse_cluster
     Scenario: gprecoverseg reports correct segment startup error messages to stdout
