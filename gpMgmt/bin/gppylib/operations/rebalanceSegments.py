@@ -52,12 +52,13 @@ class ReconfigDetectionSQLQueryCommand(base.SQLCommand):
 
 
 class GpSegmentRebalanceOperation:
-    def __init__(self, gpEnv, gpArray, batch_size, segment_batch_size, replay_lag):
+    def __init__(self, gpEnv, gpArray, batch_size, segment_batch_size, replay_lag, hba_hostnames=False):
         self.gpEnv = gpEnv
         self.gpArray = gpArray
         self.batch_size = batch_size
         self.segment_batch_size = segment_batch_size
         self.replay_lag = replay_lag
+        self.hba_hostnames = hba_hostnames
         self.logger = gplog.get_default_logger()
 
     def rebalance(self):
@@ -140,6 +141,11 @@ class GpSegmentRebalanceOperation:
             # import here because GpRecoverSegmentProgram and GpSegmentRebalanceOperation have a circular dependency
             from gppylib.programs.clsRecoverSegment import GpRecoverSegmentProgram
             cmd_args = ['gprecoverseg', '-a', '-B', str(self.batch_size), '-b', str(self.segment_batch_size)]
+            # The inner recovery rewrites pg_hba.conf on the primaries of the
+            # pairs it resyncs, so it must use the same entry form as the outer
+            # command; otherwise an --hba-hostnames rebalance writes /32 entries.
+            if self.hba_hostnames:
+                cmd_args.append('--hba-hostnames')
             sys.argv = cmd_args[:]
             local_parser = GpRecoverSegmentProgram.createParser()
             local_options, args = local_parser.parse_args()
