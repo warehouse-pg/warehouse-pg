@@ -110,3 +110,36 @@ create or replace function perl_encode_typed_literal() returns setof text langua
 $$;
 
 select perl_encode_typed_literal();
+
+-- An error while converting the value must be reported to Perl, not
+-- longjmp out of the interpreter; on some platforms this crashed after
+-- several iterations.
+create or replace function perl_encode_typed_literal_bad() returns setof text language plperl as $$
+	return_next encode_typed_literal('abc', 'integer');
+$$;
+select perl_encode_typed_literal_bad();  -- fail
+select perl_encode_typed_literal_bad();  -- fail
+select perl_encode_typed_literal_bad();  -- fail
+select perl_encode_typed_literal_bad();  -- fail
+
+-- encode_typed_literal() can also be reached when PL/Perl is not inside a
+-- SPI procedure, e.g. from a tied element that is fetched while the
+-- function result is converted.  Both outcomes must leave SPI usable.
+create or replace function perl_encode_typed_literal_late(text) returns text[] language plperl as $$
+	our $late_val = $_[0];
+	package PLPerlLateLiteral;
+	sub TIESCALAR { bless \(my $s), $_[0] }
+	sub FETCH { main::encode_typed_literal($main::late_val, 'integer') }
+	sub STORE { }
+	package main;
+	my $r = [ 'x' ];
+	tie $r->[0], 'PLPerlLateLiteral';
+	return $r;
+$$;
+select perl_encode_typed_literal_late('42');
+select perl_encode_typed_literal_late('abc');  -- fail
+select perl_encode_typed_literal_late('42');
+create or replace function perl_spi_still_works() returns int language plperl as $$
+	return spi_exec_query('select 7 as a')->{rows}[0]{a};
+$$;
+select perl_spi_still_works();
