@@ -254,6 +254,7 @@ static Datum plperl_trigger_handler(plperl_proc_desc *prodesc, PG_FUNCTION_ARGS)
 static void plperl_event_trigger_handler(plperl_proc_desc *prodesc, PG_FUNCTION_ARGS);
 
 static void free_plperl_function(plperl_proc_desc *prodesc);
+static void check_spi_usage_allowed(void);
 
 static plperl_proc_desc *compile_plperl_function(Oid fn_oid,
 						bool is_trigger,
@@ -1577,32 +1578,108 @@ plperl_sv_to_datum(SV *sv, Oid typid, int32 typmod,
 	}
 }
 
-/* Convert the perl SV to a string returned by the type output function */
+/*
+ * Convert the perl SV to a string returned by the type output function,
+ * or NULL if the SV is undef.
+ */
 char *
 plperl_sv_to_literal(SV *sv, char *fqtypename)
 {
-	Datum		str = CStringGetDatum(fqtypename);
-	Oid			typid = DirectFunctionCall1(regtypein, str);
-	Oid			typoutput;
-	Datum		datum;
-	bool		typisvarlena,
-				isnull;
+	/*
+	 * Execute the conversion inside a sub-transaction, so we can cope with
+	 * errors sanely
+	 */
+	dTHX;
+	char	   *volatile result = NULL;
+	MemoryContext oldcontext = CurrentMemoryContext;
+	ResourceOwner oldowner = CurrentResourceOwner;
+	bool		in_spi_proc;
 
-	if (!OidIsValid(typid))
-		elog(ERROR, "lookup failed for type %s", fqtypename);
+	check_spi_usage_allowed();
 
-	datum = plperl_sv_to_datum(sv,
-							   typid, -1,
-							   NULL, NULL, InvalidOid,
-							   &isnull);
+	/*
+	 * Unlike the SPI wrappers below, this can be called when we are not
+	 * inside a SPI procedure: for instance from a tied variable that is
+	 * fetched while the function result is converted, after SPI_finish().
+	 * SPI_restore_connection() must not be used then, so note which state
+	 * we are in.
+	 */
+	in_spi_proc = SPI_push_conditional();
+	SPI_pop_conditional(in_spi_proc);
 
-	if (isnull)
+	BeginInternalSubTransaction(NULL);
+	/* Want to run inside function's memory context */
+	MemoryContextSwitchTo(oldcontext);
+
+	PG_PERL_TRY();
+	{
+		Oid			typid;
+		Oid			typoutput;
+		Datum		datum;
+		bool		typisvarlena,
+					isnull;
+
+		typid = DatumGetObjectId(DirectFunctionCall1(regtypein,
+													 CStringGetDatum(fqtypename)));
+		if (!OidIsValid(typid))
+			elog(ERROR, "lookup failed for type %s", fqtypename);
+
+		datum = plperl_sv_to_datum(sv,
+								   typid, -1,
+								   NULL, NULL, InvalidOid,
+								   &isnull);
+
+		if (!isnull)
+		{
+			getTypeOutputInfo(typid,
+							  &typoutput, &typisvarlena);
+
+			result = OidOutputFunctionCall(typoutput, datum);
+		}
+
+		/* Commit the inner transaction, return to outer xact context */
+		ReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(oldcontext);
+		CurrentResourceOwner = oldowner;
+
+		/*
+		 * AtEOSubXact_SPI() should not have popped any SPI context, but just
+		 * in case it did, make sure we remain connected.
+		 */
+		if (in_spi_proc)
+			SPI_restore_connection();
+	}
+	PG_PERL_CATCH();
+	{
+		ErrorData  *edata;
+
+		/* Save error info */
+		MemoryContextSwitchTo(oldcontext);
+		edata = CopyErrorData();
+		FlushErrorState();
+
+		/* Abort the inner transaction */
+		RollbackAndReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(oldcontext);
+		CurrentResourceOwner = oldowner;
+
+		/*
+		 * If AtEOSubXact_SPI() popped any SPI context of the subxact, it will
+		 * have left us in a disconnected state.  We need this hack to return
+		 * to connected state.
+		 */
+		if (in_spi_proc)
+			SPI_restore_connection();
+
+		/* Punt the error to Perl */
+		croak_cstr(edata->message);
+
+		/* Can't get here, but keep compiler quiet */
 		return NULL;
+	}
+	PG_PERL_END_TRY();
 
-	getTypeOutputInfo(typid,
-					  &typoutput, &typisvarlena);
-
-	return OidOutputFunctionCall(typoutput, datum);
+	return result;
 }
 
 /*
@@ -3233,7 +3310,7 @@ plperl_hash_from_tuple(HeapTuple tuple, TupleDesc tupdesc)
 
 
 static void
-check_spi_usage_allowed()
+check_spi_usage_allowed(void)
 {
 	/* see comment in plperl_fini() */
 	if (plperl_ending)
