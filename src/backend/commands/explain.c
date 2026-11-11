@@ -18,6 +18,7 @@
 #include "access/xact.h"
 #include "catalog/pg_type.h"
 #include "catalog/pg_inherits.h"
+#include "cdb/cdbaocsam_stagedscan.h"
 #include "commands/createas.h"
 #include "commands/defrem.h"
 #include "commands/prepare.h"
@@ -99,6 +100,8 @@ static void show_expression(Node *node, const char *qlabel,
 static void show_qual(List *qual, const char *qlabel,
 					  PlanState *planstate, List *ancestors,
 					  bool useprefix, ExplainState *es);
+static void show_staged_scan(SeqScan *plan, PlanState *planstate,
+									ExplainState *es);
 static void show_scan_qual(List *qual, const char *qlabel,
 						   PlanState *planstate, List *ancestors,
 						   ExplainState *es);
@@ -1584,10 +1587,11 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			sname = "Hash Join";
 			break;
 		case T_SeqScan:
-			pname = sname = "Seq Scan";
+			/* WHPG: a Seq Scan the planner turned into a staged scan */
+			pname = sname = ((SeqScan *) plan)->staged.enabled ? "Staged Seq Scan" : "Seq Scan";
 			break;
 		case T_DynamicSeqScan:
-			pname = sname = "Dynamic Seq Scan";
+			pname = sname = ((SeqScan *) plan)->staged.enabled ? "Dynamic Staged Seq Scan" : "Dynamic Seq Scan";
 			break;
 		case T_SampleScan:
 			pname = sname = "Sample Scan";
@@ -2366,7 +2370,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 				char *buf;
 				Oid relid;
 				relid = rt_fetch(((DynamicSeqScan *)plan)
-							->seqscan.scanrelid,
+							->seqscan.scan.scanrelid,
 							es->rtable)->relid;
 				buf = psprintf("(out of %d)",  countLeafPartTables(relid));
 				ExplainPropertyInteger(
@@ -2377,6 +2381,8 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			if (plan->qual)
 				show_instrumentation_count("Rows Removed by Filter", 1,
 										   planstate, es);
+			if (IsA(plan, SeqScan) || IsA(plan, DynamicSeqScan))
+				show_staged_scan((SeqScan *) plan, planstate, es);
 			break;
 		case T_Gather:
 			{
@@ -2944,6 +2950,138 @@ show_plan_tlist(PlanState *planstate, List *ancestors, ExplainState *es)
 
 	/* Print results */
 	ExplainPropertyList("Output", result, es);
+}
+
+/*
+ * Report what drives a staged scan.
+ *
+ * "Stages:" names the column(s) Phase A reads in full to find the
+ * surviving row numbers -- the whole line for most predicates -- and, for a
+ * multi-column predicate, the stages in which Phase B then fetches the
+ * remaining filter columns for the survivors, "a, b, c" (the Phase A
+ * group parenthesized when it is wider than one column). ANALYZE adds
+ * "Stage Survivors:", how many rows Phase A kept out of how many it
+ * scanned, and "Stage Blocks:", how many blocks of the columns Phase
+ * B fetched it decompressed and how many it stepped over, both summed over
+ * the segments.
+ *
+ * The decision is the planner's (cost_aocs_stagedscan() in stagedscancost.c,
+ * reached from create_seqscan_plan() for the Postgres planner and from
+ * stagedscan_decide_orca_plan() for GPORCA) and is recorded on the plan node,
+ * so this just reports it. Reporting the flag rather than re-deriving
+ * applicability matters: re-deriving would claim the feature is active on
+ * plans where it will not run.
+ */
+static void
+show_staged_scan(SeqScan *plan, PlanState *planstate, ExplainState *es)
+{
+	Oid			relid;
+	StringInfoData stages;
+	ListCell   *lc;
+	int			pos = 0;
+
+	if (!plan->staged.enabled || planstate == NULL || plan->staged.filterAttnos == NIL)
+		return;
+
+	/*
+	 * Column names come from the scanned relation. A DynamicSeqScan has no
+	 * relation open until it runs, so go through the range table, which names
+	 * the partitioned parent -- the attribute numbers on the plan are its.
+	 */
+	relid = rt_fetch(plan->scan.scanrelid, es->rtable)->relid;
+	if (!OidIsValid(relid))
+		return;
+
+	/*
+	 * One line: the Phase A column(s) first -- parenthesized when a clause
+	 * needs several columns before it can drop a row -- then each Phase B
+	 * stage in the order the executor takes them, so that a reader sees both
+	 * which column stands in for the index and how a multi-column predicate
+	 * is staged, without asking for VERBOSE.
+	 */
+	initStringInfo(&stages);
+	if (plan->staged.phaseAWidth > 1)
+		appendStringInfoChar(&stages, '(');
+	foreach(lc, plan->staged.filterAttnos)
+	{
+		int			attno = lfirst_int(lc);
+		const char *name = attno >= 1 ? get_attname(relid, attno, true) : NULL;
+
+		/* a column the catalog no longer knows: show its number */
+		if (name == NULL)
+			name = psprintf("attno %d", attno);
+		if (pos > 0)
+			appendStringInfoString(&stages, ", ");
+		appendStringInfoString(&stages, name);
+		if (plan->staged.phaseAWidth > 1 && pos == plan->staged.phaseAWidth - 1)
+			appendStringInfoChar(&stages, ')');
+		pos++;
+	}
+
+	ExplainPropertyText("Stages", stages.data, es);
+
+	if (es->analyze && planstate->instrument != NULL)
+	{
+		Instrumentation *instr = planstate->instrument;
+
+		if (es->format == EXPLAIN_FORMAT_TEXT)
+		{
+			char	   *txt = psprintf("%.0f of %.0f rows",
+									   instr->stagedSurvivors,
+									   instr->stagedRowsScanned);
+
+			ExplainPropertyText("Stage Survivors", txt, es);
+			pfree(txt);
+			/*
+			 * The executor hands a segment file back to the ordinary scan
+			 * when a Phase A column has missing values there or the first
+			 * batch shows the predicate too unselective; say so, or the
+			 * line above reads as if Phase A had scanned nothing.
+			 */
+			if (instr->stagedFallbacks > 0)
+			{
+				txt = psprintf("%.0f segment file%s scanned without it",
+							   instr->stagedFallbacks,
+							   instr->stagedFallbacks == 1 ? "" : "s");
+				ExplainPropertyText("Stage Fallback", txt, es);
+				pfree(txt);
+			}
+			/*
+			 * Where the saving comes from: Phase B decompressed only the
+			 * blocks that held a survivor and stepped over the rest by their
+			 * headers or jumped past through the block directory (those it
+			 * counts from the directory's entries, so the two paths bill the
+			 * same blocks). Phase A's blocks are not counted: the filter
+			 * column is read in full, as the ordinary scan would.
+			 */
+			if (instr->stagedBlocksDecompressed + instr->stagedBlocksSkipped +
+				instr->stagedBlocksSeeked > 0)
+			{
+				txt = psprintf("%.0f decompressed, %.0f skipped",
+							   instr->stagedBlocksDecompressed,
+							   instr->stagedBlocksSkipped);
+				ExplainPropertyText("Stage Blocks", txt, es);
+				pfree(txt);
+			}
+		}
+		else
+		{
+			ExplainPropertyFloat("Stage Survivors", NULL,
+								 instr->stagedSurvivors, 0, es);
+			ExplainPropertyFloat("Stage Rows Scanned", NULL,
+								 instr->stagedRowsScanned, 0, es);
+			ExplainPropertyFloat("Stage Fallbacks", NULL,
+								 instr->stagedFallbacks, 0, es);
+			ExplainPropertyFloat("Stage Blocks Decompressed", NULL,
+								 instr->stagedBlocksDecompressed, 0, es);
+			ExplainPropertyFloat("Stage Blocks Skipped", NULL,
+								 instr->stagedBlocksSkipped, 0, es);
+			ExplainPropertyFloat("Stage Blocks Seeked", NULL,
+								 instr->stagedBlocksSeeked, 0, es);
+		}
+	}
+
+	pfree(stages.data);
 }
 
 /*

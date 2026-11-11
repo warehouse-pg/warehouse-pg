@@ -60,7 +60,10 @@ typedef enum ScanOptions
 	SO_ALLOW_PAGEMODE = 1 << 6,
 
 	/* unregister snapshot at scan end? */
-	SO_TEMP_SNAPSHOT = 1 << 7
+	SO_TEMP_SNAPSHOT = 1 << 7,
+
+	/* WHPG: run as a Staged Scan, see scan_begin_extractcolumns */
+	SO_STAGED_SCAN = 1 << 16
 } ScanOptions;
 
 /*
@@ -238,6 +241,12 @@ typedef struct TableAmRoutine
 	 * GPDB: Extract columns for scan from either a projection array
 	 * or a targetlist and quals. This is currently used for AOCO
 	 * tables.
+	 *
+	 * WHPG: the arguments after flags carry the planner's Staged Scan
+	 * decision (cdbaocsam_stagedscan.h) and are read only when flags has
+	 * SO_STAGED_SCAN. They come last and behind that flag so that an access
+	 * method, or a caller, built before they existed still finds every other
+	 * argument where it expects it.
 	 */
 	TableScanDesc	(*scan_begin_extractcolumns) (Relation rel,
 												  Snapshot snapshot,
@@ -245,7 +254,10 @@ typedef struct TableAmRoutine
 												  List *qual,
 												  bool *proj,
 												  List *constraintList,
-												  uint32 flags);
+												  uint32 flags,
+												  int stagedPhaseAWidth,
+												  List *stagedFilterAttnos,
+												  double stagedPhaseASel);
 
 	/*
 	 * GPDB: Extract columns for scan from targetlist and quals,
@@ -884,11 +896,39 @@ table_beginscan_es(Relation rel, Snapshot snapshot,
 	if (rel->rd_tableam->scan_begin_extractcolumns)
 		return rel->rd_tableam->scan_begin_extractcolumns(rel, snapshot,
 														  targetList, qual, proj, constraintList,
-														  flags);
+														  flags, 0, NIL, 0.0);
 
 	return rel->rd_tableam->scan_begin(rel, snapshot,
 									   0, NULL,
 									   NULL, flags);
+}
+
+/*
+ * WHPG: table_beginscan_es() for a SeqScan the planner made a Staged Scan
+ * (stagedPhaseAWidth > 0): passes the decision on to the access method. An
+ * access method without scan_begin_extractcolumns never sees it.
+ */
+static inline TableScanDesc
+table_beginscan_es_staged(Relation rel, Snapshot snapshot,
+						  List *targetList, List *qual, bool *proj,
+						  List *constraintList, int stagedPhaseAWidth,
+						  List *stagedFilterAttnos, double stagedPhaseASel)
+{
+	uint32		flags = SO_TYPE_SEQSCAN |
+	SO_ALLOW_STRAT | SO_ALLOW_SYNC | SO_ALLOW_PAGEMODE;
+
+	if (stagedPhaseAWidth > 0)
+		flags |= SO_STAGED_SCAN;
+
+	if (rel->rd_tableam->scan_begin_extractcolumns)
+		return rel->rd_tableam->scan_begin_extractcolumns(rel, snapshot,
+														  targetList, qual, proj, constraintList,
+														  flags, stagedPhaseAWidth,
+														  stagedFilterAttnos, stagedPhaseASel);
+
+	return rel->rd_tableam->scan_begin(rel, snapshot,
+									   0, NULL,
+									   NULL, flags & ~SO_STAGED_SCAN);
 }
 
 /*

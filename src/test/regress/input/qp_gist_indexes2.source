@@ -5,6 +5,10 @@
 
 create schema qp_gist_indexes2;
 set search_path to qp_gist_indexes2;
+-- The scans here are about GiST index paths; on this tiny AOCO table the
+-- staged-scan decision sits on a cost tie that ANALYZE timing moves, so
+-- keep the plain scan.
+set whpg_enable_staged_scan = off;
 
  -- start_ignore
 create language plpython3u;

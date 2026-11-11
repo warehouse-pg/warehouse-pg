@@ -29,12 +29,14 @@
 
 #include "access/relscan.h"
 #include "access/tableam.h"
+#include "cdb/cdbaocsam.h"
 #include "executor/execdebug.h"
 #include "executor/nodeSeqscan.h"
 #include "utils/rel.h"
 #include "nodes/nodeFuncs.h"
 
 static TupleTableSlot *SeqNext(SeqScanState *node);
+static void SeqScanSyncStagedInstrumentation(SeqScanState *node, TableScanDesc scandesc);
 
 /* ----------------------------------------------------------------
  *						Scan Support
@@ -74,21 +76,130 @@ SeqNext(SeqScanState *node)
 		 * scan state with the column info needed for AOCO relations. Check the
 		 * comment in table_beginscan_es() for more info.
 		 */
-		scandesc = table_beginscan_es(node->ss.ss_currentRelation,
-									  estate->es_snapshot,
-									  node->ss.ps.plan->targetlist,
-									  node->ss.ps.plan->qual,
-									  NULL,
-									  NULL);
+		scandesc = table_beginscan_es_staged(node->ss.ss_currentRelation,
+											 estate->es_snapshot,
+											 node->ss.ps.plan->targetlist,
+											 node->ss.ps.plan->qual,
+											 NULL,
+											 NULL,
+											 ((SeqScan *) node->ss.ps.plan)->staged.enabled ?
+											 ((SeqScan *) node->ss.ps.plan)->staged.phaseAWidth : 0,
+											 ((SeqScan *) node->ss.ps.plan)->staged.filterAttnos,
+											 ((SeqScan *) node->ss.ps.plan)->staged.phaseASel);
 		node->ss.ss_currentScanDesc = scandesc;
+
+		/*
+		 * GPDB: the counts a staged scan keeps on its instrumentation start
+		 * from zero on a fresh descriptor, so the high-water marks that
+		 * SeqScanSyncStagedInstrumentation() compares them with must too.
+		 * This matters when the node is reopened rather than rescanned:
+		 * ExecEagerFreeSeqScan() ended the previous descriptor once the
+		 * Append moved past this node, and a rescan of the Append brings us
+		 * back here with the marks still at the previous pass's totals.
+		 */
+		node->staged_removed_reported = 0;
+		node->staged_scanned_reported = 0;
+		node->staged_survivors_reported = 0;
+		node->staged_fallbacks_reported = 0;
+		node->staged_blocks_decompressed_reported = 0;
+		node->staged_blocks_skipped_reported = 0;
+		node->staged_blocks_seeked_reported = 0;
+
+		/* GPDB: a staged scan's costlier counts are for EXPLAIN ANALYZE only */
+		if (((SeqScan *) node->ss.ps.plan)->staged.enabled &&
+			RelationIsAoCols(scandesc->rs_rd) &&
+			((AOCSScanDesc) scandesc)->stagedInstrument != NULL &&
+			(node->ss.ps.instrument != NULL || node->staged_instr != NULL))
+			((AOCSScanDesc) scandesc)->stagedInstrument->staged_analyze = true;
 	}
 
 	/*
 	 * get the next tuple from the table
 	 */
 	if (table_scan_getnextslot(scandesc, direction, slot))
+	{
+		SeqScanSyncStagedInstrumentation(node, scandesc);
 		return slot;
+	}
+	SeqScanSyncStagedInstrumentation(node, scandesc);
 	return NULL;
+}
+
+/*
+ * GPDB: a staged scan keeps its counts on the scan's instrumentation;
+ * mirror them into the node's so that they are in place whenever the QE
+ * ships its stats (which happens before ExecEndSeqScan), including under a
+ * LIMIT. The rows the predicate rejected in Phase A or a stage never reached
+ * ExecScan's filter, so they are added to nfiltered1 here: "Rows Removed by
+ * Filter" then reports what the predicate removed, whichever phase did it.
+ */
+static void
+SeqScanSyncStagedInstrumentation(SeqScanState *node, TableScanDesc scandesc)
+{
+	Instrumentation *instr = node->staged_instr ? node->staged_instr
+		: node->ss.ps.instrument;
+	TableScanInstrumentation *scaninstr;
+	double		scanned;
+	double		survivors;
+	double		fallbacks;
+	double		blocks;
+	double		removed;
+
+	/* only an AOCO scan opened for a Staged Scan plan keeps these counts */
+	if (instr == NULL || !((SeqScan *) node->ss.ps.plan)->staged.enabled ||
+		!RelationIsAoCols(scandesc->rs_rd))
+		return;
+	scaninstr = ((AOCSScanDesc) scandesc)->stagedInstrument;
+	if (scaninstr == NULL)
+		return;
+
+	/*
+	 * Add the increments rather than copying the totals: a Dynamic Seq Scan
+	 * points every partition's scan at its own instrumentation, and the
+	 * partitions' counts have to add up there.
+	 */
+	scanned = (double) scaninstr->staged_rows_scanned;
+	if (scanned > node->staged_scanned_reported)
+	{
+		instr->stagedRowsScanned += scanned - node->staged_scanned_reported;
+		node->staged_scanned_reported = scanned;
+	}
+	survivors = (double) scaninstr->staged_survivors;
+	if (survivors > node->staged_survivors_reported)
+	{
+		instr->stagedSurvivors += survivors - node->staged_survivors_reported;
+		node->staged_survivors_reported = survivors;
+	}
+	fallbacks = (double) scaninstr->staged_fallbacks;
+	if (fallbacks > node->staged_fallbacks_reported)
+	{
+		instr->stagedFallbacks += fallbacks - node->staged_fallbacks_reported;
+		node->staged_fallbacks_reported = fallbacks;
+	}
+	blocks = (double) scaninstr->staged_blocks_decompressed;
+	if (blocks > node->staged_blocks_decompressed_reported)
+	{
+		instr->stagedBlocksDecompressed += blocks - node->staged_blocks_decompressed_reported;
+		node->staged_blocks_decompressed_reported = blocks;
+	}
+	blocks = (double) scaninstr->staged_blocks_skipped;
+	if (blocks > node->staged_blocks_skipped_reported)
+	{
+		instr->stagedBlocksSkipped += blocks - node->staged_blocks_skipped_reported;
+		node->staged_blocks_skipped_reported = blocks;
+	}
+	blocks = (double) scaninstr->staged_blocks_seeked;
+	if (blocks > node->staged_blocks_seeked_reported)
+	{
+		instr->stagedBlocksSeeked += blocks - node->staged_blocks_seeked_reported;
+		node->staged_blocks_seeked_reported = blocks;
+	}
+	removed = (double) scaninstr->staged_rows_removed;
+	if (removed > node->staged_removed_reported)
+	{
+		instr->nfiltered1 += removed - node->staged_removed_reported;
+		node->staged_removed_reported = removed;
+	}
 }
 
 /*
@@ -136,7 +247,7 @@ ExecInitSeqScan(SeqScan *node, EState *estate, int eflags)
 	 * get the relation object id from the relid'th entry in the range table,
 	 * open that relation and acquire appropriate lock on it.
 	 */
-	currentRelation = ExecOpenScanRelation(estate, node->scanrelid, eflags);
+	currentRelation = ExecOpenScanRelation(estate, node->scan.scanrelid, eflags);
 
 	return ExecInitSeqScanForPartition(node, estate, currentRelation);
 }
@@ -188,8 +299,24 @@ ExecInitSeqScanForPartition(SeqScan *node, EState *estate,
 	/*
 	 * initialize child expressions
 	 */
-	scanstate->ss.ps.qual =
-		ExecInitQual(node->plan.qual, (PlanState *) scanstate);
+	/*
+	 * GPDB: on a Staged Scan plan over an AOCO relation the access method
+	 * applies the qual itself and returns only rows that satisfy it -- on the
+	 * two-phase path, on the ordinary scan a segment file may fall back to,
+	 * and when it declines the two-phase scan at open (aocs_stagedscan_getnext()).
+	 * Running the qual here again would only cost the evaluation and would
+	 * need columns the scan no longer fetches for the emitted row, so this
+	 * node runs no qual. A partition of another access method under a
+	 * dynamic scan keeps it. EvalPlanQual is not reached on AO tables; keep
+	 * the qual there anyway, the access method's filter makes it harmless.
+	 */
+	if (node->staged.enabled && node->staged.phaseAWidth > 0 &&
+		RelationIsAoCols(currentRelation) &&
+		estate->es_epq_active == NULL)
+		scanstate->ss.ps.qual = NULL;
+	else
+		scanstate->ss.ps.qual =
+			ExecInitQual(node->scan.plan.qual, (PlanState *) scanstate);
 
 	return scanstate;
 }

@@ -117,6 +117,12 @@ CREATE INDEX
 SET
 1: set enable_bitmapscan = off;
 SET
+-- Show the ordinary plan: on a column-oriented table this scan would run as a
+-- Staged Seq Scan, which the staged_scan_* tests cover.  The queries after
+-- the EXPLAIN run with it on, so Phase B must leave the invisible block
+-- directory alone and walk the segment files.
+1: set whpg_enable_staged_scan = off;
+SET
 1: explain (costs off) select a from create_index_old_snapshot_tbl where a between 1 and 100;
  QUERY PLAN                                      
 -------------------------------------------------
@@ -125,6 +131,8 @@ SET
          Filter: ((a >= 1) AND (a <= 100))       
  Optimizer: Postgres-based planner               
 (4 rows)
+1: reset whpg_enable_staged_scan;
+RESET
 1: select count(*) from create_index_old_snapshot_tbl where a between 1 and 100;
  count 
 -------

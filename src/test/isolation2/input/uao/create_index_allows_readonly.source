@@ -70,7 +70,13 @@ insert into create_index_old_snapshot_tbl select a, a from generate_series(1, 10
 2: create index create_index_old_snapshot_idx on create_index_old_snapshot_tbl(a);
 1: set enable_seqscan = off;
 1: set enable_bitmapscan = off;
+-- Show the ordinary plan: on a column-oriented table this scan would run as a
+-- Staged Seq Scan, which the staged_scan_* tests cover.  The queries after
+-- the EXPLAIN run with it on, so Phase B must leave the invisible block
+-- directory alone and walk the segment files.
+1: set whpg_enable_staged_scan = off;
 1: explain (costs off) select a from create_index_old_snapshot_tbl where a between 1 and 100;
+1: reset whpg_enable_staged_scan;
 1: select count(*) from create_index_old_snapshot_tbl where a between 1 and 100;
 1: select count(b) from create_index_old_snapshot_tbl where a between 1 and 100;
 1: set enable_indexscan = off;

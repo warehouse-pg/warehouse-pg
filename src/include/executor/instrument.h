@@ -45,6 +45,34 @@ typedef struct WalUsage
 	uint64		wal_bytes;		/* size of WAL records produced */
 } WalUsage;
 
+/*
+ * Counters the AOCO access method keeps for one Staged Scan, hung off
+ * AOCSScanDescData.stagedInstrument.
+ */
+typedef struct TableScanInstrumentation
+{
+	/*
+	 * GPDB: Staged Scan (AOCO two-phase scan) counters, maintained by the
+	 * AOCO AM and copied into the node's instrumentation by nodeSeqscan.c so
+	 * EXPLAIN ANALYZE can show how many rows Phase A kept.
+	 */
+	int64		staged_rows_scanned;
+	int64		staged_survivors;
+	int64		staged_rows_removed;	/* rows the predicate rejected in Phase A or a stage */
+	int64		staged_fallbacks;	/* segment files handed back to the ordinary scan */
+	/* Phase B block counters, summed over the columns it fetched */
+	int64		staged_blocks_decompressed;
+	int64		staged_blocks_skipped;	/* stepped over by header, content never decompressed */
+	int64		staged_blocks_seeked;	/* jumps through the block directory */
+
+	/*
+	 * Set by the scan node when EXPLAIN ANALYZE reads these counters. The
+	 * count that costs a catalog lookup -- the blocks a block-directory seek
+	 * passes over -- is taken only then; the counters above are kept always.
+	 */
+	bool		staged_analyze;
+} TableScanInstrumentation;
+
 /* Flag bits included in InstrAlloc's instrument_options bitmask */
 typedef enum InstrumentOption
 {
@@ -95,6 +123,12 @@ typedef struct Instrumentation
 	const char *sortSpaceType;	/* CDB: Sort space type (Memory / Disk) */
 	long		sortSpaceUsed;	/* CDB: Memory / Disk used by sort(KBytes) */
 	struct CdbExplain_NodeSummary *cdbNodeSummary;	/* stats from all qExecs */
+	double		stagedRowsScanned;	/* GPDB: Staged Scan Phase A rows scanned */
+	double		stagedSurvivors;		/* GPDB: Staged Scan Phase A survivors */
+	double		stagedFallbacks;		/* WHPG: segment files Staged Scan fell back on */
+	double		stagedBlocksDecompressed;	/* WHPG: Staged Scan Phase B blocks decompressed */
+	double		stagedBlocksSkipped;	/* WHPG: Staged Scan Phase B blocks skipped */
+	double		stagedBlocksSeeked;	/* WHPG: Staged Scan Phase B block-directory seeks */
 } Instrumentation;
 
 typedef struct WorkerInstrumentation
