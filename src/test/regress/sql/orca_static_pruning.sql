@@ -184,3 +184,25 @@ RESET optimizer_enable_constant_expression_evaluation;
 
 DROP TABLE lp_text;
 DROP TABLE lp_varchar;
+
+-- A Dynamic Index Scan reads one partition after another, so its output
+-- follows the index order only when a single partition is left to scan.
+-- With optimizer_enable_sort off, GPORCA must not merge the unsorted
+-- multi-partition stream as if it were sorted.
+CREATE TABLE lp_ord (a int, b int, c int) DISTRIBUTED BY (a) PARTITION BY LIST (c);
+CREATE TABLE lp_ord_1 PARTITION OF lp_ord FOR VALUES IN (1);
+CREATE TABLE lp_ord_2 PARTITION OF lp_ord FOR VALUES IN (2);
+CREATE TABLE lp_ord_3 PARTITION OF lp_ord FOR VALUES IN (3);
+INSERT INTO lp_ord SELECT i, i % 5000, 1 + i % 3 FROM generate_series(1, 30000) i;
+CREATE INDEX lp_ord_b ON lp_ord (b);
+ANALYZE lp_ord;
+
+SET optimizer_enable_sort = off;
+EXPLAIN (COSTS OFF) SELECT b FROM lp_ord WHERE b < 3 ORDER BY b;
+SELECT b FROM lp_ord WHERE b < 3 ORDER BY b;
+-- statically pruned to one partition: the index order holds
+EXPLAIN (COSTS OFF) SELECT b FROM lp_ord WHERE b < 3 AND c = 2 ORDER BY b;
+SELECT b FROM lp_ord WHERE b < 3 AND c = 2 ORDER BY b;
+RESET optimizer_enable_sort;
+
+DROP TABLE lp_ord;
