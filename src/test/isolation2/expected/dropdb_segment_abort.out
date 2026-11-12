@@ -1,0 +1,193 @@
+-- WHPG (PTT-2078): DROP DATABASE that fails on one segment
+-- after the other segments have already run dropdb().
+--
+-- The distributed transaction aborts, and the database must come back intact
+-- and usable on every node: base/<oid> is still there on every primary and
+-- mirror, and the data can be read and written again, including through
+-- utility-mode connections to the segments that had run dropdb().
+-- A DROP that commits removes base/<oid> on every primary, and on every
+-- mirror once the commit record is replayed.
+
+CREATE EXTENSION IF NOT EXISTS gp_inject_fault;
+CREATE EXTENSION
+CREATE DATABASE dropdb_abort_a;
+CREATE DATABASE
+CREATE DATABASE dropdb_abort_b;
+CREATE DATABASE
+1:@db_name dropdb_abort_a: CREATE TABLE t AS SELECT g FROM generate_series(1, 100) g DISTRIBUTED BY (g);
+SELECT 100
+1q: ... <quitting>
+1:@db_name dropdb_abort_b: CREATE TABLE t AS SELECT g FROM generate_series(1, 100) g DISTRIBUTED BY (g);
+SELECT 100
+1q: ... <quitting>
+
+-- Remember the OIDs: the directory checks below must work after a DROP has
+-- removed the pg_database row.
+CREATE TABLE dropdb_abort_oids AS SELECT datname, oid AS dboid FROM pg_database WHERE datname LIKE 'dropdb_abort_%' DISTRIBUTED REPLICATED;
+SELECT 2
+
+-- Does base/<oid> exist in the data directory of the coordinator and of
+-- every primary and mirror segment? (All instances run on this host.)
+CREATE VIEW dropdb_abort_dirs AS SELECT o.datname, c.content, c.role, coalesce((pg_stat_file(c.datadir || '/base/' || o.dboid, true)).isdir, false) AS has_dir FROM gp_segment_configuration c, dropdb_abort_oids o WHERE c.content >= 0 OR c.role = 'p';
+CREATE VIEW
+
+-- Case 1: a utility-mode connection on segment 0 is connected to the
+-- database. Segment 0 refuses the DROP because the database is in use; the
+-- other segments have run dropdb() by then.
+0U:@db_name dropdb_abort_a: SELECT 1;
+ ?column? 
+----------
+ 1        
+(1 row)
+2: DROP DATABASE dropdb_abort_a;
+ERROR:  database "dropdb_abort_a" is being accessed by other users  (seg0 127.0.0.1:7102 pid=71502)
+DETAIL:  There is 1 other session using the database.
+0Uq: ... <quitting>
+
+-- The database is intact everywhere.
+2: SELECT gp_segment_id, count(*) FROM gp_dist_random('pg_database') WHERE datname = 'dropdb_abort_a' GROUP BY 1 ORDER BY 1;
+ gp_segment_id | count 
+---------------+-------
+ 0             | 1     
+ 1             | 1     
+ 2             | 1     
+(3 rows)
+2: SELECT content, role, has_dir FROM dropdb_abort_dirs WHERE datname = 'dropdb_abort_a' ORDER BY content, role;
+ content | role | has_dir 
+---------+------+---------
+ -1      | p    | t       
+ 0       | m    | t       
+ 0       | p    | t       
+ 1       | m    | t       
+ 1       | p    | t       
+ 2       | m    | t       
+ 2       | p    | t       
+(7 rows)
+
+-- ... and usable: read and write it through the coordinator, and connect to
+-- each segment directly, which reads its catalogs from disk.
+1:@db_name dropdb_abort_a: SELECT count(*) FROM t;
+ count 
+-------
+ 100   
+(1 row)
+1: INSERT INTO t SELECT g FROM generate_series(101, 200) g;
+INSERT 0 100
+1: SELECT count(*) FROM t;
+ count 
+-------
+ 200   
+(1 row)
+1q: ... <quitting>
+0U:@db_name dropdb_abort_a: SELECT count(*) FROM pg_class WHERE relname = 't';
+ count 
+-------
+ 1     
+(1 row)
+0Uq: ... <quitting>
+1U:@db_name dropdb_abort_a: SELECT count(*) FROM pg_class WHERE relname = 't';
+ count 
+-------
+ 1     
+(1 row)
+1Uq: ... <quitting>
+2U:@db_name dropdb_abort_a: SELECT count(*) FROM pg_class WHERE relname = 't';
+ count 
+-------
+ 1     
+(1 row)
+2Uq: ... <quitting>
+
+-- Case 2: every segment runs dropdb() to completion and segment 1 then fails
+-- to PREPARE, so the trigger does not depend on an administrative connection.
+2: SELECT gp_inject_fault('start_prepare', 'error', dbid) FROM gp_segment_configuration WHERE role = 'p' AND content = 1;
+ gp_inject_fault 
+-----------------
+ Success:        
+(1 row)
+2: DROP DATABASE dropdb_abort_b;
+ERROR:  fault triggered, fault name:'start_prepare' fault type:'error'  (seg1 127.0.0.1:7103 pid=71503)
+2: SELECT gp_inject_fault('start_prepare', 'reset', dbid) FROM gp_segment_configuration WHERE role = 'p' AND content = 1;
+ gp_inject_fault 
+-----------------
+ Success:        
+(1 row)
+
+2: SELECT gp_segment_id, count(*) FROM gp_dist_random('pg_database') WHERE datname = 'dropdb_abort_b' GROUP BY 1 ORDER BY 1;
+ gp_segment_id | count 
+---------------+-------
+ 0             | 1     
+ 1             | 1     
+ 2             | 1     
+(3 rows)
+2: SELECT content, role, has_dir FROM dropdb_abort_dirs WHERE datname = 'dropdb_abort_b' ORDER BY content, role;
+ content | role | has_dir 
+---------+------+---------
+ -1      | p    | t       
+ 0       | m    | t       
+ 0       | p    | t       
+ 1       | m    | t       
+ 1       | p    | t       
+ 2       | m    | t       
+ 2       | p    | t       
+(7 rows)
+1:@db_name dropdb_abort_b: SELECT count(*) FROM t;
+ count 
+-------
+ 100   
+(1 row)
+1q: ... <quitting>
+1U:@db_name dropdb_abort_b: SELECT count(*) FROM pg_class WHERE relname = 't';
+ count 
+-------
+ 1     
+(1 row)
+1Uq: ... <quitting>
+
+-- Case 3: a DROP that commits removes the directories on the coordinator and
+-- on every primary, and the mirrors remove theirs when they replay the
+-- commit record.
+2: DROP DATABASE dropdb_abort_a;
+DROP DATABASE
+2: DROP DATABASE dropdb_abort_b;
+DROP DATABASE
+2: SELECT count(*) FROM pg_database WHERE datname LIKE 'dropdb_abort_%';
+ count 
+-------
+ 0     
+(1 row)
+2: SELECT count(*) FROM gp_dist_random('pg_database') WHERE datname LIKE 'dropdb_abort_%';
+ count 
+-------
+ 0     
+(1 row)
+2: SELECT content, wait_for_replication_replay(content, 5000) FROM gp_segment_configuration WHERE role = 'p' AND content >= 0 ORDER BY content;
+ content | wait_for_replication_replay 
+---------+-----------------------------
+ 0       | t                           
+ 1       | t                           
+ 2       | t                           
+(3 rows)
+2: SELECT datname, content, role, has_dir FROM dropdb_abort_dirs ORDER BY datname, content, role;
+ datname        | content | role | has_dir 
+----------------+---------+------+---------
+ dropdb_abort_a | -1      | p    | f       
+ dropdb_abort_a | 0       | m    | f       
+ dropdb_abort_a | 0       | p    | f       
+ dropdb_abort_a | 1       | m    | f       
+ dropdb_abort_a | 1       | p    | f       
+ dropdb_abort_a | 2       | m    | f       
+ dropdb_abort_a | 2       | p    | f       
+ dropdb_abort_b | -1      | p    | f       
+ dropdb_abort_b | 0       | m    | f       
+ dropdb_abort_b | 0       | p    | f       
+ dropdb_abort_b | 1       | m    | f       
+ dropdb_abort_b | 1       | p    | f       
+ dropdb_abort_b | 2       | m    | f       
+ dropdb_abort_b | 2       | p    | f       
+(14 rows)
+
+DROP VIEW dropdb_abort_dirs;
+DROP VIEW
+DROP TABLE dropdb_abort_oids;
+DROP TABLE

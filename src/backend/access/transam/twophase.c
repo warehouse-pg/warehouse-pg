@@ -96,6 +96,7 @@
 #include "replication/origin.h"
 #include "replication/syncrep.h"
 #include "replication/walsender.h"
+#include "storage/bufmgr.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/md.h"
@@ -1754,8 +1755,36 @@ FinishPreparedTransaction(const char *gid, bool isCommit, bool raiseErrorIfNotFo
 	/* Make sure files supposed to be dropped are dropped */
 	DropRelationFiles(delrels, ndelrels, false);
 
-	/* Make sure database folders to be dropped are dropped */
-	DropDatabaseDirectories(deldbs, ndeldbs, false);
+	/*
+	 * Make sure database folders to be dropped are dropped.
+	 *
+	 * The directories may hold pages that went through shared buffers, and
+	 * the checkpointer may hold fsync requests for their files; at COMMIT
+	 * PREPARED discard both, per <tablespace, database> directory, before
+	 * unlinking, or a later write-back would fail on the unlinked files.
+	 * Per directory because movedb's old directory shares its database OID
+	 * with the live new location, so a per-database discard would hit that
+	 * too. dropdb() and movedb() discard the database's buffers themselves
+	 * before the transaction prepares, but a node that reconstructed the
+	 * prepared transaction from WAL -- a promoted mirror, or a primary after
+	 * crash recovery -- has the pages dirty from replay and fsync requests
+	 * queued for them. (At ROLLBACK PREPARED the at-abort directories are a
+	 * CREATE DATABASE's or SET TABLESPACE's new copy, made with copydir()
+	 * outside shared buffers.)
+	 */
+	if (isCommit)
+	{
+		int			i;
+
+		for (i = 0; i < ndeldbs; i++)
+		{
+			DropDatabaseTablespaceBuffers(deldbs[i].tablespace,
+										  deldbs[i].database);
+			ForgetDatabaseTablespaceSyncRequests(deldbs[i].tablespace,
+												 deldbs[i].database);
+		}
+	}
+	DropDatabaseDirectories(deldbs, ndeldbs, false, isCommit);
 
 	finish_prepared_transaction_tablespace_storage(isCommit);
 
