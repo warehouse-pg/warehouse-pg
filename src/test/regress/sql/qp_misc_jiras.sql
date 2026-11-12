@@ -2215,18 +2215,23 @@ drop table if exists qp_misc_jiras.r cascade;
 
 -- Triggers are applied AFTER the row has been routed per the distribution
 -- policy. However, a trigger can change the value of the distribution column.
--- This means, we have an unexpected row in a segment, which can lead to wrong
--- results. Including gp_segment_id in below queries allows us to ensure that
--- no redistribution has occurred.
+-- WHPG: such a trigger used to leave the row on the segment it
+-- was routed to, where direct dispatch and co-located joins miss it; WHPG now
+-- refuses the statement instead.  Multi-row statements make at least one row
+-- change segment whatever the hash, so the refusal is deterministic, and the
+-- replicated witness copy of each row's segment shows that nothing moved.
 CREATE TABLE qp_misc_jiras.test_trig(id int, aaa text) DISTRIBUTED BY (id);
-INSERT INTO qp_misc_jiras.test_trig VALUES (1, 'before creating trigger');
-SELECT gp_segment_id, * FROM qp_misc_jiras.test_trig;
+INSERT INTO qp_misc_jiras.test_trig
+    SELECT i, 'before creating trigger' FROM generate_series(1, 20) i;
+CREATE TABLE qp_misc_jiras.test_trig_w AS
+    SELECT id, gp_segment_id AS seg FROM qp_misc_jiras.test_trig
+    DISTRIBUTED REPLICATED;
+SELECT count(*) FROM qp_misc_jiras.test_trig;
 
 CREATE OR REPLACE FUNCTION fn_trig() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
    NEW.aaa = NEW.aaa || '1';
    NEW.id = NEW.id + 1;
-   RAISE NOTICE '%', NEW.id;
 RETURN NEW;
 END
 $$;
@@ -2236,15 +2241,25 @@ BEFORE INSERT OR UPDATE ON qp_misc_jiras.test_trig
 FOR EACH ROW
     EXECUTE PROCEDURE fn_trig();
 
-INSERT INTO qp_misc_jiras.test_trig VALUES (0, 'after creating trigger');
+INSERT INTO qp_misc_jiras.test_trig
+    SELECT i, 'after creating trigger' FROM generate_series(1, 20) i;
 
-INSERT INTO qp_misc_jiras.test_trig VALUES (1, 'aaa');
-SELECT gp_segment_id, * FROM qp_misc_jiras.test_trig;
-
+-- A no-op SET of the key keeps the UPDATE in place (no SplitUpdate), so the
+-- trigger's rewrite is what would move the row.
 UPDATE qp_misc_jiras.test_trig SET id = id;
-SELECT gp_segment_id, * FROM qp_misc_jiras.test_trig;
+UPDATE qp_misc_jiras.test_trig SET aaa = aaa || 'x';
+
+-- Nothing was inserted, updated, or moved.
+SELECT count(*) AS rows_total,
+       count(*) FILTER (WHERE aaa = 'before creating trigger') AS rows_untouched
+FROM qp_misc_jiras.test_trig;
+SELECT (SELECT array_agg(id::text || ':' || gp_segment_id::text ORDER BY id)
+          FROM qp_misc_jiras.test_trig)
+     = (SELECT array_agg(id::text || ':' || seg::text ORDER BY id)
+          FROM qp_misc_jiras.test_trig_w) AS placement_ok;
 
 DROP TABLE qp_misc_jiras.test_trig;
+DROP TABLE qp_misc_jiras.test_trig_w;
 DROP FUNCTION fn_trig();
 
 set gp_select_invisible=false;

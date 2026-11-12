@@ -22,4 +22,14 @@ extern void ExecEndModifyTable(ModifyTableState *node);
 extern void ExecReScanModifyTable(ModifyTableState *node);
 extern void ExecSquelchModifyTable(ModifyTableState *node);
 
+/* GPDB: refuse a row that a BEFORE ROW trigger left belonging to another segment */
+extern bool ExecDistKeyMisplaced(ResultRelInfo *resultRelInfo,
+								 EState *estate,
+								 TupleTableSlot *slot,
+								 int *target_seg);
+extern void ExecReportDistKeyMisplaced(ResultRelInfo *resultRelInfo,
+									   const char *cmdname,
+									   int target_seg,
+									   int sqlerrcode);
+
 #endif							/* NODEMODIFYTABLE_H */
