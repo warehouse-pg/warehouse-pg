@@ -793,7 +793,8 @@ PostgreSQL documentation
    The <option>--clean</option> option can be useful even when your
    intention is to restore the dump script into a fresh cluster.  Use of
    <option>--clean</option> authorizes the script to drop and re-create the
-   built-in <literal>postgres</literal> and <literal>template1</literal>
+   built-in <literal>postgres</literal>, <literal>whadmin</literal>,
+   <literal>gpadmin</literal>, and <literal>template1</literal>
    databases, ensuring that those databases will retain the same properties
    (for instance, locale and encoding) that they had in the source cluster.
    Without the option, those databases will retain their existing
