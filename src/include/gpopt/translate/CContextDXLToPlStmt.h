@@ -136,6 +136,13 @@ private:
 	HMUlIndex *m_used_rte_indexes;
 
 public:
+	// the extension regions of the plan being translated and its physical
+	// operators (CTranslatorDXLToPlStmt::FindExtensionRegions), which the
+	// translators of its subplans share
+	const struct OrcaPlanRegions *m_ext_regions{nullptr};
+	const CDXLNode **m_ext_ops{nullptr};
+	ULONG m_ext_nops{0};
+
 	// ctor/dtor
 	CContextDXLToPlStmt(CMemoryPool *mp, CIdGenerator *plan_id_counter,
 						CIdGenerator *motion_id_counter,

@@ -46,6 +46,7 @@ struct TargetEntry;
 struct Expr;
 struct ExtTableEntry;
 struct ForeignScan;
+struct OrcaPlanRegions;
 struct Uri;
 struct CdbComponentDatabases;
 struct StringInfoData;
@@ -505,6 +506,13 @@ double CdbEstimatePartitionedNumTuples(Relation rel);
 
 PageEstimate CdbEstimatePartitionedNumPages(Relation rel);
 
+// whether an extension reads the relation itself (orca_relation_hook), an
+// OrcaRelation
+int ExtensionRelation(Oid relid);
+
+// the relation's size from orca_relation_size_hook, when an extension knows it
+bool ExtensionRelationSize(Relation rel, double *tuples, PageEstimate *pages);
+
 // close the given relation
 void CloseRelation(Relation rel);
 
@@ -682,6 +690,10 @@ PartitionDesc GPDBRelationRetrievePartitionDesc(Relation rel);
 PartitionKey GPDBRelationRetrievePartitionKey(Relation rel);
 
 bool TestexprIsHashable(Node *testexpr, List *param_ids);
+
+// the regions orca_plan_regions_hook returns for a plan, if it is set
+const struct OrcaPlanRegions *PlanRegions(const char *plan_dxl, int nops,
+										  const char *const *opnames);
 
 gpos::BOOL WalkQueryTree(Query *query, bool (*walker)(), void *context,
 						 int flags);

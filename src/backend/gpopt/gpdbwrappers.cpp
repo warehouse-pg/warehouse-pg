@@ -42,12 +42,14 @@ extern "C" {
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/orca.h"
 #include "optimizer/plancat.h"
 #include "optimizer/subselect.h"
 #include "parser/parse_agg.h"
 #include "partitioning/partdesc.h"
 #include "storage/lmgr.h"
 #include "utils/fmgroids.h"
+#include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/partcache.h"
 #include "utils/snapmgr.h"
@@ -759,9 +761,48 @@ gpdb::GetAttrStatsSlot(AttStatsSlot *sslot, HeapTuple statstuple, int reqkind,
 	return false;
 }
 
+orca_relation_size_hook_type orca_relation_size_hook = nullptr;
+orca_att_stats_hook_type orca_att_stats_hook = nullptr;
+
+namespace
+{
+// Orca isn't reentrant, and the statistics hooks may run queries (through
+// SPI) to find their answers: those are planned by PG's planner. Declared
+// outside GP_WRAP_START, so the exception GP_WRAP_END raises for a PG error
+// restores the setting too.
+class CAutoPlannerOnly
+{
+	bool m_saved;
+
+public:
+	CAutoPlannerOnly() : m_saved(optimizer)
+	{
+		optimizer = false;
+	}
+	~CAutoPlannerOnly()
+	{
+		optimizer = m_saved;
+	}
+};
+}  // namespace
+
 HeapTuple
 gpdb::GetAttStats(Oid relid, AttrNumber attnum)
 {
+	if (orca_att_stats_hook != nullptr)
+	{
+		CAutoPlannerOnly planner_only;
+		HeapTuple tuple = nullptr;
+		GP_WRAP_START;
+		{
+			tuple = orca_att_stats_hook(relid, attnum);
+		}
+		GP_WRAP_END;
+		if (tuple != nullptr)
+		{
+			return tuple;
+		}
+	}
 	GP_WRAP_START;
 	{
 		/* catalog tables: pg_statistic */
@@ -1862,6 +1903,12 @@ gpdb::IsAppendOnlyBlockDirectoryVisible(Relation rel)
 double
 gpdb::CdbEstimatePartitionedNumTuples(Relation rel)
 {
+	double tuples;
+	PageEstimate pages;
+	if (ExtensionRelationSize(rel, &tuples, &pages))
+	{
+		return tuples;
+	}
 	GP_WRAP_START;
 	{
 		return cdb_estimate_partitioned_numtuples(rel);
@@ -1872,11 +1919,56 @@ gpdb::CdbEstimatePartitionedNumTuples(Relation rel)
 PageEstimate
 gpdb::CdbEstimatePartitionedNumPages(Relation rel)
 {
+	double tuples;
+	PageEstimate pages;
+	if (ExtensionRelationSize(rel, &tuples, &pages))
+	{
+		return pages;
+	}
 	GP_WRAP_START;
 	{
 		return cdb_estimate_partitioned_numpages(rel);
 	}
 	GP_WRAP_END;
+}
+
+orca_relation_hook_type orca_relation_hook = nullptr;
+
+int
+gpdb::ExtensionRelation(Oid relid)
+{
+	if (orca_relation_hook == nullptr)
+	{
+		return ORCA_RELATION_NONE;
+	}
+	GP_WRAP_START;
+	{
+		return orca_relation_hook(relid);
+	}
+	GP_WRAP_END;
+	return ORCA_RELATION_NONE;
+}
+
+bool
+gpdb::ExtensionRelationSize(Relation rel, double *tuples, PageEstimate *pages)
+{
+	if (orca_relation_size_hook == nullptr)
+	{
+		return false;
+	}
+	CAutoPlannerOnly planner_only;
+	bool found = false;
+	BlockNumber blocks = 0;
+	GP_WRAP_START;
+	{
+		found = orca_relation_size_hook(RelationGetRelid(rel), tuples, &blocks);
+	}
+	GP_WRAP_END;
+	if (found)
+	{
+		*pages = {.totalpages = blocks, .totalallvisiblepages = blocks};
+	}
+	return found;
 }
 
 void
@@ -2784,6 +2876,24 @@ gpdb::TestexprIsHashable(Node *testexpr, List *param_ids)
 	}
 	GP_WRAP_END;
 	return false;
+}
+
+const int orca_hooks_abi_version = ORCA_HOOKS_ABI_VERSION;
+orca_plan_regions_hook_type orca_plan_regions_hook = nullptr;
+
+const struct OrcaPlanRegions *
+gpdb::PlanRegions(const char *plan_dxl, int nops, const char *const *opnames)
+{
+	if (nullptr == orca_plan_regions_hook)
+	{
+		return nullptr;
+	}
+	GP_WRAP_START;
+	{
+		return orca_plan_regions_hook(plan_dxl, nops, opnames);
+	}
+	GP_WRAP_END;
+	return nullptr;
 }
 
 // EOF

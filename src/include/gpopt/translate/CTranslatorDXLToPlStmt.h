@@ -48,6 +48,9 @@ class IMDIndex;
 }  // namespace gpmd
 
 struct PlannedStmt;
+struct OrcaPlanRegion;
+struct OrcaPlanRegions;
+struct CustomScan;
 struct Scan;
 struct HashJoin;
 struct NestLoop;
@@ -133,6 +136,17 @@ private:
 
 	// command type
 	CmdType m_cmd_type;
+
+	// the plan's regions an extension executes (orca_plan_regions_hook),
+	// and its physical operators in pre-order, which the regions refer to
+	const OrcaPlanRegions *m_ext_regions{nullptr};
+	const CDXLNode **m_ext_ops{nullptr};
+	ULONG m_ext_nops{0};
+	// whether this translator found the regions, rather than taking those
+	// of the plan whose subplan it translates
+	BOOL m_owns_ext_ops{false};
+	// a region root being translated as its own leaf
+	const CDXLNode *m_ext_root_leaf{nullptr};
 
 	// is target table distributed, false when in non DML statements
 	BOOL m_is_tgt_tbl_distributed;
@@ -346,6 +360,44 @@ private:
 		CDXLTranslationContextArray *
 			ctxt_translation_prev_siblings	// translation contexts of previous siblings
 	);
+
+	// targetlist of an ipc region's (segment, payload) rows referencing varno
+	static List *IpcTargetList(Index varno);
+
+	// sets a region's targetlist, and its scan tuple's
+	static void SetRegionTargetList(CustomScan *cscan, List *target_list);
+
+	// whether the node is the root of an ipc extension region
+	BOOL IsIpcRegion(const CDXLNode *dxlnode) const;
+
+	// whether the node outputs an ipc region's rows, itself or via a sequence
+	BOOL IsIpcOutput(const CDXLNode *dxlnode) const;
+
+	// a motion routing the (segment, payload) rows of the region below it
+	static void TranslateDXLIpcMotion(const CDXLNode *motion_dxlnode,
+									  Motion *motion);
+
+	// asks orca_plan_regions_hook for the plan's extension regions
+	void FindExtensionRegions(const CDXLNode *plan_dxlnode);
+
+	// the extension region rooted at the node, if any
+	const OrcaPlanRegion *ExtensionRegion(const CDXLNode *dxlnode) const;
+
+	BOOL IsExtensionRegionLeaf(const CDXLNode *dxlnode) const;
+
+	BOOL IsExtensionIpcConsumer(const CDXLNode *dxlnode) const;
+
+	Plan *TranslateDXLExtensionRegion(
+		const CDXLNode *root_dxlnode, const OrcaPlanRegion *region,
+		CDXLTranslateContext *output_context,
+		CDXLTranslationContextArray *ctxt_translation_prev_siblings);
+
+	CHAR *SerializeDXL(const CDXLNode *dxlnode);
+
+	void TranslateExtensionRegionFilter(const CDXLNode *scan_dxlnode,
+										const OrcaPlanRegion *region,
+										List *leaves, CustomScan *cscan,
+										CDXLTranslateContext *output_context);
 
 	Plan *TranslateDXLMaterialize(
 		const CDXLNode *materialize_dxlnode,

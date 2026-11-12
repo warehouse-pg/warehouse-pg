@@ -23,6 +23,7 @@ extern "C" {
 #include "catalog/pg_type.h"
 #include "nodes/parsenodes.h"
 #include "nodes/plannodes.h"
+#include "optimizer/orca.h"
 #include "optimizer/walkers.h"
 #include "utils/guc.h"
 #include "utils/rel.h"
@@ -118,9 +119,30 @@ CTranslatorUtils::GetTableDescr(CMemoryPool *mp, CMDAccessor *md_accessor,
 								BOOL *is_distributed_table	// output
 )
 {
-	// generate an MDId for the table desc.
 	OID rel_oid = rte->relid;
 
+	// A table an extension reads itself (orca_relation_hook): the metadata
+	// cache may hold it from a query the extension planned, so ask each time.
+	// ORCA plans only reads of it; the PG planner plans writes.
+	switch (gpdb::ExtensionRelation(rel_oid))
+	{
+		case ORCA_RELATION_PLANNER:
+			GPOS_THROW_EXCEPTION(
+				gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLUnsupportedFeature,
+				GPOS_WSZ_LIT("Table an extension plans with PG's planner"));
+		case ORCA_RELATION_RANDOM:
+			if (UNASSIGNED_QUERYID != assigned_query_id_for_target_rel)
+			{
+				GPOS_THROW_EXCEPTION(
+					gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLUnsupportedFeature,
+					GPOS_WSZ_LIT("DML on a table an extension reads itself"));
+			}
+			break;
+		default:
+			break;
+	}
+
+	// generate an MDId for the table desc.
 	CMDIdGPDB *mdid = GPOS_NEW(mp) CMDIdGPDB(IMDId::EmdidRel, rel_oid);
 
 	const IMDRelation *rel = md_accessor->RetrieveRel(mdid);
