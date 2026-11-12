@@ -17,6 +17,7 @@
 #include "gpopt/operators/CLogicalLeftOuterJoin.h"
 #include "gpopt/operators/CLogicalNAryJoin.h"
 #include "gpopt/operators/CLogicalRightOuterJoin.h"
+#include "gpopt/operators/CLogicalSelect.h"
 #include "gpopt/operators/CPredicateUtils.h"
 #include "gpopt/operators/CScalarNAryJoinPredList.h"
 #include "gpopt/optimizer/COptimizerConfig.h"
@@ -176,11 +177,16 @@ IsAliasSubsetOrDisjoint(CTableDescriptorHashSet *tabdescs,
 //
 //		Note: The hint itself is not the source of truth, it's the binary join
 //		expression. Consider a future when a hint may be partially applied.
+//
+//		"sourceChildIndexes" receives one entry per returned child: the index
+//		of the "naryJoinPexpr" child it was built from, or gpos::ulong_max for
+//		"binaryJoinExpr". The caller uses it to rebuild per-child information
+//		of the N-ary join, such as the LOJ predicate indexes.
 //---------------------------------------------------------------------------
 CExpressionArray *
 CJoinOrderHintsPreprocessor::ConstructNAryJoinChildren(
 	CMemoryPool *mp, CExpression *naryJoinPexpr, CExpression *binaryJoinExpr,
-	gpos::set<ULONG> &usedChildrenIndexes)
+	gpos::set<ULONG> &usedChildrenIndexes, ULongPtrArray **sourceChildIndexes)
 {
 	GPOS_ASSERT(COperator::EopLogicalNAryJoin == naryJoinPexpr->Pop()->Eopid());
 
@@ -189,6 +195,7 @@ CJoinOrderHintsPreprocessor::ConstructNAryJoinChildren(
 		mp, binaryJoinExpr->DeriveTableDescriptor());
 
 	CExpressionArray *naryChildren = GPOS_NEW(mp) CExpressionArray(mp);
+	*sourceChildIndexes = GPOS_NEW(mp) ULongPtrArray(mp);
 	bool binaryJoinExprAdded = false;
 
 	// For each "naryJoinPexpr" child, check if the child is accounted for in
@@ -222,6 +229,7 @@ CJoinOrderHintsPreprocessor::ConstructNAryJoinChildren(
 			// explicity recurse into CLogicalNAryJoin operators.
 			naryChildren->Append(CJoinOrderHintsPreprocessor::PexprPreprocess(
 				mp, (*naryJoinPexpr)[ul], nullptr /* joinnode */));
+			(*sourceChildIndexes)->Append(GPOS_NEW(mp) ULONG(ul));
 		}
 		else if (!binaryJoinExprAdded && usedChildrenIndexes.count(ul) == 1)
 		{
@@ -232,6 +240,7 @@ CJoinOrderHintsPreprocessor::ConstructNAryJoinChildren(
 			// covers multiple children, but is added once as a child of the
 			// new nary operator. Hence the variable `binaryJoinExprAdded`.
 			naryChildren->Append(binaryJoinExpr);
+			(*sourceChildIndexes)->Append(GPOS_NEW(mp) ULONG(gpos::ulong_max));
 			binaryJoinExprAdded = true;
 		}
 	}
@@ -248,11 +257,13 @@ CJoinOrderHintsPreprocessor::ConstructNAryJoinChildren(
 //	@doc:
 //		Builds the predicates to join the inner and outer expressions. The
 //		returned predicate is a conjunction of all applicable predicates in
-//		allOnPreds.
+//		allOnPreds. When "usedPreds" is given, the predicates taken are added
+//		to it (borrowed pointers, owned by allOnPreds).
 //---------------------------------------------------------------------------
 static CExpression *
 GetOnPreds(CMemoryPool *mp, CExpression *outer, CExpression *inner,
-		   CExpressionArray *allOnPreds)
+		   CExpressionArray *allOnPreds,
+		   gpos::set<CExpression *> *usedPreds = nullptr)
 {
 	CExpressionArray *preds = GPOS_NEW(mp) CExpressionArray(mp);
 
@@ -273,6 +284,10 @@ GetOnPreds(CMemoryPool *mp, CExpression *outer, CExpression *inner,
 			// add the predicate.
 			(*allOnPreds)[ul]->AddRef();
 			preds->Append((*allOnPreds)[ul]);
+			if (nullptr != usedPreds)
+			{
+				usedPreds->insert((*allOnPreds)[ul]);
+			}
 		}
 	}
 
@@ -288,6 +303,50 @@ GetOnPreds(CMemoryPool *mp, CExpression *outer, CExpression *inner,
 
 	// No explicit predicate found, use "ON true".
 	return CUtils::PexprScalarConstBool(mp, /*fVal*/ true, /*is_null*/ false);
+}
+
+
+//---------------------------------------------------------------------------
+//	@function:
+//		PexprRemainingInnerPreds
+//
+//	@doc:
+//		The conjuncts of the N-ary join's inner-join predicate (its scalar
+//		child, or index GPOPT_ZERO_INNER_JOIN_PRED_INDEX of the predicate
+//		list when the join has outer-join children) that no hinted join took
+//		as its ON predicate, as one conjunction. nullptr when none is left;
+//		constant-true conjuncts do not count.
+//
+//		Conjuncts are matched by expression: PdrgpexprConjuncts() hands out
+//		the sub-expressions of the predicate itself, so the pointers are the
+//		ones the hinted joins recorded in usedInnerConjuncts.
+//---------------------------------------------------------------------------
+static CExpression *
+PexprRemainingInnerPreds(CMemoryPool *mp, CExpression *pexprNAryJoin,
+						 gpos::set<CExpression *> &usedInnerConjuncts)
+{
+	CExpression *innerPreds = CLogicalNAryJoin::PopConvert(pexprNAryJoin->Pop())
+								  ->GetInnerJoinPreds(pexprNAryJoin);
+	CExpressionArray *conjuncts =
+		CPredicateUtils::PdrgpexprConjuncts(mp, innerPreds);
+	CExpressionArray *remaining = GPOS_NEW(mp) CExpressionArray(mp);
+	for (ULONG ul = 0; ul < conjuncts->Size(); ul++)
+	{
+		CExpression *conjunct = (*conjuncts)[ul];
+		if (usedInnerConjuncts.count(conjunct) == 0 &&
+			!CUtils::FScalarConstTrue(conjunct))
+		{
+			conjunct->AddRef();
+			remaining->Append(conjunct);
+		}
+	}
+	conjuncts->Release();
+	if (0 == remaining->Size())
+	{
+		remaining->Release();
+		return nullptr;
+	}
+	return CPredicateUtils::PexprConjunction(mp, remaining);
 }
 
 
@@ -342,7 +401,8 @@ CExpression *
 CJoinOrderHintsPreprocessor::RecursiveApplyJoinOrderHintsOnNAryJoin(
 	CMemoryPool *mp, CExpression *pexpr, const CJoinHint::JoinNode *joinnode,
 	gpos::set<ULONG> &usedChildrenIndexes,
-	gpos::set<ULONG> &usedPredicateIndexes, ULONG *joinChildPredIndex)
+	gpos::set<ULONG> &usedPredicateIndexes,
+	gpos::set<CExpression *> &usedInnerConjuncts, ULONG *joinChildPredIndex)
 {
 	GPOS_ASSERT(COperator::EopLogicalNAryJoin == pexpr->Pop()->Eopid());
 
@@ -407,10 +467,10 @@ CJoinOrderHintsPreprocessor::RecursiveApplyJoinOrderHintsOnNAryJoin(
 	ULONG inner_join_child_pred_index = MAX_INDEX;
 	CExpression *outer = RecursiveApplyJoinOrderHintsOnNAryJoin(
 		mp, pexpr, joinnode->GetOuter(), usedChildrenIndexes,
-		usedPredicateIndexes, &outer_join_child_pred_index);
+		usedPredicateIndexes, usedInnerConjuncts, &outer_join_child_pred_index);
 	CExpression *inner = RecursiveApplyJoinOrderHintsOnNAryJoin(
 		mp, pexpr, joinnode->GetInner(), usedChildrenIndexes,
-		usedPredicateIndexes, &inner_join_child_pred_index);
+		usedPredicateIndexes, usedInnerConjuncts, &inner_join_child_pred_index);
 
 	// Hint not satisfied. This can happen, for example, if joins hint
 	// splits across a GROUP BY, like:
@@ -568,17 +628,34 @@ CJoinOrderHintsPreprocessor::RecursiveApplyJoinOrderHintsOnNAryJoin(
 						inner_join_child_pred_index);
 			*joinChildPredIndex = outer_join_child_pred_index;
 
-			CExpression *pred = (*(*all_on_preds)[0])[0];
-			pred->AddRef();
+			// The inner-join predicate of the N-ary join is one conjunction
+			// (index GPOPT_ZERO_INNER_JOIN_PRED_INDEX of the predicate list).
+			// Join the two sides with the conjuncts they cover between them,
+			// as GetOnPreds() does for an N-ary join without outer joins. A
+			// conjunct that also references a table not joined yet, such as
+			// t1.a=t4.a for the hint (t1 t2) on
+			//
+			// SELECT * FROM t1 JOIN t2 ON t1.a=t2.a LEFT JOIN t3 ON t2.a=t3.a
+			//               JOIN t4 ON t1.a=t4.a;
+			//
+			// stays in the N-ary join's inner-join predicate (see
+			// PexprPreprocess) and is applied once t4 is joined.
+			CExpressionArray *innerConjuncts =
+				CPredicateUtils::PdrgpexprConjuncts(
+					mp,
+					(*(*all_on_preds)[0])[GPOPT_ZERO_INNER_JOIN_PRED_INDEX]);
+			CExpression *pred = GetOnPreds(mp, outer, inner, innerConjuncts,
+										   &usedInnerConjuncts);
+			innerConjuncts->Release();
 			pexprAppliedHints = GPOS_NEW(mp) CExpression(
 				mp, GPOS_NEW(mp) CLogicalInnerJoin(mp), outer, inner, pred);
 		}
 	}
 	else
 	{
-		pexprAppliedHints = GPOS_NEW(mp)
-			CExpression(mp, GPOS_NEW(mp) CLogicalInnerJoin(mp), outer, inner,
-						GetOnPreds(mp, outer, inner, all_on_preds));
+		pexprAppliedHints = GPOS_NEW(mp) CExpression(
+			mp, GPOS_NEW(mp) CLogicalInnerJoin(mp), outer, inner,
+			GetOnPreds(mp, outer, inner, all_on_preds, &usedInnerConjuncts));
 	}
 	all_on_preds->Release();
 
@@ -635,11 +712,12 @@ CJoinOrderHintsPreprocessor::PexprPreprocess(
 	if (COperator::EopLogicalNAryJoin == pop->Eopid() && nullptr != joinnode)
 	{
 		gpos::set<ULONG> usedPredicateIndexes(mp);
+		gpos::set<CExpression *> usedInnerConjuncts(mp);
 		gpos::set<ULONG> usedChildrenIndexes(mp);
 		ULONG joinChildPredIndex = MAX_INDEX;
 		CExpression *pexprAppliedHints = RecursiveApplyJoinOrderHintsOnNAryJoin(
 			mp, pexpr, joinnode, usedChildrenIndexes, usedPredicateIndexes,
-			&joinChildPredIndex);
+			usedInnerConjuncts, &joinChildPredIndex);
 
 		if (nullptr == pexprAppliedHints)
 		{
@@ -652,8 +730,10 @@ CJoinOrderHintsPreprocessor::PexprPreprocess(
 			return pexpr;
 		}
 
-		CExpressionArray *naryChildren = ConstructNAryJoinChildren(
-			mp, pexpr, pexprAppliedHints, usedChildrenIndexes);
+		ULongPtrArray *sourceChildIndexes = nullptr;
+		CExpressionArray *naryChildren =
+			ConstructNAryJoinChildren(mp, pexpr, pexprAppliedHints,
+									  usedChildrenIndexes, &sourceChildIndexes);
 		if (naryChildren->Size() == 1)
 		{
 			// 0) Hint used all nary children making the nary operator
@@ -661,16 +741,53 @@ CJoinOrderHintsPreprocessor::PexprPreprocess(
 			CExpression *pexprResult = (*naryChildren)[0];
 			(*naryChildren)[0]->AddRef();
 			naryChildren->Release();
+			sourceChildIndexes->Release();
+
+			// The hinted joins took the inner-join conjuncts that join their
+			// two sides. A conjunct no join took, such as one on the right
+			// side of a LEFT JOIN that cannot be pushed below it
+			// (coalesce(t3.b, 0) = 0 on t1 LEFT JOIN t3), must still filter
+			// the result: keep it as a Select above the hinted tree, which
+			// is where the N-ary join's own expansion applies it.
+			if (pexprAppliedHints != pexpr)
+			{
+				CExpression *remaining =
+					PexprRemainingInnerPreds(mp, pexpr, usedInnerConjuncts);
+				if (nullptr != remaining)
+				{
+					return GPOS_NEW(mp)
+						CExpression(mp, GPOS_NEW(mp) CLogicalSelect(mp),
+									pexprResult, remaining);
+				}
+			}
 			return pexprResult;
 		}
 		else if (CLogicalNAryJoin::PopConvert(pexpr->Pop())
 					 ->HasOuterJoinChildren())
 		{
-			// 1) Re-create list of unused predicates
 			CExpression *predList = (*pexpr)[pexpr->Arity() - 1];
 			CExpressionArray *naryJoinPredicates =
 				GPOS_NEW(mp) CExpressionArray(mp);
-			for (ULONG ul = 0; ul < predList->Arity(); ul++)
+
+			// 1) The inner-join predicate: the conjuncts the hinted joins did
+			//    not take as their ON predicate. Keeping a taken conjunct here
+			//    would apply it a second time above the hinted join and have
+			//    its selectivity counted twice.
+			CExpression *remaining =
+				PexprRemainingInnerPreds(mp, pexpr, usedInnerConjuncts);
+			if (nullptr != remaining)
+			{
+				naryJoinPredicates->Append(remaining);
+			}
+			else
+			{
+				naryJoinPredicates->Append(CUtils::PexprScalarConstBool(
+					mp, /*fVal*/ true, /*is_null*/ false));
+			}
+
+			// 2) The ON predicates of the LOJ children the hint did not take
+			for (ULONG ul = GPOPT_ZERO_INNER_JOIN_PRED_INDEX + 1;
+				 ul < predList->Arity(); ul++)
 			{
 				if (usedPredicateIndexes.count(ul) == 0)
 				{
@@ -679,40 +796,48 @@ CJoinOrderHintsPreprocessor::PexprPreprocess(
 				}
 			}
 
-			// 2) Re-create list of unused predicate indexes
+			// 3) One LOJ predicate index per child of the new N-ary join, in
+			//    the children's order: a child kept from the original join
+			//    keeps its index, the hinted join gets the index its subtree
+			//    reported (0 when it is an inner-join child, otherwise the
+			//    index of the ON predicate joining it as the right side of an
+			//    LOJ that is still part of the N-ary join). Indexes are then
+			//    shifted down past the taken ON predicates, which are no
+			//    longer in the list. For example:
+			//
+			//    Before:
+			//      [0 1 3 2]
+			//         ^
+			//    Let hint use index 1
+			//
+			//    After:
+			//      [0 2 1]
+			const ULongPtrArray *oldPredIndexes =
+				CLogicalNAryJoin::PopConvert(pexpr->Pop())
+					->GetLojChildPredIndexes();
 			ULongPtrArray *lojChildPredIndexes = GPOS_NEW(mp) ULongPtrArray(mp);
-			for (ULONG ul = 0; ul < CLogicalNAryJoin::PopConvert(pexpr->Pop())
-										->GetLojChildPredIndexes()
-										->Size();
-				 ul++)
+			GPOS_ASSERT(sourceChildIndexes->Size() == naryChildren->Size());
+			for (ULONG ul = 0; ul < naryChildren->Size(); ul++)
 			{
-				ULONG predicateIndex =
-					*(*CLogicalNAryJoin::PopConvert(pexpr->Pop())
-						   ->GetLojChildPredIndexes())[ul];
-				if (usedPredicateIndexes.count(predicateIndex) == 0)
+				ULONG sourceIndex = *(*sourceChildIndexes)[ul];
+				ULONG predicateIndex = (gpos::ulong_max == sourceIndex)
+										   ? joinChildPredIndex
+										   : *(*oldPredIndexes)[sourceIndex];
+				GPOS_ASSERT(MAX_INDEX != predicateIndex);
+				GPOS_ASSERT(usedPredicateIndexes.count(predicateIndex) == 0);
+
+				ULONG adjustedPredicateIndex = predicateIndex;
+				for (ULONG ul2 = 0; ul2 < predicateIndex; ul2++)
 				{
-					// Adjust lojChildPredIndexes to fill in holes created by
-					// used predicates. For example:
-					//
-					// Before:
-					//   [0 1 3 2]
-					//      ^
-					// Let hint use index 1
-					//
-					// After:
-					//   [0 2 1]
-					ULONG adjustedPredicateIndex = predicateIndex;
-					for (ULONG ul2 = 0; ul2 < predicateIndex; ul2++)
+					if (usedPredicateIndexes.count(ul2) != 0)
 					{
-						if (usedPredicateIndexes.count(ul2) != 0)
-						{
-							adjustedPredicateIndex -= 1;
-						}
+						adjustedPredicateIndex -= 1;
 					}
-					lojChildPredIndexes->Append(
-						GPOS_NEW(mp) ULONG(adjustedPredicateIndex));
 				}
+				lojChildPredIndexes->Append(GPOS_NEW(mp)
+												ULONG(adjustedPredicateIndex));
 			}
+			sourceChildIndexes->Release();
 			naryChildren->Append(GPOS_NEW(mp) CExpression(
 				mp, GPOS_NEW(mp) CScalarNAryJoinPredList(mp),
 				naryJoinPredicates));
@@ -723,9 +848,23 @@ CJoinOrderHintsPreprocessor::PexprPreprocess(
 		}
 		else
 		{
-			(*pexpr->PdrgPexpr())[pexpr->PdrgPexpr()->Size() - 1]->AddRef();
-			naryChildren->Append(
-				(*pexpr->PdrgPexpr())[pexpr->PdrgPexpr()->Size() - 1]);
+			sourceChildIndexes->Release();
+
+			// The hinted joins carry the conjuncts that join their sides as
+			// their own predicate, so the N-ary join keeps only the rest. A
+			// conjunct kept in both places would be applied twice, and one
+			// that only concerns the hinted join is a predicate over a single
+			// child of the N-ary join, which the join-order algorithms other
+			// than exhaustive2 refuse (CXformExpandNAryJoin) or drop. With
+			// nothing left, the remaining children form a cross join.
+			CExpression *remaining =
+				PexprRemainingInnerPreds(mp, pexpr, usedInnerConjuncts);
+			if (nullptr == remaining)
+			{
+				remaining = CUtils::PexprScalarConstBool(mp, /*fVal*/ true,
+														 /*is_null*/ false);
+			}
+			naryChildren->Append(remaining);
 
 			return GPOS_NEW(mp) CExpression(
 				mp, GPOS_NEW(mp) CLogicalNAryJoin(mp), naryChildren);

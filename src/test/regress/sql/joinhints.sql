@@ -487,6 +487,26 @@ EXPLAIN (costs off) SELECT * FROM t1, t2 RIGHT JOIN t3 ON t2.a=t3.a;
  */
 EXPLAIN (costs off) SELECT * FROM t1 LEFT JOIN t2 ON t1.a=t2.a;
 
+-- WHPG: hints over the inner-join children of an N-ary join
+-- that also has LEFT JOIN children. The hinted join takes only the inner-join
+-- conjuncts its two sides cover; the other conjuncts and the LOJ children's
+-- ON predicates stay with the N-ary join, which keeps one LOJ predicate index
+-- per remaining child. Each hint is honored by GPORCA, no fallback.
+/*+
+    Leading((t1 t2))
+ */
+EXPLAIN (costs off) SELECT * FROM t1 JOIN t2 ON t1.a=t2.a LEFT JOIN t3 ON t2.a=t3.a, t4;
+
+/*+
+    Leading((((t1 t2) t3) t4))
+ */
+EXPLAIN (costs off) SELECT * FROM t1 JOIN t2 ON t1.a=t2.a LEFT JOIN t3 ON t2.a=t3.a JOIN t4 ON t1.a=t4.a;
+
+/*+
+    Leading((t1 t2))
+ */
+EXPLAIN (costs off) SELECT * FROM t1 JOIN t2 ON t1.a=t2.a LEFT JOIN t3 ON t2.a=t3.a JOIN t4 ON t1.a=t4.a;
+
 -- Bad LOJ/ROJ hints
 --
 -- Notice that the join condition does not allow the following hint to be
@@ -549,6 +569,112 @@ INSERT INTO t2 VALUES (50, 50), (52, 52), (NULL, NULL);
 INSERT INTO t3 VALUES (50, 50), (53, 53), (NULL, NULL);
 INSERT INTO t4 VALUES (50, 50), (54, 54), (NULL, NULL);
 INSERT INTO t5 VALUES (50, 50), (55, 55), (NULL, NULL);
+
+-- WHPG: the hinted plans above return the same rows as the unhinted one.
+/*+
+    Leading((t1 t2))
+ */
+SELECT * FROM t1 JOIN t2 ON t1.a=t2.a LEFT JOIN t3 ON t2.a=t3.a JOIN t4 ON t1.a=t4.a ORDER BY 1,2,3,4,5,6,7,8;
+/*+
+    Leading((((t1 t2) t3) t4))
+ */
+SELECT * FROM t1 JOIN t2 ON t1.a=t2.a LEFT JOIN t3 ON t2.a=t3.a JOIN t4 ON t1.a=t4.a ORDER BY 1,2,3,4,5,6,7,8;
+SELECT * FROM t1 JOIN t2 ON t1.a=t2.a LEFT JOIN t3 ON t2.a=t3.a JOIN t4 ON t1.a=t4.a ORDER BY 1,2,3,4,5,6,7,8;
+
+-- WHPG: an inner-join conjunct that references the right side of a LEFT JOIN
+-- and cannot be pushed below it belongs to no hinted join. When the hint covers
+-- every table it must survive as a filter above the hinted tree; the rows of
+-- lh1 without a match in lh3 are the ones that tell. Compared with the planner
+-- on the same data.
+CREATE TABLE lh1(a int, b int);
+CREATE TABLE lh2(a int, b int);
+CREATE TABLE lh3(a int, b int);
+INSERT INTO lh1 VALUES (1, 1), (2, 2), (3, 3);
+INSERT INTO lh2 VALUES (1, 1), (2, -1), (3, 0);
+INSERT INTO lh3 VALUES (1, 1);
+ANALYZE lh1; ANALYZE lh2; ANALYZE lh3;
+SET optimizer = on;
+/*+
+    Leading(((lh1 lh2) lh3))
+ */
+EXPLAIN (costs off) SELECT * FROM lh1 LEFT JOIN lh3 ON lh1.a=lh3.a JOIN lh2 ON lh2.b = coalesce(lh3.b, -1);
+/*+
+    Leading(((lh1 lh2) lh3))
+ */
+SELECT * FROM lh1 LEFT JOIN lh3 ON lh1.a=lh3.a JOIN lh2 ON lh2.b = coalesce(lh3.b, -1) ORDER BY 1,2,3,4,5,6;
+/*+
+    Leading(((lh1 lh3) lh2))
+ */
+EXPLAIN (costs off) SELECT * FROM lh1 LEFT JOIN lh3 ON lh1.a=lh3.a JOIN lh2 ON lh1.a=lh2.a AND coalesce(lh3.b, 0) = 0;
+/*+
+    Leading(((lh1 lh3) lh2))
+ */
+SELECT * FROM lh1 LEFT JOIN lh3 ON lh1.a=lh3.a JOIN lh2 ON lh1.a=lh2.a AND coalesce(lh3.b, 0) = 0 ORDER BY 1,2,3,4,5,6;
+/*+
+    Leading(((lh1 lh3) lh2))
+ */
+SELECT * FROM lh1 LEFT JOIN lh3 ON lh1.a=lh3.a JOIN lh2 ON lh1.a=lh2.a WHERE coalesce(lh3.b, 0) = 0 ORDER BY 1,2,3,4,5,6;
+SET optimizer = off;
+SELECT * FROM lh1 LEFT JOIN lh3 ON lh1.a=lh3.a JOIN lh2 ON lh2.b = coalesce(lh3.b, -1) ORDER BY 1,2,3,4,5,6;
+SELECT * FROM lh1 LEFT JOIN lh3 ON lh1.a=lh3.a JOIN lh2 ON lh1.a=lh2.a AND coalesce(lh3.b, 0) = 0 ORDER BY 1,2,3,4,5,6;
+SELECT * FROM lh1 LEFT JOIN lh3 ON lh1.a=lh3.a JOIN lh2 ON lh1.a=lh2.a WHERE coalesce(lh3.b, 0) = 0 ORDER BY 1,2,3,4,5,6;
+RESET optimizer;
+DROP TABLE lh1, lh2, lh3;
+
+-- WHPG: a hint that covers only some tables of a plain inner join leaves the
+-- N-ary join with the conjuncts no hinted join took. A conjunct that only
+-- concerns the hinted join must not stay there: the query, greedy and
+-- exhaustive join orderers treat a join predicate over a single child as not
+-- pushed down and make GPORCA fall back (optimizer_trace_fallback reports
+-- it). The plans must stay on GPORCA and match the exhaustive2 one; a hint
+-- that takes every conjunct leaves a cross join with the remaining table.
+SET optimizer = on;
+SET optimizer_join_order = query;
+/*+
+    Leading((t1 t2))
+ */
+EXPLAIN (costs off) SELECT * FROM t1, t2, t3 WHERE t1.a = t2.a AND t1.b = t2.b AND t2.a = t3.a;
+/*+
+    Leading((t1 t2))
+ */
+SELECT * FROM t1, t2, t3 WHERE t1.a = t2.a AND t1.b = t2.b AND t2.a = t3.a ORDER BY 1,2,3,4,5,6;
+SET optimizer_join_order = greedy;
+/*+
+    Leading((t1 t2))
+ */
+EXPLAIN (costs off) SELECT * FROM t1, t2, t3 WHERE t1.a = t2.a AND t1.b = t2.b AND t2.a = t3.a;
+/*+
+    Leading((t1 t2))
+ */
+SELECT * FROM t1, t2, t3 WHERE t1.a = t2.a AND t1.b = t2.b AND t2.a = t3.a ORDER BY 1,2,3,4,5,6;
+SET optimizer_join_order = exhaustive;
+/*+
+    Leading((t1 t2))
+ */
+EXPLAIN (costs off) SELECT * FROM t1, t2, t3 WHERE t1.a = t2.a AND t1.b = t2.b AND t2.a = t3.a;
+/*+
+    Leading((t1 t2))
+ */
+SELECT * FROM t1, t2, t3 WHERE t1.a = t2.a AND t1.b = t2.b AND t2.a = t3.a ORDER BY 1,2,3,4,5,6;
+/*+
+    Leading((t1 t2))
+ */
+EXPLAIN (costs off) SELECT * FROM t1, t2, t3 WHERE t1.a = t2.a AND t1.b = t2.b;
+/*+
+    Leading((t1 t2))
+ */
+SELECT * FROM t1, t2, t3 WHERE t1.a = t2.a AND t1.b = t2.b ORDER BY 1,2,3,4,5,6;
+SET optimizer_join_order = exhaustive2;
+/*+
+    Leading((t1 t2))
+ */
+EXPLAIN (costs off) SELECT * FROM t1, t2, t3 WHERE t1.a = t2.a AND t1.b = t2.b AND t2.a = t3.a;
+/*+
+    Leading((t1 t2))
+ */
+SELECT * FROM t1, t2, t3 WHERE t1.a = t2.a AND t1.b = t2.b AND t2.a = t3.a ORDER BY 1,2,3,4,5,6;
+RESET optimizer_join_order;
+RESET optimizer;
 
 /*+
     Leading((t1 (t2 t3)))

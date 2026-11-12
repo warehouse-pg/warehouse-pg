@@ -423,7 +423,7 @@ Hint-IndexScan-Over-Table Hint-IndexScan-Over-Join Hint-NoIndexScan-Over-Table
 Hint-IndexOnlyScan-Over-Table Hint-NoIndexOnlyScan-Over-Table
 Hint-BitmapScan-Over-Table Hint-NoBitmapScan-Over-Table
 Hint-AbsoluteRows-Over-Join Hint-AddRows-Over-Join Hint-SubtractRows-Over-Join Hint-MultiplyRows-Over-Join
-Hint-Leading-Multiple Hint-Leading-Directed Hint-Leading-NonDirected
+Hint-Leading-Multiple Hint-Leading-Directed Hint-Leading-NonDirected Hint-Leading-Next-To-LeftJoin Hint-Leading-LeftJoin-Conjunct-Above Hint-Leading-Partial-Query-JoinOrder
 Hint-FullHashJoin-JoinType Hint-FullMergeJoin-JoinType Hint-IndexHashJoin-JoinType Hint-IndexNestLoop-JoinType;
 
 CForeignPartTest:
