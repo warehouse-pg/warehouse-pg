@@ -76,6 +76,18 @@ void
 cdbconn_doConnectComplete(SegmentDatabaseDescriptor *segdbDesc);
 
 /*
+ * Resolve the TLS parameters for an internal QD->QE connection from the
+ * gp_internal_tls policy.  Returns the libpq "sslmode" value; sets the
+ * out-params to NULL or to absolute paths written into the supplied buffers
+ * (each at least MAXPGPATH bytes).  Shared by the dispatch and FTS paths.
+ */
+extern const char *cdbconn_internal_tls_resolve(char *certbuf, char *keybuf,
+												char *rootbuf,
+												const char **certfile,
+												const char **keyfile,
+												const char **rootcertfile);
+
+/*
  * Read result from connection and discard it.
  *
  * Retry at most N times.

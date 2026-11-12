@@ -1213,6 +1213,49 @@ PostmasterMain(int argc, char *argv[])
 #endif
 
 	/*
+	 * gp_internal_tls = verify-ca demands mutual TLS on internal QD<->QE
+	 * connections, which is impossible unless SSL is enabled and the internal
+	 * cluster CA and this node's client credentials are configured.  Fail fast
+	 * at startup with a clear message rather than letting every internal
+	 * connection be rejected at authentication time, which would lock the
+	 * segment out of the cluster.
+	 *
+	 * We deliberately do NOT require the external ssl_ca_file here: internal
+	 * connections are verified against gp_internal_tls_ca_file (loaded into the
+	 * verify store by be_tls_init), so a coordinator that serves external
+	 * clients over one-way TLS need not set ssl_ca_file at all.
+	 */
+	if (gp_internal_tls == GP_INTERNAL_TLS_VERIFY_CA)
+	{
+#ifdef USE_SSL
+		if (!EnableSSL)
+			ereport(FATAL,
+					(errcode(ERRCODE_CONFIG_FILE_ERROR),
+					 errmsg("gp_internal_tls is set to \"verify-ca\" but \"ssl\" is off"),
+					 errhint("Enable SSL (ssl=on) with a certificate and key on every node.")));
+
+		/*
+		 * The internal client credentials must be configured explicitly -- there
+		 * is no fallback to the external-facing ssl_* certificate, so that a
+		 * coordinator cannot accidentally dial segments with its external
+		 * certificate (which the cluster CA would reject).  Fail fast at startup
+		 * rather than at dispatch time.
+		 */
+		if (gp_internal_tls_cert_file == NULL || gp_internal_tls_cert_file[0] == '\0' ||
+			gp_internal_tls_key_file == NULL || gp_internal_tls_key_file[0] == '\0' ||
+			gp_internal_tls_ca_file == NULL || gp_internal_tls_ca_file[0] == '\0')
+			ereport(FATAL,
+					(errcode(ERRCODE_CONFIG_FILE_ERROR),
+					 errmsg("gp_internal_tls is set to \"verify-ca\" but the internal TLS certificate GUCs are not all set"),
+					 errhint("Set gp_internal_tls_cert_file, gp_internal_tls_key_file and gp_internal_tls_ca_file to this node's cluster (internal) certificate, key and CA.")));
+#else
+		ereport(FATAL,
+				(errcode(ERRCODE_CONFIG_FILE_ERROR),
+				 errmsg("gp_internal_tls is set to \"verify-ca\" but this build has no SSL support")));
+#endif
+	}
+
+	/*
 	 * CDB: gpdb auxilary process like fts probe, dtx recovery process is
 	 * essential, we need to load them ahead of custom shared preload libraries
 	 * to avoid exceeding max_worker_processes.

@@ -259,6 +259,55 @@ extern int			gp_dispatch_keepalives_count;
 #define MAX_GP_DISPATCH_KEEPALIVES_COUNT 127 /* Linux MAX_TCP_KEEPCNT */
 
 /*
+ * gp_internal_tls - controls TLS on internal QD<->QE libpq connections
+ * (query dispatch, FTS probes, fault-injector).
+ *
+ * Historically these connections set a "magic" high bit in the protocol
+ * version (GPDB_INTERNAL_PROTOCOL) which caused the QE to skip authentication
+ * entirely (FakeClientAuthentication).  On a real segment the bypass is
+ * unconditional, so anyone able to reach a segment's postgres port can obtain
+ * superuser access with zero credentials.  This GUC governs the migration to
+ * mutual-TLS authentication where the QD presents a client certificate signed
+ * by the cluster CA and the QE verifies it during the SSL handshake; the magic
+ * bit is then only a connection-type hint, never a grant of trust.
+ *
+ * There is deliberately no "prefer"-style transition mode: gp_internal_tls is
+ * PGC_POSTMASTER and applied cluster-wide via gpconfig + restart, so there is
+ * no node-by-node rollout for such a mode to smooth, and a mode that silently
+ * falls back to plaintext is the very footgun we are retiring.  The two states
+ * mirror the corresponding libpq sslmode values they resolve to on the wire:
+ *
+ *   disable   - legacy plaintext; flag-based bypass still honored (insecure)
+ *   verify-ca - mandatory mutual TLS; the internal short-circuit is honored
+ *               only after the peer certificate is verified against the
+ *               internal cluster CA (gp_internal_tls_ca_file)
+ */
+typedef enum GpVars_InternalTls
+{
+	GP_INTERNAL_TLS_DISABLE = 0,
+	GP_INTERNAL_TLS_VERIFY_CA,
+} GpVars_InternalTls;
+
+extern int gp_internal_tls;
+
+/*
+ * Certificate, key and CA files identifying this node in the *internal*
+ * (intra-cluster) trust domain, used by mutual TLS on QD<->QE connections.
+ * Kept distinct from the server-side ssl_cert_file/ssl_key_file/ssl_ca_file,
+ * which belong to the *external* trust domain (the coordinator's identity to
+ * client applications): conflating them would force external clients to trust
+ * the cluster CA, or the cluster to trust the external CA.  A node presents
+ * gp_internal_tls_cert_file as its client certificate when dialing another
+ * cluster node and verifies the peer against gp_internal_tls_ca_file.  There is
+ * deliberately no fallback to ssl_*: when gp_internal_tls is "verify-ca" the
+ * postmaster refuses to start unless these are set explicitly, so a node cannot
+ * accidentally present its external-facing ssl_cert_file on internal links.
+ */
+extern char *gp_internal_tls_cert_file;
+extern char *gp_internal_tls_key_file;
+extern char *gp_internal_tls_ca_file;
+
+/*
  * Parameter Gp_max_packet_size
  *
  * The run-time parameter gp_max_packet_size controls the largest packet
