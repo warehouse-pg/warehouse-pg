@@ -643,6 +643,10 @@ SET optimizer_join_order = greedy;
     Leading((t1 t2))
  */
 EXPLAIN (costs off) SELECT * FROM t1, t2, t3 WHERE t1.a = t2.a AND t1.b = t2.b AND t2.a = t3.a;
+/*+
+    Leading((t1 t2))
+ */
+SELECT * FROM t1, t2, t3 WHERE t1.a = t2.a AND t1.b = t2.b AND t2.a = t3.a ORDER BY 1,2,3,4,5,6;
 SET optimizer_join_order = exhaustive;
 /*+
     Leading((t1 t2))
@@ -651,12 +655,24 @@ EXPLAIN (costs off) SELECT * FROM t1, t2, t3 WHERE t1.a = t2.a AND t1.b = t2.b A
 /*+
     Leading((t1 t2))
  */
+SELECT * FROM t1, t2, t3 WHERE t1.a = t2.a AND t1.b = t2.b AND t2.a = t3.a ORDER BY 1,2,3,4,5,6;
+/*+
+    Leading((t1 t2))
+ */
 EXPLAIN (costs off) SELECT * FROM t1, t2, t3 WHERE t1.a = t2.a AND t1.b = t2.b;
+/*+
+    Leading((t1 t2))
+ */
+SELECT * FROM t1, t2, t3 WHERE t1.a = t2.a AND t1.b = t2.b ORDER BY 1,2,3,4,5,6;
 SET optimizer_join_order = exhaustive2;
 /*+
     Leading((t1 t2))
  */
 EXPLAIN (costs off) SELECT * FROM t1, t2, t3 WHERE t1.a = t2.a AND t1.b = t2.b AND t2.a = t3.a;
+/*+
+    Leading((t1 t2))
+ */
+SELECT * FROM t1, t2, t3 WHERE t1.a = t2.a AND t1.b = t2.b AND t2.a = t3.a ORDER BY 1,2,3,4,5,6;
 RESET optimizer_join_order;
 RESET optimizer;
 
