@@ -2852,6 +2852,24 @@ not used hint:
  Optimizer: GPORCA
 (12 rows)
 
+/*+
+    Leading((t1 t2))
+ */
+SELECT * FROM t1, t2, t3 WHERE t1.a = t2.a AND t1.b = t2.b AND t2.a = t3.a ORDER BY 1,2,3,4,5,6;
+LOG:  statement: /*+
+    Leading((t1 t2))
+ */
+SELECT * FROM t1, t2, t3 WHERE t1.a = t2.a AND t1.b = t2.b AND t2.a = t3.a ORDER BY 1,2,3,4,5,6;
+LOG:  2026-11-12 13:16:24:437654 CST,THD000,TRACE,"PlanHint: [
+used hint:
+JoinHint:(t1 t2)
+not used hint:
+]",
+ a  | b  | a  | b  | a  | b  
+----+----+----+----+----+----
+ 50 | 50 | 50 | 50 | 50 | 50
+(1 row)
+
 SET optimizer_join_order = exhaustive;
 LOG:  statement: SET optimizer_join_order = exhaustive;
 /*+
@@ -2886,6 +2904,24 @@ not used hint:
 /*+
     Leading((t1 t2))
  */
+SELECT * FROM t1, t2, t3 WHERE t1.a = t2.a AND t1.b = t2.b AND t2.a = t3.a ORDER BY 1,2,3,4,5,6;
+LOG:  statement: /*+
+    Leading((t1 t2))
+ */
+SELECT * FROM t1, t2, t3 WHERE t1.a = t2.a AND t1.b = t2.b AND t2.a = t3.a ORDER BY 1,2,3,4,5,6;
+LOG:  2026-11-12 13:16:24:446862 CST,THD000,TRACE,"PlanHint: [
+used hint:
+JoinHint:(t1 t2)
+not used hint:
+]",
+ a  | b  | a  | b  | a  | b  
+----+----+----+----+----+----
+ 50 | 50 | 50 | 50 | 50 | 50
+(1 row)
+
+/*+
+    Leading((t1 t2))
+ */
 EXPLAIN (costs off) SELECT * FROM t1, t2, t3 WHERE t1.a = t2.a AND t1.b = t2.b;
 LOG:  statement: /*+
     Leading((t1 t2))
@@ -2912,6 +2948,26 @@ not used hint:
                      ->  Seq Scan on t3
  Optimizer: GPORCA
 (13 rows)
+
+/*+
+    Leading((t1 t2))
+ */
+SELECT * FROM t1, t2, t3 WHERE t1.a = t2.a AND t1.b = t2.b ORDER BY 1,2,3,4,5,6;
+LOG:  statement: /*+
+    Leading((t1 t2))
+ */
+SELECT * FROM t1, t2, t3 WHERE t1.a = t2.a AND t1.b = t2.b ORDER BY 1,2,3,4,5,6;
+LOG:  2026-11-12 13:16:24:453908 CST,THD000,TRACE,"PlanHint: [
+used hint:
+JoinHint:(t1 t2)
+not used hint:
+]",
+ a  | b  | a  | b  | a  | b  
+----+----+----+----+----+----
+ 50 | 50 | 50 | 50 | 50 | 50
+ 50 | 50 | 50 | 50 | 53 | 53
+ 50 | 50 | 50 | 50 |    |   
+(3 rows)
 
 SET optimizer_join_order = exhaustive2;
 LOG:  statement: SET optimizer_join_order = exhaustive2;
@@ -2943,6 +2999,24 @@ not used hint:
                Index Cond: (a = t2.a)
  Optimizer: GPORCA
 (12 rows)
+
+/*+
+    Leading((t1 t2))
+ */
+SELECT * FROM t1, t2, t3 WHERE t1.a = t2.a AND t1.b = t2.b AND t2.a = t3.a ORDER BY 1,2,3,4,5,6;
+LOG:  statement: /*+
+    Leading((t1 t2))
+ */
+SELECT * FROM t1, t2, t3 WHERE t1.a = t2.a AND t1.b = t2.b AND t2.a = t3.a ORDER BY 1,2,3,4,5,6;
+LOG:  2026-11-12 13:16:24:465223 CST,THD000,TRACE,"PlanHint: [
+used hint:
+JoinHint:(t1 t2)
+not used hint:
+]",
+ a  | b  | a  | b  | a  | b  
+----+----+----+----+----+----
+ 50 | 50 | 50 | 50 | 50 | 50
+(1 row)
 
 RESET optimizer_join_order;
 LOG:  statement: RESET optimizer_join_order;
@@ -3571,9 +3645,9 @@ not used hint:
 ]",
  a  | b  | a  | b  | a  | b  
 ----+----+----+----+----+----
+ 50 | 50 | 50 | 50 | 50 | 50
  51 | 51 |    |    |    |   
     |    |    |    |    |   
- 50 | 50 | 50 | 50 | 50 | 50
 (3 rows)
 
 /*+
@@ -3623,9 +3697,9 @@ not used hint:
 ]",
  a  | b  | a  | b  | a  | b  
 ----+----+----+----+----+----
-    |    |    |    |    |   
- 51 | 51 |    |    |    |   
  50 | 50 | 50 | 50 | 50 | 50
+ 51 | 51 |    |    |    |   
+    |    |    |    |    |   
 (3 rows)
 
 /*+
