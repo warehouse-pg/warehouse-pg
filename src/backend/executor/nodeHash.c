@@ -482,6 +482,7 @@ ExecHashTableCreate(HashState *state, HashJoinState *hjstate,
 	ListCell   *ho;
 	ListCell   *hc;
 	MemoryContext oldcxt;
+	bool		useskew;
 
 	/*
 	 * Get information about the size of the relation to be hashed (it's the
@@ -492,6 +493,15 @@ ExecHashTableCreate(HashState *state, HashJoinState *hjstate,
 	outerNode = outerPlan(node);
 
 	/*
+	 * GPDB: don't use the skew optimization if the hash table may be reused
+	 * across rescans.  A reused multi-batch table is reloaded from the inner
+	 * batch files that ExecHashJoinNewBatch writes as it leaves each batch,
+	 * and those only hold the main hash table.  Tuples in skew buckets are
+	 * never written to a batch file, so a rescan would lose their matches.
+	 */
+	useskew = OidIsValid(node->skewTable) && !hjstate->reuse_hashtable;
+
+	/*
 	 * If this is shared hash table with a partial plan, then we can't use
 	 * outerNode->plan_rows to estimate its size.  We need an estimate of the
 	 * total number of rows across all copies of the partial plan.
@@ -499,7 +509,7 @@ ExecHashTableCreate(HashState *state, HashJoinState *hjstate,
 	rows = node->plan.parallel_aware ? node->rows_total : outerNode->plan_rows;
 
 	ExecChooseHashTableSize(rows, outerNode->plan_width,
-							OidIsValid(node->skewTable),
+							useskew,
 							operatorMemKB,
 							state->parallel_state != NULL,
 							state->parallel_state != NULL ?
@@ -691,7 +701,7 @@ ExecHashTableCreate(HashState *state, HashJoinState *hjstate,
 		 * more than one batch.  (In a one-batch join, there's no point in
 		 * it.)
 		 */
-		if (nbatch > 1)
+		if (nbatch > 1 && useskew)
 			ExecHashBuildSkewHash(hashtable, node, num_skew_mcvs);
 
 		MemoryContextSwitchTo(oldcxt);
