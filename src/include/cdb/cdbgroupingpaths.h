@@ -58,4 +58,16 @@ extern List *get_common_group_tles(PathTarget *target,
 extern CdbPathLocus choose_grouping_locus(PlannerInfo *root, Path *path,
 										  List *group_tles,
 										  bool *need_redistribute_p);
+extern double cdb_window_prefilter_bound(WindowPrefilter *prefilter);
+extern Path *cdb_create_window_prefilter_path(PlannerInfo *root,
+											  RelOptInfo *rel,
+											  Path *subpath,
+											  bool is_sorted,
+											  List *window_pathkeys,
+											  WindowClause *wc,
+											  List *prefilters,
+											  List *prefilter_wfuncs,
+											  List *prefilter_quals,
+											  double bound_rows,
+											  bool *keep_sorted_p);
 #endif   /* CDBGROUPINGPATHS_H */

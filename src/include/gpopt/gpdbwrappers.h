@@ -400,6 +400,9 @@ Value *MakeIntegerValue(long i);
 // create a constant of type int4
 Node *MakeIntConst(int32 intValue);
 
+// construct an int8 Const
+Node *MakeInt8Const(int64 intValue);
+
 // create a bool constant
 Node *MakeBoolConst(bool value, bool isnull);
 

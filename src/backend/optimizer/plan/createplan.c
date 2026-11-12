@@ -135,6 +135,7 @@ static TupleSplit *create_tup_split_plan(PlannerInfo *root, TupleSplitPath *best
 static Plan *create_groupingsets_plan(PlannerInfo *root, GroupingSetsPath *best_path);
 static Result *create_minmaxagg_plan(PlannerInfo *root, MinMaxAggPath *best_path);
 static WindowAgg *create_windowagg_plan(PlannerInfo *root, WindowAggPath *best_path);
+static WindowTopN *create_windowtopn_plan(PlannerInfo *root, WindowTopNPath *best_path);
 static SetOp *create_setop_plan(PlannerInfo *root, SetOpPath *best_path,
 								int flags);
 static RecursiveUnion *create_recursiveunion_plan(PlannerInfo *root, RecursiveUnionPath *best_path);
@@ -293,6 +294,14 @@ static EquivalenceMember *find_ec_member_for_tle(EquivalenceClass *ec,
 static Sort *make_sort_from_groupcols(List *groupcls,
 									  AttrNumber *grpColIdx,
 									  Plan *lefttree);
+static WindowTopN *make_windowtopn(Plan *lefttree,
+								   int partNumCols, AttrNumber *partColIdx,
+								   Oid *partOperators, Oid *partCollations,
+								   int ordNumCols, AttrNumber *ordColIdx,
+								   Oid *sortOperators, Oid *ordCollations,
+								   bool *nullsFirst,
+								   WindowTopNKind kind, Node *limitExpr,
+								   bool limitInclusive);
 static WindowAgg *make_windowagg(List *tlist, Index winref,
 								 int partNumCols, AttrNumber *partColIdx, Oid *partOperators, Oid *partCollations,
 								 int ordNumCols, AttrNumber *ordColIdx, Oid *ordOperators, Oid *ordCollations,
@@ -530,6 +539,10 @@ create_plan_recurse(PlannerInfo *root, Path *best_path, int flags)
 		case T_WindowAgg:
 			plan = (Plan *) create_windowagg_plan(root,
 												  (WindowAggPath *) best_path);
+			break;
+		case T_WindowTopN:
+			plan = (Plan *) create_windowtopn_plan(root,
+												   (WindowTopNPath *) best_path);
 			break;
 		case T_SetOp:
 			plan = (Plan *) create_setop_plan(root,
@@ -2819,6 +2832,84 @@ create_windowagg_plan(PlannerInfo *root, WindowAggPath *best_path)
 						  wc->inRangeAsc,
 						  wc->inRangeNullsFirst,
 						  subplan);
+
+	copy_generic_path_info(&plan->plan, (Path *) best_path);
+
+	return plan;
+}
+
+/*
+ * create_windowtopn_plan
+ *
+ *	  Create a WindowTopN plan for 'best_path' and (recursively) plans
+ *	  for its subpaths.
+ */
+static WindowTopN *
+create_windowtopn_plan(PlannerInfo *root, WindowTopNPath *best_path)
+{
+	WindowTopN *plan;
+	WindowClause *wc = best_path->winclause;
+	int			numPart = list_length(wc->partitionClause);
+	int			numOrder = list_length(wc->orderClause);
+	Plan	   *subplan;
+	int			partNumCols;
+	AttrNumber *partColIdx;
+	Oid		   *partOperators;
+	Oid		   *partCollations;
+	int			ordNumCols;
+	AttrNumber *ordColIdx;
+	Oid		   *sortOperators;
+	Oid		   *ordCollations;
+	bool	   *nullsFirst;
+	ListCell   *lc;
+
+	/* The node stores its kept rows, so ask for a small input tlist. */
+	subplan = create_plan_recurse(root, best_path->subpath,
+								  CP_LABEL_TLIST | CP_SMALL_TLIST);
+
+	partColIdx = (AttrNumber *) palloc(sizeof(AttrNumber) * numPart);
+	partOperators = (Oid *) palloc(sizeof(Oid) * numPart);
+	partCollations = (Oid *) palloc(sizeof(Oid) * numPart);
+
+	partNumCols = 0;
+	foreach(lc, wc->partitionClause)
+	{
+		SortGroupClause *sgc = (SortGroupClause *) lfirst(lc);
+		TargetEntry *tle = get_sortgroupclause_tle(sgc, subplan->targetlist);
+
+		Assert(OidIsValid(sgc->eqop));
+		partColIdx[partNumCols] = tle->resno;
+		partOperators[partNumCols] = sgc->eqop;
+		partCollations[partNumCols] = exprCollation((Node *) tle->expr);
+		partNumCols++;
+	}
+
+	ordColIdx = (AttrNumber *) palloc(sizeof(AttrNumber) * numOrder);
+	sortOperators = (Oid *) palloc(sizeof(Oid) * numOrder);
+	ordCollations = (Oid *) palloc(sizeof(Oid) * numOrder);
+	nullsFirst = (bool *) palloc(sizeof(bool) * numOrder);
+
+	ordNumCols = 0;
+	foreach(lc, wc->orderClause)
+	{
+		SortGroupClause *sgc = (SortGroupClause *) lfirst(lc);
+		TargetEntry *tle = get_sortgroupclause_tle(sgc, subplan->targetlist);
+
+		Assert(OidIsValid(sgc->sortop));
+		ordColIdx[ordNumCols] = tle->resno;
+		sortOperators[ordNumCols] = sgc->sortop;
+		ordCollations[ordNumCols] = exprCollation((Node *) tle->expr);
+		nullsFirst[ordNumCols] = sgc->nulls_first;
+		ordNumCols++;
+	}
+
+	plan = make_windowtopn(subplan,
+						   partNumCols, partColIdx, partOperators, partCollations,
+						   ordNumCols, ordColIdx, sortOperators, ordCollations,
+						   nullsFirst,
+						   best_path->kind,
+						   best_path->limitExpr,
+						   best_path->limitInclusive);
 
 	copy_generic_path_info(&plan->plan, (Path *) best_path);
 
@@ -7472,6 +7563,40 @@ make_tup_split(List *tlist, List *dqa_expr_lst, int numGroupCols,
 	return node;
 }
 
+static WindowTopN *
+make_windowtopn(Plan *lefttree,
+				int partNumCols, AttrNumber *partColIdx,
+				Oid *partOperators, Oid *partCollations,
+				int ordNumCols, AttrNumber *ordColIdx,
+				Oid *sortOperators, Oid *ordCollations,
+				bool *nullsFirst,
+				WindowTopNKind kind, Node *limitExpr, bool limitInclusive)
+{
+	WindowTopN *node = makeNode(WindowTopN);
+	Plan	   *plan = &node->plan;
+
+	/* like Sort, the node returns its input rows unchanged */
+	plan->targetlist = lefttree->targetlist;
+	plan->qual = NIL;
+	plan->lefttree = lefttree;
+	plan->righttree = NULL;
+
+	node->partNumCols = partNumCols;
+	node->partColIdx = partColIdx;
+	node->partOperators = partOperators;
+	node->partCollations = partCollations;
+	node->ordNumCols = ordNumCols;
+	node->ordColIdx = ordColIdx;
+	node->sortOperators = sortOperators;
+	node->ordCollations = ordCollations;
+	node->nullsFirst = nullsFirst;
+	node->kind = kind;
+	node->limitExpr = limitExpr;
+	node->limitInclusive = limitInclusive;
+
+	return node;
+}
+
 static WindowAgg *
 make_windowagg(List *tlist, Index winref,
 			   int partNumCols, AttrNumber *partColIdx, Oid *partOperators, Oid *partCollations,
@@ -8030,6 +8155,7 @@ is_projection_capable_path(Path *path)
 		case T_Motion:
 		case T_ShareInputScan:
 		case T_PartitionSelector:
+		case T_WindowTopN:
 			return false;
 		case T_Append:
 
@@ -8079,6 +8205,7 @@ is_projection_capable_plan(Plan *plan)
 		case T_ShareInputScan:
 		case T_Sequence:
 		case T_PartitionSelector:
+		case T_WindowTopN:
 			return false;
 		case T_ProjectSet:
 

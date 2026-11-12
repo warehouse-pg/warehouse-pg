@@ -129,6 +129,7 @@ static void show_tablesample(TableSampleClause *tsc, PlanState *planstate,
 							 List *ancestors, ExplainState *es);
 static void show_sort_info(SortState *sortstate, ExplainState *es);
 static void show_windowagg_keys(WindowAggState *waggstate, List *ancestors, ExplainState *es);
+static void show_windowtopn_keys(WindowTopNState *wstate, List *ancestors, ExplainState *es);
 static void show_hash_info(HashState *hashstate, ExplainState *es);
 static void show_hashagg_info(AggState *hashstate, ExplainState *es);
 static void show_tidbitmap_info(BitmapHeapScanState *planstate,
@@ -1770,6 +1771,9 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_WindowAgg:
 			pname = sname = "WindowAgg";
 			break;
+		case T_WindowTopN:
+			pname = sname = "WindowTopN";
+			break;
 		case T_TableFunctionScan:
 			pname = sname = "Table Function Scan";
 			break;
@@ -2609,6 +2613,9 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_WindowAgg:
 			show_windowagg_keys((WindowAggState *) planstate, ancestors, es);
 			break;
+		case T_WindowTopN:
+			show_windowtopn_keys((WindowTopNState *) planstate, ancestors, es);
+			break;
 		case T_TableFunctionScan:
 			show_scan_qual(plan->qual, "Filter", planstate, ancestors, es);
 			/* TODO: Partitioning and ordering information */
@@ -3061,6 +3068,60 @@ show_windowagg_keys(WindowAggState *waggstate, List *ancestors, ExplainState *es
 }
 
 
+
+/*
+ * Show the partitioning, ordering and bound of a WindowTopN node.
+ */
+static void
+show_windowtopn_keys(WindowTopNState *wstate, List *ancestors, ExplainState *es)
+{
+	WindowTopN *plan = (WindowTopN *) wstate->ss.ps.plan;
+	const char *funcname;
+	List	   *context;
+	char	   *exprstr;
+	StringInfoData buf;
+
+	/* The key columns refer to the tlist of the child plan */
+	ancestors = lcons(plan, ancestors);
+	if (plan->partNumCols > 0)
+		show_sort_group_keys((PlanState *) outerPlanState(wstate), "Partition By",
+							 plan->partNumCols, plan->partColIdx,
+							 NULL, NULL, NULL,
+							 ancestors, es);
+	if (plan->ordNumCols > 0)
+		show_sort_group_keys((PlanState *) outerPlanState(wstate), "Order By",
+							 plan->ordNumCols, plan->ordColIdx,
+							 plan->sortOperators, plan->ordCollations,
+							 plan->nullsFirst,
+							 ancestors, es);
+	ancestors = list_delete_first(ancestors);
+
+	switch (plan->kind)
+	{
+		case WINDOWTOPN_ROW_NUMBER:
+			funcname = "row_number";
+			break;
+		case WINDOWTOPN_RANK:
+			funcname = "rank";
+			break;
+		case WINDOWTOPN_DENSE_RANK:
+			funcname = "dense_rank";
+			break;
+		default:
+			funcname = "?";
+			break;
+	}
+
+	context = set_deparse_context_planstate(es->deparse_cxt,
+											(Node *) wstate, ancestors);
+	exprstr = deparse_expression(plan->limitExpr, context, false, false);
+
+	initStringInfo(&buf);
+	appendStringInfo(&buf, "%s() %s %s", funcname,
+					 plan->limitInclusive ? "<=" : "<", exprstr);
+	ExplainPropertyText("Top N", buf.data, es);
+	pfree(buf.data);
+}
 
 /*
  * Likewise, for a MergeAppend node.

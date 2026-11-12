@@ -262,6 +262,7 @@ bool		gp_enable_hashjoin_size_heuristic = false;
 bool		gp_enable_predicate_propagation = false;
 bool		gp_enable_minmax_optimization = true;
 bool		gp_enable_multiphase_agg = true;
+bool		whpg_enable_window_topn = true;
 bool		gp_enable_preunique = true;
 bool		gp_enable_agg_distinct = true;
 bool		gp_enable_dqa_pruning = true;
@@ -769,6 +770,17 @@ struct config_bool ConfigureNamesBool_gp[] =
 			gettext_noop("Allows partial aggregation before motion.")
 		},
 		&gp_enable_multiphase_agg,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"whpg_enable_window_topn", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Enables the planner's use of window top-N pre-filters."),
+			gettext_noop("Keeps only the rows that can pass an outer query's \"rank() <= N\" "
+						 "style filter before a window's input is sorted and redistributed.")
+		},
+		&whpg_enable_window_topn,
 		true,
 		NULL, NULL, NULL
 	},

@@ -3286,6 +3286,11 @@ finalize_plan(PlannerInfo *root, Plan *plan,
 							  &context);
 			break;
 
+		case T_WindowTopN:
+			finalize_primnode(((WindowTopN *) plan)->limitExpr,
+							  &context);
+			break;
+
 		case T_Gather:
 			/* child nodes are allowed to reference rescan_param, if any */
 			locally_added_param = ((Gather *) plan)->rescan_param;

@@ -17,6 +17,7 @@ extern "C" {
 #include "postgres.h"
 
 #include "utils/guc.h"
+#include "cdb/cdbvars.h"
 }
 
 #include "gpopt/config/CConfigParamMapping.h"
@@ -404,6 +405,12 @@ CConfigParamMapping::PackConfigParamInBitset(
 	{
 		traceflag_bitset->ExchangeSet(
 			GPOPT_DISABLE_XFORM_TF(CXform::ExfMaxOneRow2Assert));
+	}
+
+	if (!whpg_enable_window_topn)
+	{
+		traceflag_bitset->ExchangeSet(
+			GPOPT_DISABLE_XFORM_TF(CXform::ExfSelect2WindowTopN));
 	}
 
 	if (!optimizer_enable_hashjoin)

@@ -175,6 +175,7 @@ OBJS        = CParseHandlerAgg.o \
               CParseHandlerSearchStrategy.o \
               CParseHandlerSequence.o \
               CParseHandlerSort.o \
+              CParseHandlerWindowTopN.o \
               CParseHandlerSortCol.o \
               CParseHandlerSortColList.o \
               CParseHandlerStackTrace.o \

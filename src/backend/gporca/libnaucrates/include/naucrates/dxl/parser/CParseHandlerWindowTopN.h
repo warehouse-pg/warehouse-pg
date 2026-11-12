@@ -1,0 +1,65 @@
+//---------------------------------------------------------------------------
+//	WarehousePG
+//
+//	@filename:
+//		CParseHandlerWindowTopN.h
+//
+//	@doc:
+//		SAX parse handler class for parsing WindowTopN operator nodes
+//---------------------------------------------------------------------------
+#ifndef GPDXL_CParseHandlerWindowTopN_H
+#define GPDXL_CParseHandlerWindowTopN_H
+
+#include "gpos/base.h"
+
+#include "naucrates/dxl/operators/CDXLPhysicalWindowTopN.h"
+#include "naucrates/dxl/parser/CParseHandlerPhysicalOp.h"
+
+namespace gpdxl
+{
+using namespace gpos;
+
+XERCES_CPP_NAMESPACE_USE
+
+//---------------------------------------------------------------------------
+//	@class:
+//		CParseHandlerWindowTopN
+//
+//	@doc:
+//		Parse handler for WindowTopN operators
+//
+//---------------------------------------------------------------------------
+class CParseHandlerWindowTopN : public CParseHandlerPhysicalOp
+{
+private:
+	// the operator
+	CDXLPhysicalWindowTopN *m_dxl_op;
+
+	// process the start of an element
+	void StartElement(
+		const XMLCh *const element_uri,			// URI of element's namespace
+		const XMLCh *const element_local_name,	// local part of element's name
+		const XMLCh *const element_qname,		// element's qname
+		const Attributes &attr					// element's attributes
+		) override;
+
+	// process the end of an element
+	void EndElement(
+		const XMLCh *const element_uri,			// URI of element's namespace
+		const XMLCh *const element_local_name,	// local part of element's name
+		const XMLCh *const element_qname		// element's qname
+		) override;
+
+public:
+	CParseHandlerWindowTopN(const CParseHandlerWindowTopN &) = delete;
+
+	// ctor
+	CParseHandlerWindowTopN(CMemoryPool *mp,
+							CParseHandlerManager *parse_handler_mgr,
+							CParseHandlerBase *parse_handler_root);
+};
+}  // namespace gpdxl
+
+#endif	// !GPDXL_CParseHandlerWindowTopN_H
+
+// EOF

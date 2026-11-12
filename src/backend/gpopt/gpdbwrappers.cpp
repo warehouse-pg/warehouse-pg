@@ -1466,6 +1466,18 @@ gpdb::MakeIntConst(int32 intValue)
 }
 
 Node *
+gpdb::MakeInt8Const(int64 intValue)
+{
+	GP_WRAP_START;
+	{
+		return (Node *) makeConst(INT8OID, -1, InvalidOid, sizeof(int64),
+								  Int64GetDatum(intValue), false,
+								  FLOAT8PASSBYVAL);
+	}
+	GP_WRAP_END;
+}
+
+Node *
 gpdb::MakeBoolConst(bool value, bool isnull)
 {
 	GP_WRAP_START;

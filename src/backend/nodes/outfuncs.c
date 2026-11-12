@@ -1136,6 +1136,27 @@ _outWindowAgg(StringInfo str, const WindowAgg *node)
 }
 
 static void
+_outWindowTopN(StringInfo str, const WindowTopN *node)
+{
+	WRITE_NODE_TYPE("WINDOWTOPN");
+
+	_outPlanInfo(str, (const Plan *) node);
+
+	WRITE_INT_FIELD(partNumCols);
+	WRITE_ATTRNUMBER_ARRAY(partColIdx, node->partNumCols);
+	WRITE_OID_ARRAY(partOperators, node->partNumCols);
+	WRITE_OID_ARRAY(partCollations, node->partNumCols);
+	WRITE_INT_FIELD(ordNumCols);
+	WRITE_ATTRNUMBER_ARRAY(ordColIdx, node->ordNumCols);
+	WRITE_OID_ARRAY(sortOperators, node->ordNumCols);
+	WRITE_OID_ARRAY(ordCollations, node->ordNumCols);
+	WRITE_BOOL_ARRAY(nullsFirst, node->ordNumCols);
+	WRITE_ENUM_FIELD(kind, WindowTopNKind);
+	WRITE_NODE_FIELD(limitExpr);
+	WRITE_BOOL_FIELD(limitInclusive);
+}
+
+static void
 _outTableFunctionScan(StringInfo str, const TableFunctionScan *node)
 {
 	WRITE_NODE_TYPE("TABLEFUNCTIONSCAN");
@@ -5685,6 +5706,9 @@ outNode(StringInfo str, const void *obj)
                 break;
 			case T_WindowAgg:
 				_outWindowAgg(str, obj);
+				break;
+			case T_WindowTopN:
+				_outWindowTopN(str, obj);
 				break;
 			case T_TableFunctionScan:
 				_outTableFunctionScan(str, obj);

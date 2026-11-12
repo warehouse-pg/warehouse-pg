@@ -1079,6 +1079,9 @@ _outNode(StringInfo str, void *obj)
 			case T_WindowAgg:
 				_outWindowAgg(str, obj);
 				break;
+			case T_WindowTopN:
+				_outWindowTopN(str, obj);
+				break;
 			case T_TableFunctionScan:
 				_outTableFunctionScan(str, obj);
 				break;

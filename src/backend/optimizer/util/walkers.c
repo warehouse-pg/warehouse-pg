@@ -395,6 +395,13 @@ plan_tree_walker(Node *node,
 				return true;
 			break;
 
+		case T_WindowTopN:
+			if (walk_plan_node_fields((Plan *) node, walker, context))
+				return true;
+			if (walker(((WindowTopN *) node)->limitExpr, context))
+				return true;
+			break;
+
 		case T_Unique:
 			if (walk_plan_node_fields((Plan *) node, walker, context))
 				return true;

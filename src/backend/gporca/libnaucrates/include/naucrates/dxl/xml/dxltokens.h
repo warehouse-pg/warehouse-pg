@@ -772,6 +772,10 @@ enum Edxltoken
 	EdxltokenSubtract,
 	EdxltokenMultiply,
 
+	EdxltokenPhysicalWindowTopN,
+	EdxltokenWindowTopNKind,
+	EdxltokenWindowTopNLimit,
+
 	EdxltokenSentinel
 };
 

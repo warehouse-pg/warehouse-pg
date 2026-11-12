@@ -65,8 +65,12 @@
 #include "optimizer/paths.h"
 #include "optimizer/tlist.h"
 #include "optimizer/planner.h"
+#include "access/stratnum.h"
+#include "optimizer/restrictinfo.h"
 #include "parser/parse_clause.h"
 #include "parser/parse_oper.h"
+#include "parser/parsetree.h"
+#include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 #include "foreign/fdwapi.h"
@@ -3341,4 +3345,396 @@ cdb_prepare_path_for_hashed_agg(PlannerInfo *root,
 											 locus);
 
 	return subpath;
+}
+
+/*
+ * estimate_window_partitions
+ *
+ * Estimate the number of distinct PARTITION BY values over 'total_rows'
+ * input rows of the window.
+ *
+ * estimate_num_groups() has no statistics for a column of a grouped
+ * subquery (examine_simple_variable() deliberately punts on GROUP BY, as
+ * the subquery's output no longer follows the base column's distribution)
+ * and falls back to a default that is far too high for a typical top-N
+ * query, where the window input is an aggregate and the partitioning column
+ * one of its grouping columns.  For a plain grouping column we can still
+ * bound the count: the subquery outputs at most one row per group, so it
+ * cannot produce more distinct values than the underlying expression has
+ * in the subquery's own input.  Estimate that expression in the subquery's
+ * planner instead, where the base statistics are visible.  Only an upper
+ * bound is wanted here, so using the base distribution is safe.
+ */
+static double
+estimate_window_partitions(PlannerInfo *root, List *part_exprs,
+						   double total_rows)
+{
+	double		result;
+
+	if (list_length(part_exprs) == 1 && IsA(linitial(part_exprs), Var))
+	{
+		Var		   *var = (Var *) linitial(part_exprs);
+		RangeTblEntry *rte;
+		RelOptInfo *rel;
+
+		if (var->varlevelsup == 0 &&
+			var->varno >= 1 && var->varno < root->simple_rel_array_size &&
+			(rel = root->simple_rel_array[var->varno]) != NULL &&
+			rel->subroot != NULL &&
+			(rte = planner_rt_fetch(var->varno, root))->rtekind == RTE_SUBQUERY)
+		{
+			PlannerInfo *subroot = rel->subroot;
+			Query	   *subquery = subroot->parse;
+			TargetEntry *tle = get_tle_by_resno(subquery->targetList,
+												var->varattno);
+
+			if (tle != NULL &&
+				subquery->groupClause != NIL &&
+				subquery->setOperations == NULL &&
+				tle->ressortgroupref != 0 &&
+				targetIsInSortList(tle, InvalidOid, subquery->groupClause))
+			{
+				double		bound;
+
+				bound = estimate_window_partitions(subroot,
+												   list_make1(tle->expr),
+												   total_rows);
+				/* ROLLUP / GROUPING SETS may add a NULL group */
+				if (subquery->groupingSets != NIL)
+					bound += 1.0;
+				return clamp_row_est(Min(bound, total_rows));
+			}
+		}
+	}
+
+	result = estimate_num_groups(root, part_exprs, total_rows, NULL);
+	return clamp_row_est(result);
+}
+
+/*
+ * cdb_window_prefilter_bound
+ *
+ * The number of rows per partition a WindowPrefilter keeps, when its bound
+ * is a plain integer constant; -1 otherwise.
+ */
+double
+cdb_window_prefilter_bound(WindowPrefilter *prefilter)
+{
+	Node	   *bound = (Node *) lsecond(prefilter->clause->args);
+	Const	   *c;
+	double		n;
+
+	if (!IsA(bound, Const) || ((Const *) bound)->constisnull)
+		return -1.0;
+	c = (Const *) bound;
+
+	switch (c->consttype)
+	{
+		case INT2OID:
+			n = DatumGetInt16(c->constvalue);
+			break;
+		case INT4OID:
+			n = DatumGetInt32(c->constvalue);
+			break;
+		case INT8OID:
+			n = DatumGetInt64(c->constvalue);
+			break;
+		default:
+			return -1.0;
+	}
+	if (prefilter->strategy == BTLessStrategyNumber)
+		n -= 1.0;
+	return Max(n, 1.0);
+}
+
+/*
+ * estimate_prefilter_rows
+ *
+ * Rows (per segment) that survive a first-stage filter keeping 'bound_rows'
+ * rows per partition, out of the 'input_rows' (per segment) of 'subpath'.
+ * A negative 'bound_rows' means the bound is not a plain constant; fall
+ * back to the generic inequality selectivity then.
+ */
+static double
+estimate_prefilter_rows(PlannerInfo *root, Path *subpath, WindowClause *wc,
+						double input_rows, double bound_rows)
+{
+	double		rows;
+
+	if (bound_rows >= 0)
+	{
+		double		partitions_per_segment = 1.0;
+
+		if (wc->partitionClause != NIL)
+		{
+			List	   *part_exprs;
+			double		total_rows;
+			double		total_partitions;
+
+			part_exprs = get_sortgrouplist_exprs(wc->partitionClause,
+												 root->processed_tlist);
+			total_rows = subpath->rows;
+			if (CdbPathLocus_IsPartitioned(subpath->locus))
+				total_rows *= CdbPathLocus_NumSegments(subpath->locus);
+			total_partitions = estimate_window_partitions(root, part_exprs,
+														  total_rows);
+			partitions_per_segment =
+				estimate_num_groups_on_segment(total_partitions,
+											   subpath->rows,
+											   subpath->locus);
+		}
+		rows = Min(input_rows, partitions_per_segment * bound_rows);
+	}
+	else
+		rows = input_rows * DEFAULT_INEQ_SEL;
+
+	return clamp_row_est(rows);
+}
+
+/*
+ * The Sort + WindowAgg + Filter form of the first stage.
+ */
+static Path *
+create_prefilter_sort_path(PlannerInfo *root,
+						   RelOptInfo *rel,
+						   Path *subpath,
+						   bool is_sorted,
+						   List *window_pathkeys,
+						   WindowClause *wc,
+						   List *prefilter_wfuncs,
+						   List *prefilter_quals,
+						   double bound_rows)
+{
+	PathTarget *input_target = subpath->pathtarget;
+	PathTarget *pre_target;
+	Path	   *path;
+	ProjectionPath *ppath;
+	List	   *rinfos = NIL;
+	QualCost	qual_cost;
+	ListCell   *lc;
+
+	path = subpath;
+	if (!is_sorted && window_pathkeys)
+		path = (Path *) create_sort_path(root, rel, path, window_pathkeys, -1.0);
+
+	/*
+	 * The first-stage WindowAgg computes only the filtered window functions;
+	 * everything else of this window clause is computed once, by the final
+	 * WindowAgg.
+	 */
+	pre_target = copy_pathtarget(input_target);
+	foreach(lc, prefilter_wfuncs)
+	{
+		WindowFunc *wfunc = lfirst_node(WindowFunc, lc);
+
+		add_column_to_pathtarget(pre_target, (Expr *) wfunc, 0);
+		pre_target->width += get_typavgwidth(wfunc->wintype, -1);
+	}
+
+	path = (Path *) create_windowagg_path(root, rel, path, pre_target,
+										  prefilter_wfuncs, wc);
+
+	foreach(lc, prefilter_quals)
+		rinfos = lappend(rinfos, make_simple_restrictinfo((Expr *) lfirst(lc)));
+
+	/*
+	 * Filter, and project the pre-computed window function columns away
+	 * again so that the rest of the plan sees exactly the input target it
+	 * would have seen without the pre-filter.
+	 */
+	ppath = create_projection_path_with_quals(root, rel, path, input_target,
+											  rinfos, false);
+
+	ppath->path.rows = estimate_prefilter_rows(root, subpath, wc,
+											   path->rows, bound_rows);
+
+	/* create_projection_path_with_quals() does not charge for the quals */
+	cost_qual_eval(&qual_cost, prefilter_quals, root);
+	ppath->path.startup_cost += qual_cost.startup;
+	ppath->path.total_cost += qual_cost.startup +
+		qual_cost.per_tuple * path->rows;
+
+	return (Path *) ppath;
+}
+
+/*
+ * The WindowTopN form of the first stage, or NULL if it does not apply.
+ *
+ * WindowTopN bounds one window function.  With several filtered functions
+ * of the same window clause, take the one with the smallest constant bound;
+ * the others are still enforced by the outer query's filter.  The node holds
+ * the kept rows in memory, so refuse it when they are estimated not to fit
+ * the operator's memory (it would only pass everything through).
+ */
+static Path *
+create_prefilter_topn_path(PlannerInfo *root,
+						   RelOptInfo *rel,
+						   Path *subpath,
+						   WindowClause *wc,
+						   List *prefilters)
+{
+	WindowPrefilter *best = NULL;
+	double		best_bound = -1.0;
+	WindowTopNKind kind;
+	double		rows;
+	ListCell   *lc;
+
+	foreach(lc, prefilters)
+	{
+		WindowPrefilter *prefilter = (WindowPrefilter *) lfirst(lc);
+		double		bound = cdb_window_prefilter_bound(prefilter);
+
+		if (best == NULL ||
+			(bound >= 0 && (best_bound < 0 || bound < best_bound)))
+		{
+			best = prefilter;
+			best_bound = bound;
+		}
+	}
+	if (best == NULL)
+		return NULL;
+
+	switch (best->wfunc->winfnoid)
+	{
+		case F_WINDOW_ROW_NUMBER:
+			kind = WINDOWTOPN_ROW_NUMBER;
+			break;
+		case F_WINDOW_RANK:
+			kind = WINDOWTOPN_RANK;
+			break;
+		case F_WINDOW_DENSE_RANK:
+			kind = WINDOWTOPN_DENSE_RANK;
+			break;
+		default:
+			return NULL;
+	}
+
+	/* without ORDER BY, rank() and dense_rank() are 1 for every row */
+	if (kind != WINDOWTOPN_ROW_NUMBER && wc->orderClause == NIL)
+		return NULL;
+
+	/* the node hashes its input on the PARTITION BY columns */
+	foreach(lc, wc->partitionClause)
+	{
+		SortGroupClause *sgc = (SortGroupClause *) lfirst(lc);
+
+		if (!sgc->hashable)
+			return NULL;
+	}
+
+	rows = estimate_prefilter_rows(root, subpath, wc, subpath->rows, best_bound);
+
+	/* the kept rows, as minimal tuples plus bookkeeping, must fit in memory */
+	if (rows * (subpath->pathtarget->width + MAXALIGN(SizeofMinimalTupleHeader) + 64) >
+		work_mem * 1024L)
+		return NULL;
+
+	return (Path *) create_windowtopn_path(root, rel, subpath, wc, kind,
+										   copyObject(lsecond(best->clause->args)),
+										   best->strategy == BTLessEqualStrategyNumber,
+										   best_bound >= 0 ? best_bound : rows,
+										   rows);
+}
+
+/*
+ * cdb_create_window_prefilter_path
+ *
+ * Build the top-N pre-filter for a window clause whose output is filtered
+ * by the parent query with a monotonic window function qual such as
+ * "rank() OVER (...) <= N" (see find_window_prefilters() in allpaths.c).
+ * It keeps, on every segment, only the rows that can pass that qual.  Two
+ * forms exist and the cheaper one is returned:
+ *
+ *     [Sort on the window pathkeys, if not already sorted]
+ *     -> WindowAgg computing only 'prefilter_wfuncs'
+ *     -> Result projecting back to the input target
+ *        Filter: 'prefilter_quals'
+ *
+ * or a single WindowTopN node (see nodeWindowTopN.c), which keeps the top
+ * rows of each partition with a hash table and heaps and never sorts.
+ *
+ * Either runs on every segment over the segment's own rows, *before* the
+ * Motion that cdb_prepare_path_for_sorted_agg() will add for the final
+ * WindowAgg.  Because a row's rank over a subset of its partition is never
+ * larger than its rank over the whole partition, every row dropped here
+ * would also have been dropped by the parent query's qual on the final
+ * result; the parent query still applies that qual, so the final WindowAgg
+ * is left completely unchanged.
+ *
+ * When no Motion is needed, because the input is already on a single
+ * segment or already distributed by the PARTITION BY columns, the Sort form
+ * would only repeat the final stage and is not built.  WindowTopN still
+ * applies: the final WindowAgg then sorts only the kept rows instead of
+ * the whole input, which is where most of the time of such a plan goes.
+ * The caller compares the costs of the two variants either way.
+ *
+ * Returns NULL when no first stage is built.
+ *
+ * 'prefilters' are the WindowPrefilter entries that apply to this window
+ * clause; 'prefilter_wfuncs' and 'prefilter_quals' are their functions and
+ * normalized quals in terms of the planner's own WindowFunc nodes, and
+ * 'bound_rows' the smallest constant bound among them (negative if none is
+ * a plain constant).
+ *
+ * *keep_sorted_p tells the caller how to feed the result to
+ * cdb_prepare_path_for_sorted_agg(): true when the result is still sorted
+ * on the window pathkeys and the final WindowAgg will gather everything to
+ * a single segment, so the segment-local sort order can be preserved
+ * through an order-preserving Motion; false otherwise, where the (now much
+ * smaller) input is sorted after the Motion.
+ */
+Path *
+cdb_create_window_prefilter_path(PlannerInfo *root,
+								 RelOptInfo *rel,
+								 Path *subpath,
+								 bool is_sorted,
+								 List *window_pathkeys,
+								 WindowClause *wc,
+								 List *prefilters,
+								 List *prefilter_wfuncs,
+								 List *prefilter_quals,
+								 double bound_rows,
+								 bool *keep_sorted_p)
+{
+	CdbPathLocus locus;
+	bool		need_redistribute;
+	List	   *group_tles;
+	Path	   *sortpath;
+	Path	   *topnpath = NULL;
+
+	/* Mirror the decision cdb_prepare_path_for_sorted_agg() will make. */
+	if (CdbPathLocus_IsBottleneck(subpath->locus))
+	{
+		locus = subpath->locus;
+		need_redistribute = false;
+	}
+	else
+	{
+		group_tles = get_common_group_tles(subpath->pathtarget,
+										   wc->partitionClause, NIL);
+		locus = choose_grouping_locus(root, subpath, group_tles,
+									  &need_redistribute);
+	}
+
+	if (!need_redistribute)
+	{
+		*keep_sorted_p = false;
+		return create_prefilter_topn_path(root, rel, subpath, wc, prefilters);
+	}
+
+	sortpath = create_prefilter_sort_path(root, rel, subpath, is_sorted,
+										  window_pathkeys, wc,
+										  prefilter_wfuncs, prefilter_quals,
+										  bound_rows);
+
+	topnpath = create_prefilter_topn_path(root, rel, subpath, wc, prefilters);
+
+	if (topnpath != NULL && topnpath->total_cost < sortpath->total_cost)
+	{
+		*keep_sorted_p = false;
+		return topnpath;
+	}
+
+	*keep_sorted_p = !CdbPathLocus_IsPartitioned(locus);
+	return sortpath;
 }

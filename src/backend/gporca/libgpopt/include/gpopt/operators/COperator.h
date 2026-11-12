@@ -266,6 +266,9 @@ public:
 
 		EopLogicalIndexOnlyGet,
 		EopLogicalDynamicIndexOnlyGet,
+
+		EopLogicalWindowTopN,
+		EopPhysicalWindowTopN,
 		EopSentinel
 	};
 
