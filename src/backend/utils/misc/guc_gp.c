@@ -17,6 +17,7 @@
 #include "postgres.h"
 
 #include <float.h>
+#include <limits.h>
 #include <sys/stat.h>
 #include <sys/unistd.h>
 
@@ -98,6 +99,11 @@ static bool check_pljava_classpath_insecure(bool *newval, void **extra, GucSourc
 static void assign_pljava_classpath_insecure(bool newval, void *extra);
 static bool check_gp_resource_group_bypass(bool *newval, void **extra, GucSource source);
 static int guc_array_compare(const void *a, const void *b);
+
+#ifdef ENABLE_IC_PROXY
+static bool check_gp_interconnect_proxy_addresses(char **newval, void **extra,
+												  GucSource source);
+#endif
 
 extern struct config_generic *find_option(const char *name, bool create_placeholders, int elevel);
 
@@ -4829,13 +4835,15 @@ struct config_string ConfigureNamesString_gp[] =
 #ifdef ENABLE_IC_PROXY
 	{
 		{"gp_interconnect_proxy_addresses", PGC_SIGHUP, GP_ARRAY_CONFIGURATION,
-			gettext_noop("Sets the ic-proxy addresses as \"content:ip:port ...\", must be ordered by content, the port is ignored at the moment."),
-			gettext_noop("e.g. \"-1:10.0.0.1:2000 0:10.0.0.2:2000 1:10.0.0.2:2001\""),
-			GUC_NO_SHOW_ALL | GUC_GPDB_NO_SYNC
+			gettext_noop("ic-proxy mesh as \"dbid:content:hostname:port,...\", sorted by dbid."),
+			gettext_noop("e.g. \"1:-1:10.0.0.1:2000,2:0:10.0.0.2:2000,3:1:10.0.0.2:2001\". "
+						 "Normally written by gpinitsystem from PROXY_PORT_BASE; "
+						 "operators only adjust it for port changes or expansion."),
+			GUC_GPDB_NO_SYNC
 		},
 		&gp_interconnect_proxy_addresses,
 		"",
-		NULL, NULL, NULL
+		check_gp_interconnect_proxy_addresses, NULL, NULL
 	},
 #endif  /* ENABLE_IC_PROXY */
 
@@ -5530,6 +5538,207 @@ check_gp_workfile_compression(bool *newval, void **extra, GucSource source)
 #endif
 	return true;
 }
+
+#ifdef ENABLE_IC_PROXY
+/*
+ * ICProxyAddr.hostname (ic_proxy_addr.h) is HOST_NAME_MAX bytes; keep the
+ * fallback in sync with that header for platforms without the macro.
+ */
+#ifndef HOST_NAME_MAX
+#define HOST_NAME_MAX 255
+#endif
+
+/* one parsed entry, kept to detect duplicates */
+typedef struct ICProxyMeshEntry
+{
+	int			dbid;
+	int			port;
+	char	   *hostname;
+} ICProxyMeshEntry;
+
+/*
+ * Validate gp_interconnect_proxy_addresses. Format is one or more entries
+ * of "dbid:content:hostname:port", joined by commas. Empty string is
+ * valid (means "ic-proxy mesh not configured").
+ *
+ * The grammar accepted here is the one the runtime parser in
+ * ic_proxy_addr.c (a fscanf loop) has always consumed, so values that
+ * worked before this hook existed keep working across an upgrade:
+ * whitespace may surround an entry, and a trailing comma is allowed.
+ * Within an entry the fields are strict, the hostname is bounded by the
+ * runtime's ICProxyAddr.hostname buffer and may not contain a comma (the
+ * sign of an entry that lacks a field).  A dbid or a host:port
+ * listed twice is rejected as well.  The runtime parser stops silently at
+ * the first entry it cannot parse; this hook reports it instead, so SET /
+ * ALTER SYSTEM / postmaster start fail loudly.
+ */
+static bool
+check_gp_interconnect_proxy_addresses(char **newval, void **extra, GucSource source)
+{
+	const char *s = *newval;
+	int			entry_idx = 0;
+	ICProxyMeshEntry *seen = NULL;
+	int			nseen = 0;
+	int			seen_cap = 0;
+	bool		ok = true;
+	int			i;
+
+	if (s == NULL)
+		return true;
+
+	while (*s)
+	{
+		int			dbid = 0;
+		int			content = 0;
+		int			port = 0;
+		char		hostname[1024] = {0};
+		int			consumed = 0;
+		int			matched;
+		size_t		hostlen;
+
+		/* skip the blanks around separators, as the runtime parser does */
+		while (*s && isspace((unsigned char) *s))
+			s++;
+		if (*s == '\0')
+			break;
+
+		/*
+		 * The hostname buffer is larger than any accepted hostname, so an
+		 * overlong one fails the length check below rather than parsing.
+		 */
+		matched = sscanf(s, "%d:%d:%1023[^:]:%d%n",
+						 &dbid, &content, hostname, &port, &consumed);
+		if (matched != 4)
+		{
+			GUC_check_errdetail("malformed entry #%d near \"%.40s\" "
+								"(expected dbid:content:hostname:port)",
+								entry_idx, s);
+			ok = false;
+			break;
+		}
+
+		/*
+		 * The hostname conversion stops at a colon only, so an entry that
+		 * lacks a field swallows the comma and the start of the next entry
+		 * ("2:0:sdw1,3:1:sdw1:2001" has the hostname "sdw1,3").  Report that
+		 * before the numbers, which belong to the wrong fields then.
+		 */
+		if (strchr(hostname, ',') != NULL)
+		{
+			GUC_check_errdetail("entry #%d: hostname \"%s\" contains a comma "
+								"(an entry needs all of dbid:content:hostname:port)",
+								entry_idx, hostname);
+			ok = false;
+			break;
+		}
+
+		if (dbid < 1)
+		{
+			GUC_check_errdetail("entry #%d: dbid must be >= 1, got %d",
+								entry_idx, dbid);
+			ok = false;
+			break;
+		}
+		if (content < -1)
+		{
+			GUC_check_errdetail("entry #%d: content must be >= -1, got %d",
+								entry_idx, content);
+			ok = false;
+			break;
+		}
+		if (port < 1 || port > 65535)
+		{
+			GUC_check_errdetail("entry #%d: port must be 1-65535, got %d",
+								entry_idx, port);
+			ok = false;
+			break;
+		}
+
+		hostlen = strlen(hostname);
+		if (hostlen == 0)
+		{
+			GUC_check_errdetail("entry #%d: hostname is empty", entry_idx);
+			ok = false;
+			break;
+		}
+		if (hostlen >= HOST_NAME_MAX)
+		{
+			GUC_check_errdetail("entry #%d: hostname is too long "
+								"(%zu bytes, maximum is %d)",
+								entry_idx, hostlen, HOST_NAME_MAX - 1);
+			ok = false;
+			break;
+		}
+		if (strpbrk(hostname, " \t\r\n") != NULL)
+		{
+			GUC_check_errdetail("entry #%d: hostname \"%s\" contains whitespace",
+								entry_idx, hostname);
+			ok = false;
+			break;
+		}
+
+		/*
+		 * A dbid listed twice, or two proxies on one host:port, make the
+		 * mesh unusable; both are cheap to catch here.  Hostnames are
+		 * compared as strings, so an alias of the same host is not caught.
+		 */
+		for (i = 0; i < nseen; i++)
+		{
+			if (seen[i].dbid == dbid)
+			{
+				GUC_check_errdetail("entry #%d: dbid %d is already listed",
+									entry_idx, dbid);
+				ok = false;
+				break;
+			}
+			if (seen[i].port == port && strcmp(seen[i].hostname, hostname) == 0)
+			{
+				GUC_check_errdetail("entry #%d: %s:%d is already used by dbid %d",
+									entry_idx, hostname, port, seen[i].dbid);
+				ok = false;
+				break;
+			}
+		}
+		if (!ok)
+			break;
+
+		if (nseen >= seen_cap)
+		{
+			seen_cap = seen_cap ? seen_cap * 2 : 64;
+			if (seen == NULL)
+				seen = (ICProxyMeshEntry *) palloc(seen_cap * sizeof(ICProxyMeshEntry));
+			else
+				seen = (ICProxyMeshEntry *) repalloc(seen, seen_cap * sizeof(ICProxyMeshEntry));
+		}
+		seen[nseen].dbid = dbid;
+		seen[nseen].port = port;
+		seen[nseen].hostname = pstrdup(hostname);
+		nseen++;
+
+		s += consumed;
+		while (*s && isspace((unsigned char) *s))
+			s++;
+		if (*s == ',')
+			s++;
+		else if (*s != '\0')
+		{
+			GUC_check_errdetail("entry #%d: unexpected trailing character '%c'",
+								entry_idx, *s);
+			ok = false;
+			break;
+		}
+
+		entry_idx++;
+	}
+
+	for (i = 0; i < nseen; i++)
+		pfree(seen[i].hostname);
+	if (seen)
+		pfree(seen);
+
+	return ok;
+}
+#endif   /* ENABLE_IC_PROXY */
 
 void
 DispatchSyncPGVariable(struct config_generic * gconfig)

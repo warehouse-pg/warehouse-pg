@@ -15,6 +15,7 @@ import sys
 import json
 import shutil
 import signal
+import subprocess
 import traceback
 from collections import defaultdict
 from time import strftime, sleep
@@ -934,6 +935,23 @@ class SegmentTemplate:
 
 # ------------------------------------------------------------------------------------------------------
 # ------------------------------------------------------------------------------------------------------
+def parse_icproxy_addresses(value):
+    """
+    Split a gp_interconnect_proxy_addresses value into its entries, a list of
+    (dbid, content, address, port) string tuples.  The GUC accepts blanks
+    around the entries and a trailing comma (the proxy's own parser always
+    did), so parse the same way.
+    """
+    entries = []
+    for addr in value.split(','):
+        addr = addr.strip()
+        if not addr:
+            continue
+        db_id, content_id, host, port = [f.strip() for f in addr.split(':')]
+        entries.append((db_id, content_id, host, port))
+    return entries
+
+
 class NewSegmentInput:
     def __init__(self, hostname, address, port, datadir, dbid, contentId, role):
         self.hostname = hostname
@@ -1095,6 +1113,9 @@ class gpexpand:
 
         self.statusLogger.remove_status_file()
         self.statusLogger.remove_segment_configuration_backup_file()
+
+        # last, gpconfig refuses to run while the status file is there
+        self.rollback_icproxy_addr()
 
     def get_state(self):
         """Returns expansion state from status logger"""
@@ -2006,19 +2027,71 @@ class gpexpand:
 
     def validate_icproxy_addr(self, inputFileEntryList):
         """
-        If we are in icproxy mode: the proxy addresses of newly added segments are still empty after
-        expansion. It will cause queries to hang forever.
-        So, we have to check if the user have already set gp_interconnect_proxy_addresses before.
-        And prompt user to set a proper value via gpconfig before expansion.
+        If the cluster runs ic-proxy, each new segment needs an entry in
+        gp_interconnect_proxy_addresses or motion will hang forever. This
+        function derives a proxy port for each new segment from the existing
+        mesh's PROXY_PORT_BASE pattern and rewrites the GUC via gpconfig
+        before expansion proceeds. Old behaviour was to halt and ask the
+        operator to copy-paste a gpconfig command; that hasn't been needed
+        since the GUC became visible to gpconfig.
+
+        Auto-derivation assumes the cluster was initialised with gpinitsystem's
+        PROXY_PORT_BASE / MIRROR_PROXY_PORT_BASE, where for any segment:
+          proxy_port = segment.port + (<role's proxy port base> - <role's port base>)
+        The two offsets are independent operator-supplied values —
+        (MIRROR_PROXY_PORT_BASE - PROXY_PORT_BASE) need not equal
+        (MIRROR_PORT_BASE - PORT_BASE) — so primaries and mirrors are derived
+        separately, each from the offset its existing segments keep between
+        proxy port and postmaster port.  "Role" is the preferred role: that
+        is the one the bases were assigned by and the one the input file
+        gives a new segment, and it does not change when a pair has failed
+        over.  If the existing segments of a role do not all keep the same
+        offset the mesh was not built that way and there is nothing to derive
+        from; that, and a derived port that is already taken on the host, is
+        reported so the operator can set the mesh by hand and rerun gpexpand.
+
+        An entry that is already there for a new segment's dbid is kept when
+        it names the segment's content and address: that is how the operator
+        sets a port by hand.  One that names another content or address is
+        left from an expansion that was not completed (the dbid is free
+        again) and is replaced.
+
+        The mesh is updated whenever it is configured, not only when
+        gp_interconnect_type is already 'proxy': the value has to list every
+        segment to be usable at all, and keeping it complete costs nothing on
+        a cluster that currently runs UDPIFC.
         """
 
         # get GUC value
-        conn = dbconn.connect(_gp_expand.dburl, encoding='UTF8')
+        conn = dbconn.connect(self.dburl, encoding='UTF8')
         try:
             sql = "show gp_interconnect_proxy_addresses;"
-            icproxy_addresses_string = dbconn.queryRow(conn, sql)[0].strip()
+            running_mesh_string = dbconn.queryRow(conn, sql)[0].strip()
             sql = "show gp_interconnect_type;"
             ic_type = dbconn.queryRow(conn, sql)[0].strip()
+            # gpconfig edits postgresql.conf without reloading, so the
+            # running value can be behind what gpinitstandby or the
+            # operator wrote last.  Extend the configured value, which is
+            # what the next reload applies; the edit below is written the
+            # same way and would otherwise drop theirs.
+            icproxy_addresses_string = dbconn.queryFileSetting(
+                conn, 'gp_interconnect_proxy_addresses')
+            if icproxy_addresses_string is None:
+                icproxy_addresses_string = running_mesh_string
+            icproxy_addresses_string = icproxy_addresses_string.strip()
+            # The mesh names a segment by its address (the column the
+            # interconnect resolves), not its hostname.
+            sql = ("SELECT dbid, content, preferred_role, address, port "
+                   "FROM gp_segment_configuration")
+            cursor = dbconn.query(conn, sql)
+            seg_rows = cursor.fetchall()
+            seg_role_port = dict((str(dbid), (role, int(port)))
+                                 for (dbid, content, role, address, port) in seg_rows
+                                 if content >= 0)
+            # (address, postmaster port) of every instance, coordinator and
+            # standby included: a derived proxy port must not land on one.
+            data_host_ports = dict(((address.strip(), int(port)), str(dbid))
+                                   for (dbid, content, role, address, port) in seg_rows)
         except DatabaseError as e:
             if re.search('unrecognized configuration parameter', str(e)):
                 # no gp_interconnect_proxy_addresses in a distribution without `ENABLE_IC_PROXY`
@@ -2030,37 +2103,208 @@ class gpexpand:
         finally:
             conn.close()
 
-        # check if newly added dbid exists in gp_interconnect_proxy_addresses
-        need_prompt = False
-        new_addresses_string = icproxy_addresses_string
-        if icproxy_addresses_string:
-            self.logger.info("ICProxy addresses has been set to: %s, start to checking if it contains newly added segs", icproxy_addresses_string)
+        # No mesh configured — cluster runs on UDPIFC/TCP, nothing to do.
+        if not icproxy_addresses_string:
+            return
 
-            dbid_set = set()
-            # icproxy_addresses_string example: 1:-1:gpdb:1432,2:0:gpdb:2000,3:1:gpdb:2001
-            for addr in icproxy_addresses_string.split(','):
-                db_id, content_id, host, port = addr.split(':')
-                dbid_set.add(db_id)
+        self.logger.info("ICProxy addresses currently configured as: %s", icproxy_addresses_string)
+        if icproxy_addresses_string != running_mesh_string:
+            self.logger.info("(the running value is %s; the configuration has not been "
+                             "reloaded since it was written)", running_mesh_string or "empty")
 
-            for seg in inputFileEntryList:
-                if seg.dbid not in dbid_set:
-                    need_prompt = True
-                    new_addresses_string += ",%s:%s:%s:{port}" % (seg.dbid, seg.contentId, seg.hostname.strip())
-                    self.logger.warning(" Missing the address of dbid %s in gp_interconnect_proxy_addresses" % (seg.dbid))
+        existing_entries = parse_icproxy_addresses(icproxy_addresses_string)
 
-            # prompt user to use gpconfig to set the proper value of gp_interconnect_proxy_addresses
-            if need_prompt:
-                if ic_type == "proxy":
-                    self.logger.error("Please run gpconfig to set gp_interconnect_proxy_addresses (replace the {port} with a proper value):")
-                    self.logger.error(" gpconfig -c gp_interconnect_proxy_addresses -v \"'%s'\" --skipvalidation" % (new_addresses_string))
-                    self.logger.error('then rerun gpexpand -i {input_file}')
+        # An entry for a dbid the input file assigns: keep it when it is for
+        # this very segment, drop it otherwise (see the function comment).
+        new_segs = dict((seg.dbid, seg) for seg in inputFileEntryList)
+        existing_dbids = set()
+        kept_entries = []
+        dropped_any = False
+        for entry in existing_entries:
+            (db_id, content_id, host, port) = entry
+            seg = new_segs.get(db_id)
+            if seg is not None and (content_id != str(seg.contentId) or
+                                    host != seg.address.strip()):
+                self.logger.info(" Replacing the stale entry %s: the input file has dbid %s "
+                                 "as content %s on %s", ':'.join(entry), db_id,
+                                 seg.contentId, seg.address.strip())
+                dropped_any = True
+                continue
+            kept_entries.append(entry)
+            existing_dbids.add(db_id)
+        existing_entries = kept_entries
+
+        # Recover each role's offset between proxy port and postmaster port
+        # from the segments in the catalog.  The coordinator and the standby
+        # (content -1) have ports of their own and are not in seg_role_port,
+        # neither is an entry kept above for a new segment.
+        # PROXY_PORT_BASE and MIRROR_PROXY_PORT_BASE are independent operator
+        # inputs, hence the per-role split — a single primary-based formula
+        # would derive wrong mirror ports whenever the two offsets differ.
+        proxy_port_offset = {}  # preferred role ('p'/'m') -> (offset, dbid it came from)
+        for (db_id, content_id, host, port) in existing_entries:
+            if db_id not in seg_role_port:
+                continue
+            role, data_port = seg_role_port[db_id]
+            offset = int(port) - data_port
+            if role not in proxy_port_offset:
+                proxy_port_offset[role] = (offset, db_id)
+            elif proxy_port_offset[role][0] != offset:
+                self.logger.error("Cannot derive proxy ports: the %s segments in "
+                                  "gp_interconnect_proxy_addresses do not keep one offset between "
+                                  "proxy port and postmaster port (%+d for dbid %s, %+d for dbid %s). "
+                                  "Set gp_interconnect_proxy_addresses by hand and rerun gpexpand.",
+                                  'primary' if role == 'p' else 'mirror',
+                                  proxy_port_offset[role][0], proxy_port_offset[role][1],
+                                  offset, db_id)
+                raise Exception("Checking ICProxy addresses failed")
+        if 'p' not in proxy_port_offset:
+            self.logger.error("Cannot derive PROXY_PORT_BASE: no primary entries in existing mesh.")
+            raise Exception("Checking ICProxy addresses failed")
+
+        # Build the mesh string with entries for new segments appended.
+        new_mesh_entries = list(existing_entries)
+        # (host, proxy port) pairs in use, to catch a derived port that
+        # collides with an existing proxy or with another new segment.
+        used_host_ports = dict(((host, int(port)), db_id)
+                               for (db_id, content_id, host, port) in existing_entries)
+        # The new segments' own postmaster ports are not in the catalog yet.
+        for seg in inputFileEntryList:
+            data_host_ports.setdefault((seg.address.strip(), int(seg.port)), seg.dbid)
+        added_any = False
+        for seg in inputFileEntryList:
+            if seg.dbid in existing_dbids:
+                # set by the operator; the port still has to be usable
+                kept_port = [int(port) for (db_id, content_id, host, port) in existing_entries
+                             if db_id == seg.dbid][0]
+                if (seg.address.strip(), kept_port) in data_host_ports:
+                    self.logger.error("The proxy port %d that gp_interconnect_proxy_addresses has for "
+                                      "new dbid %s is the postmaster port of dbid %s on host %s. Fix "
+                                      "the entry and rerun gpexpand.", kept_port, seg.dbid,
+                                      data_host_ports[(seg.address.strip(), kept_port)],
+                                      seg.address.strip())
                     raise Exception("Checking ICProxy addresses failed")
-                else:
-                    self.logger.warning("Recommended that run gpconfig to set gp_interconnect_proxy_addresses (replace the {port} with a proper value):")
-                    self.logger.warning(" gpconfig -c gp_interconnect_proxy_addresses -v \"'%s'\" --skipvalidation" % (new_addresses_string))
-            else:
-                self.logger.info("Checking ICProxy addresses passed")
+                continue
+            if seg.role not in proxy_port_offset:
+                self.logger.error("Cannot derive proxy port for new dbid %s: no existing "
+                                  "segment with role '%s' in the mesh to derive from.",
+                                  seg.dbid, seg.role)
+                raise Exception("Checking ICProxy addresses failed")
+            try:
+                derived_port = int(seg.port) + proxy_port_offset[seg.role][0]
+            except (TypeError, ValueError) as e:
+                self.logger.error("Cannot derive proxy port for new dbid %s: %s",
+                                  seg.dbid, str(e))
+                raise Exception("Checking ICProxy addresses failed")
+            if derived_port < 1 or derived_port > 65535:
+                self.logger.error("Cannot derive proxy port for new dbid %s: derived port %d "
+                                  "is out of range.", seg.dbid, derived_port)
+                raise Exception("Checking ICProxy addresses failed")
+            host = seg.address.strip()
+            if (host, derived_port) in used_host_ports:
+                self.logger.error("Cannot derive proxy port for new dbid %s: port %d on host %s "
+                                  "is already the proxy port of dbid %s. Set "
+                                  "gp_interconnect_proxy_addresses by hand and rerun gpexpand.",
+                                  seg.dbid, derived_port, host, used_host_ports[(host, derived_port)])
+                raise Exception("Checking ICProxy addresses failed")
+            if (host, derived_port) in data_host_ports:
+                self.logger.error("Cannot derive proxy port for new dbid %s: port %d on host %s "
+                                  "is the postmaster port of dbid %s. Set "
+                                  "gp_interconnect_proxy_addresses by hand and rerun gpexpand.",
+                                  seg.dbid, derived_port, host, data_host_ports[(host, derived_port)])
+                raise Exception("Checking ICProxy addresses failed")
+            used_host_ports[(host, derived_port)] = seg.dbid
+            new_mesh_entries.append((seg.dbid, seg.contentId, host, str(derived_port)))
+            added_any = True
+            self.logger.info(" Assigning proxy port %d to dbid %s (content %s, host %s)",
+                             derived_port, seg.dbid, seg.contentId, host)
+
+        if not added_any and not dropped_any:
+            self.logger.info("All new segments already have entries in gp_interconnect_proxy_addresses")
+            return
+
+        # Re-sort by dbid (numeric) so the mesh stays canonical.
+        new_mesh_entries.sort(key=lambda t: int(t[0]))
+        new_mesh_string = ','.join("%s:%s:%s:%s" % (db_id, content_id, host, port)
+                                   for (db_id, content_id, host, port) in new_mesh_entries)
+
+        self.logger.info("Updating gp_interconnect_proxy_addresses to: %s", new_mesh_string)
+        # gpconfig writes the value into every existing segment's
+        # postgresql.conf, and the new segments inherit it when their data
+        # directories are cloned from the primaries below.  gpexpand does
+        # not reload the running postmasters: a proxy only dials the
+        # segments with a lower content id, the new segments have the
+        # highest ones and so initiate every peer connection, and the
+        # existing proxies register a peer from the dbid in its HELLO
+        # rather than from the mesh.  The existing proxies' in-memory mesh
+        # stays stale until the next reload or restart; that only matters
+        # for proactive disconnects on a later mesh change.
+        # No --skipvalidation: the GUC is visible to gpconfig now, which
+        # also quotes the value; the format itself is validated by every
+        # postmaster when it reads the setting.
+        cmd = ['gpconfig', '-c', 'gp_interconnect_proxy_addresses',
+               '-v', new_mesh_string]
+        try:
+            subprocess.check_call(cmd)
+        except subprocess.CalledProcessError as e:
+            self.logger.error("gpconfig failed to update gp_interconnect_proxy_addresses: %s", str(e))
+            if ic_type == "proxy":
+                raise Exception("Updating ICProxy addresses failed")
+            self.logger.warning("Continuing because gp_interconnect_type=%s — fix the mesh manually before switching to proxy", ic_type)
         return
+
+    def rollback_icproxy_addr(self):
+        """
+        Take the entries of the segments that are not added after all out of
+        gp_interconnect_proxy_addresses again.
+
+        They are the entries of the input file's dbids that the catalog does
+        not have (any more).  Such an entry does no harm to the running
+        proxies, which only dial lower content ids, but the dbid is handed
+        out again, to the next expansion or to a standby coordinator, and
+        the entry would then describe the wrong instance.  An entry the
+        operator had set by hand for one of these dbids goes as well: the
+        mesh lists the instances of the catalog, and whether the same port
+        suits the next attempt is decided when its input file is known.
+
+        Never fails the rollback: the catalog and the data directories are
+        what must be restored, the mesh can be corrected with gpconfig.
+        """
+        try:
+            input_filename = self.statusLogger.get_input_filename()
+            if not input_filename:
+                return
+            new_dbids = set(str(seg.dbid) for seg in self.read_input_files(input_filename))
+
+            conn = dbconn.connect(self.dburl, utility=True, encoding='UTF8')
+            try:
+                try:
+                    mesh = dbconn.queryFileSetting(conn, 'gp_interconnect_proxy_addresses')
+                except DatabaseError as e:
+                    if re.search('unrecognized configuration parameter', str(e)):
+                        return
+                    raise
+                cursor = dbconn.query(conn, "SELECT dbid FROM gp_segment_configuration")
+                catalog_dbids = set(str(row[0]) for row in cursor.fetchall())
+            finally:
+                conn.close()
+            if not mesh or not mesh.strip():
+                return
+
+            entries = parse_icproxy_addresses(mesh)
+            remaining = [e for e in entries
+                         if e[0] not in new_dbids or e[0] in catalog_dbids]
+            if len(remaining) == len(entries):
+                return
+
+            value = ','.join(':'.join(e) for e in remaining)
+            self.logger.info('Rolling back gp_interconnect_proxy_addresses to: %s' % value)
+            subprocess.check_call(['gpconfig', '-c', 'gp_interconnect_proxy_addresses', '-v', value])
+        except Exception as e:
+            self.logger.warning('Could not take the new segments out of '
+                                'gp_interconnect_proxy_addresses: %s' % str(e))
+            self.logger.warning('Remove the entries of the dbids that are not in '
+                                'gp_segment_configuration with gpconfig.')
 
 # -----------------------------------------------
 class ExpandTable():

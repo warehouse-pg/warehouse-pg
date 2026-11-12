@@ -159,6 +159,296 @@ class GpExpand(GpTestCase):
     # end tests for interview_setup()
     #
 
+    #
+    # tests for validate_icproxy_addr()
+    #
+    ICPROXY_MESH = "1:-1:cdw:35432,2:0:sdw1:36000,3:1:sdw2:36001,4:0:sdw2:37000,5:1:sdw1:37001"
+    # (dbid, content, preferred_role, address, port) as returned by the gp_segment_configuration query
+    ICPROXY_SEG_ROWS = [(1, -1, 'p', 'cdw', 5432),
+                        (2, 0, 'p', 'sdw1', 40000), (3, 1, 'p', 'sdw2', 40001),
+                        (4, 0, 'm', 'sdw2', 50000), (5, 1, 'm', 'sdw1', 50001)]
+
+    def _icproxy_subject(self, mesh, ic_type='proxy', seg_rows=None, configured=None):
+        """
+        A gpexpand instance whose catalog queries answer with the given mesh
+        (the running value), interconnect type and segment rows.  `configured`
+        is what pg_file_settings holds; None means the files do not set it.
+        """
+        if seg_rows is None:
+            seg_rows = self.ICPROXY_SEG_ROWS
+        cursor = Mock()
+        cursor.fetchall.return_value = seg_rows
+        patches = [patch('gpexpand.dbconn.queryRow', side_effect=[[mesh], [ic_type]]),
+                   patch('gpexpand.dbconn.query', return_value=cursor),
+                   patch('gpexpand.subprocess.check_call'),
+                   patch('gpexpand.WorkerPool'),
+                   patch('gpexpand.dbconn.queryFileSetting', return_value=configured)]
+        mocks = [p.start() for p in patches]
+        for p in patches:
+            self.addCleanup(p.stop)
+        self.check_call_mock = mocks[2]
+        self.query_mock = mocks[1]
+        return self.subject.gpexpand(self.subject.logger, self.gparray, Mock(), self.options)
+
+    def _new_seg(self, dbid, content, host, port, role):
+        return self.subject.NewSegmentInput(host, host, port, '/data/seg%s' % dbid,
+                                            str(dbid), str(content), role)
+
+    def test_validate_icproxy_addr_derives_ports_per_role(self):
+        expand = self._icproxy_subject(self.ICPROXY_MESH)
+        new_segs = [self._new_seg(6, 2, 'sdw3', 40002, 'p'),
+                    self._new_seg(7, 2, 'sdw1', 50002, 'm')]
+
+        expand.validate_icproxy_addr(new_segs)
+
+        # primary: 40002 + (36000 - 40000); mirror: 50002 + (37000 - 50000)
+        self.check_call_mock.assert_called_once_with(
+            ['gpconfig', '-c', 'gp_interconnect_proxy_addresses', '-v',
+             self.ICPROXY_MESH + ",6:2:sdw3:36002,7:2:sdw1:37002"])
+
+    def test_validate_icproxy_addr_extends_the_configured_value_not_the_running_one(self):
+        # gpinitstandby wrote the standby's entry (dbid 8) but nothing reloaded
+        # the configuration yet: the running value does not have it
+        configured = self.ICPROXY_MESH + ",8:-1:scdw:35432"
+        expand = self._icproxy_subject(self.ICPROXY_MESH, configured=configured)
+
+        expand.validate_icproxy_addr([self._new_seg(6, 2, 'sdw3', 40002, 'p')])
+
+        self.check_call_mock.assert_called_once_with(
+            ['gpconfig', '-c', 'gp_interconnect_proxy_addresses', '-v',
+             self.ICPROXY_MESH + ",6:2:sdw3:36002,8:-1:scdw:35432"])
+
+    def test_validate_icproxy_addr_is_a_noop_when_the_files_unset_the_mesh(self):
+        # the running value is stale, the files say the mesh is gone
+        expand = self._icproxy_subject(self.ICPROXY_MESH, configured="")
+
+        expand.validate_icproxy_addr([self._new_seg(6, 2, 'sdw3', 40002, 'p')])
+
+        self.check_call_mock.assert_not_called()
+
+    def test_validate_icproxy_addr_fails_on_a_broken_configured_value(self):
+        expand = self._icproxy_subject(self.ICPROXY_MESH)
+        self.subject.dbconn.queryFileSetting.side_effect = Exception(
+            'gp_interconnect_proxy_addresses is set in the configuration files but cannot be applied: x')
+
+        with self.assertRaises(Exception) as ex:
+            expand.validate_icproxy_addr([self._new_seg(6, 2, 'sdw3', 40002, 'p')])
+
+        self.assertIn("cannot be applied", str(ex.exception))
+        self.check_call_mock.assert_not_called()
+
+    def test_validate_icproxy_addr_accepts_blanks_and_a_trailing_comma(self):
+        mesh = " 1:-1:cdw:35432, 2:0:sdw1:36000 ,3:1:sdw2:36001,4:0:sdw2:37000,5:1:sdw1:37001,"
+        expand = self._icproxy_subject(mesh)
+
+        expand.validate_icproxy_addr([self._new_seg(6, 2, 'sdw3', 40002, 'p')])
+
+        self.check_call_mock.assert_called_once_with(
+            ['gpconfig', '-c', 'gp_interconnect_proxy_addresses', '-v',
+             self.ICPROXY_MESH + ",6:2:sdw3:36002"])
+
+    def test_validate_icproxy_addr_updates_mesh_even_when_not_in_proxy_mode(self):
+        expand = self._icproxy_subject(self.ICPROXY_MESH, ic_type='udpifc')
+
+        expand.validate_icproxy_addr([self._new_seg(6, 2, 'sdw3', 40002, 'p')])
+
+        self.check_call_mock.assert_called_once()
+
+    def test_validate_icproxy_addr_is_a_noop_without_a_mesh(self):
+        expand = self._icproxy_subject("")
+
+        expand.validate_icproxy_addr([self._new_seg(6, 2, 'sdw3', 40002, 'p')])
+
+        self.check_call_mock.assert_not_called()
+
+    def test_validate_icproxy_addr_keeps_existing_entries(self):
+        mesh = self.ICPROXY_MESH + ",6:2:sdw3:16502"
+        expand = self._icproxy_subject(mesh)
+
+        expand.validate_icproxy_addr([self._new_seg(6, 2, 'sdw3', 40002, 'p')])
+
+        self.check_call_mock.assert_not_called()
+
+    def test_validate_icproxy_addr_keeps_an_entry_set_by_hand_for_a_new_segment(self):
+        # set by the operator, with a port the derivation would not give;
+        # the other new segment still gets its entry
+        mesh = self.ICPROXY_MESH + ",6:2:sdw3:16502"
+        expand = self._icproxy_subject(mesh)
+
+        expand.validate_icproxy_addr([self._new_seg(6, 2, 'sdw3', 40002, 'p'),
+                                      self._new_seg(7, 2, 'sdw1', 50002, 'm')])
+
+        self.check_call_mock.assert_called_once_with(
+            ['gpconfig', '-c', 'gp_interconnect_proxy_addresses', '-v',
+             mesh + ",7:2:sdw1:37002"])
+
+    def test_validate_icproxy_addr_replaces_a_stale_entry_of_a_reused_dbid(self):
+        # left from an expansion that was rolled back: dbid 6 was to be
+        # content 2 on sdw4 then, the input file puts it on sdw3 now
+        for stale in ("6:2:sdw4:36002", "6:3:sdw3:36002"):
+            expand = self._icproxy_subject(self.ICPROXY_MESH + "," + stale)
+
+            expand.validate_icproxy_addr([self._new_seg(6, 2, 'sdw3', 40005, 'p')])
+
+            self.check_call_mock.assert_called_once_with(
+                ['gpconfig', '-c', 'gp_interconnect_proxy_addresses', '-v',
+                 self.ICPROXY_MESH + ",6:2:sdw3:36005"])
+
+    def test_validate_icproxy_addr_rejects_a_kept_entry_on_a_postmaster_port(self):
+        # the entry set by hand for dbid 6 uses the postmaster port the
+        # input file gives dbid 7 on that host
+        expand = self._icproxy_subject(self.ICPROXY_MESH + ",6:2:sdw3:40003")
+
+        with self.assertRaises(Exception) as ex:
+            expand.validate_icproxy_addr([self._new_seg(6, 2, 'sdw3', 40002, 'p'),
+                                          self._new_seg(7, 3, 'sdw3', 40003, 'p')])
+
+        self.assertEqual("Checking ICProxy addresses failed", str(ex.exception))
+        self.check_call_mock.assert_not_called()
+
+    def test_validate_icproxy_addr_derives_by_preferred_role(self):
+        # after a failover the acting roles of a pair are swapped while the
+        # ports stay where gpinitsystem put them; the offsets belong to the
+        # preferred roles
+        expand = self._icproxy_subject(self.ICPROXY_MESH)
+
+        expand.validate_icproxy_addr([self._new_seg(6, 2, 'sdw3', 40002, 'p')])
+
+        sql = self.query_mock.call_args[0][1]
+        self.assertIn("preferred_role", sql)
+        self.assertNotIn(" role", sql)
+
+    def test_validate_icproxy_addr_rejects_a_mesh_without_a_port_pattern(self):
+        # the primaries do not keep one offset between proxy port and
+        # postmaster port (-4000 for dbid 2, -3990 for dbid 3): nothing to
+        # derive a new primary's port from
+        mesh = "1:-1:cdw:35432,2:0:sdw1:36000,3:1:sdw2:36011,4:0:sdw2:37000,5:1:sdw1:37001"
+        expand = self._icproxy_subject(mesh)
+
+        with self.assertRaises(Exception) as ex:
+            expand.validate_icproxy_addr([self._new_seg(6, 2, 'sdw3', 40002, 'p')])
+
+        self.assertEqual("Checking ICProxy addresses failed", str(ex.exception))
+        self.assertIn("do not keep one offset", self.subject.logger.error.call_args[0][0])
+        self.check_call_mock.assert_not_called()
+
+    def _icproxy_rollback_subject(self, configured, catalog_dbids, new_segs):
+        expand = self._icproxy_subject("", configured=configured,
+                                       seg_rows=[(dbid,) for dbid in catalog_dbids])
+        expand.statusLogger.get_input_filename.return_value = '/tmp/gpexpand_inputfile'
+        expand.read_input_files = Mock(return_value=new_segs)
+        return expand
+
+    def test_rollback_icproxy_addr_removes_the_entries_of_the_segments_not_added(self):
+        configured = self.ICPROXY_MESH + ",6:2:sdw3:36002,7:2:sdw1:37002,8:-1:scdw:35432"
+        expand = self._icproxy_rollback_subject(
+            configured, [1, 2, 3, 4, 5, 8],
+            [self._new_seg(6, 2, 'sdw3', 40002, 'p'), self._new_seg(7, 2, 'sdw1', 50002, 'm')])
+
+        expand.rollback_icproxy_addr()
+
+        expand.read_input_files.assert_called_once_with('/tmp/gpexpand_inputfile')
+        self.check_call_mock.assert_called_once_with(
+            ['gpconfig', '-c', 'gp_interconnect_proxy_addresses', '-v',
+             self.ICPROXY_MESH + ",8:-1:scdw:35432"])
+
+    def test_rollback_icproxy_addr_keeps_the_entries_of_segments_in_the_catalog(self):
+        # nothing of the input file is left in the mesh without being in the catalog
+        configured = self.ICPROXY_MESH + ",6:2:sdw3:36002"
+        expand = self._icproxy_rollback_subject(
+            configured, [1, 2, 3, 4, 5, 6], [self._new_seg(6, 2, 'sdw3', 40002, 'p')])
+
+        expand.rollback_icproxy_addr()
+
+        self.check_call_mock.assert_not_called()
+
+    def test_rollback_icproxy_addr_is_a_noop_without_a_mesh(self):
+        expand = self._icproxy_rollback_subject(
+            None, [1, 2, 3, 4, 5], [self._new_seg(6, 2, 'sdw3', 40002, 'p')])
+
+        expand.rollback_icproxy_addr()
+
+        self.check_call_mock.assert_not_called()
+
+    def test_rollback_icproxy_addr_never_fails_the_rollback(self):
+        expand = self._icproxy_rollback_subject(
+            self.ICPROXY_MESH + ",6:2:sdw3:36002", [1, 2, 3, 4, 5],
+            [self._new_seg(6, 2, 'sdw3', 40002, 'p')])
+        self.check_call_mock.side_effect = self.subject.subprocess.CalledProcessError(1, 'gpconfig')
+
+        expand.rollback_icproxy_addr()
+
+        self.subject.logger.warning.assert_called()
+
+    def test_validate_icproxy_addr_rejects_a_colliding_derived_port(self):
+        expand = self._icproxy_subject(self.ICPROXY_MESH)
+        # 40001 + (36000 - 40000) = 36001 on sdw2 is already dbid 3's proxy port
+        new_segs = [self._new_seg(6, 2, 'sdw2', 40001, 'p')]
+
+        with self.assertRaises(Exception) as ex:
+            expand.validate_icproxy_addr(new_segs)
+
+        self.assertEqual("Checking ICProxy addresses failed", str(ex.exception))
+        self.check_call_mock.assert_not_called()
+
+    def test_validate_icproxy_addr_rejects_a_derived_port_used_by_a_postmaster(self):
+        # primary offset 36000 - 40000: a new primary on sdw2 with port 44001 derives
+        # 40001, which is dbid 3's postmaster port on that host
+        expand = self._icproxy_subject(self.ICPROXY_MESH)
+
+        with self.assertRaises(Exception) as ex:
+            expand.validate_icproxy_addr([self._new_seg(6, 2, 'sdw2', 44001, 'p')])
+
+        self.assertEqual("Checking ICProxy addresses failed", str(ex.exception))
+        self.check_call_mock.assert_not_called()
+
+    def test_validate_icproxy_addr_rejects_a_derived_port_used_by_a_new_postmaster(self):
+        # two new primaries on sdw3: dbid 6 (port 40002) derives proxy port 36002,
+        # which is the postmaster port the input file gives dbid 7 on that host
+        expand = self._icproxy_subject(self.ICPROXY_MESH)
+        new_segs = [self._new_seg(6, 2, 'sdw3', 40002, 'p'),
+                    self._new_seg(7, 3, 'sdw3', 36002, 'p')]
+
+        with self.assertRaises(Exception) as ex:
+            expand.validate_icproxy_addr(new_segs)
+
+        self.assertEqual("Checking ICProxy addresses failed", str(ex.exception))
+        self.check_call_mock.assert_not_called()
+
+    def test_validate_icproxy_addr_rejects_a_role_absent_from_the_mesh(self):
+        # a mesh without mirrors cannot tell us where the new mirror's port goes
+        mesh = "1:-1:cdw:35432,2:0:sdw1:36000,3:1:sdw2:36001"
+        expand = self._icproxy_subject(mesh, seg_rows=[(1, -1, 'p', 'cdw', 5432),
+                                                       (2, 0, 'p', 'sdw1', 40000),
+                                                       (3, 1, 'p', 'sdw2', 40001)])
+
+        with self.assertRaises(Exception) as ex:
+            expand.validate_icproxy_addr([self._new_seg(6, 2, 'sdw1', 50002, 'm')])
+
+        self.assertEqual("Checking ICProxy addresses failed", str(ex.exception))
+        self.check_call_mock.assert_not_called()
+
+    def test_validate_icproxy_addr_gpconfig_failure_is_fatal_in_proxy_mode(self):
+        expand = self._icproxy_subject(self.ICPROXY_MESH, ic_type='proxy')
+        self.check_call_mock.side_effect = self.subject.subprocess.CalledProcessError(1, 'gpconfig')
+
+        with self.assertRaises(Exception) as ex:
+            expand.validate_icproxy_addr([self._new_seg(6, 2, 'sdw3', 40002, 'p')])
+
+        self.assertEqual("Updating ICProxy addresses failed", str(ex.exception))
+
+    def test_validate_icproxy_addr_gpconfig_failure_is_a_warning_otherwise(self):
+        expand = self._icproxy_subject(self.ICPROXY_MESH, ic_type='udpifc')
+        self.check_call_mock.side_effect = self.subject.subprocess.CalledProcessError(1, 'gpconfig')
+
+        expand.validate_icproxy_addr([self._new_seg(6, 2, 'sdw3', 40002, 'p')])
+
+        self.subject.logger.warning.assert_called()
+
+    #
+    # end tests for validate_icproxy_addr()
+    #
+
     def createGpArrayWith2Primary2Mirrors(self):
         self.coordinator = Segment.initFromString(
             "1|-1|p|p|s|u|cdw|cdw|5432|/data/coordinator")

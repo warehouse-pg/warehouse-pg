@@ -240,6 +240,7 @@ CHK_PARAMS () {
 		    
 		    # Make sure old CLUSTER_CONFIG settings are not hanging around.
 		    unset PORT_BASE SEG_PREFIX DATA_DIRECTORY HEAP_CHECKSUM HBA_HOSTNAMES
+		    unset PROXY_PORT_BASE MIRROR_PROXY_PORT_BASE COORDINATOR_PROXY_PORT STANDBY_PROXY_PORT
 
 		    # Make sure it is not a dos file with CTRL M at end of each line
 		    $TR -d '\r' < $CLUSTER_CONFIG > $TMP_FILE
@@ -262,6 +263,21 @@ CHK_PARAMS () {
 
 		    if [ $MIRROR_PORT_BASE ]; then
 			    MIRRORING=1
+		    fi
+
+		    # ic-proxy mesh ports: PROXY_PORT_BASE opts in, and then every
+		    # role that gets a segment needs a port too, or the mesh written
+		    # by WRITE_PROXY_MESH would be missing the coordinator / the
+		    # mirrors and could never be used in proxy mode.
+		    if [ x"" != x"$PROXY_PORT_BASE" ]; then
+			    if [ x"" = x"$COORDINATOR_PROXY_PORT" ]; then
+				    ERROR_EXIT "[FATAL]:-COORDINATOR_PROXY_PORT must be set when PROXY_PORT_BASE is set in $CLUSTER_CONFIG."
+			    fi
+			    if [ $MIRRORING -eq 1 ] && [ x"" = x"$MIRROR_PROXY_PORT_BASE" ]; then
+				    ERROR_EXIT "[FATAL]:-MIRROR_PROXY_PORT_BASE must be set when PROXY_PORT_BASE and MIRROR_PORT_BASE are set in $CLUSTER_CONFIG."
+			    fi
+		    elif [ x"" != x"$COORDINATOR_PROXY_PORT" ] || [ x"" != x"$MIRROR_PROXY_PORT_BASE" ] || [ x"" != x"$STANDBY_PROXY_PORT" ]; then
+			    ERROR_EXIT "[FATAL]:-COORDINATOR_PROXY_PORT, MIRROR_PROXY_PORT_BASE and STANDBY_PROXY_PORT require PROXY_PORT_BASE in $CLUSTER_CONFIG."
 		    fi
 
 		else
@@ -944,7 +960,7 @@ CREATE_QE_ARRAY () {
 	SEG_DIR_VECTOR=0
 	MIR_COUNT=-1
 	COORDINATOR_HOST=$COORDINATOR_HOSTNAME
-	QD_PRIMARY_ARRAY=${COORDINATOR_HOST}~${COORDINATOR_HOSTNAME}~${COORDINATOR_PORT}~${COORDINATOR_DIRECTORY}/${SEG_PREFIX}${CONTENT_COUNT}~${DBID_COUNT}~${CONTENT_COUNT}~0
+	QD_PRIMARY_ARRAY=${COORDINATOR_HOST}~${COORDINATOR_HOSTNAME}~${COORDINATOR_PORT}~${COORDINATOR_DIRECTORY}/${SEG_PREFIX}${CONTENT_COUNT}~${DBID_COUNT}~${CONTENT_COUNT}~${COORDINATOR_PROXY_PORT:-0}
 	((DBID_COUNT=$DBID_COUNT+1));((CONTENT_COUNT=$CONTENT_COUNT+1))
 	for QE_PAIR in ${M_HOST_ARRAY[@]}
 	do
@@ -958,9 +974,14 @@ CREATE_QE_ARRAY () {
 			PORT_COUNT=0
 		fi
 		((GP_PORT=$PORT_BASE+$PORT_COUNT))
-		
+		if [ x"" != x"$PROXY_PORT_BASE" ]; then
+			((GP_PROXY_PORT=$PROXY_PORT_BASE+$PORT_COUNT))
+		else
+			GP_PROXY_PORT=0
+		fi
+
 		GP_DIR=${DATA_DIRECTORY[$SEG_DIR_VECTOR]}
-		QE_PRIMARY_ARRAY=(${QE_PRIMARY_ARRAY[@]} ${QE_HOST}~${QE_NAME}~${GP_PORT}~${GP_DIR}/${SEG_PREFIX}${CONTENT_COUNT}~${DBID_COUNT}~$CONTENT_COUNT)
+		QE_PRIMARY_ARRAY=(${QE_PRIMARY_ARRAY[@]} ${QE_HOST}~${QE_NAME}~${GP_PORT}~${GP_DIR}/${SEG_PREFIX}${CONTENT_COUNT}~${DBID_COUNT}~$CONTENT_COUNT~${GP_PROXY_PORT})
 		POSTGRES_PORT_CHK $GP_PORT $QE_NAME
 		((DBID_COUNT=$DBID_COUNT+1))
 		((CONTENT_COUNT=$CONTENT_COUNT+1))
@@ -970,12 +991,16 @@ CREATE_QE_ARRAY () {
 	if [ $DEBUG_LEVEL -eq 0 ] && [ x"" != x"$VERBOSE" ];then $ECHO;fi
 	if [ $MIRRORING -eq 1 ] ;then
 		((MIRROR_OFFSET=$MIRROR_PORT_BASE-$PORT_BASE))
+		if [ x"" != x"$PROXY_PORT_BASE" ] && [ x"" != x"$MIRROR_PROXY_PORT_BASE" ]; then
+			((MIRROR_PROXY_OFFSET=$MIRROR_PROXY_PORT_BASE-$PROXY_PORT_BASE))
+			export MIRROR_PROXY_OFFSET
+		fi
 		if [ $MIRROR_TYPE -eq 1 ];then
 			CREATE_SPREAD_MIRROR_ARRAY
 		else
 			CREATE_GROUP_MIRROR_ARRAY
 		fi
-	fi 
+	fi
 	((TOTAL_SEG=${#QE_PRIMARY_ARRAY[@]}))
 	LOG_MSG "[INFO]:-End Function $FUNCNAME"
 }
@@ -1102,6 +1127,15 @@ DISPLAY_CONFIG () {
         LOG_MSG "[INFO]:-Trusted shell              = $TRUSTED_SHELL" 1
         ((NUM_QES=${#MACHINE_LIST[*]}))
         LOG_MSG "[INFO]:-Number segment hosts       = $NUM_QES" 1
+        if [ x"" != x"$PROXY_PORT_BASE" ]; then
+            LOG_MSG "[INFO]:-Proxy port base            = $PROXY_PORT_BASE" 1
+            if [ x"" != x"$COORDINATOR_PROXY_PORT" ]; then
+                LOG_MSG "[INFO]:-Coordinator proxy port     = $COORDINATOR_PROXY_PORT" 1
+            fi
+            if [ x"" != x"$MIRROR_PROXY_PORT_BASE" ]; then
+                LOG_MSG "[INFO]:-Mirror proxy port base     = $MIRROR_PROXY_PORT_BASE" 1
+            fi
+        fi
         if [ $MIRROR_PORT_BASE ]; then
             LOG_MSG "[INFO]:-Mirror port base           = $MIRROR_PORT_BASE" 1
             ((NUM_MIRROR_DIRECTORY=${#MIRROR_DATA_DIRECTORY[@]}))
@@ -1638,6 +1672,12 @@ DUMP_OUTPUT_CONFIG () {
 	$ECHO "HBA_HOSTNAMES=$HBA_HOSTNAMES" >> $OUTPUT_CONFIG
     fi
 
+    # The segments' proxy ports travel in field 7 of the arrays below; the
+    # standby is not in the arrays, so its port is dumped as a parameter.
+    if [ x"" != x"$STANDBY_PROXY_PORT" ] ; then
+	$ECHO "STANDBY_PROXY_PORT=$STANDBY_PROXY_PORT" >> $OUTPUT_CONFIG
+    fi
+
     $ECHO "QD_PRIMARY_ARRAY=$QD_PRIMARY_ARRAY" >> $OUTPUT_CONFIG
     $ECHO "declare -a PRIMARY_ARRAY=(" >> $OUTPUT_CONFIG
     for qe in ${QE_PRIMARY_ARRAY[@]}
@@ -1837,6 +1877,299 @@ CHK_QE_ARRAY_PORT_RANGES () {
     QE_PORT=$PORT_BASE
 }
 
+#
+# PROXY_PORT_CHK <port> <host>:
+#
+# The ic-proxy listener is a plain TCP socket, so the postmaster-oriented
+# POSTGRES_PORT_CHK (lock file + Unix socket) says nothing about it.  Ask
+# the host whether anything already listens on the TCP port, on any
+# address; a proxy of another cluster or an unrelated daemon would make
+# the bind fail at the gpstop -u that activates the mesh.
+#
+PROXY_PORT_CHK () {
+	LOG_MSG "[INFO]:-Start Function $FUNCNAME"
+	local PORT=$1 HOST=$2 LISTENERS
+	# Local Address:Port is the 4th column of ss -ltn; a port in use shows
+	# up as ":<port>" followed by blanks, whatever the address.
+	if [ x"" = x"$HOST" ] || [ "$HOST" = "$COORDINATOR_HOSTNAME" ]; then
+		LISTENERS=`$SS -ltn 2>/dev/null | $GREP -c ":${PORT}[[:space:]]"`
+	else
+		LISTENERS=`REMOTE_EXECUTE_AND_GET_OUTPUT $HOST "$SS -ltn 2>/dev/null | $GREP -c ':${PORT}[[:space:]]'" 2>>$LOG_FILE`
+	fi
+	if [ x"$LISTENERS" != x"0" ] && [ x"$LISTENERS" != x"" ]; then
+		ERROR_EXIT "[FATAL]:-Host $HOST already has a process listening on TCP port $PORT, which is assigned as an ic-proxy port"
+	fi
+	LOG_MSG "[INFO]:-End Function $FUNCNAME"
+}
+
+#
+# STANDBY_SHARES_COORDINATOR_ADDRESS:
+#
+# Whether the standby's proxy cannot use the coordinator's proxy port.  A
+# proxy binds its listener to the address its own mesh entry resolves to, so
+# the two collide when the names resolve to a common address, not only when
+# the names are equal: one machine has several names (localhost and
+# localhost.localdomain, the hostname and an interface name).  This is the
+# rule gpinitstandby applies when a standby is added later.  A name that
+# does not resolve here leaves the comparison of the names.
+#
+STANDBY_SHARES_COORDINATOR_ADDRESS () {
+	[ "$STANDBY_HOSTNAME" = "$COORDINATOR_HOSTNAME" ] && return 0
+	python3 - "$COORDINATOR_HOSTNAME" "$STANDBY_HOSTNAME" 2>>$LOG_FILE <<-'EOF_RESOLVE'
+		import socket, sys
+		def resolve(name):
+		    return set(info[4][0] for info in socket.getaddrinfo(name, None))
+		try:
+		    sys.exit(0 if resolve(sys.argv[1]) & resolve(sys.argv[2]) else 1)
+		except socket.error:
+		    sys.exit(1)
+	EOF_RESOLVE
+}
+
+#
+# CHK_PROXY_PORT_RANGES:
+#
+# The proxy ports are assigned per host like the segment ports, so apply
+# the same conservative rule as CHK_QE_ARRAY_PORT_RANGES: every range and
+# single port must be disjoint from every other one, whichever host they
+# land on.  Then make sure nothing listens on them yet.  Entries whose
+# proxy port is 0 (ic-proxy not configured for that role) are ignored, and
+# the whole check is skipped when no entry carries a proxy port.
+#
+CHK_PROXY_PORT_RANGES () {
+	LOG_MSG "[INFO]:-Start Function $FUNCNAME"
+	local MIN_PROXY_PORT=1000000 MAX_PROXY_PORT=0
+	local MIN_MIRROR_PROXY_PORT=1000000 MAX_MIRROR_PROXY_PORT=0
+	local QE P_PORT P_HOST ANY=0
+
+	for QE in ${QE_PRIMARY_ARRAY[@]}; do
+		P_PORT=`$ECHO $QE|$AWK -F"~" '{print $7}'`
+		[ x"" = x"$P_PORT" ] || [ "$P_PORT" -le 0 ] 2>/dev/null && continue
+		ANY=1
+		[ $P_PORT -lt $MIN_PROXY_PORT ] && MIN_PROXY_PORT=$P_PORT
+		[ $P_PORT -gt $MAX_PROXY_PORT ] && MAX_PROXY_PORT=$P_PORT
+	done
+	for QE in ${QE_MIRROR_ARRAY[@]}; do
+		P_PORT=`$ECHO $QE|$AWK -F"~" '{print $7}'`
+		[ x"" = x"$P_PORT" ] || [ "$P_PORT" -le 0 ] 2>/dev/null && continue
+		ANY=1
+		[ $P_PORT -lt $MIN_MIRROR_PROXY_PORT ] && MIN_MIRROR_PROXY_PORT=$P_PORT
+		[ $P_PORT -gt $MAX_MIRROR_PROXY_PORT ] && MAX_MIRROR_PROXY_PORT=$P_PORT
+	done
+	local QD_PROXY_PORT=`$ECHO $QD_PRIMARY_ARRAY|$AWK -F"~" '{print $7}'`
+	[ x"" = x"$QD_PROXY_PORT" ] && QD_PROXY_PORT=0
+	[ "$QD_PROXY_PORT" -gt 0 ] 2>/dev/null && ANY=1
+	local SB_PROXY_PORT=0
+	if [ x"" != x"$STANDBY_HOSTNAME" ] && [ "$QD_PROXY_PORT" -gt 0 ]; then
+		SB_PROXY_PORT=${STANDBY_PROXY_PORT:-$QD_PROXY_PORT}
+	fi
+
+	if [ $ANY -eq 0 ]; then
+		LOG_MSG "[INFO]:-No proxy ports configured, skipping proxy port checks"
+		LOG_MSG "[INFO]:-End Function $FUNCNAME"
+		return 0
+	fi
+
+	# Every participant must have a port once any of them has one; the
+	# mesh is only usable when it is complete.
+	if [ $MAX_PROXY_PORT -eq 0 ]; then
+		ERROR_EXIT "[FATAL]:-Proxy ports are configured but no primary segment has one, check PROXY_PORT_BASE."
+	fi
+	if [ x"" != x"${QE_MIRROR_ARRAY}" ] && [ $MAX_MIRROR_PROXY_PORT -eq 0 ]; then
+		ERROR_EXIT "[FATAL]:-Proxy ports are configured but no mirror segment has one, check MIRROR_PROXY_PORT_BASE."
+	fi
+	if [ "$QD_PROXY_PORT" -le 0 ]; then
+		ERROR_EXIT "[FATAL]:-Proxy ports are configured but the coordinator has none, check COORDINATOR_PROXY_PORT."
+	fi
+
+	# Ranges must not overlap each other, the segment ports or the
+	# coordinator / standby ports.
+	if CHK_OVERLAP $MIN_PROXY_PORT $MAX_PROXY_PORT $MIN_PORT $MAX_PORT; then
+		ERROR_EXIT "[FATAL]:-PROXY_PORT_BASE range ($MIN_PROXY_PORT-$MAX_PROXY_PORT) overlaps with the PORT_BASE range ($MIN_PORT-$MAX_PORT)."
+	fi
+	if CHK_OVERLAP $QD_PROXY_PORT $QD_PROXY_PORT $MIN_PROXY_PORT $MAX_PROXY_PORT; then
+		ERROR_EXIT "[FATAL]:-COORDINATOR_PROXY_PORT ($QD_PROXY_PORT) overlaps with the PROXY_PORT_BASE range ($MIN_PROXY_PORT-$MAX_PROXY_PORT)."
+	fi
+	if CHK_OVERLAP $QD_PROXY_PORT $QD_PROXY_PORT $MIN_PORT $MAX_PORT; then
+		ERROR_EXIT "[FATAL]:-COORDINATOR_PROXY_PORT ($QD_PROXY_PORT) overlaps with the PORT_BASE range ($MIN_PORT-$MAX_PORT)."
+	fi
+	if [ $QD_PROXY_PORT -eq $COORDINATOR_PORT ]; then
+		ERROR_EXIT "[FATAL]:-COORDINATOR_PROXY_PORT ($QD_PROXY_PORT) is the same as COORDINATOR_PORT."
+	fi
+	if CHK_OVERLAP $COORDINATOR_PORT $COORDINATOR_PORT $MIN_PROXY_PORT $MAX_PROXY_PORT; then
+		ERROR_EXIT "[FATAL]:-COORDINATOR_PORT ($COORDINATOR_PORT) overlaps with the PROXY_PORT_BASE range ($MIN_PROXY_PORT-$MAX_PROXY_PORT)."
+	fi
+	if [ $MAX_MIRROR_PROXY_PORT -gt 0 ]; then
+		if CHK_OVERLAP $MIN_MIRROR_PROXY_PORT $MAX_MIRROR_PROXY_PORT $MIN_PROXY_PORT $MAX_PROXY_PORT; then
+			ERROR_EXIT "[FATAL]:-MIRROR_PROXY_PORT_BASE range ($MIN_MIRROR_PROXY_PORT-$MAX_MIRROR_PROXY_PORT) overlaps with the PROXY_PORT_BASE range ($MIN_PROXY_PORT-$MAX_PROXY_PORT)."
+		fi
+		if CHK_OVERLAP $MIN_MIRROR_PROXY_PORT $MAX_MIRROR_PROXY_PORT $MIN_PORT $MAX_PORT; then
+			ERROR_EXIT "[FATAL]:-MIRROR_PROXY_PORT_BASE range ($MIN_MIRROR_PROXY_PORT-$MAX_MIRROR_PROXY_PORT) overlaps with the PORT_BASE range ($MIN_PORT-$MAX_PORT)."
+		fi
+		if CHK_OVERLAP $MIN_MIRROR_PROXY_PORT $MAX_MIRROR_PROXY_PORT $MIN_MIRROR_PORT $MAX_MIRROR_PORT; then
+			ERROR_EXIT "[FATAL]:-MIRROR_PROXY_PORT_BASE range ($MIN_MIRROR_PROXY_PORT-$MAX_MIRROR_PROXY_PORT) overlaps with the MIRROR_PORT_BASE range ($MIN_MIRROR_PORT-$MAX_MIRROR_PORT)."
+		fi
+		if CHK_OVERLAP $QD_PROXY_PORT $QD_PROXY_PORT $MIN_MIRROR_PROXY_PORT $MAX_MIRROR_PROXY_PORT; then
+			ERROR_EXIT "[FATAL]:-COORDINATOR_PROXY_PORT ($QD_PROXY_PORT) overlaps with the MIRROR_PROXY_PORT_BASE range ($MIN_MIRROR_PROXY_PORT-$MAX_MIRROR_PROXY_PORT)."
+		fi
+		if CHK_OVERLAP $COORDINATOR_PORT $COORDINATOR_PORT $MIN_MIRROR_PROXY_PORT $MAX_MIRROR_PROXY_PORT; then
+			ERROR_EXIT "[FATAL]:-COORDINATOR_PORT ($COORDINATOR_PORT) overlaps with the MIRROR_PROXY_PORT_BASE range ($MIN_MIRROR_PROXY_PORT-$MAX_MIRROR_PROXY_PORT)."
+		fi
+	fi
+	if [ x"" != x"$MIRROR_PORT_BASE" ] && [ x"" != x"$MIN_MIRROR_PORT" ]; then
+		if CHK_OVERLAP $MIN_PROXY_PORT $MAX_PROXY_PORT $MIN_MIRROR_PORT $MAX_MIRROR_PORT; then
+			ERROR_EXIT "[FATAL]:-PROXY_PORT_BASE range ($MIN_PROXY_PORT-$MAX_PROXY_PORT) overlaps with the MIRROR_PORT_BASE range ($MIN_MIRROR_PORT-$MAX_MIRROR_PORT)."
+		fi
+		if CHK_OVERLAP $QD_PROXY_PORT $QD_PROXY_PORT $MIN_MIRROR_PORT $MAX_MIRROR_PORT; then
+			ERROR_EXIT "[FATAL]:-COORDINATOR_PROXY_PORT ($QD_PROXY_PORT) overlaps with the MIRROR_PORT_BASE range ($MIN_MIRROR_PORT-$MAX_MIRROR_PORT)."
+		fi
+	fi
+	if [ $SB_PROXY_PORT -gt 0 ]; then
+		local SB_PORT=${STANDBY_PORT:-$COORDINATOR_PORT}
+		if [ $SB_PROXY_PORT -eq $QD_PROXY_PORT ] && STANDBY_SHARES_COORDINATOR_ADDRESS; then
+			ERROR_EXIT "[FATAL]:-The standby coordinator ($STANDBY_HOSTNAME) is on the coordinator host ($COORDINATOR_HOSTNAME), set STANDBY_PROXY_PORT to a port other than COORDINATOR_PROXY_PORT ($QD_PROXY_PORT)."
+		fi
+		if [ $SB_PROXY_PORT -eq $SB_PORT ] || [ $SB_PROXY_PORT -eq $COORDINATOR_PORT ]; then
+			ERROR_EXIT "[FATAL]:-STANDBY_PROXY_PORT ($SB_PROXY_PORT) is the same as a coordinator port."
+		fi
+		if CHK_OVERLAP $SB_PROXY_PORT $SB_PROXY_PORT $MIN_PROXY_PORT $MAX_PROXY_PORT || CHK_OVERLAP $SB_PROXY_PORT $SB_PROXY_PORT $MIN_PORT $MAX_PORT; then
+			ERROR_EXIT "[FATAL]:-STANDBY_PROXY_PORT ($SB_PROXY_PORT) overlaps with a segment port range."
+		fi
+		if [ $MAX_MIRROR_PROXY_PORT -gt 0 ] && CHK_OVERLAP $SB_PROXY_PORT $SB_PROXY_PORT $MIN_MIRROR_PROXY_PORT $MAX_MIRROR_PROXY_PORT; then
+			ERROR_EXIT "[FATAL]:-STANDBY_PROXY_PORT ($SB_PROXY_PORT) overlaps with the MIRROR_PROXY_PORT_BASE range ($MIN_MIRROR_PROXY_PORT-$MAX_MIRROR_PROXY_PORT)."
+		fi
+	fi
+
+	# Nothing may be listening on them already.
+	LOG_MSG "[INFO]:-Checking that the ic-proxy ports are free, please wait..." 1
+	PROXY_PORT_CHK $QD_PROXY_PORT $COORDINATOR_HOSTNAME
+	for QE in ${QE_PRIMARY_ARRAY[@]} ${QE_MIRROR_ARRAY[@]}; do
+		P_PORT=`$ECHO $QE|$AWK -F"~" '{print $7}'`
+		P_HOST=`$ECHO $QE|$AWK -F"~" '{print $1}'`
+		[ x"" = x"$P_PORT" ] || [ "$P_PORT" -le 0 ] 2>/dev/null && continue
+		PROXY_PORT_CHK $P_PORT $P_HOST
+	done
+	if [ $SB_PROXY_PORT -gt 0 ]; then
+		PROXY_PORT_CHK $SB_PROXY_PORT $STANDBY_HOSTNAME
+	fi
+	LOG_MSG "[INFO]:-End Function $FUNCNAME"
+}
+
+#
+# WRITE_PROXY_MESH:
+#
+# After the cluster is fully up (mirrors registered, standby created),
+# derive gp_interconnect_proxy_addresses from the in-memory QD / QE
+# primary / QE mirror arrays and persist it to every segment's
+# postgresql.conf via gpconfig + gpstop -u to activate.
+#
+# Mesh format: dbid:content:hostname:port,dbid:content:hostname:port,...
+# Sorted by dbid ascending — convention shared with gp_segment_configuration.
+#
+# Each array entry has 7 ~-delimited fields:
+#     hostname~address~port~datadir~dbid~content~proxy_port
+# The entry names the segment by its address (field 2, the interface
+# name from the hostfile), the column the UDPIFC and TCP interconnects
+# resolve, so that on a multi-NIC host each proxy listens on its own
+# segment's interface rather than all of them on the hostname's.
+# The proxy_port field comes from gpinitsystem's per-host PORT_COUNT
+# offset applied to $PROXY_PORT_BASE (in the -c clusterConfigFile flow)
+# or is inherited from a -O dump (in the -I inputConfigFile flow). If a
+# given entry's proxy_port is 0 (the default when the operator hasn't
+# opted into ic-proxy mesh on that role), the entry is skipped. When
+# all entries are skipped, the mesh is empty and gpconfig is not run —
+# this is the non-proxy default behaviour.
+#
+# The standby coordinator is not in the arrays; its entry is appended
+# from the catalog once CREATE_STANDBY_QD has registered it.  It listens
+# on STANDBY_PROXY_PORT, or on COORDINATOR_PROXY_PORT when that is unset
+# (fine on a dedicated standby host, impossible on the coordinator host).
+#
+# gpconfig goes through its normal path (no --skipvalidation): the GUC is
+# visible in pg_settings now, and gpconfig's quote_string adds the outer
+# single quotes for string GUCs, so we pass $mesh raw rather than
+# "'$mesh'".  gpconfig does not run the GUC's check hook — that happens
+# in every postmaster at the gpstop -u below and at each later start.
+#
+WRITE_PROXY_MESH() {
+	LOG_MSG "[INFO]:-Start Function $FUNCNAME"
+
+	# Build the mesh from whatever proxy ports are present in the arrays.
+	# Both the `-c CLUSTER_CONFIG` path (which populates ports from
+	# PROXY_PORT_BASE) and the `-I INPUT_CONFIG` path (which inherits
+	# them from a previously dumped configuration) reach here with
+	# entries that already carry the proxy port in field 7. If nothing
+	# in the cluster has a proxy port, the mesh stays empty and we no-op.
+
+	# Collect entries from QD + QE primary + QE mirror arrays.
+	# Drop any entry whose proxy port is 0 (meaning unconfigured for that seg).
+	local mesh=""
+	local ALL_ENTRIES=("$QD_PRIMARY_ARRAY" "${QE_PRIMARY_ARRAY[@]}")
+	if [ ${#QE_MIRROR_ARRAY[@]} -gt 0 ]; then
+		ALL_ENTRIES=("${ALL_ENTRIES[@]}" "${QE_MIRROR_ARRAY[@]}")
+	fi
+
+	local entry M_HOST M_DBID M_CONTENT M_PROXY
+	for entry in "${ALL_ENTRIES[@]}"; do
+		M_HOST=`$ECHO $entry|$AWK -F"~" '{print $2}'`
+		M_DBID=`$ECHO $entry|$AWK -F"~" '{print $5}'`
+		M_CONTENT=`$ECHO $entry|$AWK -F"~" '{print $6}'`
+		M_PROXY=`$ECHO $entry|$AWK -F"~" '{print $7}'`
+		if [ x"" = x"$M_PROXY" ] || [ "$M_PROXY" -eq 0 ] 2>/dev/null; then
+			LOG_MSG "[WARN]:-dbid=$M_DBID content=$M_CONTENT has no proxy port; skipping mesh entry" 1
+			continue
+		fi
+		if [ x"" = x"$mesh" ]; then
+			mesh="${M_DBID}:${M_CONTENT}:${M_HOST}:${M_PROXY}"
+		else
+			mesh="${mesh},${M_DBID}:${M_CONTENT}:${M_HOST}:${M_PROXY}"
+		fi
+	done
+
+	if [ x"" = x"$mesh" ]; then
+		LOG_MSG "[WARN]:-No valid proxy mesh entries assembled; skipping gpconfig" 1
+		LOG_MSG "[INFO]:-End Function $FUNCNAME"
+		return 0
+	fi
+
+	# The standby coordinator: the segments dial the coordinator by the
+	# address recorded for its dbid, so after a promotion the standby's
+	# dbid must be in the mesh too.  Its dbid is whatever gpinitstandby
+	# registered, so read it back from the catalog.
+	local M_COORDINATOR_PROXY=`$ECHO $QD_PRIMARY_ARRAY|$AWK -F"~" '{print $7}'`
+	if [ x"" != x"$STANDBY_HOSTNAME" ] && [ "$STANDBY_RET_CODE" -eq 0 ] 2>/dev/null && [ "$M_COORDINATOR_PROXY" -gt 0 ] 2>/dev/null; then
+		local STANDBY_PROXY=${STANDBY_PROXY_PORT:-$M_COORDINATOR_PROXY}
+		local STANDBY_DBID=`env PGOPTIONS="-c gp_role=utility" $PSQL -p $COORDINATOR_PORT -d template1 -X -A -t -c "SELECT dbid FROM gp_segment_configuration WHERE content = -1 AND role = 'm';" 2>>${LOG_FILE}`
+		if [ x"" = x"$STANDBY_DBID" ]; then
+			LOG_MSG "[WARN]:-Could not find the standby coordinator in gp_segment_configuration; add its gp_interconnect_proxy_addresses entry manually" 1
+		elif [ "$STANDBY_PROXY" -eq "$M_COORDINATOR_PROXY" ] && STANDBY_SHARES_COORDINATOR_ADDRESS; then
+			LOG_MSG "[WARN]:-Standby coordinator shares host $COORDINATOR_HOSTNAME with the coordinator; set STANDBY_PROXY_PORT to a free port, or add the standby's gp_interconnect_proxy_addresses entry (dbid $STANDBY_DBID) manually" 1
+		else
+			mesh="${mesh},${STANDBY_DBID}:-1:${STANDBY_HOSTNAME}:${STANDBY_PROXY}"
+		fi
+	fi
+
+	LOG_MSG "[INFO]:-Setting gp_interconnect_proxy_addresses = $mesh" 1
+	export COORDINATOR_DATA_DIRECTORY=${COORDINATOR_DIRECTORY}/${SEG_PREFIX}-1
+	$GPCONFIG -c gp_interconnect_proxy_addresses -v "$mesh"
+	if [ $? -ne 0 ]; then
+		LOG_MSG "[WARN]:-gpconfig failed to set gp_interconnect_proxy_addresses; the GUC must be set manually before enabling ic-proxy" 1
+		LOG_MSG "[INFO]:-End Function $FUNCNAME"
+		return 0
+	fi
+
+	# gpconfig only edits postgresql.conf; the running postmasters still
+	# hold the old (empty) value. Signal each one so the GUC is validated
+	# and the bgworker that manages the ic-proxy mesh re-parses it
+	# immediately and binds its listener.
+	LOG_MSG "[INFO]:-Reloading configuration to activate the proxy mesh" 1
+	$GPSTOP -u >> $LOG_FILE 2>&1
+	if [ $? -ne 0 ]; then
+		LOG_MSG "[WARN]:-gpstop -u failed; run it manually to activate the new gp_interconnect_proxy_addresses value" 1
+	fi
+	LOG_MSG "[INFO]:-End Function $FUNCNAME"
+}
+
 SET_DCA_CONFIG_SETTINGS () {
 	LOG_MSG "[INFO]:-Setting DCA specific configuration values..." 1
 	local coordinator_data_directory="${COORDINATOR_DIRECTORY}/${SEG_PREFIX}-1"
@@ -1957,6 +2290,7 @@ if [ x"$INPUT_CONFIG" != x"" ] ; then
     CHK_GPDB_ID
     CHK_PARAMS
     CHK_QE_ARRAY_PORT_RANGES
+    CHK_PROXY_PORT_RANGES
     CHK_QES_FROM_INPUTFILE
 
     if [ x"" != x"$OUTPUT_CONFIG" ] ; then
@@ -1972,6 +2306,7 @@ else
     CHK_MULTI_HOME
     CREATE_QE_ARRAY
     CHK_QE_ARRAY_PORT_RANGES
+    CHK_PROXY_PORT_RANGES
     CHK_QES
 
     if [ x"" != x"$OUTPUT_CONFIG" ] ; then
@@ -2023,6 +2358,8 @@ fi
 if [ x"" != x"$STANDBY_HOSTNAME" ];then
 	CREATE_STANDBY_QD
 fi
+
+WRITE_PROXY_MESH
 
 SCAN_LOG
 LOG_MSG "[INFO]:-Greenplum Database instance successfully created" 1
