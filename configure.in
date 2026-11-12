@@ -865,7 +865,7 @@ AS_IF([test "$enable_orca" = yes || test "$enable_gpcloud" = yes],
 # ic-proxy
 #
 PGAC_ARG_BOOL(enable, ic-proxy, no,
-              [enable interconnect proxy mode (requires libuv library)],
+              [enable interconnect proxy mode (requires libuv library and --with-openssl)],
               [AC_DEFINE(ENABLE_IC_PROXY, 1,
                          [Define to 1 to build with ic-proxy support (--enable-ic-proxy)])])
 AC_SUBST(enable_ic_proxy)
@@ -1443,6 +1443,12 @@ fi
 if test "$enable_ic_proxy" = yes; then
   AC_CHECK_LIB(uv, uv_default_loop, [],
                [AC_MSG_ERROR([libuv library not found, it is required by --enable-ic-proxy.])])
+  # The ic-proxy peer connections can be protected with TLS
+  # (gp_interconnect_proxy_tls_enable); that code links OpenSSL
+  # unconditionally.
+  if test "$with_openssl" != yes; then
+    AC_MSG_ERROR([--enable-ic-proxy requires --with-openssl.])
+  fi
 fi
 
 if test "$enable_spinlocks" = yes; then
