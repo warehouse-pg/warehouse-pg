@@ -5369,12 +5369,42 @@ create_modifytable_path(PlannerInfo *root, RelOptInfo *rel,
 	else
 	{
 		/* don't allow split updates in utility mode. */
-		if (Gp_role == GP_ROLE_UTILITY && operation == CMD_UPDATE &&
-			list_member_int(is_split_updates, (int) true))
+		if (Gp_role == GP_ROLE_UTILITY && operation == CMD_UPDATE)
 		{
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("cannot update distribution key columns in utility mode")));
+			bool		needs_split_update = false;
+			bool		dist_key_updated = false;
+			ListCell   *lc_rel;
+			ListCell   *lc_split;
+
+			forboth(lc_rel, resultRelations, lc_split, is_split_updates)
+			{
+				Index		rti = lfirst_int(lc_rel);
+
+				if (lfirst_int(lc_split) == (int) false)
+					continue;
+
+				needs_split_update = true;
+
+				if (is_dist_key_updated(planner_rt_fetch(rti, root)))
+				{
+					dist_key_updated = true;
+					break;
+				}
+			}
+
+			if (needs_split_update)
+			{
+				if (dist_key_updated)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("cannot update distribution key columns in utility mode")));
+				else
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("updates changing tuples distribution across segments can not be executed in utility mode"),
+							 errdetail("Leaf partitions of updated table have different distributions, so update on partitioning "
+									   "column may force tuple routing across segments.")));
+			}
 		}
 
 		CdbPathLocus_MakeEntry(&pathnode->path.locus);

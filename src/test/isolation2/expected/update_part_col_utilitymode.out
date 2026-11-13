@@ -1,0 +1,35 @@
+CREATE EXTENSION IF NOT EXISTS gp_debug_numsegments;
+CREATE EXTENSION
+
+SELECT gp_debug_set_create_table_default_numsegments(2);
+ gp_debug_set_create_table_default_numsegments 
+-----------------------------------------------
+ 2                                             
+(1 row)
+
+CREATE TABLE rank (id INT, rank INT, year INT, gender CHAR(1), count INT) DISTRIBUTED BY (id) PARTITION BY RANGE (year) ( START (2006) INCLUSIVE END (2008) EXCLUSIVE EVERY (1), DEFAULT PARTITION extra);
+CREATE TABLE
+
+INSERT INTO rank VALUES (543,1,2006,'m',1);
+INSERT 0 1
+INSERT INTO rank VALUES (543,1,2007,'f',1);
+INSERT 0 1
+
+ALTER TABLE rank EXPAND PARTITION PREPARE;
+ALTER TABLE
+
+ALTER TABLE rank_1_prt_2 SET WITH (REORGANIZE=true) DISTRIBUTED BY (id);
+ALTER TABLE
+
+1U: UPDATE rank SET year=2006 WHERE gender='f';
+ERROR:  updates changing tuples distribution across segments can not be executed in utility mode
+DETAIL:  Leaf partitions of updated table have different distributions, so update on partitioning column may force tuple routing across segments.
+
+SELECT gp_debug_reset_create_table_default_numsegments();
+ gp_debug_reset_create_table_default_numsegments 
+-------------------------------------------------
+                                                 
+(1 row)
+
+DROP TABLE rank;
+DROP TABLE

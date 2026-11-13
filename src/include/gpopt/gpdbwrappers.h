@@ -379,6 +379,9 @@ int ListNthInt(List *list, int n);
 // return the nth element in a list of oids
 Oid ListNthOid(List *list, int n);
 
+// return the last element in a list of ints
+int ListLastInt(List *list);
+
 // check whether the given oid is a member of the given list
 bool ListMemberOid(List *list, Oid oid);
 
