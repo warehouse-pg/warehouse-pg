@@ -2674,7 +2674,7 @@ turn_volatile_seggen_to_singleqe(PlannerInfo *root, Path *path, Node *node)
  * done in expand_targetlist() in preptlist.c, but derives the set of changed
  * columns from rte->updatedCols instead of walking the target list.
  */
-static bool
+bool
 is_dist_key_updated(RangeTblEntry *rte)
 {
 	GpPolicy   *targetPolicy;
@@ -2698,9 +2698,6 @@ is_dist_key_updated(RangeTblEntry *rte)
 			}
 		}
 	}
-
-	if (targetPolicy)
-		pfree(targetPolicy);
 
 	return key_col_updated;
 }
