@@ -16,7 +16,7 @@ test: concurrent_partition_table_operations_should_not_deadlock
 
 test: select_dropped_table
 test: update_hash_col_utilitymode execute_on_utilitymode
-test: update_part_col_utilitymode.sql
+test: update_part_col_utilitymode
 
 # Test to check root stats updation
 test: merge_root_stats
