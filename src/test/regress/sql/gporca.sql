@@ -3747,11 +3747,33 @@ begin
 end;
 $$;
 select * from extstats_estimated_rows('select x, y from ndist_t group by x, y');
+-- WHPG: the system column is the only grouping column no statistics object
+-- covers, so ORCA multiplies the (x, y) joint distinct count by its distinct
+-- count undamped: 50 x 3 segments = 150, the actual group count.
 select * from extstats_estimated_rows('select gp_segment_id, x, y from ndist_t group by gp_segment_id, x, y');
 -- without the statistics object both estimates fall back to independence
 drop statistics ndist_t_xy;
 select * from extstats_estimated_rows('select x, y from ndist_t group by x, y');
 select * from extstats_estimated_rows('select gp_segment_id, x, y from ndist_t group by gp_segment_id, x, y');
+-- WHPG: grouping columns that mix a set covered by an ndistinct statistics
+-- object with columns no object covers. ORCA multiplies each object's joint
+-- count by the uncovered columns' counts without damping between them, as the
+-- planner does, and damps only the uncovered columns against each other:
+-- (a, b) covered by ndist_mixed_ab with c uncovered gives 9 x 5 = 45, with d
+-- uncovered 9 x 20 = 180, and (a, b), (c, d) covered by ndist_mixed_ab and
+-- ndist_mixed_cd gives 9 x 20 = 180, all the actual group counts. The planner
+-- reports the same 45 and, for the other two, its 0.1 x reltuples clamp of
+-- 100. Autovacuum is disabled on the table so that an automatic ANALYZE
+-- cannot change the statistics under the test.
+create table ndist_mixed (a int, b int, c int, d int) with (autovacuum_enabled = false) distributed by (a);
+insert into ndist_mixed select mod(g, 3), mod(g, 9), mod(g, 5), mod(g, 20) from generate_series(1, 1000) g;
+create statistics ndist_mixed_ab (ndistinct) on a, b from ndist_mixed;
+create statistics ndist_mixed_cd (ndistinct) on c, d from ndist_mixed;
+analyze ndist_mixed;
+select * from extstats_estimated_rows('select a, b, c from ndist_mixed group by a, b, c');
+select * from extstats_estimated_rows('select a, b, d from ndist_mixed group by a, b, d');
+select * from extstats_estimated_rows('select a, b, c, d from ndist_mixed group by a, b, c, d');
+drop table ndist_mixed;
 drop function extstats_estimated_rows(text);
 drop table ndist_t;
 

@@ -692,7 +692,8 @@ CExtendedStatsProcessor::ApplyCorrelatedStatsToNDistinctCalculation(
 			ULONG colid = *(*src_grouping_cols)[ul];
 
 			INT *attnum = colid_to_attno_mapping->Find(&colid);
-			if (!matched->Get(*attnum))
+			/* a system column never entered 'attnums', so it stays unmatched */
+			if (!FUsableAttno(attnum) || !matched->Get(*attnum))
 			{
 				new_src_grouping_cols->Append(GPOS_NEW(mp) ULONG(colid));
 			}

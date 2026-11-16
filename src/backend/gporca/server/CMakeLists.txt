@@ -169,7 +169,8 @@ StatsFilter-AnyWithNewColStats EquiJoinOnExpr-Supported EquiJoinOnExpr-Unsupport
 
 CCorrelatedStatsTest:
 Correlated-Stat-Function-Dependency Correlated-Stat-Function-Dependency-2 Correlated-Stat-Function-Dependency-3 Correlated-Stat-Function-Dependency-4
-Correlated-Stat-NDistinct Correlated-Stat-NDistinct-2 Correlated-Stat-NDistinct-3 Correlated-Stat-NDistinct-4 Correlated-Stat-NDistinct-5;
+Correlated-Stat-NDistinct Correlated-Stat-NDistinct-2 Correlated-Stat-NDistinct-3 Correlated-Stat-NDistinct-4 Correlated-Stat-NDistinct-5
+Correlated-Stat-NDistinct-7;
 
 CICGMiscTest:
 BroadcastSkewedHashjoin OrderByNullsFirst ConvertHashToRandomSelect ConvertHashToRandomInsert HJN-DeeperOuter CTAS CTAS-Random CheckAsUser
