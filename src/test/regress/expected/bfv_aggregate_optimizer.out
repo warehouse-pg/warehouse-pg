@@ -2327,7 +2327,7 @@ select count(*) from sagg_t, (select count(*) n from sagg_f where a = 15 and b =
                                              Filter: ((a = 15) AND (b = 3))
                ->  Hash
                      ->  Redistribute Motion 3:3  (slice4; segments: 3)
-                           Hash Key: ((sagg_t.id - 1))::bigint
+                           Hash Key: (sagg_t.id - 1)
                            ->  Seq Scan on sagg_t
  Optimizer: GPORCA
 (17 rows)
