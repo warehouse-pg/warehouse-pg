@@ -2316,7 +2316,7 @@ select count(*) from sagg_t, (select count(*) n from sagg_f where a = 15 and b =
  Aggregate
    ->  Gather Motion 3:1  (slice1; segments: 3)
          ->  Hash Join
-               Hash Cond: ((count()) = ((sagg_t.id - 1))::bigint)
+               Hash Cond: ((count()) = (sagg_t.id - 1))
                ->  Redistribute Motion 1:3  (slice2)
                      Hash Key: (count())
                      ->  Result
@@ -2575,9 +2575,9 @@ select count(*) from agg_vol t, (select a, count(*) c from agg_vol group by a) s
    ->  Gather Motion 3:1  (slice1; segments: 3)
          ->  Partial Aggregate
                ->  Hash Join
-                     Hash Cond: ((t.b)::bigint = (count()))
+                     Hash Cond: (t.b = (count()))
                      ->  Redistribute Motion 3:3  (slice2; segments: 3)
-                           Hash Key: (t.b)::bigint
+                           Hash Key: t.b
                            ->  Seq Scan on agg_vol t
                      ->  Hash
                            ->  Redistribute Motion 3:3  (slice3; segments: 3)
