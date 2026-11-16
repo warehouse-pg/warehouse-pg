@@ -3852,6 +3852,100 @@ select enable_xform(xname) from xform_seg_eval order by id;
 insert into xform_seg_eval select 9, disable_xform('CXformSelect2IndexGet' || substr(relname::text, 1, 0)) from pg_class where relname = 'pg_class' returning xname;
 drop table xform_seg_eval;
 
+-- WHPG (PTT-2105): a cross-type equality keeps its native operator in GPORCA's
+-- hash join when the operator's hash opfamily is the distribution opfamily of
+-- both types, as the Postgres-based planner already does: each side is hashed
+-- as it is, with no cast. Casting the text side to name would truncate it to
+-- 63 bytes, so rows 1 and 3 below (70-byte and multibyte values) would match
+-- the name their text value starts with -- in the join and in DELETE/UPDATE.
+-- Unlike warehouse-pg-next, WHPG7 has no collation-mismatch fallback for this
+-- type pair, so these cases are planned by GPORCA end to end, not only through
+-- the CJoinPredTest minidumps.
+create table cx_text (id int, k text, v varchar, c char(70)) distributed by (id);
+create table cx_name (id int, n name) distributed by (id);
+create table cx_name2 (id int, n name) distributed by (id);
+insert into cx_text values
+  (1, repeat('x', 70), repeat('x', 70), repeat('x', 70)),
+  (2, 'short', 'short', 'short'),
+  (3, repeat('é', 40), repeat('é', 40), repeat('é', 40));
+insert into cx_name values (1, repeat('x', 63)), (2, 'short'), (3, repeat('é', 31));
+insert into cx_name2 select * from cx_name;
+analyze cx_text;
+analyze cx_name;
+analyze cx_name2;
+-- only row 2 is equal on both sides
+explain (costs off)
+select t.id, n.id from cx_text t join cx_name n on t.k = n.n;
+select t.id, n.id from cx_text t join cx_name n on t.k = n.n order by 1;
+select t.id, n.id from cx_name n join cx_text t on n.n = t.k order by 1;
+-- varchar and char(n) reach the same text-family cross-type operator
+explain (costs off)
+select t.id, n.id from cx_text t join cx_name n on t.v = n.n;
+select t.id, n.id from cx_text t join cx_name n on t.v = n.n order by 1;
+select t.id, n.id from cx_text t join cx_name n on t.c = n.n order by 1;
+-- LEFT JOIN: the right side's non-matching rows are NULL-extended, not matched
+select t.id, n.id from cx_text t left join cx_name n on t.k = n.n order by 1;
+-- a 3-way join carries the same equality through a second join
+select t.id, n2.id from cx_text t join cx_name n on t.k = n.n
+  join cx_name2 n2 on n.n = n2.n order by 1;
+-- semi join / anti join (IN / NOT EXISTS) over the same cross-type equality
+select id from cx_name where n in (select v from cx_text) order by 1;
+select id from cx_name where n in (select c from cx_text) order by 1;
+select id from cx_text t where exists (select 1 from cx_name n where t.k = n.n)
+  order by 1;
+select id from cx_text t
+  where not exists (select 1 from cx_name n where t.k = n.n) order by 1;
+-- DELETE and UPDATE over the join change only row 2
+begin;
+delete from cx_text t using cx_name n where t.k = n.n;
+select id from cx_text order by 1;
+rollback;
+begin;
+update cx_text t set id = t.id + 100 from cx_name n where t.k = n.n;
+select id from cx_text order by 1;
+rollback;
+drop table cx_text, cx_name, cx_name2;
+
+-- WHPG (PTT-2105): integer types share the hash opfamily integer_ops: no
+-- cast, and two tables distributed by an int4 and an int2 key are joined
+-- without redistributing either side.
+create table cx_i8 (id int, x int8) distributed by (id);
+create table cx_i4 (id int, y int4) distributed by (id);
+create table cx_i4k (k int4) distributed by (k);
+create table cx_i2k (k int2) distributed by (k);
+insert into cx_i8 select i, i from generate_series(1, 100) i;
+insert into cx_i8 values (101, 4294967297), (102, null);
+insert into cx_i4 select i, i from generate_series(1, 100, 2) i;
+insert into cx_i4 values (101, 1), (102, null);
+insert into cx_i4k select i from generate_series(1, 100) i;
+insert into cx_i2k select i from generate_series(1, 100, 2) i;
+analyze cx_i8;
+analyze cx_i4;
+analyze cx_i4k;
+analyze cx_i2k;
+explain (costs off)
+select count(*) from cx_i8 a join cx_i4 b on a.x = b.y;
+select count(*) from cx_i8 a join cx_i4 b on a.x = b.y;
+explain (costs off)
+select count(*) from cx_i4k a join cx_i2k b on a.k = b.k;
+select count(*) from cx_i4k a join cx_i2k b on a.k = b.k;
+-- IS NOT DISTINCT FROM between integer types, and between types without a
+-- common hash opfamily (timestamp and date), is planned by GPORCA
+explain (costs off)
+select count(*) from cx_i8 a join cx_i4 b on a.x is not distinct from b.y;
+select count(*) from cx_i8 a join cx_i4 b on a.x is not distinct from b.y;
+create table cx_ts (id int, x timestamp) distributed by (id);
+create table cx_d (id int, y date) distributed by (id);
+insert into cx_ts select i, '2026-01-01'::timestamp + (i || ' hours')::interval
+  from generate_series(0, 100) i;
+insert into cx_d select i, '2026-01-01'::date + i from generate_series(0, 5) i;
+analyze cx_ts;
+analyze cx_d;
+explain (costs off)
+select count(*) from cx_ts a join cx_d b on a.x is not distinct from b.y;
+select count(*) from cx_ts a join cx_d b on a.x is not distinct from b.y;
+drop table cx_i8, cx_i4, cx_i4k, cx_i2k, cx_ts, cx_d;
+
 -- start_ignore
 DROP SCHEMA orca CASCADE;
 -- end_ignore
