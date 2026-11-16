@@ -261,6 +261,10 @@ unsigned int GetComparisonType(Oid op_oid);
 // get scalar comparison between given types
 Oid GetComparisonOperator(Oid left_oid, Oid right_oid, unsigned int cmpt);
 
+// get the input type of the type's default btree operator class (the type
+// itself, or the type it is binary coercible to, e.g. text for varchar)
+Oid GetDefaultBtreeOpclassInputType(Oid type_oid);
+
 // get equality operator for given type
 Oid GetEqualityOp(Oid type_oid);
 

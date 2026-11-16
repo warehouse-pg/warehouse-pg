@@ -20,9 +20,12 @@
 #include "gpopt/operators/CScalarArrayCoerceExpr.h"
 #include "gpopt/operators/CScalarCast.h"
 #include "gpopt/operators/CScalarIdent.h"
+#include "gpopt/operators/CScalarIsDistinctFrom.h"
 #include "naucrates/md/CMDArrayCoerceCastGPDB.h"
 #include "naucrates/md/IMDCast.h"
 #include "naucrates/md/IMDIndex.h"
+#include "naucrates/md/IMDScalarOp.h"
+#include "naucrates/md/IMDType.h"
 
 using namespace gpopt;
 using namespace gpmd;
@@ -273,6 +276,39 @@ CCastUtils::PexprAddCast(CMemoryPool *mp, CExpression *pexprPred)
 	if (fTypesEqual || !(fCastLtoR || fCastRtoL))
 	{
 		return pexprNewPred;
+	}
+
+	// WHPG: a cross-type equality whose operator is in the hash opfamily that
+	// both input types distribute by needs no cast: the opfamily guarantees that
+	// each type's own hash function gives equal values equal hashes (text and
+	// name in text_ops, int2, int4 and int8 in integer_ops), so each side is
+	// hashed as it is, as the Postgres planner does.  A cast can change the
+	// values: text -> name truncates to NAMEDATALEN - 1 bytes.  This relies on
+	// opfamily-aware distribution: the hashed distribution then records the
+	// opfamily, and a Redistribute Motion takes each key's hash function from
+	// that opfamily for the key's own type (hashtext for text, hashname for
+	// name).  Without it, each key is hashed with its type's own distribution
+	// function, nothing makes the two agree, and the cast below is what makes
+	// the keys hash alike.
+	if (GPOS_FTRACE(EopttraceConsiderOpfamiliesForDistribution))
+	{
+		IMDId *mdid_op =
+			CUtils::FScalarCmp(pexprChild)
+				? CScalarCmp::PopConvert(pexprChild->Pop())->MdIdOp()
+				: CScalarIsDistinctFrom::PopConvert(pexprChild->Pop())
+					  ->MdIdOp();
+		IMDId *op_hash_opfamily =
+			md_accessor->RetrieveScOp(mdid_op)->HashOpfamilyMdid();
+		if (nullptr != op_hash_opfamily &&
+			CUtils::Equals(op_hash_opfamily,
+						   md_accessor->RetrieveType(mdid_type_left)
+							   ->GetDistrOpfamilyMdid()) &&
+			CUtils::Equals(op_hash_opfamily,
+						   md_accessor->RetrieveType(mdid_type_right)
+							   ->GetDistrOpfamilyMdid()))
+		{
+			return pexprNewPred;
+		}
 	}
 
 	// To perform explicit cast on the hash join condition,

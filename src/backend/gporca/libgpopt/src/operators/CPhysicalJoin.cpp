@@ -806,6 +806,18 @@ CPhysicalJoin::AlignJoinKeyOuterInner(CExpression *pexprPred,
 
 		GPOS_ASSERT(pcrsInner->ContainsAll(pcrsPredOuter));
 		*ppexprKeyInner = pexprOuterKeyWithoutBCC;
+
+		// WHPG: the keys are swapped, so compare them with the commutator: a
+		// cross-type operator such as text = name then still gets arguments of
+		// its input types (name = text) instead of casts, which may change the
+		// values.
+		CMDAccessor *md_accessor = COptCtxt::PoctxtFromTLS()->Pmda();
+		IMDId *mdid_commute =
+			md_accessor->RetrieveScOp(*mdid_scop)->GetCommuteOpMdid();
+		if (nullptr != mdid_commute && mdid_commute->IsValid())
+		{
+			*mdid_scop = mdid_commute;
+		}
 	}
 }
 

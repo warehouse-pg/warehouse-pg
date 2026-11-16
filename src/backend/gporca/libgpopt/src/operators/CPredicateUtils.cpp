@@ -30,6 +30,7 @@
 #include "gpopt/operators/CScalarCmp.h"
 #include "gpopt/operators/CScalarFunc.h"
 #include "gpopt/operators/CScalarIdent.h"
+#include "gpopt/operators/CScalarIsDistinctFrom.h"
 #include "gpopt/operators/CScalarNullTest.h"
 #include "naucrates/dxl/gpdb_types.h"
 #include "naucrates/md/CMDArrayCoerceCastGPDB.h"
@@ -1711,14 +1712,19 @@ CPredicateUtils::FOpInOpfamily(IMDId *col_mdid, CExpression *pexpr,
 {
 	GPOS_ASSERT(nullptr != pexpr);
 
-	// base case: expression has a comparison operator
-	if (CUtils::FScalarCmp(pexpr))
+	// base case: expression has a comparison operator, or IS DISTINCT FROM,
+	// whose operator is the equality operator of its arguments
+	if (CUtils::FScalarCmp(pexpr) ||
+		COperator::EopScalarIsDistinctFrom == pexpr->Pop()->Eopid())
 	{
 		CMDAccessor *mda = COptCtxt::PoctxtFromTLS()->Pmda();
 
 		// retrieve scalar operator
-		CScalarCmp *popScCmp = CScalarCmp::PopConvert(pexpr->Pop());
-		const IMDScalarOp *op = mda->RetrieveScOp(popScCmp->MdIdOp());
+		IMDId *mdid_op =
+			CUtils::FScalarCmp(pexpr)
+				? CScalarCmp::PopConvert(pexpr->Pop())->MdIdOp()
+				: CScalarIsDistinctFrom::PopConvert(pexpr->Pop())->MdIdOp();
+		const IMDScalarOp *op = mda->RetrieveScOp(mdid_op);
 
 		// retieve column's opfamily
 		const IMDType *col_type = mda->RetrieveType(col_mdid);
