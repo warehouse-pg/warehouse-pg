@@ -935,6 +935,24 @@ gpdb::GetComparisonOperator(Oid left_oid, Oid right_oid, unsigned int cmpt)
 }
 
 Oid
+gpdb::GetDefaultBtreeOpclassInputType(Oid type_oid)
+{
+	GP_WRAP_START;
+	{
+		/* catalog tables: pg_opclass, pg_type, pg_cast */
+		Oid opclass = GetDefaultOpClass(type_oid, BTREE_AM_OID);
+
+		if (OidIsValid(opclass))
+		{
+			return get_opclass_input_type(opclass);
+		}
+		return InvalidOid;
+	}
+	GP_WRAP_END;
+	return InvalidOid;
+}
+
+Oid
 gpdb::GetEqualityOp(Oid type_oid)
 {
 	GP_WRAP_START;

@@ -2301,6 +2301,32 @@ CTranslatorRelcacheToDXL::RetrieveScCmp(CMemoryPool *mp, IMDId *mdid)
 
 	OID scalar_cmp_oid = gpdb::GetComparisonOperator(left_oid, right_oid, cmpt);
 
+	// WHPG: a type without an operator class of its own compares through the
+	// type it is binary coercible to, as PostgreSQL resolves it: varchar (or a
+	// domain) through text, so varchar against name uses text = name, and GPORCA
+	// adds the relabel to the operator's input type ((v)::text).  With no
+	// operator found for the pair, GPORCA would instead cast one side to the
+	// other's type, and varchar -> name truncates the value.
+	if (InvalidOid == scalar_cmp_oid)
+	{
+		OID left_input_oid = gpdb::GetDefaultBtreeOpclassInputType(left_oid);
+		OID right_input_oid = gpdb::GetDefaultBtreeOpclassInputType(right_oid);
+
+		if (InvalidOid == left_input_oid)
+		{
+			left_input_oid = left_oid;
+		}
+		if (InvalidOid == right_input_oid)
+		{
+			right_input_oid = right_oid;
+		}
+		if (left_input_oid != left_oid || right_input_oid != right_oid)
+		{
+			scalar_cmp_oid = gpdb::GetComparisonOperator(left_input_oid,
+														 right_input_oid, cmpt);
+		}
+	}
+
 	if (InvalidOid == scalar_cmp_oid)
 	{
 		GPOS_RAISE(gpdxl::ExmaMD, gpdxl::ExmiMDCacheEntryNotFound,

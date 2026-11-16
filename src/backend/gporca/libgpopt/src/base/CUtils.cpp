@@ -194,6 +194,38 @@ CUtils::PexprScalarProjectElement(CMemoryPool *mp, CColRef *colref,
 		CExpression(mp, GPOS_NEW(mp) CScalarProjectElement(mp, colref), pexpr);
 }
 
+// WHPG: keep the given comparison operator when no operator compares the two
+// argument types directly and the given one takes them through implicit casts
+// to its declared input types.  The callers pass the query's operator (the
+// parser's choice, or its inverse for a negated subquery); deriving another one
+// would cast one side and can pick a lossy cast (varchar -> name for
+// name = varchar, where the parser chose name = text).  An operator for the
+// exact types needs no cast and still wins.
+static BOOL
+FCmpOpTakesArgs(IMDId *mdid_op, IMDId *left_mdid, IMDId *right_mdid)
+{
+	CMDAccessor *md_accessor = COptCtxt::PoctxtFromTLS()->Pmda();
+	if (CMDAccessorUtils::FCmpExists(md_accessor, left_mdid, right_mdid,
+									 CUtils::ParseCmpType(mdid_op)))
+	{
+		return false;
+	}
+	const IMDScalarOp *op = md_accessor->RetrieveScOp(mdid_op);
+	IMDId *op_left_mdid = op->GetLeftMdid();
+	IMDId *op_right_mdid = op->GetRightMdid();
+	if (nullptr == op_left_mdid || nullptr == op_right_mdid ||
+		!op_left_mdid->IsValid() || !op_right_mdid->IsValid())
+	{
+		return false;
+	}
+	return (op_left_mdid->Equals(left_mdid) ||
+			CMDAccessorUtils::FCastExists(md_accessor, left_mdid,
+										  op_left_mdid)) &&
+		   (op_right_mdid->Equals(right_mdid) ||
+			CMDAccessorUtils::FCastExists(md_accessor, right_mdid,
+										  op_right_mdid));
+}
+
 // generate a comparison expression over two columns
 CExpression *
 CUtils::PexprScalarCmp(CMemoryPool *mp, const CColRef *pcrLeft,
@@ -209,6 +241,14 @@ CUtils::PexprScalarCmp(CMemoryPool *mp, const CColRef *pcrLeft,
 		IMDId *left_mdid = pcrLeft->RetrieveType()->MDId();
 		IMDId *right_mdid = pcrRight->RetrieveType()->MDId();
 
+		if (FCmpOpTakesArgs(mdid_op, left_mdid, right_mdid))
+		{
+			CExpression *pexprScCmp =
+				PexprScalarCmp(mp, PexprScalarIdent(mp, pcrLeft),
+							   PexprScalarIdent(mp, pcrRight), mdid_op);
+			mdid_op->Release();
+			return pexprScCmp;
+		}
 		if (CMDAccessorUtils::FCmpOrCastedCmpExists(left_mdid, right_mdid,
 													cmp_type))
 		{
@@ -243,6 +283,13 @@ CUtils::PexprScalarCmp(CMemoryPool *mp, const CColRef *pcrLeft,
 		IMDId *left_mdid = pcrLeft->RetrieveType()->MDId();
 		IMDId *right_mdid = CScalar::PopConvert(pexprRight->Pop())->MdidType();
 
+		if (FCmpOpTakesArgs(mdid_op, left_mdid, right_mdid))
+		{
+			CExpression *pexprScCmp = PexprScalarCmp(
+				mp, PexprScalarIdent(mp, pcrLeft), pexprRight, mdid_op);
+			mdid_op->Release();
+			return pexprScCmp;
+		}
 		if (CMDAccessorUtils::FCmpOrCastedCmpExists(left_mdid, right_mdid,
 													cmp_type))
 		{
@@ -320,6 +367,13 @@ CUtils::PexprScalarCmp(CMemoryPool *mp, CExpression *pexprLeft,
 		IMDId *left_mdid = CScalar::PopConvert(pexprLeft->Pop())->MdidType();
 		IMDId *right_mdid = pcrRight->RetrieveType()->MDId();
 
+		if (FCmpOpTakesArgs(mdid_op, left_mdid, right_mdid))
+		{
+			CExpression *pexprScCmp = PexprScalarCmp(
+				mp, pexprLeft, PexprScalarIdent(mp, pcrRight), mdid_op);
+			mdid_op->Release();
+			return pexprScCmp;
+		}
 		if (CMDAccessorUtils::FCmpOrCastedCmpExists(left_mdid, right_mdid,
 													cmp_type))
 		{
@@ -354,6 +408,13 @@ CUtils::PexprScalarCmp(CMemoryPool *mp, CExpression *pexprLeft,
 		IMDId *left_mdid = CScalar::PopConvert(pexprLeft->Pop())->MdidType();
 		IMDId *right_mdid = CScalar::PopConvert(pexprRight->Pop())->MdidType();
 
+		if (FCmpOpTakesArgs(mdid_op, left_mdid, right_mdid))
+		{
+			CExpression *pexprScCmp =
+				PexprScalarCmp(mp, pexprLeft, pexprRight, mdid_op);
+			mdid_op->Release();
+			return pexprScCmp;
+		}
 		if (CMDAccessorUtils::FCmpOrCastedCmpExists(left_mdid, right_mdid,
 													cmp_type))
 		{
