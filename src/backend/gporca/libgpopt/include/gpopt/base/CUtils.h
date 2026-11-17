@@ -422,6 +422,13 @@ public:
 		CColRefArray *pdrgpcrInner, COperator::EOperatorId eopidOriginSubq,
 		CExpression *pexprPred = NULL);
 
+	// WHPG: find the Select under a chain of Projects; NULL if none
+	static CExpression *PexprSelectUnderProjects(CExpression *pexpr);
+
+	// WHPG: copy a chain of Projects over a Select without that Select
+	static CExpression *PexprRemoveSelectUnderProjects(CMemoryPool *mp,
+													   CExpression *pexpr);
+
 	// generate a correlated apply for quantified subquery with a known array of inner columns
 	template <class T>
 	static CExpression *PexprLogicalCorrelatedQuantifiedApply(
@@ -718,8 +725,10 @@ public:
 	// returns the expression under the Nth project element of a CLogicalProject
 	static CExpression *PNthProjectElementExpr(CExpression *pexpr, ULONG ul);
 
-	// check if the Project list has an inner reference assuming project list has one projecet element
-	static BOOL FInnerRefInProjectList(CExpression *pexpr);
+	// WHPG: returns the expression under the project element of a
+	// CLogicalProject that defines colref, or NULL if there is none
+	static CExpression *PexprProjElemDefining(CExpression *pexpr,
+											  const CColRef *colref);
 
 	// Check if expression tree has a col being referenced in the CColRefSet passed as input
 	static BOOL FExprHasAnyCrFromCrs(CExpression *pexpr, CColRefSet *pcrs);
@@ -1148,7 +1157,9 @@ CUtils::PexprLogicalApply(CMemoryPool *mp, CExpression *pexprLeft,
 //		CUtils::PexprLogicalCorrelatedQuantifiedApply
 //
 //	@doc:
-//		Helper to create a left semi correlated apply from left semi apply
+//		Helper to create a left semi correlated apply from left semi apply;
+//		returns NULL (releasing its inputs) if it cannot find the
+//		quantified comparison
 //
 //---------------------------------------------------------------------------
 template <class T>
@@ -1169,7 +1180,40 @@ CUtils::PexprLogicalCorrelatedQuantifiedApply(
 		pexprScalar = PexprScalarConstBool(mp, true /*value*/);
 	}
 
-	if (COperator::EopLogicalSelect != pexprRight->Pop()->Eopid())
+	// WHPG: the subquery unnester puts the quantified comparison in a Select
+	// on top of the inner child, but projections it pulls up afterwards
+	// (CNormalizer::PexprPullUpProjections) can stack Projects above that
+	// Select, e.g. a constant column of a derived table under a LIMIT.
+	// Look through them: had we taken the comparison as pushed down, the
+	// apply would be translated as a scalar subplan and fail as soon as the
+	// inner child returns more than one row.
+	CExpression *pexprSelect = PexprSelectUnderProjects(pexprRight);
+	if (NULL != pexprSelect && pexprSelect != pexprRight)
+	{
+		// a Select found under Projects holds the quantified comparison only
+		// if it uses the subquery's column. The unnester's Select always
+		// does, and the Projects pulled above it cannot define a column it
+		// uses, so we know of no plan where this does not hold; should it
+		// fail anyway, we cannot tell where the comparison is, and taking it
+		// for pushed down would bring back the scalar subplan, so a release
+		// build gives up on this alternative instead
+		CColRefSet *pcrsInner = GPOS_NEW(mp) CColRefSet(mp, pdrgpcrInner);
+		BOOL fUsesInner =
+			pcrsInner->FIntersects((*pexprSelect)[1]->DeriveUsedColumns());
+		pcrsInner->Release();
+		GPOS_ASSERT(fUsesInner &&
+					"Select under Projects does not use the subquery column");
+		if (!fUsesInner)
+		{
+			pexprLeft->Release();
+			pexprRight->Release();
+			pdrgpcrInner->Release();
+			pexprScalar->Release();
+			return NULL;
+		}
+	}
+
+	if (NULL == pexprSelect)
 	{
 		// quantified comparison was pushed down, we create a dummy comparison here
 		GPOS_ASSERT(
@@ -1180,14 +1224,16 @@ CUtils::PexprLogicalCorrelatedQuantifiedApply(
 	}
 	else
 	{
-		// quantified comparison is now on top of inner expression, skip to child
-		(*pexprRight)[1]->AddRef();
-		CExpression *pexprNewPredicate = (*pexprRight)[1];
+		// quantified comparison is now on top of inner expression, remove it
+		// from the inner child and use it as the apply predicate; the
+		// Projects above it cannot define any column it uses
+		(*pexprSelect)[1]->AddRef();
+		CExpression *pexprNewPredicate = (*pexprSelect)[1];
 		pexprScalar->Release();
 		pexprScalar = pexprNewPredicate;
 
-		(*pexprRight)[0]->AddRef();
-		CExpression *pexprChild = (*pexprRight)[0];
+		CExpression *pexprChild =
+			PexprRemoveSelectUnderProjects(mp, pexprRight);
 		pexprRight->Release();
 		pexprRight = pexprChild;
 	}

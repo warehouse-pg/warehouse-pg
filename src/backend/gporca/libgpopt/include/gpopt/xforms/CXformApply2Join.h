@@ -127,6 +127,13 @@ private:
 				return;
 		}
 
+		if (NULL == pexprResult)
+		{
+			// WHPG: no correlated apply could be built (see
+			// CUtils::PexprLogicalCorrelatedQuantifiedApply)
+			return;
+		}
+
 		pxfres->Add(pexprResult);
 	}
 
