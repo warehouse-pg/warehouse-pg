@@ -1016,7 +1016,9 @@ add_first_stage_group_agg_path(PlannerInfo *root,
 	}
 	else if (ctx->hasAggs || ctx->groupClause)
 	{
-		add_path(ctx->partial_rel,
+		Path	   *first_stage_agg_path;
+
+		first_stage_agg_path =
 			(Path *) create_agg_path(root,
 									 ctx->partial_rel,
 									 path,
@@ -1028,7 +1030,24 @@ add_first_stage_group_agg_path(PlannerInfo *root,
 									 NIL,
 									 ctx->agg_partial_costs,
 									 estimate_num_groups_on_segment(ctx->dNumGroupsTotal,
-																	path->rows, path->locus)));
+																	path->rows, path->locus));
+
+		/*
+		 * create_agg_path() keeps all of the input's pathkeys, but the input
+		 * may be sorted on more columns than we group by, e.g. by the Sort +
+		 * Unique of a UNION. Those extra columns are not in the partial Agg's
+		 * output, so a Gather Motion above it could not use them as Merge
+		 * Keys. Keep only the leading pathkeys we asked for; they are known
+		 * to be a prefix of the input's.
+		 */
+		if (is_sorted &&
+			list_length(first_stage_agg_path->pathkeys) >
+			list_length(ctx->partial_needed_pathkeys))
+			first_stage_agg_path->pathkeys =
+				list_truncate(list_copy(first_stage_agg_path->pathkeys),
+							  list_length(ctx->partial_needed_pathkeys));
+
+		add_path(ctx->partial_rel, first_stage_agg_path);
 	}
 	else
 	{

@@ -85,6 +85,29 @@ set enable_hashagg=off;
 explain select a, b, c, sum(d) from olap_test group by grouping sets((a, b), (a), (b, c)) limit 200;
 reset enable_hashagg;
 
+-- The input of the first-stage Agg can be sorted on more columns than the
+-- GROUP BY, here by the Sort + Unique of the UNION on (b, c). Column c is not
+-- in the Partial GroupAggregate's output, so the Gather Motion above it must
+-- merge on b only. This used to fail with "could not find pathkey item to
+-- sort". The bug was in the Postgres planner, so test with it.
+create table olap_union1(a int, b int, c int) distributed by (a);
+create table olap_union2(a int, b int, c int) distributed by (a);
+insert into olap_union1 select g, g % 10, g from generate_series(1, 10000) g;
+insert into olap_union2 select g, g % 10, g * 2 from generate_series(1, 10000) g;
+analyze olap_union1;
+analyze olap_union2;
+set optimizer = off;
+set enable_hashagg = off;
+explain (costs off)
+select b, sum(c) from (select b, c from olap_union1 union select b, c from olap_union2) s
+group by b order by b limit 3;
+select b, sum(c) from (select b, c from olap_union1 union select b, c from olap_union2) s
+group by b order by b limit 3;
+reset enable_hashagg;
+reset optimizer;
+drop table olap_union1;
+drop table olap_union2;
+
 --
 -- Test an optimization in the grouping planner for CREATE TABLE AS, where
 -- partial aggregation results are redistributed directly according to the
