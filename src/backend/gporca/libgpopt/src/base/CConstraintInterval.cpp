@@ -266,9 +266,10 @@ FArrayHasNullConst(CExpression *pexprArray, ULONG ulArity)
 //		CConstraintInterval::PcnstrIntervalFromScalarArrayCmp
 //
 //	@doc:
-//		Create an interval from "col IN (const array)" or "col NOT IN (const
-//		array)". Returns NULL if no interval is derived. Has the side effect
-//		of removing duplicates.
+//		Create an interval from "col = ANY (const array)" (IN), "col <> ALL
+//		(const array)" (NOT IN), "col = ALL (const array)" or "col <> ANY
+//		(const array)". Returns NULL if no interval is derived. Has the side
+//		effect of removing duplicates.
 //
 //		Returns NULL, meaning "no information", also when the array has more
 //		than optimizer_array_interval_threshold items and no NULL constants.
@@ -323,6 +324,15 @@ CConstraintInterval::PcnstrIntervalFromScalarArrayCmp(CMemoryPool *mp,
 		return nullptr;
 	}
 
+	// WHPG: "= ANY" is IN and "<> ALL" is NOT IN.  "= ALL" and "<> ANY" are
+	// not: over two or more distinct values "= ALL" never holds and "<> ANY"
+	// holds for every non-NULL value.  They get their own intervals below.
+	// Returning NULL for them is not safe: an AND drops a child it cannot
+	// derive, and a NOT over that AND would then complement a superset.
+	const BOOL fAll = CScalarArrayCmp::EarrcmpAll == popScArrayCmp->Earrcmpt();
+	const BOOL fEqAll = IMDType::EcmptEq == cmp_type && fAll;
+	const BOOL fNEqAny = IMDType::EcmptNEq == cmp_type && !fAll;
+
 	CExpression *pexprArray = CUtils::PexprScalarArrayChild(pexpr);
 	const ULONG ulArrayExprArity = CUtils::UlScalarArrayArity(pexprArray);
 	if (0 == ulArrayExprArity)
@@ -365,8 +375,73 @@ CConstraintInterval::PcnstrIntervalFromScalarArrayCmp(CMemoryPool *mp,
 	// CDatumSortedSet drops NULL constants and remembers that it saw them
 	const BOOL fArrayHasNull = apdatumsortedset->FIncludesNull();
 
+	const ULONG ulDistinct = apdatumsortedset->Size();
+
 	CConstraintInterval *pci = nullptr;
-	if (IMDType::EcmptEq == cmp_type)
+	if (fEqAll)
+	{
+		// x = ALL (array) is FALSE if a non-NULL element differs from x, TRUE
+		// if every element is x, and NULL otherwise.  So it can pass only
+		// with at most one distinct value, and with a NULL element only when
+		// NULL passes.
+		if (0 == ulDistinct && infer_nulls_as)
+		{
+			// only NULL elements: NULL for every x
+			pci = PciUnbounded(mp, colref, true /*fIncludesNull*/);
+		}
+		else
+		{
+			CRangeArray *prgrng = GPOS_NEW(mp) CRangeArray(mp);
+			if (1 == ulDistinct && (infer_nulls_as || !fArrayHasNull))
+			{
+				// [X, X]
+				(*apdatumsortedset)[0]->AddRef();
+				prgrng->Append(GPOS_NEW(mp) CRange(pcomp, IMDType::EcmptEq,
+												   (*apdatumsortedset)[0]));
+			}
+			pci = GPOS_NEW(mp)
+				CConstraintInterval(mp, colref, prgrng, infer_nulls_as);
+		}
+	}
+	else if (fNEqAny)
+	{
+		// x <> ANY (array) is TRUE if a non-NULL element differs from x,
+		// FALSE if every element is x, and NULL otherwise.  So it holds for
+		// every non-NULL x over two or more distinct values, and for every x
+		// but X over the single value X.  A NULL element can only turn FALSE
+		// into NULL.
+		if (ulDistinct >= 2 || (infer_nulls_as && fArrayHasNull))
+		{
+			pci = PciUnbounded(mp, colref, infer_nulls_as);
+		}
+		else if (0 == ulDistinct)
+		{
+			// only NULL elements, and NULL does not pass
+			pci = GPOS_NEW(mp) CConstraintInterval(
+				mp, colref, GPOS_NEW(mp) CRangeArray(mp), false /*fIncludesNull*/);
+		}
+		else
+		{
+			// (-inf, X) (X, inf)
+			IDatum *datum = (*apdatumsortedset)[0];
+			CRangeArray *prgrng = GPOS_NEW(mp) CRangeArray(mp);
+			datum->AddRef();
+			datum->MDId()->AddRef();
+			prgrng->Append(GPOS_NEW(mp)
+							   CRange(datum->MDId(), pcomp, nullptr,
+									  CRange::EriExcluded, datum,
+									  CRange::EriExcluded));
+			datum->AddRef();
+			datum->MDId()->AddRef();
+			prgrng->Append(GPOS_NEW(mp)
+							   CRange(datum->MDId(), pcomp, datum,
+									  CRange::EriExcluded, nullptr,
+									  CRange::EriExcluded));
+			pci = GPOS_NEW(mp)
+				CConstraintInterval(mp, colref, prgrng, infer_nulls_as);
+		}
+	}
+	else if (IMDType::EcmptEq == cmp_type)
 	{
 		if (infer_nulls_as && fArrayHasNull)
 		{
@@ -677,6 +752,20 @@ CConstraintInterval::PciIntervalFromColConstCmp(CMemoryPool *mp,
 												CScalarConst *popScConst,
 												BOOL infer_nulls_as)
 {
+	// A comparison with NULL is NULL for every row, so the interval holds
+	// every value and NULL when NULLs are inferred as true, and nothing
+	// otherwise.  The ranges built below would treat the NULL datum as an
+	// ordinary value.
+	if (IMDType::EcmptOther != cmp_type && popScConst->GetDatum()->IsNull())
+	{
+		if (infer_nulls_as)
+		{
+			return PciUnbounded(mp, colref, true /*fIncludesNull*/);
+		}
+		return GPOS_NEW(mp) CConstraintInterval(
+			mp, colref, GPOS_NEW(mp) CRangeArray(mp), false /*fIncludesNull*/);
+	}
+
 	CConstraintInterval *pcri = nullptr;
 	CRangeArray *pdrngprng = PciRangeFromColConstCmp(mp, cmp_type, popScConst);
 

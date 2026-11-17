@@ -1077,15 +1077,67 @@ SELECT * FROM bitmap_alt WHERE hash_idx_col IN (3, 5);
 (2 rows)
 
 -- ORCA should generate seq scan plans for the following
+-- WHPG: "= ALL" over two distinct values is never true, and
+-- ORCA plans an empty Result for it (see below); repeat the element so
+-- these queries still check that "= ALL" gets no index path.
 EXPLAIN (COSTS OFF)
-SELECT * FROM bitmap_alt WHERE bitmap_idx_col=ALL(ARRAY[3, 5]);
+SELECT * FROM bitmap_alt WHERE bitmap_idx_col=ALL(ARRAY[3, 3]);
                          QUERY PLAN                          
 -------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Seq Scan on bitmap_alt
-         Filter: (bitmap_idx_col = ALL ('{3,5}'::integer[]))
- Optimizer: Pivotal Optimizer (GPORCA)
+         Filter: (bitmap_idx_col = ALL ('{3,3}'::integer[]))
+ Optimizer: GPORCA
 (4 rows)
+
+SELECT * FROM bitmap_alt WHERE bitmap_idx_col=ALL(ARRAY[3, 3]);
+ id | bitmap_idx_col | btree_idx_col | hash_idx_col 
+----+----------------+---------------+--------------
+  3 |              3 |             3 |            3
+(1 row)
+
+EXPLAIN (COSTS OFF)
+SELECT * FROM bitmap_alt WHERE btree_idx_col=ALL(ARRAY[3, 3]);
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Seq Scan on bitmap_alt
+         Filter: (btree_idx_col = ALL ('{3,3}'::integer[]))
+ Optimizer: GPORCA
+(4 rows)
+
+SELECT * FROM bitmap_alt WHERE btree_idx_col=ALL(ARRAY[3, 3]);
+ id | bitmap_idx_col | btree_idx_col | hash_idx_col 
+----+----------------+---------------+--------------
+  3 |              3 |             3 |            3
+(1 row)
+
+EXPLAIN (COSTS OFF)
+SELECT * FROM bitmap_alt WHERE hash_idx_col=ALL(ARRAY[3, 3]);
+                        QUERY PLAN                         
+-----------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Seq Scan on bitmap_alt
+         Filter: (hash_idx_col = ALL ('{3,3}'::integer[]))
+ Optimizer: GPORCA
+(4 rows)
+
+SELECT * FROM bitmap_alt WHERE hash_idx_col=ALL(ARRAY[3, 3]);
+ id | bitmap_idx_col | btree_idx_col | hash_idx_col 
+----+----------------+---------------+--------------
+  3 |              3 |             3 |            3
+(1 row)
+
+-- WHPG: ORCA derives "= ALL" over two distinct values as a
+-- contradiction and plans an empty Result.
+EXPLAIN (COSTS OFF)
+SELECT * FROM bitmap_alt WHERE bitmap_idx_col=ALL(ARRAY[3, 5]);
+              QUERY PLAN               
+---------------------------------------
+ Result
+   One-Time Filter: false
+ Optimizer: Pivotal Optimizer (GPORCA)
+(3 rows)
 
 SELECT * FROM bitmap_alt WHERE bitmap_idx_col=ALL(ARRAY[3, 5]);
  id | bitmap_idx_col | btree_idx_col | hash_idx_col 
@@ -1094,13 +1146,12 @@ SELECT * FROM bitmap_alt WHERE bitmap_idx_col=ALL(ARRAY[3, 5]);
 
 EXPLAIN (COSTS OFF)
 SELECT * FROM bitmap_alt WHERE btree_idx_col=ALL(ARRAY[3, 5]);
-                         QUERY PLAN                         
-------------------------------------------------------------
- Gather Motion 3:1  (slice1; segments: 3)
-   ->  Seq Scan on bitmap_alt
-         Filter: (btree_idx_col = ALL ('{3,5}'::integer[]))
+              QUERY PLAN               
+---------------------------------------
+ Result
+   One-Time Filter: false
  Optimizer: Pivotal Optimizer (GPORCA)
-(4 rows)
+(3 rows)
 
 SELECT * FROM bitmap_alt WHERE btree_idx_col=ALL(ARRAY[3, 5]);
  id | bitmap_idx_col | btree_idx_col | hash_idx_col 
@@ -1109,13 +1160,12 @@ SELECT * FROM bitmap_alt WHERE btree_idx_col=ALL(ARRAY[3, 5]);
 
 EXPLAIN (COSTS OFF)
 SELECT * FROM bitmap_alt WHERE hash_idx_col=ALL(ARRAY[3, 5]);
-                        QUERY PLAN                         
------------------------------------------------------------
- Gather Motion 3:1  (slice1; segments: 3)
-   ->  Seq Scan on bitmap_alt
-         Filter: (hash_idx_col = ALL ('{3,5}'::integer[]))
+              QUERY PLAN               
+---------------------------------------
+ Result
+   One-Time Filter: false
  Optimizer: Pivotal Optimizer (GPORCA)
-(4 rows)
+(3 rows)
 
 SELECT * FROM bitmap_alt WHERE hash_idx_col=ALL(ARRAY[3, 5]);
  id | bitmap_idx_col | btree_idx_col | hash_idx_col 

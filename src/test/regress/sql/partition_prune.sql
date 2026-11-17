@@ -222,6 +222,8 @@ explain (costs off) select * from coercepart where a = any ('{ab,bc}');
 explain (costs off) select * from coercepart where a = any ('{ab,null}');
 explain (costs off) select * from coercepart where a = any (null::text[]);
 explain (costs off) select * from coercepart where a = all ('{ab}');
+-- WHPG: ORCA derives "= ALL" over two distinct values, or
+-- with a NULL element, as a contradiction, as the planner does.
 explain (costs off) select * from coercepart where a = all ('{ab,bc}');
 explain (costs off) select * from coercepart where a = all ('{ab,null}');
 explain (costs off) select * from coercepart where a = all (null::text[]);
