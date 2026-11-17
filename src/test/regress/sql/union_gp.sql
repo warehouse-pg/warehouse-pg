@@ -712,6 +712,40 @@ select json_data,id from my_table  where json_data->>'age' = '30' union all sele
 set optimizer_parallel_union to off;
 drop table if exists my_table;
 
+-- A UNION ALL branch that is a subquery over a grouped subquery: the
+-- grouped rows come sorted on g, and the branch keeps that order on the
+-- distribution key's equivalence class, but emits only 'a' || g.  The Gather
+-- Motion pushed into the branch must not merge on g, which the branch does
+-- not output (this used to fail with "could not find pathkey item to sort").
+CREATE TABLE union_sorted_sub (k int, v int) DISTRIBUTED BY (k);
+INSERT INTO union_sorted_sub SELECT i % 50, i FROM generate_series(1, 1000) i;
+ANALYZE union_sorted_sub;
+SET optimizer = off;
+SET enable_hashagg = off;
+SET gp_enable_multiphase_agg = off;
+EXPLAIN (COSTS OFF)
+SELECT id, sum(t) FROM (
+  SELECT 'a' || g AS id, t FROM (SELECT v AS g, sum(k) AS t FROM union_sorted_sub GROUP BY v) s
+  UNION ALL
+  SELECT * FROM (SELECT 'b' || k, v FROM union_sorted_sub ORDER BY v LIMIT 3) y
+) z GROUP BY id ORDER BY id LIMIT 3;
+SELECT id, sum(t) FROM (
+  SELECT 'a' || g AS id, t FROM (SELECT v AS g, sum(k) AS t FROM union_sorted_sub GROUP BY v) s
+  UNION ALL
+  SELECT * FROM (SELECT 'b' || k, v FROM union_sorted_sub ORDER BY v LIMIT 3) y
+) z GROUP BY id ORDER BY id LIMIT 3;
+-- When the branch does output g, the pushed Motion still keeps g's order.
+EXPLAIN (COSTS OFF)
+SELECT id, sum(t) FROM (
+  SELECT g, 'a' || g AS id, t FROM (SELECT v AS g, sum(k) AS t FROM union_sorted_sub GROUP BY v) s
+  UNION ALL
+  SELECT * FROM (SELECT v, 'b' || k, v FROM union_sorted_sub ORDER BY v LIMIT 3) y
+) z GROUP BY id ORDER BY id LIMIT 3;
+RESET gp_enable_multiphase_agg;
+RESET enable_hashagg;
+RESET optimizer;
+DROP TABLE union_sorted_sub;
+
 --
 -- Clean up
 --

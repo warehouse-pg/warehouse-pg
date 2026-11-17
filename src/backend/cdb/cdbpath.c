@@ -41,6 +41,7 @@
 #include "cdb/cdbdef.h"			/* CdbSwap() */
 #include "cdb/cdbhash.h"
 #include "cdb/cdbpath.h"		/* me */
+#include "cdb/cdbpullup.h"
 #include "cdb/cdbutil.h"
 #include "cdb/cdbvars.h"
 
@@ -173,6 +174,7 @@ cdbpath_create_motion_path(PlannerInfo *root,
 						   CdbPathLocus locus)
 {
 	CdbMotionPath *pathnode;
+	List	   *subquery_pathkeys = NIL;
 
 	Assert(cdbpathlocus_is_valid(locus) &&
 		   cdbpathlocus_is_valid(subpath->locus));
@@ -529,10 +531,26 @@ cdbpath_create_motion_path(PlannerInfo *root,
 	 */
 
 
+	/*
+	 * WHPG: the Motion pushed below the SubqueryScan becomes the top of the
+	 * subquery's plan, whose target list must be exactly the subquery's
+	 * output.  It can only merge on the part of the subquery's order whose
+	 * keys that output carries: a key such as s.g under "SELECT 'a' || g
+	 * FROM s" is not in the subquery's target list at all.
+	 */
+	if (IsA(subpath, SubqueryScanPath))
+	{
+		Path	   *subquery_path = ((SubqueryScanPath *) subpath)->subpath;
+
+		subquery_pathkeys =
+			cdbpullup_truncatePathKeysForTargetList(subquery_path->pathkeys,
+													make_tlist_from_pathtarget(subquery_path->pathtarget));
+	}
+
     if(IsA(subpath,SubqueryScanPath)
        && CdbPathLocus_IsBottleneck(locus)
        && !subpath->pathkeys
-       && ((SubqueryScanPath *)subpath)->subpath->pathkeys)
+       && subquery_pathkeys)
     {
         /*
          * In gpdb, when there is a Gather Motion on top of a SubqueryScan,
@@ -560,7 +578,7 @@ cdbpath_create_motion_path(PlannerInfo *root,
 
         motionPath = cdbpath_create_motion_path(root,
                                                 subpath,
-                                                subpath->pathkeys,
+                                                subquery_pathkeys,
                                                 true,
                                                 locus);
 
