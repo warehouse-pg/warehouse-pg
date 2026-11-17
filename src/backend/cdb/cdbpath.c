@@ -2699,6 +2699,8 @@ is_dist_key_updated(RangeTblEntry *rte)
 		}
 	}
 
+	pfree(targetPolicy);
+
 	return key_col_updated;
 }
 
