@@ -3048,6 +3048,265 @@ RESET optimizer_join_order;
 LOG:  statement: RESET optimizer_join_order;
 RESET optimizer;
 LOG:  statement: RESET optimizer;
+-- WHPG: a Leading hint next to a FROM item that has no table descriptor (a
+-- VALUES list, a constant subquery, a function scan) used to make GPORCA
+-- fall back: the hint preprocessor dropped such a child from the rebuilt
+-- N-ary join, so the plan could not produce its columns. The child is kept
+-- as an unused child; the plans stay on GPORCA with the hinted order, also
+-- when the VALUES list is the right side of a LEFT JOIN, and the rows match
+-- the planner's.
+SET optimizer = on;
+LOG:  statement: SET optimizer = on;
+/*+
+    Leading((t1 t2))
+ */
+EXPLAIN (costs off) SELECT * FROM t1 JOIN t2 ON t1.a=t2.a, (VALUES (1),(2)) v(x);
+LOG:  statement: /*+
+    Leading((t1 t2))
+ */
+EXPLAIN (costs off) SELECT * FROM t1 JOIN t2 ON t1.a=t2.a, (VALUES (1),(2)) v(x);
+LOG:  2026-11-18 17:29:40:241530 CST,THD000,TRACE,"PlanHint: [
+used hint:
+JoinHint:(t1 t2)
+not used hint:
+]",
+                 QUERY PLAN                  
+---------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Nested Loop
+         Join Filter: true
+         ->  Nested Loop
+               Join Filter: true
+               ->  Seq Scan on t1
+               ->  Index Scan using i2 on t2
+                     Index Cond: (a = t1.a)
+         ->  Values Scan on "Values"
+ Optimizer: GPORCA
+(10 rows)
+
+/*+
+    Leading((t1 t2))
+ */
+EXPLAIN (costs off) SELECT * FROM t1 JOIN t2 ON t1.a=t2.a, (SELECT 1 AS x) v;
+LOG:  statement: /*+
+    Leading((t1 t2))
+ */
+EXPLAIN (costs off) SELECT * FROM t1 JOIN t2 ON t1.a=t2.a, (SELECT 1 AS x) v;
+LOG:  2026-11-18 17:29:40:243514 CST,THD000,TRACE,"PlanHint: [
+used hint:
+JoinHint:(t1 t2)
+not used hint:
+]",
+                 QUERY PLAN                  
+---------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Nested Loop
+         Join Filter: true
+         ->  Nested Loop
+               Join Filter: true
+               ->  Seq Scan on t1
+               ->  Index Scan using i2 on t2
+                     Index Cond: (a = t1.a)
+         ->  Materialize
+               ->  Result
+ Optimizer: GPORCA
+(11 rows)
+
+/*+
+    Leading((t1 t2))
+ */
+EXPLAIN (costs off) SELECT * FROM t1 JOIN t2 ON t1.a=t2.a, generate_series(1,2) g(x);
+LOG:  statement: /*+
+    Leading((t1 t2))
+ */
+EXPLAIN (costs off) SELECT * FROM t1 JOIN t2 ON t1.a=t2.a, generate_series(1,2) g(x);
+LOG:  2026-11-18 17:29:40:245362 CST,THD000,TRACE,"PlanHint: [
+used hint:
+JoinHint:(t1 t2)
+not used hint:
+]",
+                  QUERY PLAN                  
+----------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Nested Loop
+         Join Filter: true
+         ->  Nested Loop
+               Join Filter: true
+               ->  Seq Scan on t1
+               ->  Index Scan using i2 on t2
+                     Index Cond: (a = t1.a)
+         ->  Function Scan on generate_series
+ Optimizer: GPORCA
+(10 rows)
+
+/*+
+    Leading((t1 t2))
+ */
+EXPLAIN (costs off) SELECT * FROM t1 JOIN t2 ON t1.a=t2.a JOIN (VALUES (50),(51)) v(x) ON v.x = t1.b;
+LOG:  statement: /*+
+    Leading((t1 t2))
+ */
+EXPLAIN (costs off) SELECT * FROM t1 JOIN t2 ON t1.a=t2.a JOIN (VALUES (50),(51)) v(x) ON v.x = t1.b;
+LOG:  2026-11-18 17:29:40:247238 CST,THD000,TRACE,"PlanHint: [
+used hint:
+JoinHint:(t1 t2)
+not used hint:
+]",
+                  QUERY PLAN                  
+----------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Hash Join
+         Hash Cond: (t1.b = "Values".column1)
+         ->  Nested Loop
+               Join Filter: true
+               ->  Seq Scan on t1
+               ->  Index Scan using i2 on t2
+                     Index Cond: (a = t1.a)
+         ->  Hash
+               ->  Values Scan on "Values"
+ Optimizer: GPORCA
+(11 rows)
+
+/*+
+    Leading((t1 t2))
+ */
+EXPLAIN (costs off) SELECT * FROM t1 JOIN t2 ON t1.a=t2.a LEFT JOIN t3 ON t1.a=t3.a, (VALUES (1),(2)) v(x);
+LOG:  statement: /*+
+    Leading((t1 t2))
+ */
+EXPLAIN (costs off) SELECT * FROM t1 JOIN t2 ON t1.a=t2.a LEFT JOIN t3 ON t1.a=t3.a, (VALUES (1),(2)) v(x);
+LOG:  2026-11-18 17:29:40:250020 CST,THD000,TRACE,"PlanHint: [
+used hint:
+JoinHint:(t1 t2)
+not used hint:
+]",
+                    QUERY PLAN                     
+---------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Nested Loop Left Join
+         Join Filter: true
+         ->  Nested Loop
+               Join Filter: true
+               ->  Nested Loop
+                     Join Filter: true
+                     ->  Seq Scan on t1
+                     ->  Index Scan using i2 on t2
+                           Index Cond: (a = t1.a)
+               ->  Values Scan on "Values"
+         ->  Index Scan using i3 on t3
+               Index Cond: (a = t1.a)
+ Optimizer: GPORCA
+(14 rows)
+
+/*+
+    Leading((t1 t2))
+ */
+EXPLAIN (costs off) SELECT * FROM t1 JOIN t2 ON t1.a=t2.a LEFT JOIN (VALUES (50),(51)) v(x) ON v.x = t1.b;
+LOG:  statement: /*+
+    Leading((t1 t2))
+ */
+EXPLAIN (costs off) SELECT * FROM t1 JOIN t2 ON t1.a=t2.a LEFT JOIN (VALUES (50),(51)) v(x) ON v.x = t1.b;
+LOG:  2026-11-18 17:29:40:252077 CST,THD000,TRACE,"PlanHint: [
+used hint:
+JoinHint:(t1 t2)
+not used hint:
+]",
+                  QUERY PLAN                  
+----------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Hash Left Join
+         Hash Cond: (t1.b = "Values".column1)
+         ->  Nested Loop
+               Join Filter: true
+               ->  Seq Scan on t1
+               ->  Index Scan using i2 on t2
+                     Index Cond: (a = t1.a)
+         ->  Hash
+               ->  Values Scan on "Values"
+ Optimizer: GPORCA
+(11 rows)
+
+/*+
+    Leading((t1 t2))
+ */
+SELECT * FROM t1 JOIN t2 ON t1.a=t2.a, (VALUES (1),(2)) v(x) ORDER BY 1,2,3,4,5;
+LOG:  statement: /*+
+    Leading((t1 t2))
+ */
+SELECT * FROM t1 JOIN t2 ON t1.a=t2.a, (VALUES (1),(2)) v(x) ORDER BY 1,2,3,4,5;
+LOG:  2026-11-18 17:29:40:253930 CST,THD000,TRACE,"PlanHint: [
+used hint:
+JoinHint:(t1 t2)
+not used hint:
+]",
+ a  | b  | a  | b  | x 
+----+----+----+----+---
+ 50 | 50 | 50 | 50 | 1
+ 50 | 50 | 50 | 50 | 2
+(2 rows)
+
+/*+
+    Leading((t1 t2))
+ */
+SELECT * FROM t1 JOIN t2 ON t1.a=t2.a JOIN (VALUES (50),(51)) v(x) ON v.x = t1.b ORDER BY 1,2,3,4,5;
+LOG:  statement: /*+
+    Leading((t1 t2))
+ */
+SELECT * FROM t1 JOIN t2 ON t1.a=t2.a JOIN (VALUES (50),(51)) v(x) ON v.x = t1.b ORDER BY 1,2,3,4,5;
+LOG:  2026-11-18 17:29:40:256188 CST,THD000,TRACE,"PlanHint: [
+used hint:
+JoinHint:(t1 t2)
+not used hint:
+]",
+ a  | b  | a  | b  | x  
+----+----+----+----+----
+ 50 | 50 | 50 | 50 | 50
+(1 row)
+
+/*+
+    Leading((t1 t2))
+ */
+SELECT * FROM t1 JOIN t2 ON t1.a=t2.a LEFT JOIN (VALUES (50),(51)) v(x) ON v.x = t1.b ORDER BY 1,2,3,4,5;
+LOG:  statement: /*+
+    Leading((t1 t2))
+ */
+SELECT * FROM t1 JOIN t2 ON t1.a=t2.a LEFT JOIN (VALUES (50),(51)) v(x) ON v.x = t1.b ORDER BY 1,2,3,4,5;
+LOG:  2026-11-18 17:29:40:258468 CST,THD000,TRACE,"PlanHint: [
+used hint:
+JoinHint:(t1 t2)
+not used hint:
+]",
+ a  | b  | a  | b  | x  
+----+----+----+----+----
+ 50 | 50 | 50 | 50 | 50
+(1 row)
+
+SET optimizer = off;
+LOG:  statement: SET optimizer = off;
+SELECT * FROM t1 JOIN t2 ON t1.a=t2.a, (VALUES (1),(2)) v(x) ORDER BY 1,2,3,4,5;
+LOG:  statement: SELECT * FROM t1 JOIN t2 ON t1.a=t2.a, (VALUES (1),(2)) v(x) ORDER BY 1,2,3,4,5;
+ a  | b  | a  | b  | x 
+----+----+----+----+---
+ 50 | 50 | 50 | 50 | 1
+ 50 | 50 | 50 | 50 | 2
+(2 rows)
+
+SELECT * FROM t1 JOIN t2 ON t1.a=t2.a JOIN (VALUES (50),(51)) v(x) ON v.x = t1.b ORDER BY 1,2,3,4,5;
+LOG:  statement: SELECT * FROM t1 JOIN t2 ON t1.a=t2.a JOIN (VALUES (50),(51)) v(x) ON v.x = t1.b ORDER BY 1,2,3,4,5;
+ a  | b  | a  | b  | x  
+----+----+----+----+----
+ 50 | 50 | 50 | 50 | 50
+(1 row)
+
+SELECT * FROM t1 JOIN t2 ON t1.a=t2.a LEFT JOIN (VALUES (50),(51)) v(x) ON v.x = t1.b ORDER BY 1,2,3,4,5;
+LOG:  statement: SELECT * FROM t1 JOIN t2 ON t1.a=t2.a LEFT JOIN (VALUES (50),(51)) v(x) ON v.x = t1.b ORDER BY 1,2,3,4,5;
+ a  | b  | a  | b  | x  
+----+----+----+----+----
+ 50 | 50 | 50 | 50 | 50
+(1 row)
+
+RESET optimizer;
+LOG:  statement: RESET optimizer;
 /*+
     Leading((t1 (t2 t3)))
  */

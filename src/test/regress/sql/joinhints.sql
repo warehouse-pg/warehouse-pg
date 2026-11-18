@@ -676,6 +676,56 @@ SELECT * FROM t1, t2, t3 WHERE t1.a = t2.a AND t1.b = t2.b AND t2.a = t3.a ORDER
 RESET optimizer_join_order;
 RESET optimizer;
 
+-- WHPG: a Leading hint next to a FROM item that has no table descriptor (a
+-- VALUES list, a constant subquery, a function scan) used to make GPORCA
+-- fall back: the hint preprocessor dropped such a child from the rebuilt
+-- N-ary join, so the plan could not produce its columns. The child is kept
+-- as an unused child; the plans stay on GPORCA with the hinted order, also
+-- when the VALUES list is the right side of a LEFT JOIN, and the rows match
+-- the planner's.
+SET optimizer = on;
+/*+
+    Leading((t1 t2))
+ */
+EXPLAIN (costs off) SELECT * FROM t1 JOIN t2 ON t1.a=t2.a, (VALUES (1),(2)) v(x);
+/*+
+    Leading((t1 t2))
+ */
+EXPLAIN (costs off) SELECT * FROM t1 JOIN t2 ON t1.a=t2.a, (SELECT 1 AS x) v;
+/*+
+    Leading((t1 t2))
+ */
+EXPLAIN (costs off) SELECT * FROM t1 JOIN t2 ON t1.a=t2.a, generate_series(1,2) g(x);
+/*+
+    Leading((t1 t2))
+ */
+EXPLAIN (costs off) SELECT * FROM t1 JOIN t2 ON t1.a=t2.a JOIN (VALUES (50),(51)) v(x) ON v.x = t1.b;
+/*+
+    Leading((t1 t2))
+ */
+EXPLAIN (costs off) SELECT * FROM t1 JOIN t2 ON t1.a=t2.a LEFT JOIN t3 ON t1.a=t3.a, (VALUES (1),(2)) v(x);
+/*+
+    Leading((t1 t2))
+ */
+EXPLAIN (costs off) SELECT * FROM t1 JOIN t2 ON t1.a=t2.a LEFT JOIN (VALUES (50),(51)) v(x) ON v.x = t1.b;
+/*+
+    Leading((t1 t2))
+ */
+SELECT * FROM t1 JOIN t2 ON t1.a=t2.a, (VALUES (1),(2)) v(x) ORDER BY 1,2,3,4,5;
+/*+
+    Leading((t1 t2))
+ */
+SELECT * FROM t1 JOIN t2 ON t1.a=t2.a JOIN (VALUES (50),(51)) v(x) ON v.x = t1.b ORDER BY 1,2,3,4,5;
+/*+
+    Leading((t1 t2))
+ */
+SELECT * FROM t1 JOIN t2 ON t1.a=t2.a LEFT JOIN (VALUES (50),(51)) v(x) ON v.x = t1.b ORDER BY 1,2,3,4,5;
+SET optimizer = off;
+SELECT * FROM t1 JOIN t2 ON t1.a=t2.a, (VALUES (1),(2)) v(x) ORDER BY 1,2,3,4,5;
+SELECT * FROM t1 JOIN t2 ON t1.a=t2.a JOIN (VALUES (50),(51)) v(x) ON v.x = t1.b ORDER BY 1,2,3,4,5;
+SELECT * FROM t1 JOIN t2 ON t1.a=t2.a LEFT JOIN (VALUES (50),(51)) v(x) ON v.x = t1.b ORDER BY 1,2,3,4,5;
+RESET optimizer;
+
 /*+
     Leading((t1 (t2 t3)))
  */
