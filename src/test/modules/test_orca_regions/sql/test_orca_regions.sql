@@ -57,6 +57,12 @@ SET test_orca_regions.batch_rows = 1000;
 SELECT count(*), sum(t.a), sum(u2.c) FROM t JOIN u2 ON t.b = u2.d;
 SELECT * FROM t ORDER BY a;
 RESET test_orca_regions.batch_rows;
+-- a CTE's producer and consumers: the rows cross the shared scans
+-- encoded, and the consumers' regions decode them
+SET test_orca_regions.mode = ipc_cte;
+EXPLAIN (COSTS OFF) WITH c AS (SELECT * FROM t) SELECT * FROM c c1 JOIN c c2 USING (a) WHERE c1.a < 5;
+WITH c AS (SELECT * FROM t) SELECT * FROM c c1 JOIN c c2 USING (a) WHERE c1.a < 5 ORDER BY 1;
+SET test_orca_regions.mode = ipc;
 
 -- the executor checks the segments a region sends rows to: those of the
 -- motion
@@ -102,6 +108,20 @@ RESET statement_timeout;
 SELECT enable_xform('CXformSplitLimit');
 DROP TABLE big;
 
+-- a region with two leaves: it reads the inner one before the outer, as
+-- a join does when both have motions in them
+SET test_orca_regions.mode = join;
+EXPLAIN (COSTS OFF) SELECT t.a, u.c FROM t JOIN u ON t.b = u.d;
+SELECT t.a, u.c FROM t JOIN u ON t.b = u.d ORDER BY 1, 2;
+-- a region replacing the materialize of a nested loop's inner side is
+-- rescanned for each outer row: it keeps its leaf's rows, as the motion in
+-- the leaf can't be rescanned
+SET test_orca_regions.mode = spool;
+EXPLAIN (COSTS OFF) SELECT count(*), sum(t.a), sum(u.c) FROM t, u WHERE t.a < u.c;
+SELECT count(*), sum(t.a), sum(u.c) FROM t, u WHERE t.a < u.c;
+SET test_orca_regions.mode = off;
+SELECT count(*), sum(t.a), sum(u.c) FROM t, u WHERE t.a < u.c;
+
 -- the PG planner doesn't call the hook
 SET optimizer = off;
 EXPLAIN (COSTS OFF) SELECT * FROM t WHERE b = 1;
@@ -130,6 +150,14 @@ SET test_orca_regions.mode = span_motion;
 EXPLAIN (COSTS OFF) SELECT * FROM t;
 SET test_orca_regions.mode = span_scan;
 EXPLAIN (COSTS OFF) SELECT * FROM t LIMIT 1;
+-- an ipc region's (segment, payload) rows may only reach other regions:
+-- not the operator above the motion, the client, or a CTE's consumers
+SET test_orca_regions.mode = ipc_unread;
+EXPLAIN (COSTS OFF) SELECT * FROM t;
+SET test_orca_regions.mode = ipc_root;
+EXPLAIN (COSTS OFF) SELECT * FROM t;
+SET test_orca_regions.mode = ipc_cte_unread;
+EXPLAIN (COSTS OFF) WITH c AS (SELECT * FROM t) SELECT * FROM c c1 JOIN c c2 USING (a) WHERE c1.a < 5;
 
 
 -- no regions under row-level security: their DXL lacks the security quals
@@ -162,15 +190,6 @@ CREATE TABLE s (a int, b int) DISTRIBUTED BY (a);
 INSERT INTO s SELECT i, CASE WHEN i <= 90 THEN 1 ELSE i END
 FROM generate_series(1, 100) i;
 ANALYZE s;
--- the rows ORCA estimates a query returns
-CREATE FUNCTION plan_rows(query text) RETURNS numeric LANGUAGE plpgsql AS $$
-DECLARE
-	plan json;
-BEGIN
-	EXECUTE 'EXPLAIN (FORMAT JSON) ' || query INTO plan;
-	RETURN round((plan->0->'Plan'->>'Plan Rows')::numeric);
-END
-$$;
 
 RESET test_orca_regions.mode;
 EXPLAIN (COSTS OFF) SELECT * FROM e;
@@ -207,16 +226,22 @@ DROP TABLE pe;
 DROP INDEX e_a;
 
 -- its size and column statistics from the extension, which the hooks look
--- up with ORCA off (the module raises an error otherwise)
-SET optimizer_trace_fallback = off;		-- plan_rows itself falls back
-SELECT plan_rows('SELECT * FROM e WHERE b = 1');
+-- up with ORCA off (the module raises an error otherwise). ORCA caches
+-- none of its metadata, so each query sees the hooks' answers of the time:
+-- 10 rows, then 1000 rows, of which b = 1 in 900
+EXPLAIN SELECT * FROM e WHERE b = 1;
 SET test_orca_regions.ext_rows = 1000;
-SELECT plan_rows('SELECT * FROM e WHERE b = 1');
+EXPLAIN SELECT * FROM e WHERE b = 1;
 SET test_orca_regions.ext_stats_from = 's';
-SELECT plan_rows('SELECT * FROM e WHERE b = 1');
+EXPLAIN SELECT * FROM e WHERE b = 1;
 RESET test_orca_regions.ext_rows;
 RESET test_orca_regions.ext_stats_from;
-SET optimizer_trace_fallback = on;
+EXPLAIN SELECT * FROM e WHERE b = 1;
+-- nor what the extension says of it: once not the extension's, ORCA
+-- doesn't plan its table AM
+SET test_orca_regions.ext_relation = none;
+EXPLAIN (COSTS OFF) SELECT * FROM e WHERE b = 1;
+SET test_orca_regions.ext_relation = random;
 
 -- regions reading it themselves, the executor evaluating the scans'
 -- filters and projections
@@ -232,8 +257,11 @@ SELECT disable_xform('CXformLeftSemiJoin2InnerJoin');
 EXPLAIN (COSTS OFF, VERBOSE) SELECT count(*) FROM e WHERE b IN (SELECT d FROM u);
 SELECT count(*) FROM e WHERE b IN (SELECT d FROM u);
 -- and its scan inside a subplan, translated on its own, gets its region
+-- (a subplan for a larger e)
+SET test_orca_regions.ext_rows = 1000;
 EXPLAIN (COSTS OFF) SELECT count(*) FROM t WHERE a = 7 OR a IN (SELECT a FROM e WHERE b = 1);
 SELECT count(*) FROM t WHERE a = 7 OR a IN (SELECT a FROM e WHERE b = 1);
+RESET test_orca_regions.ext_rows;
 SELECT enable_xform('CXformLeftSemiJoin2HashJoin');
 SELECT enable_xform('CXformLeftSemiJoin2NLJoin');
 SELECT enable_xform('CXformLeftSemiJoin2InnerJoin');
@@ -247,6 +275,5 @@ EXPLAIN (COSTS OFF) SELECT * FROM e;
 
 RESET test_orca_regions.mode;
 RESET test_orca_regions.ext_relation;
-DROP FUNCTION plan_rows(text);
 DROP TABLE t, u, u2, e, s;
 DROP ACCESS METHOD test_orca_ext;

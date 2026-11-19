@@ -18,6 +18,16 @@
  * a redistribute motion, the segment is the motion's cdbhash of the row, or
  * test_orca_regions.segment if set (to test the executor's checks of it).
  *
+ * ipc_cte: the child of a CTE producer as an ipc region, and each consumer
+ * of the CTE as a region decoding its rows.
+ *
+ * spool: a materialize over a motion, the motion its leaf. The CustomScan
+ * keeps its leaf's rows, and passes them on again when rescanned.
+ *
+ * join: an inner hash join of two motions over table scans, on an equality
+ * of int4 columns, the motions its leaves. The CustomScan reads the inner
+ * leaf's rows, then the outer's, and joins them.
+ *
  * ext_scan: every table scan of an extension table (below), as a region
  * with pg_filter: the CustomScan reads the table itself, and the executor
  * evaluates the scan's filter and projection over its rows.
@@ -26,7 +36,10 @@
  * query falls back to the PG planner. span_motion claims a gather motion
  * and the table scan below it as a region over the scan, span_scan an
  * operator above a table scan as a region with no leaves: their interiors
- * hold operators that need translating.
+ * hold operators that need translating. ipc_unread, ipc_root and
+ * ipc_cte_unread claim ipc regions whose rows reach no region: those of
+ * ipc mode without the regions above the motions, the plan's root, and
+ * those of ipc_cte without the consumers' regions.
  *
  * Tables of the test_orca_ext table AM stand for tables an extension reads
  * itself. test_orca_regions.ext_relation is what orca_relation_hook says of
@@ -50,6 +63,7 @@
 #include "access/tableam.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_class.h"
+#include "catalog/pg_operator.h"
 #include "catalog/pg_statistic.h"
 #include "catalog/pg_type.h"
 #include "cdb/cdbhash.h"
@@ -63,6 +77,7 @@
 #include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/syscache.h"
+#include "utils/tuplestore.h"
 
 PG_MODULE_MAGIC;
 
@@ -76,6 +91,9 @@ typedef enum TestMode
 	MODE_SCAN,
 	MODE_IPC,
 	MODE_EXT_SCAN,
+	MODE_SPOOL,
+	MODE_JOIN,
+	MODE_IPC_CTE,
 	MODE_BAD_VERSION,
 	MODE_NO_METHODS,
 	MODE_BAD_ROOT,
@@ -84,7 +102,10 @@ typedef enum TestMode
 	MODE_DUPLICATE_ROOT,
 	MODE_SORTED_MOTION,
 	MODE_SPAN_MOTION,
-	MODE_SPAN_SCAN
+	MODE_SPAN_SCAN,
+	MODE_IPC_UNREAD,
+	MODE_IPC_ROOT,
+	MODE_IPC_CTE_UNREAD
 } TestMode;
 
 static const struct config_enum_entry mode_options[] = {
@@ -92,6 +113,9 @@ static const struct config_enum_entry mode_options[] = {
 	{"scan", MODE_SCAN, false},
 	{"ipc", MODE_IPC, false},
 	{"ext_scan", MODE_EXT_SCAN, false},
+	{"spool", MODE_SPOOL, false},
+	{"join", MODE_JOIN, false},
+	{"ipc_cte", MODE_IPC_CTE, false},
 	{"bad_version", MODE_BAD_VERSION, false},
 	{"no_methods", MODE_NO_METHODS, false},
 	{"bad_root", MODE_BAD_ROOT, false},
@@ -101,6 +125,9 @@ static const struct config_enum_entry mode_options[] = {
 	{"sorted_motion", MODE_SORTED_MOTION, false},
 	{"span_motion", MODE_SPAN_MOTION, false},
 	{"span_scan", MODE_SPAN_SCAN, false},
+	{"ipc_unread", MODE_IPC_UNREAD, false},
+	{"ipc_root", MODE_IPC_ROOT, false},
+	{"ipc_cte_unread", MODE_IPC_CTE_UNREAD, false},
 	{NULL, 0, false}
 };
 
@@ -128,6 +155,11 @@ static char *ipc_segment = NULL;
 								 * "encode <rows per payload> <route>" */
 #define REGION_DECODE "decode"	/* decodes (segment, payload) rows */
 #define REGION_READ "read"		/* reads its leaf's table itself */
+#define REGION_SPOOL "spool"	/* passes its leaf's rows on, keeping them
+								 * for a rescan */
+#define REGION_JOIN "join"		/* joins its two leaves' rows:
+								 * "join <outer key> <inner key> <column>..."
+								 * with columns <leaf>:<attno> */
 
 /* Metadata side: the extension's tables */
 
@@ -420,6 +452,100 @@ encode_spec(const char *motion, const char *scan, const char *motion_name)
 	return spec.data;
 }
 
+/*
+ * The position, among the output columns of the operator at p, of the
+ * column colid, or 0.
+ */
+static int
+column_attno(const char *p, uint32 colid)
+{
+	int			ncols;
+	OrcaPlanRegionCol *cols;
+
+	if (!op_columns(p, &ncols, &cols))
+		return 0;
+	for (int i = 0; i < ncols; i++)
+		if (cols[i].colid == colid)
+			return i + 1;
+	return 0;
+}
+
+/* the element, from p on, before end, that starts with tag, or NULL */
+static const char *
+find_before(const char *p, const char *end, const char *tag)
+{
+	const char *found = strstr(p, tag);
+
+	return found != NULL && found < end ? found : NULL;
+}
+
+/*
+ * The payload of a join region over the inner hash join at join, with an
+ * equality of int4 columns of its outer and inner inputs at outer and inner
+ * as its only condition. NULL if it is another join.
+ */
+static const char *
+join_spec(const char *join, const char *outer, const char *inner)
+{
+	const char *conds = strstr(join, "<dxl:HashCondList>");
+	const char *end = conds ? strstr(conds, "</dxl:HashCondList>") : NULL;
+	const char *list = strstr(join, "<dxl:ProjList>");
+	const char *list_end = list ? strstr(list, "</dxl:ProjList>") : NULL;
+	const char *cmp;
+	const char *ident;
+	StringInfoData spec;
+	int			keys[2][2] = {{0, 0}, {0, 0}};	/* [ident][leaf] */
+
+	if (strcmp(attr_value(join, "JoinType"), "Inner") != 0 || end == NULL ||
+		list_end == NULL || end > outer ||
+		find_before(join, outer, "<dxl:Filter/>") == NULL ||
+		find_before(join, outer, "<dxl:JoinFilter/>") == NULL)
+		return NULL;
+	cmp = find_before(conds, end, "<dxl:Comparison ");
+	if (cmp == NULL || strcmp(attr_value(cmp, "ComparisonOperator"), "=") != 0 ||
+		mdid_oid(attr_value(cmp, "OperatorMdid")) != Int4EqualOperator ||
+		find_before(cmp + 1, end, "<dxl:Comparison ") != NULL)
+		return NULL;
+	ident = cmp;
+	for (int i = 0; i < 2; i++)
+	{
+		uint32		colid;
+
+		ident = find_before(ident + 1, end, "<dxl:Ident ");
+		if (ident == NULL)
+			return NULL;
+		colid = (uint32) atoi(attr_value(ident, "ColId"));
+		keys[i][0] = column_attno(outer, colid);
+		keys[i][1] = column_attno(inner, colid);
+	}
+	initStringInfo(&spec);
+	if (keys[0][0] > 0 && keys[1][1] > 0)
+		appendStringInfo(&spec, "%s %d %d", REGION_JOIN, keys[0][0], keys[1][1]);
+	else if (keys[1][0] > 0 && keys[0][1] > 0)
+		appendStringInfo(&spec, "%s %d %d", REGION_JOIN, keys[1][0], keys[0][1]);
+	else
+		return NULL;
+	/* where each output column comes from */
+	for (const char *elem = find_before(list, list_end, "<dxl:ProjElem ");
+		 elem != NULL; elem = find_before(elem + 1, list_end, "<dxl:ProjElem "))
+	{
+		const char *col = strchr(elem, '>') + 1;
+		uint32		colid;
+		int			attno;
+
+		if (strncmp(col, "<dxl:Ident ", 11) != 0)
+			return NULL;
+		colid = (uint32) atoi(attr_value(col, "ColId"));
+		if ((attno = column_attno(outer, colid)) > 0)
+			appendStringInfo(&spec, " 0:%d", attno);
+		else if ((attno = column_attno(inner, colid)) > 0)
+			appendStringInfo(&spec, " 1:%d", attno);
+		else
+			return NULL;
+	}
+	return spec.data;
+}
+
 static CustomScanMethods region_scan_methods;
 
 static OrcaPlanRegion *
@@ -506,6 +632,49 @@ test_plan_regions(const char *plan_dxl, int nops, const char *const *opnames)
 				}
 				break;
 
+			case MODE_SPOOL:
+				/* a materialize over a motion, its leaf */
+				if (op + 1 < nops && strcmp(opnames[op], "Materialize") == 0 &&
+					is_motion(opnames[op + 1]) && op_columns(p, &ncols, &cols))
+				{
+					region = add_region(regions, &nregions, op, REGION_SPOOL);
+					((int *) region->leaves)[0] = op + 1;
+					region->ncols = ncols;
+					region->cols = cols;
+				}
+				break;
+
+			case MODE_JOIN:
+
+				/*
+				 * a hash join of two motions over table scans, the motions
+				 * its leaves
+				 */
+				{
+					const char *spec;
+
+					if (op + 4 < nops && strcmp(opnames[op], "HashJoin") == 0 &&
+						is_motion(opnames[op + 1]) &&
+						strcmp(opnames[op + 2], "TableScan") == 0 &&
+						is_motion(opnames[op + 3]) &&
+						strcmp(opnames[op + 4], "TableScan") == 0 &&
+						op_columns(p, &ncols, &cols) &&
+						(spec = join_spec(p, find_op(plan_dxl, op + 1, opnames),
+										  find_op(plan_dxl, op + 3, opnames))) != NULL)
+					{
+						int		   *leaves = palloc(2 * sizeof(int));
+
+						region = add_region(regions, &nregions, op, spec);
+						leaves[0] = op + 1;
+						leaves[1] = op + 3;
+						region->nleaves = 2;
+						region->leaves = leaves;
+						region->ncols = ncols;
+						region->cols = cols;
+					}
+					break;
+				}
+
 			case MODE_SORTED_MOTION:
 				/* an ipc region below a gather that merges sorted rows */
 				if (op + 1 < nops && strcmp(opnames[op], "GatherMotion") == 0 &&
@@ -539,6 +708,46 @@ test_plan_regions(const char *plan_dxl, int nops, const char *const *opnames)
 				{
 					region = add_region(regions, &nregions, op, REGION_PASS);
 					region->nleaves = 0;
+					region->ncols = ncols;
+					region->cols = cols;
+				}
+				break;
+
+			case MODE_IPC_UNREAD:
+				/* ipc mode's encode regions without their decode regions */
+				{
+					const char *spec;
+
+					if (op + 1 < nops && is_motion(opnames[op]) &&
+						strcmp(opnames[op + 1], "TableScan") == 0 &&
+						(spec = encode_spec(p, find_op(plan_dxl, op + 1, opnames),
+											opnames[op])) != NULL)
+						add_region(regions, &nregions, op + 1, spec)->ipc = true;
+					break;
+				}
+
+			case MODE_IPC_ROOT:
+				/* the plan's root, under no motion */
+				if (op == 0)
+					add_region(regions, &nregions, op,
+							   "encode 4 gather")->ipc = true;
+				break;
+
+			case MODE_IPC_CTE:
+			case MODE_IPC_CTE_UNREAD:
+				/*
+				 * a CTE producer's child, and each consumer as a region
+				 * decoding its rows, unless ipc_cte_unread
+				 */
+				if (strcmp(opnames[op], "CTEProducer") == 0 &&
+					op_columns(find_op(plan_dxl, op + 1, opnames), &ncols, &cols))
+					add_region(regions, &nregions, op + 1,
+							   psprintf("%s %d gather", REGION_ENCODE,
+										batch_rows))->ipc = true;
+				if (strcmp(opnames[op], "CTEConsumer") == 0 &&
+					test_mode == MODE_IPC_CTE && op_columns(p, &ncols, &cols))
+				{
+					region = add_region(regions, &nregions, op, REGION_DECODE);
 					region->ncols = ncols;
 					region->cols = cols;
 				}
@@ -612,7 +821,10 @@ typedef struct RegionScanState
 {
 	CustomScanState css;
 	const char *what;			/* REGION_PASS, _ENCODE, _DECODE or _READ */
-	TableScanDesc scan;			/* REGION_READ's scan of its table */
+	TableScanDesc scan;			/* REGION_READ's scan of its table, from its
+								 * first row */
+	Relation	rel;
+	bool		explain_only;
 	TupleTableSlot *table_slot;
 	AttrNumber *attnos;			/* the table's attribute of each column */
 
@@ -635,6 +847,20 @@ typedef struct RegionScanState
 	/* REGION_DECODE: the payload it reads rows from */
 	const char *pos;
 	int			left;
+
+	/*
+	 * REGION_SPOOL and REGION_JOIN: the rows of each leaf, all read before
+	 * the first is returned
+	 */
+	Tuplestorestate *rows[2];
+	TupleTableSlot *leaf_slots[2];
+	bool		read;
+	/* REGION_JOIN: its keys, and where each output column comes from */
+	AttrNumber	join_keys[2];
+	int			ncols;
+	int		   *col_leaves;
+	AttrNumber *col_attnos;
+	bool		have_outer;		/* an outer row, whose matches it returns */
 } RegionScanState;
 
 /* each column of an encoded row: a null flag and an int4 */
@@ -809,6 +1035,115 @@ decode_next(RegionScanState *state, TupleTableSlot *out)
 	return ExecStoreVirtualTuple(out);
 }
 
+/*
+ * Reads the rows of the leaves of a spool or join region, the inner one
+ * first: as a join does (prefetch_inner), so that while it reads one
+ * motion, the senders of the other aren't held up waiting for it. That and
+ * keeping the rows also make a rescan not rescan the leaves, which have
+ * motions in them.
+ */
+static void
+read_leaves(RegionScanState *state)
+{
+	int			nleaves = list_length(state->css.custom_ps);
+
+	for (int leaf = nleaves - 1; leaf >= 0; leaf--)
+	{
+		PlanState  *ps = list_nth(state->css.custom_ps, leaf);
+
+		/* sized by work_mem: its plan.operatorMemKB is small */
+		if (state->rows[leaf] == NULL)
+		{
+			state->rows[leaf] = tuplestore_begin_heap(false, false, work_mem);
+			state->leaf_slots[leaf] =
+				MakeSingleTupleTableSlot(ExecGetResultType(ps),
+										 &TTSOpsMinimalTuple);
+		}
+		for (;;)
+		{
+			TupleTableSlot *in = ExecProcNode(ps);
+
+			if (TupIsNull(in))
+				break;
+			tuplestore_puttupleslot(state->rows[leaf], in);
+		}
+	}
+	state->read = true;
+}
+
+/* parses the region's "join <outer key> <inner key> <column>..." payload */
+static void
+join_begin(RegionScanState *state, const char *spec)
+{
+	char	   *copy = pstrdup(spec);
+	char	   *save;
+	char	   *tok;
+
+	strtok_r(copy, " ", &save);
+	state->join_keys[0] = atoi(strtok_r(NULL, " ", &save));
+	state->join_keys[1] = atoi(strtok_r(NULL, " ", &save));
+	state->col_leaves = palloc(sizeof(int) * 64);
+	state->col_attnos = palloc(sizeof(AttrNumber) * 64);
+	while ((tok = strtok_r(NULL, " ", &save)) != NULL)
+	{
+		state->col_leaves[state->ncols] = atoi(tok);
+		state->col_attnos[state->ncols++] = atoi(strchr(tok, ':') + 1);
+	}
+}
+
+/* the next row of the spool's leaf */
+static TupleTableSlot *
+spool_next(RegionScanState *state, TupleTableSlot *out)
+{
+	TupleTableSlot *in = state->leaf_slots[0];
+	int			natts = out->tts_tupleDescriptor->natts;
+
+	if (!tuplestore_gettupleslot(state->rows[0], true, false, in))
+		return out;
+	slot_getallattrs(in);
+	memcpy(out->tts_values, in->tts_values, natts * sizeof(Datum));
+	memcpy(out->tts_isnull, in->tts_isnull, natts * sizeof(bool));
+	return ExecStoreVirtualTuple(out);
+}
+
+/* the next pair of matching outer and inner rows, a nested loop over them */
+static TupleTableSlot *
+join_next(RegionScanState *state, TupleTableSlot *out)
+{
+	TupleTableSlot *outer = state->leaf_slots[0];
+	TupleTableSlot *inner = state->leaf_slots[1];
+
+	for (;;)
+	{
+		if (!state->have_outer)
+		{
+			if (!tuplestore_gettupleslot(state->rows[0], true, false, outer))
+				return out;
+			slot_getallattrs(outer);
+			tuplestore_rescan(state->rows[1]);
+			state->have_outer = true;
+		}
+		while (tuplestore_gettupleslot(state->rows[1], true, false, inner))
+		{
+			slot_getallattrs(inner);
+			if (outer->tts_isnull[state->join_keys[0] - 1] ||
+				inner->tts_isnull[state->join_keys[1] - 1] ||
+				DatumGetInt32(outer->tts_values[state->join_keys[0] - 1]) !=
+				DatumGetInt32(inner->tts_values[state->join_keys[1] - 1]))
+				continue;
+			for (int i = 0; i < state->ncols; i++)
+			{
+				TupleTableSlot *from = state->col_leaves[i] == 0 ? outer : inner;
+
+				out->tts_values[i] = from->tts_values[state->col_attnos[i] - 1];
+				out->tts_isnull[i] = from->tts_isnull[state->col_attnos[i] - 1];
+			}
+			return ExecStoreVirtualTuple(out);
+		}
+		state->have_outer = false;
+	}
+}
+
 static void
 region_begin(CustomScanState *node, EState *estate, int eflags)
 {
@@ -833,12 +1168,19 @@ region_begin(CustomScanState *node, EState *estate, int eflags)
 			state->attnos[i++] = castNode(Var, ((TargetEntry *) lfirst(lc))->expr)->varattno;
 
 		state->table_slot = table_slot_create(rel, &estate->es_tupleTable);
-		if (!(eflags & EXEC_FLAG_EXPLAIN_ONLY))
-			state->scan = table_beginscan(rel, estate->es_snapshot, 0, NULL);
+
+		/*
+		 * The scan starts at its first row: the coordinator initializes the
+		 * regions of the segments' slices too, but doesn't run them
+		 */
+		state->rel = rel;
+		state->explain_only = (eflags & EXEC_FLAG_EXPLAIN_ONLY) != 0;
 		return;
 	}
 	if (strcmp(state->what, REGION_ENCODE) == 0)
 		encode_begin(state, strVal(linitial(cscan->custom_private)));
+	if (strcmp(state->what, REGION_JOIN) == 0)
+		join_begin(state, strVal(linitial(cscan->custom_private)));
 	foreach(lc, cscan->custom_plans)
 		node->custom_ps = lappend(node->custom_ps,
 								  ExecInitNode(lfirst(lc), estate, eflags));
@@ -854,6 +1196,9 @@ region_next(ScanState *ss)
 	int			natts;
 
 	ExecClearTuple(out);
+	if (state->rel != NULL && state->scan == NULL && !state->explain_only)
+		state->scan = table_beginscan(state->rel,
+									  ss->ps.state->es_snapshot, 0, NULL);
 	if (state->scan != NULL)
 	{
 		/* this segment's rows of the table */
@@ -872,6 +1217,14 @@ region_next(ScanState *ss)
 		return encode_next(state, out);
 	if (strcmp(state->what, REGION_DECODE) == 0)
 		return decode_next(state, out);
+	if (strcmp(state->what, REGION_SPOOL) == 0 ||
+		strcmp(state->what, REGION_JOIN) == 0)
+	{
+		if (!state->read)
+			read_leaves(state);
+		return strcmp(state->what, REGION_SPOOL) == 0 ?
+			spool_next(state, out) : join_next(state, out);
+	}
 
 	/* REGION_PASS */
 	in = ExecProcNode(linitial(state->css.custom_ps));
@@ -905,6 +1258,12 @@ region_end(CustomScanState *node)
 
 	if (state->scan != NULL)
 		table_endscan(state->scan);
+	for (int i = 0; i < 2; i++)
+		if (state->rows[i] != NULL)
+		{
+			tuplestore_end(state->rows[i]);
+			ExecDropSingleTupleTableSlot(state->leaf_slots[i]);
+		}
 	foreach(lc, node->custom_ps)
 		ExecEndNode(lfirst(lc));
 }
@@ -920,6 +1279,19 @@ region_rescan(CustomScanState *node)
 	if (state->bufs != NULL)
 		encode_reset(state);
 	state->left = 0;
+	state->have_outer = false;
+	if (state->read && node->ss.ps.chgParam == NULL)
+	{
+		/* the leaves' rows are the same: read them again */
+		for (int i = 0; i < 2; i++)
+			if (state->rows[i] != NULL)
+				tuplestore_rescan(state->rows[i]);
+		return;
+	}
+	for (int i = 0; i < 2; i++)
+		if (state->rows[i] != NULL)
+			tuplestore_clear(state->rows[i]);
+	state->read = false;
 	foreach(lc, node->custom_ps)
 		ExecReScan(lfirst(lc));
 }
