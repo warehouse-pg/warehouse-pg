@@ -466,13 +466,16 @@ VACUUM ANALYZE test_index_types_@amname@;
 -- ORCA_FEATURE_NOT_SUPPORTED: support index-only-scan on GIST indexes
 EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
 SELECT a, b FROM test_index_types_@amname@ WHERE a<@ box '(0,0,3,3)';
-                                QUERY PLAN                                
---------------------------------------------------------------------------
+                                       QUERY PLAN                                       
+----------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3) (actual rows=40000 loops=1)
-   ->  Seq Scan on test_index_types_@amname@ (actual rows=40000 loops=1)
-         Filter: (a <@ '(3,3),(0,0)'::box)
+   ->  Bitmap Heap Scan on test_index_types_@amname@ (actual rows=40000 loops=1)
+         Recheck Cond: (a <@ '(3,3),(0,0)'::box)
+         Heap Blocks: exact=2
+         ->  Bitmap Index Scan on i_test_index_types_@amname@ (actual rows=40000 loops=1)
+               Index Cond: (a <@ '(3,3),(0,0)'::box)
  Optimizer: GPORCA
-(4 rows)
+(7 rows)
 
 -- 8) Test partial indexes
 --
