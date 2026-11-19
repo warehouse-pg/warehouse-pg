@@ -83,10 +83,12 @@ extern PGDLLIMPORT const int orca_hooks_abi_version;
  * that range silently gives wrong results. Below a random motion it may be
  * any segment in that range; a gather or broadcast ignores it. The executor
  * raises an error for a NULL segment or one outside the range.
- * Such a region has no columns, and the consumers of the motion must be
- * leaves of another region. Below a CTE producer, every consumer of the CTE
- * must be such a leaf, and reads the rows; below a Sequence, as its last
- * child, the Sequence passes them on, to a motion or a region.
+ * Such a region has no columns, and its rows must only reach other regions:
+ * the motion above it must be a leaf of another region. Below a CTE
+ * producer, every consumer of the CTE must be such a leaf, and reads the
+ * rows; as the last child of a Sequence, the Sequence passes them on, to
+ * such a motion or as a leaf of a region; or it may be a leaf of another
+ * region itself. Each of those operators yields the (segment, payload) rows.
  *
  * It isn't called for a query that row-level security applies to: the
  * security quals aren't part of the DXL.
