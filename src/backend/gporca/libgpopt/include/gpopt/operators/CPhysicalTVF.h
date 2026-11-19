@@ -44,7 +44,12 @@ private:
 	// array of column descriptors: the schema of the function result
 	CColumnDescriptorArray *m_pdrgpcoldesc;
 
-	// output columns
+	// output columns, in the order of the function's result columns: the
+	// plan built from this operator reads the n-th one from the n-th
+	// attribute of the function's result row
+	CColRefArray *m_pdrgpcrOutput;
+
+	// output columns as a set
 	CColRefSet *m_pcrsOutput;
 
 public:
@@ -53,7 +58,7 @@ public:
 	// ctor
 	CPhysicalTVF(CMemoryPool *mp, IMDId *mdid_func, IMDId *mdid_return_type,
 				 CWStringConst *str, CColumnDescriptorArray *pdrgpcoldesc,
-				 CColRefSet *pcrsOutput);
+				 CColRefArray *pdrgpcrOutput);
 
 	// dtor
 	~CPhysicalTVF() override;
@@ -105,6 +110,13 @@ public:
 	DeriveOutputColumns() const
 	{
 		return m_pcrsOutput;
+	}
+
+	// output columns in the order of the function's result columns
+	CColRefArray *
+	PdrgpcrOutput() const
+	{
+		return m_pdrgpcrOutput;
 	}
 
 	// sensitivity to order of inputs
