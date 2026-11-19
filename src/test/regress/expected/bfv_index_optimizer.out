@@ -1680,3 +1680,38 @@ reset enable_indexonlyscan;
 drop table bfv_index_collate_tbl;
 drop table bfv_index_collate_name_tbl;
 drop table bfv_index_collate_namearr_tbl;
+-- WHPG: GPORCA's bitmap scan cost has a term per distinct value
+-- the predicate selects.  It stands for the stored bitmaps of a bitmap index
+-- and is not charged to a hash index, so the 50 values of this IN list do not
+-- price the index above the Seq Scan.
+create table bfv_index_hash_heap (id int, h int, pad text) distributed by (id);
+insert into bfv_index_hash_heap select g, g, 'x' from generate_series(1, 10000) g;
+create index bfv_index_hash_heap_h on bfv_index_hash_heap using hash (h);
+analyze bfv_index_hash_heap;
+explain (costs off)
+select count(pad) from bfv_index_hash_heap where h in (
+   1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+  21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+  41, 42, 43, 44, 45, 46, 47, 48, 49, 50);
+                                                                                                  QUERY PLAN                                                                                                   
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Finalize Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Partial Aggregate
+               ->  Bitmap Heap Scan on bfv_index_hash_heap
+                     Recheck Cond: (h = ANY ('{1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50}'::integer[]))
+                     ->  Bitmap Index Scan on bfv_index_hash_heap_h
+                           Index Cond: (h = ANY ('{1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50}'::integer[]))
+ Optimizer: GPORCA
+(8 rows)
+
+select count(pad) from bfv_index_hash_heap where h in (
+   1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+  21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+  41, 42, 43, 44, 45, 46, 47, 48, 49, 50);
+ count 
+-------
+    50
+(1 row)
+
+drop table bfv_index_hash_heap;
