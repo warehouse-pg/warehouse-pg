@@ -1203,13 +1203,29 @@ doSendTuple(Motion *motion, MotionState *node, TupleTableSlot *outerTupleSlot)
 	else if (motion->motionType == MOTIONTYPE_EXPLICIT)
 	{
 		Datum		segidColIdxDatum;
+		int32		segid;
 
 		Assert(motion->segidColIdx > 0 && motion->segidColIdx <= list_length((motion->plan).targetlist));
 		bool		is_null = false;
 
 		segidColIdxDatum = slot_getattr(outerTupleSlot, motion->segidColIdx, &is_null);
-		targetRoute = Int32GetDatum(segidColIdxDatum);
-		Assert(!is_null);
+
+		/*
+		 * The segment may come from an extension (an ipc region of ORCA's
+		 * plan, optimizer/orca.h), which numHashSegments bounds.
+		 */
+		if (is_null)
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("explicit motion's target segment is NULL")));
+		segid = DatumGetInt32(segidColIdxDatum);
+		if (segid < 0 || segid > PG_INT16_MAX ||
+			(motion->numHashSegments > 0 && segid >= motion->numHashSegments))
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("explicit motion's target segment %d is out of range",
+							segid)));
+		targetRoute = (int16) segid;
 	}
 	else
 		elog(ERROR, "unknown motion type %d", motion->motionType);

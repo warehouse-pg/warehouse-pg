@@ -64,6 +64,15 @@ extern PGDLLIMPORT const int orca_hooks_abi_version;
  * A region marked ipc instead yields (segment int4, payload bytea) rows for
  * the motion right above its root, which only routes them: by the segment
  * column, or as a gather or broadcast, and neither sorts nor filters them.
+ * Below a redistribute motion, the segment must be the one ORCA's hash spec
+ * of that motion puts the row on, since the operators above rely on it: the
+ * cdbhash (makeCdbHash, cdbhashinit, cdbhash, cdbhashreduce) of the values
+ * of the motion's HashExprList, in order, with the hash function of each
+ * HashExpr's Opfamily for its expression's type (cdb_hashproc_in_opfamily),
+ * into as many segments as the motion's OutputSegments. A wrong segment in
+ * that range silently gives wrong results. Below a random motion it may be
+ * any segment in that range; a gather or broadcast ignores it. The executor
+ * raises an error for a NULL segment or one outside the range.
  * Such a region has no columns, and the consumers of the motion must be
  * leaves of another region. Below a CTE producer, every consumer of the CTE
  * must be such a leaf, and reads the rows; below a Sequence, as its last

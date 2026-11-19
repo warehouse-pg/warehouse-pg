@@ -974,8 +974,14 @@ CTranslatorDXLToPlStmt::TranslateDXLIpcMotion(const CDXLNode *motion_dxlnode,
 			motion->motionType = MOTIONTYPE_BROADCAST;
 			break;
 		default:
+			// the executor checks the extension's segment against the
+			// motion's segments
 			motion->motionType = MOTIONTYPE_EXPLICIT;
 			motion->segidColIdx = 1;
+			motion->numHashSegments =
+				(int) CDXLPhysicalMotion::Cast(motion_dxlnode->GetOperator())
+					->GetOutputSegIdsArray()
+					->Size();
 			break;
 	}
 }
