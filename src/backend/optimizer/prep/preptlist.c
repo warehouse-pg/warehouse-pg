@@ -340,6 +340,12 @@ expand_targetlist(PlannerInfo *root, List *tlist, int command_type,
 			 * column isn't dropped, apply any domain constraints that might
 			 * exist --- this is to catch domain NOT NULL.
 			 *
+			 * An exception is a generated column: the value we produce here
+			 * is ignored, since ExecComputeStoredGenerated() overwrites it,
+			 * and we don't want to risk throwing an error.  So for it we
+			 * don't apply domain constraints, and produce a NULL of the base
+			 * type.  ExecCheckPlanOutput() accounts for this.
+			 *
 			 * For UPDATE, generate a Var reference to the existing value of
 			 * the attribute, so that it gets copied to the new tuple. But
 			 * generate a NULL for dropped columns (we want to drop any old
@@ -362,7 +368,22 @@ expand_targetlist(PlannerInfo *root, List *tlist, int command_type,
 			switch (command_type)
 			{
 				case CMD_INSERT:
-					if (!att_tup->attisdropped)
+					if (!att_tup->attisdropped && att_tup->attgenerated)
+					{
+						/* Generated column, insert a NULL of the base type */
+						Oid			baseTypeId = atttype;
+						int32		baseTypeMod = atttypmod;
+
+						baseTypeId = getBaseTypeAndTypmod(baseTypeId, &baseTypeMod);
+						new_expr = (Node *) makeConst(baseTypeId,
+													  baseTypeMod,
+													  attcollation,
+													  att_tup->attlen,
+													  (Datum) 0,
+													  true, /* isnull */
+													  att_tup->attbyval);
+					}
+					else if (!att_tup->attisdropped)
 					{
 						new_expr = (Node *) makeConst(atttype,
 													  -1,

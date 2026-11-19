@@ -340,6 +340,10 @@ CREATE DOMAIN gtestdomain1 AS int CHECK (VALUE < 10);
 CREATE TABLE gtest24 (a int PRIMARY KEY, b gtestdomain1 GENERATED ALWAYS AS (a * 2) STORED);
 INSERT INTO gtest24 (a) VALUES (4);  -- ok
 INSERT INTO gtest24 (a) VALUES (6);  -- error
+CREATE DOMAIN gtestdomainnn AS int CHECK (VALUE IS NOT NULL);
+CREATE TABLE gtest24nn (a int, b gtestdomainnn GENERATED ALWAYS AS (a * 2) STORED);
+INSERT INTO gtest24nn (a) VALUES (4);  -- ok
+INSERT INTO gtest24nn (a) VALUES (NULL);  -- error
 
 -- typed tables (currently not supported)
 CREATE TYPE gtest_type AS (f1 integer, f2 text, f3 bigint);
