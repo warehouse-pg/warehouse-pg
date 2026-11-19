@@ -4585,6 +4585,14 @@ cost_qual_eval_walker(Node *node, cost_qual_eval_context *context)
 		context->total.per_tuple += cpu_operator_cost;
 		return false;			/* don't recurse into children */
 	}
+	else if (IsA(node, RuntimeFilterExpr))
+	{
+		/*
+		 * WHPG: a runtime filter probe is one hash function call and one
+		 * cache line, about an operator's worth; its key is costed below.
+		 */
+		context->total.per_tuple += cpu_operator_cost;
+	}
 	else if (IsA(node, CoerceViaIO))
 	{
 		CoerceViaIO *iocoerce = (CoerceViaIO *) node;

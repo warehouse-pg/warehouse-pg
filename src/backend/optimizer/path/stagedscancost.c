@@ -1050,9 +1050,12 @@ staged_collect_clauses(StagedCostContext *cx, Bitmapset **qualattrs)
 		 * that has no parameter values, so a qual with a Param -- a generic
 		 * plan's $n, or the exec-param a nested loop would feed a
 		 * parameterized scan -- cannot be staged. (Ordinary Var-on-Const
-		 * clauses under a custom plan are fine.)
+		 * clauses under a custom plan are fine.) The one exception is a
+		 * runtime filter clause (runtimefilter.c): the hash join above the
+		 * scan sets its Param, and the scan's ExprContexts are given the
+		 * executor's values for it.
 		 */
-		if (stagedscan_contains_param((Node *) rinfo->clause) ||
+		if (stagedscan_contains_foreign_param((Node *) rinfo->clause) ||
 			contain_volatile_functions((Node *) rinfo->clause) ||
 			contain_subplans((Node *) rinfo->clause))
 			return false;
@@ -1750,6 +1753,53 @@ stagedscan_orca_walker(Node *node, void *context)
 }
 
 /*
+ * A PlannerInfo for deciding scans of a finished plan: just enough for
+ * build_simple_rel() and the selectivity machinery over 'rtable', the range
+ * table the plan's scanrelids index. It lives only for the pass that makes it.
+ */
+static PlannerInfo *
+stagedscan_scratch_root(PlannerGlobal *glob, List *rtable)
+{
+	PlannerInfo *root = makeNode(PlannerInfo);
+
+	root->parse = makeNode(Query);
+	root->parse->commandType = CMD_SELECT;
+	root->parse->rtable = rtable;
+
+	/*
+	 * These passes run inside planner(), where get_relation_info_hook has
+	 * only ever been handed the root of a Query being planned, and so may
+	 * read it as such: every such Query has a jointree. Give it the one of a
+	 * query without FROM or WHERE. The scan quals are deliberately not put
+	 * there; they are the plan's, not the user's, and the RelOptInfo built
+	 * here is only costed, never planned.
+	 */
+	root->parse->jointree = makeFromExpr(NIL, NULL);
+	root->glob = glob;
+	root->query_level = 1;
+	root->planner_cxt = CurrentMemoryContext;
+	root->wt_param_id = -1;
+	setup_simple_rel_arrays(root);
+	return root;
+}
+
+/*
+ * Sizing a partitioned parent makes plancat open a partition directory on
+ * the glob, which standard_planner() destroys at the end of planning and
+ * the ORCA path never does; a pass that created one destroys it when done,
+ * or the pinned relations leak to the end of the transaction.
+ */
+static void
+stagedscan_release_partdir(PlannerGlobal *glob, bool ownPartdir)
+{
+	if (ownPartdir && glob->partition_directory != NULL)
+	{
+		DestroyPartitionDirectory(glob->partition_directory);
+		glob->partition_directory = NULL;
+	}
+}
+
+/*
  * Decide Staged Scan for every AOCO scan of a GPORCA plan, main tree and
  * subplans. 'glob' is the ORCA path's dummy PlannerGlobal; the scratch
  * PlannerInfo built here lives only for this pass.
@@ -1775,45 +1825,40 @@ stagedscan_decide_orca_plan(PlannerGlobal *glob, PlannedStmt *stmt,
 	if (hasRowSecurity)
 		return;
 
-	root = makeNode(PlannerInfo);
-	root->parse = makeNode(Query);
-	root->parse->commandType = CMD_SELECT;
-	root->parse->rtable = stmt->rtable;
-
-	/*
-	 * This pass runs inside planner(), where get_relation_info_hook has only
-	 * ever been handed the root of a Query being planned, and so may read it
-	 * as such: every such Query has a jointree. Give it the one of a query
-	 * without FROM or WHERE. The scan quals are deliberately not put there;
-	 * they are ORCA's, not the user's, and the RelOptInfo built here is only
-	 * costed, never planned.
-	 */
-	root->parse->jointree = makeFromExpr(NIL, NULL);
-	root->glob = glob;
-	root->query_level = 1;
-	root->planner_cxt = CurrentMemoryContext;
-	root->wt_param_id = -1;
-	setup_simple_rel_arrays(root);
-
+	root = stagedscan_scratch_root(glob, stmt->rtable);
 	cx.base.node = (Node *) root;
 	cx.root = root;
 
-	/*
-	 * Sizing a partitioned parent makes plancat open a partition directory
-	 * on the dummy glob, which standard_planner() would destroy at the end
-	 * of planning and the ORCA path never does; destroy it here if this pass
-	 * is what created it, or the pinned relations leak to the end of the
-	 * transaction.
-	 */
 	ownPartdir = (glob->partition_directory == NULL);
 
 	(void) stagedscan_orca_walker((Node *) stmt->planTree, &cx);
 	foreach(lc, stmt->subplans)
 		(void) stagedscan_orca_walker((Node *) lfirst(lc), &cx);
 
-	if (ownPartdir && glob->partition_directory != NULL)
-	{
-		DestroyPartitionDirectory(glob->partition_directory);
-		glob->partition_directory = NULL;
-	}
+	stagedscan_release_partdir(glob, ownPartdir);
+}
+
+/*
+ * WHPG: decide Staged Scan again for one scan of a finished plan whose qual
+ * another pass has just changed -- planrtfilter.c, adding a runtime filter
+ * clause -- from the plan's own qual and target list, as the GPORCA pass
+ * decides every scan. Works on either optimizer's plan; 'rtable' is what
+ * the scan's scanrelid indexes. The caller has checked row-level security.
+ */
+void
+stagedscan_decide_plan_scan(PlannerGlobal *glob, List *rtable, SeqScan *scan,
+							bool dynamic)
+{
+	PlannerInfo *root;
+	bool		ownPartdir;
+
+	if (!whpg_enable_staged_scan)
+		return;
+
+	root = stagedscan_scratch_root(glob, rtable);
+	ownPartdir = (glob->partition_directory == NULL);
+
+	stagedscan_decide_orca_scan(root, scan, dynamic);
+
+	stagedscan_release_partdir(glob, ownPartdir);
 }

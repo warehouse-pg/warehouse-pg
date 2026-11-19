@@ -98,6 +98,7 @@ WITH cte AS (SELECT * FROM t1 WHERE random() < 0.1 LIMIT 10) SELECT a, 1, 1 FROM
    ->  Hash Join
          Hash Cond: (t2.a = cte.a)
          ->  Seq Scan on t2
+               Runtime Filter: a
          ->  Hash
                ->  Redistribute Motion 1:3  (slice2; segments: 1)
                      Hash Key: cte.a
@@ -135,6 +136,7 @@ WITH cte AS (SELECT * FROM t1 WHERE random() < 0.1 ORDER BY b LIMIT 10) SELECT a
    ->  Hash Join
          Hash Cond: (t2.a = cte.a)
          ->  Seq Scan on t2
+               Runtime Filter: a
          ->  Hash
                ->  Redistribute Motion 1:3  (slice2; segments: 1)
                      Hash Key: cte.a

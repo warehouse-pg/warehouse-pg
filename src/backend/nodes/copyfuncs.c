@@ -1220,6 +1220,10 @@ _copyHashJoin(const HashJoin *from)
 	COPY_NODE_FIELD(hashoperators);
 	COPY_NODE_FIELD(hashcollations);
 	COPY_NODE_FIELD(hashkeys);
+	COPY_NODE_FIELD(rf_paramids);
+	COPY_SCALAR_FIELD(rf_decline);
+	COPY_SCALAR_FIELD(rf_keyidx);
+	COPY_SCALAR_FIELD(rf_probe_rows);
 
 	return newnode;
 }
@@ -3595,6 +3599,20 @@ static DMLActionExpr *
 _copyDMLActionExpr(const DMLActionExpr *from)
 {
 	DMLActionExpr *newnode = makeNode(DMLActionExpr);
+
+	return newnode;
+}
+
+static RuntimeFilterExpr *
+_copyRuntimeFilterExpr(const RuntimeFilterExpr *from)
+{
+	RuntimeFilterExpr *newnode = makeNode(RuntimeFilterExpr);
+
+	COPY_SCALAR_FIELD(paramid);
+	COPY_NODE_FIELD(key);
+	COPY_SCALAR_FIELD(hashop);
+	COPY_SCALAR_FIELD(collation);
+	COPY_SCALAR_FIELD(selectivity);
 
 	return newnode;
 }
@@ -6772,6 +6790,9 @@ copyObjectImpl(const void *from)
 			break;
 		case T_DMLActionExpr:
 			retval = _copyDMLActionExpr(from);
+			break;
+		case T_RuntimeFilterExpr:
+			retval = _copyRuntimeFilterExpr(from);
 			break;
 		case T_RangeTblEntry:
 			retval = _copyRangeTblEntry(from);

@@ -271,6 +271,9 @@ exprType(const Node *expr)
 		case T_DMLActionExpr:
 			type = INT4OID;
 			break;
+		case T_RuntimeFilterExpr:
+			type = BOOLOID;
+			break;
 		case T_AggExprId:
 			type = INT4OID;
 			break;
@@ -990,6 +993,7 @@ exprCollation(const Node *expr)
 		case T_DMLActionExpr:
 		case T_AggExprId:
 		case T_RowIdExpr:
+		case T_RuntimeFilterExpr:
 			coll = InvalidOid;
 			break;
 		default:
@@ -1039,6 +1043,9 @@ exprInputCollation(const Node *expr)
 			break;
 		case T_MinMaxExpr:
 			coll = ((const MinMaxExpr *) expr)->inputcollid;
+			break;
+		case T_RuntimeFilterExpr:
+			coll = ((const RuntimeFilterExpr *) expr)->collation;
 			break;
 		default:
 			coll = InvalidOid;
@@ -1183,6 +1190,9 @@ exprSetCollation(Node *expr, Oid collation)
 				   (collation == InvalidOid));
 			break;
 		case T_NullTest:
+			Assert(!OidIsValid(collation)); /* result is always boolean */
+			break;
+		case T_RuntimeFilterExpr:
 			Assert(!OidIsValid(collation)); /* result is always boolean */
 			break;
 		case T_BooleanTest:
@@ -1981,6 +1991,8 @@ expression_tree_walker(Node *node,
 		case T_RowIdExpr:
 			/* primitive node types with no expression subnodes */
 			break;
+		case T_RuntimeFilterExpr:
+			return walker((Node *) ((RuntimeFilterExpr *) node)->key, context);
 		case T_WithCheckOption:
 			return walker(((WithCheckOption *) node)->qual, context);
 		case T_Aggref:
@@ -3432,6 +3444,16 @@ expression_tree_mutator(Node *node,
 
 				FLATCOPY(newnode, sortcl, SortGroupClause);
 
+				return (Node *) newnode;
+			}
+			break;
+		case T_RuntimeFilterExpr:
+			{
+				RuntimeFilterExpr *rfexpr = (RuntimeFilterExpr *) node;
+				RuntimeFilterExpr *newnode;
+
+				FLATCOPY(newnode, rfexpr, RuntimeFilterExpr);
+				MUTATE(newnode->key, rfexpr->key, Expr *);
 				return (Node *) newnode;
 			}
 			break;

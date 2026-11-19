@@ -64,6 +64,7 @@ typedef struct TableScanInstrumentation
 	int64		staged_blocks_decompressed;
 	int64		staged_blocks_skipped;	/* stepped over by header, content never decompressed */
 	int64		staged_blocks_seeked;	/* jumps through the block directory */
+	int64		staged_rf_rows_removed;	/* rows the runtime filters rejected */
 
 	/*
 	 * Set by the scan node when EXPLAIN ANALYZE reads these counters. The
@@ -129,6 +130,7 @@ typedef struct Instrumentation
 	double		stagedBlocksDecompressed;	/* WHPG: Staged Scan Phase B blocks decompressed */
 	double		stagedBlocksSkipped;	/* WHPG: Staged Scan Phase B blocks skipped */
 	double		stagedBlocksSeeked;	/* WHPG: Staged Scan Phase B block-directory seeks */
+	double		rfRowsRemoved;		/* WHPG: rows removed by runtime filters */
 } Instrumentation;
 
 typedef struct WorkerInstrumentation

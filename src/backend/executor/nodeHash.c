@@ -45,6 +45,7 @@
 #include "utils/memutils.h"
 #include "utils/lsyscache.h"
 #include "utils/faultinjector.h"
+#include "utils/runtimefilter.h"
 #include "utils/syscache.h"
 
 #include "cdb/cdbexplain.h"
@@ -144,6 +145,234 @@ MultiExecHash(HashState *node)
 	return NULL;
 }
 
+/*
+ * WHPG: feed the builder one key's hash value, hashed as the probe scan's
+ * clause hashes its column (runtimefilter_probe()).
+ */
+static inline void
+ExecHashRuntimeFilterInsertKey(HashState *node, HashJoinTable hashtable,
+							   int idx, Datum keyval)
+{
+	runtimefilter_insert(node->rf_builder,
+						 DatumGetUInt32(FunctionCall1Coll(&hashtable->inner_hashfunctions[idx],
+														  hashtable->collations[idx],
+														  keyval)));
+}
+
+/*
+ * WHPG: put the tuple's key into the probe scan's runtime filter. The filter
+ * is over one hash key (HashJoin.rf_keyidx). For a join on a single key that
+ * is the hash value the table takes, which is that key's. For a join on
+ * several the chosen key is hashed by itself -- as the probe scan's clause
+ * hashes its column (runtimefilter_probe()) -- which costs this one more
+ * evaluation of the key per inner row. A NULL key is left out: the planner
+ * takes only strict operators (planrtfilter.c), so no probe row matches it.
+ * The tuple is econtext->ecxt_outertuple, as for ExecHashGetHashValue().
+ */
+static void
+ExecHashRuntimeFilterInsert(HashState *node, HashJoinTable hashtable,
+							ExprContext *econtext, uint32 hashvalue)
+{
+	int			idx = node->rf_keyidx;
+	ExprState  *keyexpr;
+	MemoryContext oldContext;
+	Datum		keyval;
+	bool		isNull;
+
+	if (list_length(node->hashkeys) == 1)
+	{
+		runtimefilter_insert(node->rf_builder, hashvalue);
+		return;
+	}
+
+	Assert(idx >= 0 && idx < list_length(node->hashkeys));
+	keyexpr = (ExprState *) list_nth(node->hashkeys, idx);
+	oldContext = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
+	keyval = ExecEvalExpr(keyexpr, econtext, &isNull);
+	if (!isNull)
+		ExecHashRuntimeFilterInsertKey(node, hashtable, idx, keyval);
+	MemoryContextSwitchTo(oldContext);
+}
+
+/*
+ * WHPG: compile the key the filter is over once more, for the pass over the
+ * tuples the table stores (ExecHashRuntimeFilterWalk()). node->hashkeys
+ * were compiled for the outer child's result slot (ExecInitHash()), and a
+ * fetch step compiled for a slot whose kind is fixed -- a heap scan's
+ * buffer-tuple slot -- takes no other kind; the pass hands each tuple over
+ * in the node's own result slot, a minimal-tuple slot, so this copy is
+ * compiled for that kind. The join's init calls this when it has a filter
+ * to build.
+ */
+void
+ExecHashInitRuntimeFilterKey(HashState *node, int keyidx)
+{
+	Hash	   *plan = (Hash *) node->ps.plan;
+	PlanState  *ps = &node->ps;
+	bool		opsset = ps->outeropsset;
+	bool		opsfixed = ps->outeropsfixed;
+	const TupleTableSlotOps *ops = ps->outerops;
+
+	if (list_length(plan->hashkeys) == 1)
+		keyidx = 0;
+	Assert(keyidx >= 0 && keyidx < list_length(plan->hashkeys));
+	ps->outeropsset = true;
+	ps->outeropsfixed = true;
+	ps->outerops = &TTSOpsMinimalTuple;
+	node->rf_walkkey = ExecInitExpr((Expr *) list_nth(plan->hashkeys, keyidx), ps);
+	ps->outeropsset = opsset;
+	ps->outeropsfixed = opsfixed;
+	ps->outerops = ops;
+}
+
+/*
+ * WHPG: a pass over the tuples the table holds, for the probe scan's runtime
+ * filter once every inner row is in (ExecHashJoinPublishRuntimeFilter()):
+ * to feed a filter again that the estimate had left too small and the join
+ * builds again at the size the rows call for; to find the range of
+ * integer-like keys; to set a bitmap over that range. Every inner tuple is
+ * in the table when the join has a single batch, which the caller has
+ * checked: in the dense-allocated chunks, as ExecHashIncreaseNumBuckets()
+ * walks them, and in the skew buckets. A single key's hash value is the
+ * tuple's own; its value, and the chosen key of several, are evaluated
+ * from the stored tuple by rf_walkkey, the key compiled for the slot the
+ * tuple is handed over in (ExecHashInitRuntimeFilterKey()).
+ */
+typedef enum RfWalkMode
+{
+	RF_WALK_REINSERT,			/* insert the key's hash value into rf_builder */
+	RF_WALK_RANGE,				/* the integer keys' lo and hi */
+	RF_WALK_BITMAP				/* set the integer keys' bits in 'bitmap' */
+} RfWalkMode;
+
+typedef struct RfWalk
+{
+	RfWalkMode	mode;
+	int			intlen;			/* 2, 4 or 8: how the key is read as an integer */
+	bool		any;			/* a non-NULL key was seen */
+	int64		lo;
+	int64		hi;
+	struct varlena *bitmap;
+} RfWalk;
+
+static void
+ExecHashRuntimeFilterWalkTuple(HashState *node, HashJoinTable hashtable,
+							   ExprContext *econtext, TupleTableSlot *slot,
+							   HashJoinTuple hashTuple, RfWalk *walk)
+{
+	int			idx;
+	MemoryContext oldContext;
+	Datum		keyval;
+	bool		isNull;
+	int64		v;
+
+	if (walk->mode == RF_WALK_REINSERT && list_length(node->hashkeys) == 1)
+	{
+		runtimefilter_insert(node->rf_builder, hashTuple->hashvalue);
+		return;
+	}
+
+	Assert(node->rf_walkkey != NULL);
+	ResetExprContext(econtext);
+	ExecStoreMinimalTuple(HJTUPLE_MINTUPLE(hashTuple), slot, false);
+	econtext->ecxt_outertuple = slot;
+	idx = (list_length(node->hashkeys) == 1) ? 0 : node->rf_keyidx;
+	oldContext = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
+	keyval = ExecEvalExpr(node->rf_walkkey, econtext, &isNull);
+	if (!isNull && walk->mode == RF_WALK_REINSERT)
+		ExecHashRuntimeFilterInsertKey(node, hashtable, idx, keyval);
+	MemoryContextSwitchTo(oldContext);
+	if (isNull || walk->mode == RF_WALK_REINSERT)
+		return;
+	v = (walk->intlen == 8) ? DatumGetInt64(keyval) :
+		(walk->intlen == 4) ? (int64) DatumGetInt32(keyval) :
+		(int64) DatumGetInt16(keyval);
+	if (walk->mode == RF_WALK_RANGE)
+	{
+		if (!walk->any || v < walk->lo)
+			walk->lo = v;
+		if (!walk->any || v > walk->hi)
+			walk->hi = v;
+		walk->any = true;
+	}
+	else
+		runtimefilter_bitmap_set(walk->bitmap, v);
+}
+
+static void
+ExecHashRuntimeFilterWalk(HashState *node, HashJoinTable hashtable, RfWalk *walk)
+{
+	ExprContext *econtext = node->ps.ps_ExprContext;
+	TupleTableSlot *slot = node->ps.ps_ResultTupleSlot;
+	TupleTableSlot *saved = econtext->ecxt_outertuple;
+	HashMemoryChunk chunk;
+
+	Assert(hashtable->nbatch == 1);
+
+	for (chunk = hashtable->chunks; chunk != NULL; chunk = chunk->next.unshared)
+	{
+		size_t		idx = 0;
+
+		while (idx < chunk->used)
+		{
+			HashJoinTuple hashTuple = (HashJoinTuple) (HASH_CHUNK_DATA(chunk) + idx);
+
+			ExecHashRuntimeFilterWalkTuple(node, hashtable, econtext, slot,
+										   hashTuple, walk);
+			idx += MAXALIGN(HJTUPLE_OVERHEAD +
+							HJTUPLE_MINTUPLE(hashTuple)->t_len);
+		}
+		CHECK_FOR_INTERRUPTS();
+	}
+	for (int i = 0; i < hashtable->nSkewBuckets; i++)
+	{
+		HashSkewBucket *bucket = hashtable->skewBucket[hashtable->skewBucketNums[i]];
+		HashJoinTuple hashTuple;
+
+		for (hashTuple = bucket->tuples; hashTuple != NULL;
+			 hashTuple = hashTuple->next.unshared)
+			ExecHashRuntimeFilterWalkTuple(node, hashtable, econtext, slot,
+										   hashTuple, walk);
+	}
+	econtext->ecxt_outertuple = saved;
+}
+
+/* feed rf_builder again from the table */
+void
+ExecHashRebuildRuntimeFilter(HashState *node, HashJoinTable hashtable)
+{
+	RfWalk		walk = {RF_WALK_REINSERT, 0, false, 0, 0, NULL};
+
+	Assert(node->rf_builder != NULL);
+	ExecHashRuntimeFilterWalk(node, hashtable, &walk);
+}
+
+/*
+ * The range of the table's keys read as integers of 'intlen' bytes; false
+ * when every key is NULL.
+ */
+bool
+ExecHashRuntimeFilterKeyRange(HashState *node, HashJoinTable hashtable,
+							  int intlen, int64 *lo, int64 *hi)
+{
+	RfWalk		walk = {RF_WALK_RANGE, intlen, false, 0, 0, NULL};
+
+	ExecHashRuntimeFilterWalk(node, hashtable, &walk);
+	*lo = walk.lo;
+	*hi = walk.hi;
+	return walk.any;
+}
+
+/* set the table's keys, read as integers of 'intlen' bytes, in the bitmap */
+void
+ExecHashRuntimeFilterBitmap(HashState *node, HashJoinTable hashtable,
+							int intlen, struct varlena *bitmap)
+{
+	RfWalk		walk = {RF_WALK_BITMAP, intlen, false, 0, 0, bitmap};
+
+	ExecHashRuntimeFilterWalk(node, hashtable, &walk);
+}
+
 /* ----------------------------------------------------------------
  *		MultiExecPrivateHash
  *
@@ -194,6 +423,10 @@ MultiExecPrivateHash(HashState *node)
 								 &hashvalue, &hashkeys_null))
 		{
 			int			bucketNumber;
+
+			/* WHPG: the probe scan's runtime filter takes the key too */
+			if (node->rf_builder != NULL)
+				ExecHashRuntimeFilterInsert(node, hashtable, econtext, hashvalue);
 
 			bucketNumber = ExecHashGetSkewBucket(hashtable, hashvalue);
 			if (bucketNumber != INVALID_SKEW_BUCKET_NO)
@@ -403,6 +636,9 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 	hashstate->ps.ExecProcNode = ExecHash;
 	hashstate->hashtable = NULL;
 	hashstate->hashkeys = NIL;	/* will be set by parent HashJoin */
+	hashstate->rf_builder = NULL;	/* WHPG: set by the HashJoin, per build */
+	hashstate->rf_keyidx = -1;
+	hashstate->rf_walkkey = NULL;	/* WHPG: set by the HashJoin, when it has a filter */
 
 	/*
 	 * Miscellaneous initialization

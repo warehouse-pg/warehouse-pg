@@ -911,6 +911,14 @@ clause_selectivity(PlannerInfo *root,
 								  jointype,
 								  sjinfo);
 	}
+	else if (IsA(clause, RuntimeFilterExpr))
+	{
+		/*
+		 * WHPG: a hash join's runtime filter probe carries the planner's
+		 * estimate of the probe rows that have a match (planrtfilter.c).
+		 */
+		s1 = ((RuntimeFilterExpr *) clause)->selectivity;
+	}
 	else if (IsA(clause, ScalarArrayOpExpr))
 	{
 		/* Use node specific selectivity calculation function */

@@ -364,11 +364,12 @@ explain (costs off)
                ->  Hash Join
                      Hash Cond: (r.id = s.id)
                      ->  Seq Scan on simple r
+                           Runtime Filter: id
                      ->  Hash
                            ->  Broadcast Motion 3:3  (slice2; segments: 3)
                                  ->  Seq Scan on bigger_than_it_looks s
  Optimizer: Pivotal Optimizer (GPORCA)
-(13 rows)
+(14 rows)
 
 select count(*) FROM simple r JOIN bigger_than_it_looks s USING (id);
  count 
@@ -403,11 +404,12 @@ explain (costs off)
                ->  Hash Join
                      Hash Cond: (r.id = s.id)
                      ->  Seq Scan on simple r
+                           Runtime Filter: id
                      ->  Hash
                            ->  Broadcast Motion 3:3  (slice2; segments: 3)
                                  ->  Seq Scan on bigger_than_it_looks s
  Optimizer: Pivotal Optimizer (GPORCA)
-(13 rows)
+(14 rows)
 
 select count(*) from simple r join bigger_than_it_looks s using (id);
  count 
@@ -442,11 +444,12 @@ explain (costs off)
                ->  Hash Join
                      Hash Cond: (r.id = s.id)
                      ->  Seq Scan on simple r
+                           Runtime Filter: id
                      ->  Hash
                            ->  Broadcast Motion 3:3  (slice2; segments: 3)
                                  ->  Seq Scan on bigger_than_it_looks s
  Optimizer: Pivotal Optimizer (GPORCA)
-(13 rows)
+(14 rows)
 
 select count(*) from simple r join bigger_than_it_looks s using (id);
  count 
@@ -1058,10 +1061,11 @@ explain (costs off) select * from join_hash_t_small, join_hash_t_big where a = b
    ->  Hash Join
          Hash Cond: (join_hash_t_big.b = join_hash_t_small.a)
          ->  Seq Scan on join_hash_t_big
+               Runtime Filter: b
          ->  Hash
                ->  Seq Scan on join_hash_t_small
  Optimizer: Pivotal Optimizer (GPORCA)
-(7 rows)
+(8 rows)
 
 rollback to settings;
 rollback;

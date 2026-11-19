@@ -1695,4 +1695,31 @@ typedef struct DMLActionExpr
 	Expr        xpr;
 } DMLActionExpr;
 
+/*
+ * RuntimeFilterExpr (WHPG)
+ *
+ * The probe of a hash join's runtime filter, which the planner puts in the
+ * probe scan's qual (planrtfilter.c): true if 'key' may be among the join
+ * keys the hash table holds. The filter arrives through the exec Param
+ * 'paramid', which the join sets once its table is built (nodeHashjoin.c);
+ * while the Param is NULL every row passes. 'hashop' is the join's hash
+ * operator, with the key as its left-hand operand: the key is hashed with
+ * that operator's left-hand hash support function under 'collation', as the
+ * join hashes the probe side. 'selectivity' is the planner's estimate of the
+ * probe rows that pass, for the cost model.
+ *
+ * Only the planner builds one (runtimefilter_make_clause()); SQL has no
+ * syntax for it, and it rests on no catalog entry. The executor compiles it
+ * to a step of its own (EEOP_RUNTIME_FILTER, execExpr.c).
+ */
+typedef struct RuntimeFilterExpr
+{
+	Expr		xpr;
+	int			paramid;		/* the exec Param the join sets to the filter */
+	Expr	   *key;			/* the probe row's key */
+	Oid			hashop;			/* the join's hash operator; key = its left operand */
+	Oid			collation;		/* the hash clause's input collation */
+	double		selectivity;	/* planner estimate of the rows that pass */
+} RuntimeFilterExpr;
+
 #endif							/* PRIMNODES_H */

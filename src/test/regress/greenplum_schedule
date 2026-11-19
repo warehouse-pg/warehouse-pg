@@ -58,6 +58,10 @@ test: staged_scan_ordering
 
 test: staged_scan_orca
 
+# runtime filter: a hash join's probe scan filters on the hash table's keys,
+# leading a Staged Scan on AOCO; both optimizers
+test: runtime_filter
+
 test: motion_deadlock
 
 # test gp_fastsequence allocation (early in schedule as log grepping is expensive)

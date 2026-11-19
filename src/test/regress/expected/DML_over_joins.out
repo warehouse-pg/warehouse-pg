@@ -1638,6 +1638,7 @@ explain (costs off) delete from tab1 using tab2, tab3 where tab1.a = tab2.a and 
                      ->  Hash Join
                            Hash Cond: (tab2.a = tab1.a)
                            ->  Seq Scan on tab2
+                                 Runtime Filter: a
                            ->  Hash
                                  ->  Redistribute Motion 3:3  (slice2; segments: 3)
                                        Hash Key: tab1.a

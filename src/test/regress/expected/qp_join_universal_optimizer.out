@@ -246,6 +246,7 @@ explain (analyze, costs off, timing off, summary off) select * from part join co
          ->  Dynamic Seq Scan on part (actual rows=43 loops=1)
                Number of partitions to scan: 1 (out of 3)
                Filter: (c2 = 1)
+               Rows Removed by Filter: 107
                Partitions scanned:  Avg 1.0 x 3 workers.  Max 1 parts (seg0).
          ->  Hash (actual rows=1 loops=1)
                Buckets: 524288  Batches: 1  Memory Usage: 4097kB
@@ -254,7 +255,7 @@ explain (analyze, costs off, timing off, summary off) select * from part join co
                            Filter: ((1) = 1)
                            ->  Result (actual rows=1 loops=1)
  Optimizer: Pivotal Optimizer (GPORCA)
-(15 rows)
+(16 rows)
 
 explain (analyze, costs off, timing off, summary off) select * from part join unnest_arr on part.c2 = unnest_arr.c1;
                                         QUERY PLAN                                         

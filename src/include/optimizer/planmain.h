@@ -158,4 +158,12 @@ extern void cdb_extract_plan_dependencies(PlannerInfo *root, Plan *plan);
 
 extern void add_proc_oids_for_dump(Oid funcid);
 
+/*
+ * prototypes for plan/planrtfilter.c (WHPG runtime filters for hash joins)
+ */
+extern void runtimefilter_decide_plan(PlannerGlobal *glob, Plan *plan,
+									  List *subplans, List *rtable,
+									  List **paramExecTypes,
+									  bool hasRowSecurity, bool orcaRows);
+
 #endif							/* PLANMAIN_H */
