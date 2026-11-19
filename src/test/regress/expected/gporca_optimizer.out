@@ -15621,3 +15621,228 @@ select count(*) from arrcmp_chk_not where b = 0;
 
 drop table arrcmp_part, arrcmp_chk, arrcmp_chk_null, arrcmp_chk_not;
 reset optimizer_array_constraints;
+-- WHPG: NOT over an AND whose child gives no constraint (a % 2, = ALL, a
+-- nested OR, another column) must not be read as the complement of the
+-- other children: the row (5, 5, 5, 5, 1, 3) passes every CHECK, and
+-- f = -1 is still a contradiction
+create table notand_chk (
+  a int check (not (a > 0 and a % 2 = 0)),
+  b int check (not (b > 0 and b = all (array[1, 2]))),
+  c int check (not (c > 0 and (c % 2 = 0 or c > 50))),
+  d int, e int, check (not (d > 0 and e % 2 = 0)),
+  f int check (not (f <= 0 or f % 2 = 0))) distributed by (a);
+insert into notand_chk values (5, 5, 5, 5, 1, 3);
+explain (costs off) select count(*) from notand_chk where a = 5;
+                   QUERY PLAN                   
+------------------------------------------------
+ Aggregate
+   ->  Gather Motion 1:1  (slice1; segments: 1)
+         ->  Seq Scan on notand_chk
+               Filter: (a = 5)
+ Optimizer: GPORCA
+(5 rows)
+
+select count(*) from notand_chk where a = 5;
+ count 
+-------
+     1
+(1 row)
+
+explain (costs off) select count(*) from notand_chk where b = 5;
+                   QUERY PLAN                   
+------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Seq Scan on notand_chk
+               Filter: (b = 5)
+ Optimizer: GPORCA
+(5 rows)
+
+select count(*) from notand_chk where b = 5;
+ count 
+-------
+     1
+(1 row)
+
+explain (costs off) select count(*) from notand_chk where c = 5;
+                   QUERY PLAN                   
+------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Seq Scan on notand_chk
+               Filter: (c = 5)
+ Optimizer: GPORCA
+(5 rows)
+
+select count(*) from notand_chk where c = 5;
+ count 
+-------
+     1
+(1 row)
+
+explain (costs off) select count(*) from notand_chk where d = 5;
+                   QUERY PLAN                   
+------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Seq Scan on notand_chk
+               Filter: (d = 5)
+ Optimizer: GPORCA
+(5 rows)
+
+select count(*) from notand_chk where d = 5;
+ count 
+-------
+     1
+(1 row)
+
+explain (costs off) select count(*) from notand_chk where f = -1;
+           QUERY PLAN           
+--------------------------------
+ Aggregate
+   ->  Result
+         One-Time Filter: false
+ Optimizer: GPORCA
+(4 rows)
+
+select count(*) from notand_chk where f = -1;
+ count 
+-------
+     0
+(1 row)
+
+drop table notand_chk;
+-- WHPG: the same for array comparisons that give no interval: < ANY
+-- never does, and none does with optimizer_array_constraints off.  The
+-- row (5, 0, 5, 5) passes every CHECK
+create table notand_arr_chk (
+  a int check (not (a > 0 and a < any (array[1, 2]))),
+  b int check (not (not (b < any (array[1, 2])) and b < 3)),
+  c int check (not (c > 0 and c = all (array[1, 2]))),
+  d int check (not (d > 0 and d = any (array[1])))) distributed by (a);
+insert into notand_arr_chk values (5, 0, 5, 5);
+explain (costs off) select count(*) from notand_arr_chk where a = 5;
+                   QUERY PLAN                   
+------------------------------------------------
+ Aggregate
+   ->  Gather Motion 1:1  (slice1; segments: 1)
+         ->  Seq Scan on notand_arr_chk
+               Filter: (a = 5)
+ Optimizer: GPORCA
+(5 rows)
+
+select count(*) from notand_arr_chk where a = 5;
+ count 
+-------
+     1
+(1 row)
+
+explain (costs off) select count(*) from notand_arr_chk where b = 0;
+                   QUERY PLAN                   
+------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Seq Scan on notand_arr_chk
+               Filter: (b = 0)
+ Optimizer: GPORCA
+(5 rows)
+
+select count(*) from notand_arr_chk where b = 0;
+ count 
+-------
+     1
+(1 row)
+
+set optimizer_array_constraints = off;
+explain (costs off) select count(*) from notand_arr_chk where c = 5;
+                   QUERY PLAN                   
+------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Seq Scan on notand_arr_chk
+               Filter: (c = 5)
+ Optimizer: GPORCA
+(5 rows)
+
+select count(*) from notand_arr_chk where c = 5;
+ count 
+-------
+     1
+(1 row)
+
+explain (costs off) select count(*) from notand_arr_chk where d = 5;
+                   QUERY PLAN                   
+------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Seq Scan on notand_arr_chk
+               Filter: (d = 5)
+ Optimizer: GPORCA
+(5 rows)
+
+select count(*) from notand_arr_chk where d = 5;
+ count 
+-------
+     1
+(1 row)
+
+reset optimizer_array_constraints;
+drop table notand_arr_chk;
+-- WHPG: NOT (NOT p) is p, so a = 5 is a contradiction.  NOT over a
+-- nested OR (b = 1 or (c = 2 or b = 3)) is flattened into its 3 disjuncts
+-- before checking optimizer_array_expansion_threshold: b = 1 is pruned
+-- by default, and kept once the threshold is 2
+create table notnot_chk (
+  a int check (not (not (a > 10 and a % 2 = 0))),
+  b int, c int, check (not (b = 1 or (c = 2 or b = 3))))
+  distributed by (a);
+insert into notnot_chk values (12, 2, 3);
+explain (costs off) select count(*) from notnot_chk where a = 5;
+           QUERY PLAN           
+--------------------------------
+ Aggregate
+   ->  Result
+         One-Time Filter: false
+ Optimizer: GPORCA
+(4 rows)
+
+select count(*) from notnot_chk where a = 12;
+ count 
+-------
+     1
+(1 row)
+
+explain (costs off) select count(*) from notnot_chk where b = 1;
+           QUERY PLAN           
+--------------------------------
+ Aggregate
+   ->  Result
+         One-Time Filter: false
+ Optimizer: GPORCA
+(4 rows)
+
+select count(*) from notnot_chk where b = 2;
+ count 
+-------
+     1
+(1 row)
+
+set optimizer_array_expansion_threshold = 2;
+explain (costs off) select count(*) from notnot_chk where b = 1;
+                   QUERY PLAN                   
+------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Seq Scan on notnot_chk
+               Filter: (b = 1)
+ Optimizer: GPORCA
+(5 rows)
+
+select count(*) from notnot_chk where b = 2;
+ count 
+-------
+     1
+(1 row)
+
+reset optimizer_array_expansion_threshold;
+drop table notnot_chk;

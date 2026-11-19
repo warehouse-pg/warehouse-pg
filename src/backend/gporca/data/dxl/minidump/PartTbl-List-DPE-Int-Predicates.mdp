@@ -471,6 +471,7 @@ select * from foo where b is not null;
             <dxl:Partitions>
               <dxl:Partition Mdid="6.322247001.1.1"/>
               <dxl:Partition Mdid="6.322247002.1.1"/>
+              <dxl:Partition Mdid="6.322247003.1.1"/>
             </dxl:Partitions>
             <dxl:TableDescriptor Mdid="6.322247.1.1" TableName="foo">
               <dxl:Columns>
@@ -507,6 +508,7 @@ select * from foo where b is not null;
             <dxl:Partitions>
               <dxl:Partition Mdid="6.322247001.1.1"/>
               <dxl:Partition Mdid="6.322247002.1.1"/>
+              <dxl:Partition Mdid="6.322247003.1.1"/>
             </dxl:Partitions>
             <dxl:TableDescriptor Mdid="6.322247.1.1" TableName="foo">
               <dxl:Columns>
@@ -546,6 +548,7 @@ select * from foo where b is not null;
             <dxl:Partitions>
               <dxl:Partition Mdid="6.322247001.1.1"/>
               <dxl:Partition Mdid="6.322247002.1.1"/>
+              <dxl:Partition Mdid="6.322247003.1.1"/>
             </dxl:Partitions>
             <dxl:TableDescriptor Mdid="6.322247.1.1" TableName="foo">
               <dxl:Columns>
@@ -583,6 +586,7 @@ select * from foo where b is not null;
             <dxl:Partitions>
               <dxl:Partition Mdid="6.322247001.1.1"/>
               <dxl:Partition Mdid="6.322247002.1.1"/>
+              <dxl:Partition Mdid="6.322247003.1.1"/>
             </dxl:Partitions>
             <dxl:TableDescriptor Mdid="6.322247.1.1" TableName="foo">
               <dxl:Columns>

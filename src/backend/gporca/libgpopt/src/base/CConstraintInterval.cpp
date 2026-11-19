@@ -22,6 +22,7 @@
 #include "gpopt/base/COptCtxt.h"
 #include "gpopt/base/CUtils.h"
 #include "gpopt/optimizer/COptimizerConfig.h"
+#include "gpopt/operators/CExpressionUtils.h"
 #include "gpopt/operators/CPredicateUtils.h"
 #include "gpopt/operators/CScalarArray.h"
 #include "gpopt/operators/CScalarBooleanTest.h"
@@ -945,12 +946,34 @@ CConstraintInterval::PciIntervalFromScalarBoolOp(
 
 		case CScalarBoolOp::EboolopNot:
 		{
-			// AND drops a child it cannot derive, which is fine for the AND
-			// itself (a superset) but not for its complement. If an IN/NOT IN
-			// list inside the child was skipped (threshold), the result is
-			// incomplete, so do not complement it. This covers only skipped
-			// lists; the general case (an AND that dropped any child it could
-			// not derive) is a known issue, tracked separately.
+			// WHPG: the AND case skips a child that gives no interval, so it
+			// may return a superset.  Complementing that superset gives a
+			// subset, i.e. it rules out values the predicate accepts.  Push
+			// the NOT through AND / OR first (De Morgan), so that it is only
+			// complemented over leaves.
+			CExpression *pexprChild = (*pexpr)[0];
+
+			// WHPG: NOT (NOT p) is p; see CConstraint::PcnstrFromScalarBoolOp
+			if (CPredicateUtils::FNot(pexprChild))
+			{
+				return PciIntervalFromScalarExpr(mp, (*pexprChild)[0], colref,
+												 infer_nulls_as, access_method);
+			}
+
+			if (CPredicateUtils::FAnd(pexprChild) ||
+				CPredicateUtils::FOr(pexprChild))
+			{
+				CExpression *pexprPushed =
+					CExpressionUtils::PexprPushNotOneLevel(mp, pexprChild);
+				CConstraintInterval *pci = PciIntervalFromScalarExpr(
+					mp, pexprPushed, colref, infer_nulls_as, access_method);
+				pexprPushed->Release();
+				return pci;
+			}
+
+			// The child is a leaf.  If an IN/NOT IN list in it was skipped
+			// (threshold), its interval is incomplete, so do not complement
+			// it.
 			COptCtxt *poctxt = COptCtxt::PoctxtFromTLS();
 			const ULONG ulBailouts = poctxt->UlArrayCnstrBailouts();
 
