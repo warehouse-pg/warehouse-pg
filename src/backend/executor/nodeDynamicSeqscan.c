@@ -191,12 +191,19 @@ initNextTableToScan(DynamicSeqScanState *node)
 
 	/*
 	 * WHPG: the partition's scan is initialized outside ExecInitNode() and
-	 * gets no instrumentation of its own; a staged scan reports its
-	 * counts into this node's (SeqScanSyncStagedInstrumentation()).
+	 * gets no instrumentation of its own; it counts into this node's. A
+	 * staged scan reports its counts through
+	 * SeqScanSyncStagedInstrumentation(); the rows the qual removes are
+	 * counted on the instrumentation the scan sees as its own, so that
+	 * EXPLAIN ANALYZE shows "Rows Removed by Filter" for a dynamic scan as
+	 * for a plain one. The partition's ExecProcNode is ExecSeqScan itself,
+	 * not the instrumented wrapper, so its tuples and time are still counted
+	 * once, by this node.
 	 */
 	node->seqScanState = ExecInitSeqScanForPartition(&plan->seqscan, estate,
 													 currentRelation);
 	node->seqScanState->staged_instr = scanState->ps.instrument;
+	node->seqScanState->ss.ps.instrument = scanState->ps.instrument;
 	return true;
 }
 

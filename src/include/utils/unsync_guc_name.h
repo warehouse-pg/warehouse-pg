@@ -573,6 +573,7 @@
 		"whpg_hot_standby_anchor_name",
 		"whpg_hot_standby_snapshot_mode",
 		"whpg_max_anchor_snapshots",
+		"whpg_runtime_filter_explain",
 		"writable_external_table_bufsize",
 		"xid_stop_limit",
 		"xid_warn_limit",

@@ -193,6 +193,7 @@ explain (costs off) select * from legacy_int a inner join modern_int b on a.id =
    ->  Hash Join
          Hash Cond: (a.id = b.id)
          ->  Seq Scan on legacy_int a
+               Runtime Filter: id
          ->  Hash
                ->  Redistribute Motion 3:3  (slice2; segments: 3)
                      Hash Key: b.id

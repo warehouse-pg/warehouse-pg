@@ -203,6 +203,22 @@ typedef struct StagedScanState
 	struct StagedScanSimpleClause *simple;
 	int			nsimple;
 	int			simpleLen;		/* attlen of the Phase A column: 2, 4 or 8 */
+
+	/*
+	 * Runtime filter clauses on the Phase A column (runtimefilter.c), probed
+	 * off the raw datum array beside 'simple' -- the hash function inlined
+	 * for the integer-like types -- rather than through the row-at-a-time
+	 * ExecQual(). Compiled with 'simple'; a block qualifies for the fast path
+	 * with either kind of clause present.
+	 */
+	struct StagedScanSimpleFilter *rfilters;
+	int			nrfilters;
+	int64		rfRemovedKept;	/* filter rejections no probe state holds: the
+								 * fast path's, and those of quals compiled
+								 * before a stage rebuild */
+	List	   *rfProbes;		/* probe states of the quals compiled here */
+	int64		rfRemovedSegStart;	/* the filters' rejections so far when
+									 * Phase A entered this segfile */
 	int64		blocksFastA;	/* blocks Phase A tested through the fast path */
 	StagedScanClause *clauses;
 	int			nclauses;
@@ -325,8 +341,11 @@ typedef struct StagedScanState
 
 extern bool extractcolumns_from_node(Node *expr, bool *cols, AttrNumber natts);
 extern bool stagedscan_contains_param(Node *node);
+extern bool stagedscan_contains_foreign_param(Node *node);
 extern bool stagedscan_clause_can_fail(Node *clause);
 extern List *stagedscan_flatten_qual(List *qual);
+struct AOCSScanDescData;
+extern void stagedscan_sync_rf_removed(struct AOCSScanDescData *scan);
 
 extern bool stagedscan_applicable(Relation rel, List *targetlist, List *qual,
 								  bool *proj, AttrNumber natts,

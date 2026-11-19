@@ -42,8 +42,11 @@
 #include "storage/bufmgr.h"
 #include "utils/datumstream.h"
 #include "utils/faultinjector.h"
+#include "parser/parse_coerce.h"
+#include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "utils/runtimefilter.h"
 
 static void stagedscan_compile_simple(StagedScanState *gi, List *quals,
 									  TupleDesc tupdesc);
@@ -258,6 +261,12 @@ stagedscan_flatten_qual(List *qual)
  * feeds an inner scan. Either kind fails at evaluation time with "no value
  * found for parameter", so such quals are declined up front. The planner
  * declines them too; this is the executor's own guard.
+ *
+ * The one Param a stage qual may read is a runtime filter's
+ * (runtimefilter.c): the hash join above the scan sets it, and the scan's
+ * ExprContexts are given the executor's exec-param values for it
+ * (aocsam.c). stagedscan_contains_param() reports every Param,
+ * stagedscan_contains_foreign_param() every other one.
  */
 static bool
 stagedscan_contains_param_walker(Node *node, void *context)
@@ -273,6 +282,27 @@ bool
 stagedscan_contains_param(Node *node)
 {
 	return stagedscan_contains_param_walker(node, NULL);
+}
+
+static bool
+stagedscan_contains_foreign_param_walker(Node *node, void *context)
+{
+	if (node == NULL)
+		return false;
+	if (IsA(node, Param))
+		return true;
+	if (runtimefilter_is_clause(node))
+		return stagedscan_contains_foreign_param_walker(
+												runtimefilter_clause_key(node),
+												context);
+	return expression_tree_walker(node, stagedscan_contains_foreign_param_walker,
+								  context);
+}
+
+bool
+stagedscan_contains_foreign_param(Node *node)
+{
+	return stagedscan_contains_foreign_param_walker(node, NULL);
 }
 
 /* Does the expression reference a system column or a whole row? */
@@ -305,6 +335,12 @@ stagedscan_contains_sysattr(Node *node)
  * to fail. Unlike contain_leaked_vars(), a call with no Var below it counts
  * too: whether it fails does not depend on the row, but whether it runs at
  * all does.
+ *
+ * A runtime filter clause (runtimefilter_is_clause(): a RuntimeFilterExpr,
+ * which only the planner writes -- SQL has no syntax for one) cannot fail
+ * either: the executor hands it NULL or a filter it built, and the planner
+ * paired the operator with the key type, so only its key expression could
+ * fail.
  */
 static bool
 stagedscan_can_fail_checker(Oid func_id, void *context)
@@ -318,10 +354,14 @@ stagedscan_can_fail_walker(Node *node, void *context)
 	if (node == NULL)
 		return false;
 
+	if (runtimefilter_is_clause(node))
+		return stagedscan_can_fail_walker(runtimefilter_clause_key(node), context);
+
 	switch (nodeTag(node))
 	{
 		case T_Var:
 		case T_Const:
+		case T_Param:
 		case T_ArrayExpr:
 		case T_BoolExpr:
 		case T_RelabelType:
@@ -557,6 +597,13 @@ stagedscan_build_stages(StagedScanState *gi, AOCSScanDesc scan)
 	ListCell   *lc;
 	MemoryContext oldctx;
 
+	/*
+	 * The quals compiled below go with the context, and with them the probe
+	 * states of their runtime filter clauses; what those rejected is kept
+	 * (stagedscan_sync_rf_removed()).
+	 */
+	gi->rfRemovedKept += (int64) runtimefilter_probes_removed(gi->rfProbes);
+	gi->rfProbes = NIL;
 	MemoryContextReset(gi->stageCtx);
 	oldctx = MemoryContextSwitchTo(gi->stageCtx);
 
@@ -721,6 +768,8 @@ stagedscan_build_stages(StagedScanState *gi, AOCSScanDesc scan)
 			 * subplans or anything else needing a PlanState.
 			 */
 			ev->qual = ExecInitQual(list_make1(part), NULL);
+			gi->rfProbes = list_concat(gi->rfProbes,
+									   runtimefilter_qual_probes(ev->qual));
 
 			/* the part's columns: fetch Phase A ones here, mark who needs each */
 			memset(cols, 0, sizeof(bool) * natts);
@@ -779,12 +828,14 @@ stagedscan_build_stages(StagedScanState *gi, AOCSScanDesc scan)
 
 	gi->phaseAQual = phaseAQuals != NIL ? ExecInitQual(phaseAQuals, NULL) : NULL;
 	Assert(gi->phaseAQual != NULL);
+	gi->rfProbes = list_concat(gi->rfProbes,
+							   runtimefilter_qual_probes(gi->phaseAQual));
 	stagedscan_compile_simple(gi, phaseAQuals, tupdesc);
 	/*
 	 * The fast path tests the datums before consulting the visimap, which is
 	 * only safe because every comparison it admits is leakproof.
 	 */
-	Assert(gi->nsimple == 0 || !gi->phaseAMayFail);
+	Assert((gi->nsimple == 0 && gi->nrfilters == 0) || !gi->phaseAMayFail);
 
 	/*
 	 * The columns the scan's consumers read and no stage fetched are fetched
@@ -1043,6 +1094,8 @@ stagedscan_reset_for_segment(StagedScanState *gi)
 	gi->batchTarget = STAGEDSCAN_BATCH_FIRST_ROWS;
 	gi->rowsScannedSeg = 0;
 	gi->rowsInvisibleSeg = 0;
+	gi->rfRemovedSegStart = gi->rfRemovedKept +
+		(int64) runtimefilter_probes_removed(gi->rfProbes);
 	gi->blocksScannedA = 0;
 	gi->blocksHitA = 0;
 	gi->curBlockFirstRow = -1;
@@ -1268,6 +1321,15 @@ stagedscan_fall_back(StagedScanState *gi, AOCSScanDesc scan)
 	gi->fellBack = true;
 	if (scan->stagedInstrument != NULL)
 		scan->stagedInstrument->staged_fallbacks++;
+
+	/*
+	 * The ordinary scan reads this segment file from its start and tests
+	 * every row again, the runtime filter clauses included; what they
+	 * rejected here in Phase A would be counted twice.
+	 */
+	gi->rfRemovedKept -= gi->rfRemovedKept +
+		(int64) runtimefilter_probes_removed(gi->rfProbes) -
+		gi->rfRemovedSegStart;
 	stagedscan_close_phase_a(gi);
 	return false;
 }
@@ -1361,6 +1423,28 @@ stagedscan_survivors_too_dense(StagedScanState *gi)
 #define STAGED_DATETIME_BTREE_FAM_OID 434
 
 /*
+ * A runtime filter clause (a RuntimeFilterExpr over $p, the column and the
+ * join's hash operator) compiled for the fast path: the Param the hash join
+ * sets, and how to hash the column's raw value as the join does -- inline
+ * for the functions that hash the value as an integer
+ * (runtimefilter_int_width(): the integer and datetime types), through fmgr
+ * for anything else. 'cur' is the filter the Param holds for
+ * the block being tested, NULL when there is none yet (or it was dropped, or
+ * the Param does not hold one), which lets every row through. The watch on
+ * the filter's usefulness is the filter's own tally
+ * (runtimefilter_probe_count()), shared with the qual's probes; a filter at
+ * rest is told of the rows of each block that went by it.
+ */
+typedef struct StagedScanSimpleFilter
+{
+	int			paramid;
+	Oid			collation;
+	bool		inlineHash;
+	FmgrInfo	hashfn;
+	RuntimeFilter *cur;
+} StagedScanSimpleFilter;
+
+/*
  * Compile Phase A's clauses into the fast-path form, if they qualify: one
  * Phase A column of a fixed-width integer-like type (int2/int4/int8, date,
  * timestamp, timestamptz), and every clause <Var op Const> or <Const op Var>
@@ -1378,10 +1462,13 @@ stagedscan_compile_simple(StagedScanState *gi, List *quals, TupleDesc tupdesc)
 	Oid			famoid;
 	bool		integerFamily;
 	StagedScanSimpleClause *simple;
+	StagedScanSimpleFilter *rf;
 	int			n = 0;
+	int			nrf = 0;
 	ListCell   *lc;
 
 	gi->nsimple = 0;
+	gi->nrfilters = 0;
 	if (gi->nphaseA != 1 || quals == NIL)
 		return;
 
@@ -1411,6 +1498,8 @@ stagedscan_compile_simple(StagedScanState *gi, List *quals, TupleDesc tupdesc)
 
 	simple = (StagedScanSimpleClause *)
 		palloc(sizeof(StagedScanSimpleClause) * list_length(quals));
+	rf = (StagedScanSimpleFilter *)
+		palloc0(sizeof(StagedScanSimpleFilter) * list_length(quals));
 
 	foreach(lc, quals)
 	{
@@ -1423,6 +1512,37 @@ stagedscan_compile_simple(StagedScanState *gi, List *quals, TupleDesc tupdesc)
 		bool		flipped;
 		int			strategy;
 		int64		value;
+
+		/*
+		 * A runtime filter on this column: the test the planner made before
+		 * it wrote the clause and the qual's probe makes before it trusts it
+		 * (runtimefilter_key_hashable()), made once here, so that the block
+		 * loop can hash the raw value and probe the filter directly.
+		 */
+		if (runtimefilter_is_clause(clause))
+		{
+			RuntimeFilterExpr *rfexpr = (RuntimeFilterExpr *) clause;
+			Node	   *key = (Node *) rfexpr->key;
+			Oid			lhsproc;
+
+			if (!IsA(key, Var) ||
+				((Var *) key)->varattno != attno + 1 ||
+				((Var *) key)->varlevelsup != 0 ||
+				((Var *) key)->vartype != att->atttypid)
+				return;
+			if (!runtimefilter_key_hashable(rfexpr->hashop, att->atttypid,
+											&lhsproc, NULL))
+				return;
+
+			rf[nrf].paramid = rfexpr->paramid;
+			rf[nrf].collation = rfexpr->collation;
+			rf[nrf].inlineHash =
+				(runtimefilter_int_width(lhsproc) == att->attlen);
+			if (!rf[nrf].inlineHash)
+				fmgr_info_cxt(lhsproc, &rf[nrf].hashfn, CurrentMemoryContext);
+			nrf++;
+			continue;
+		}
 
 		if (!IsA(clause, OpExpr))
 			return;
@@ -1512,6 +1632,8 @@ stagedscan_compile_simple(StagedScanState *gi, List *quals, TupleDesc tupdesc)
 
 	gi->simple = simple;
 	gi->nsimple = n;
+	gi->rfilters = rf;
+	gi->nrfilters = nrf;
 	gi->simpleLen = att->attlen;
 }
 
@@ -1525,7 +1647,7 @@ stagedscan_block_is_fast(StagedScanState *gi, DatumStreamRead *ds)
 {
 	DatumStreamBlockRead *dsr = &ds->blockRead;
 
-	return gi->nsimple > 0 &&
+	return (gi->nsimple > 0 || gi->nrfilters > 0) &&
 		dsr->datumStreamVersion == DatumStreamVersion_Original &&
 		!dsr->has_null &&
 		dsr->typeInfo.datumlen == gi->simpleLen &&
@@ -1558,6 +1680,95 @@ stagedscan_simple_match(const StagedScanSimpleClause *simple, int nsimple, int64
 				ok = v > c;
 				break;
 		}
+		if (!ok)
+			return false;
+	}
+	return true;
+}
+
+/*
+ * Hand EXPLAIN ANALYZE what the runtime filter clauses have rejected so far,
+ * wherever they ran: the fast path over the raw datums, the quals Phase A
+ * and the stages evaluate row by row, and the ordinary scan's qual once a
+ * segment file has fallen back (aocsam.c). A running total, like the other
+ * counters on the scan's instrumentation; the scan node asks for it only
+ * when it has instrumentation (nodeSeqscan.c), so a plain run never sums.
+ */
+void
+stagedscan_sync_rf_removed(AOCSScanDesc scan)
+{
+	StagedScanState *gi = scan->stagedScan;
+
+	if (scan->stagedInstrument == NULL)
+		return;
+	scan->stagedInstrument->staged_rf_rows_removed =
+		(gi != NULL ? gi->rfRemovedKept +
+		 (int64) runtimefilter_probes_removed(gi->rfProbes) : 0) +
+		(int64) runtimefilter_probes_removed(scan->stagedFallbackProbes);
+}
+
+/*
+ * Point each compiled runtime filter clause at the filter its Param holds
+ * now, for the block about to be tested. The hash join sets the Param before
+ * it reads a probe row and only changes it on a rebuild, so once per block is
+ * often enough; a NULL Param (no filter yet, or dropped) lets every row
+ * through, as the qual's probe does.
+ */
+static inline void
+stagedscan_rf_bind(StagedScanState *gi)
+{
+	ParamExecData *vals = NULL;
+
+	if (gi->econtext)
+		vals = gi->econtext->ecxt_param_exec_vals;
+
+	for (int k = 0; k < gi->nrfilters; k++)
+	{
+		StagedScanSimpleFilter *rf = &gi->rfilters[k];
+		ParamExecData *prm = vals ? &vals[rf->paramid] : NULL;
+
+		if (prm == NULL || prm->isnull)
+			rf->cur = NULL;
+		else
+			rf->cur = (RuntimeFilter *)
+				runtimefilter_check((struct varlena *) DatumGetPointer(prm->value));
+	}
+}
+
+/* Does a raw value pass every runtime filter clause on the Phase A column? */
+static inline bool
+stagedscan_rf_match(StagedScanState *gi, int64 v, int len)
+{
+	for (int k = 0; k < gi->nrfilters; k++)
+	{
+		StagedScanSimpleFilter *rf = &gi->rfilters[k];
+		uint32		hv;
+		bool		ok;
+
+		if (rf->cur == NULL || runtimefilter_resting(rf->cur))
+			continue;
+		if (rf->inlineHash)
+		{
+			/* an integer key: the range, the bitmap or the Bloom filter */
+			ok = runtimefilter_test_int(rf->cur, v, len);
+		}
+		else if (rf->cur->flags & (RF_FLAG_INTRANGE | RF_FLAG_BITMAP))
+		{
+			/*
+			 * a filter over integer keys for a column not hashed as one: let
+			 * the row through
+			 */
+			continue;
+		}
+		else
+		{
+			hv = DatumGetUInt32(FunctionCall1Coll(&rf->hashfn, rf->collation,
+												  len == 8 ? Int64GetDatum(v) :
+												  len == 4 ? Int32GetDatum((int32) v) :
+												  Int16GetDatum((int16) v)));
+			ok = runtimefilter_contains(rf->cur, hv);
+		}
+		runtimefilter_probe_count(rf->cur, ok);
 		if (!ok)
 			return false;
 	}
@@ -1599,6 +1810,9 @@ stagedscan_phase_a_scan_block(StagedScanState *gi, AOCSScanDesc scan,
 	const int64 first = ds->blockFirstRowNum;
 	const StagedScanSimpleClause *simple = gi->simple;
 	const int	nsimple = gi->nsimple;
+	const int	nrf = gi->nrfilters;
+	int64		surv0 = gi->rowsSurviving;
+	int64		inv0 = gi->rowsInvisible;
 	int			i;
 
 	if (first != gi->curBlockFirstRow)
@@ -1608,6 +1822,8 @@ stagedscan_phase_a_scan_block(StagedScanState *gi, AOCSScanDesc scan,
 		gi->blocksScannedA++;
 	}
 	gi->blocksFastA++;
+	if (nrf > 0)
+		stagedscan_rf_bind(gi);
 
 #ifdef FAULT_INJECTOR
 	FaultInjector_InjectFaultIfSet("StagedScan_PhaseA_FastBlock",
@@ -1647,6 +1863,13 @@ stagedscan_phase_a_scan_block(StagedScanState *gi, AOCSScanDesc scan,
 
 		if (!stagedscan_simple_match(simple, nsimple, v))
 			continue;
+		if (nrf > 0 && !stagedscan_rf_match(gi, v, len))
+		{
+			/* counted below, off the totals, when no simple clause is ahead */
+			if (nsimple > 0)
+				gi->rfRemovedKept++;
+			continue;
+		}
 
 		rowNum = first + i;
 		if (checkVisimap)
@@ -1692,6 +1915,25 @@ stagedscan_phase_a_scan_block(StagedScanState *gi, AOCSScanDesc scan,
 			break;
 		}
 	}
+
+	/* the rows that went by a filter at rest, for it to count its rest */
+	for (int k = 0; k < nrf; k++)
+	{
+		RuntimeFilter *cur = gi->rfilters[k].cur;
+
+		if (cur != NULL)
+			runtimefilter_rest(cur, i);
+	}
+
+	/*
+	 * What the filters rejected here, for EXPLAIN ANALYZE: with no simple
+	 * clause ahead of them every row consumed reached them, so it is the
+	 * rows less the survivors and the invisible, and the loop above stays
+	 * free of a store per rejected row.
+	 */
+	if (nrf > 0 && nsimple == 0)
+		gi->rfRemovedKept += i - (gi->rowsSurviving - surv0) -
+			(gi->rowsInvisible - inv0);
 
 	return i;
 }
@@ -2160,7 +2402,7 @@ stagedscan_applicable(Relation rel, List *targetlist, List *qual,
 	 */
 	if (contain_volatile_functions((Node *) qual) ||
 		contain_subplans((Node *) qual) ||
-		stagedscan_contains_param((Node *) qual))
+		stagedscan_contains_foreign_param((Node *) qual))
 		return false;
 
 	/* System columns and whole-row references live in no column file. */

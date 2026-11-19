@@ -78,6 +78,7 @@
 
 #include "cdb/cdbvars.h"
 #include "utils/fmgroids.h"
+#include "utils/runtimefilter.h"
 
 
 /*
@@ -404,6 +405,8 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 		&&CASE_EEOP_AGG_PLAIN_TRANS,
 		&&CASE_EEOP_AGG_ORDERED_TRANS_DATUM,
 		&&CASE_EEOP_AGG_ORDERED_TRANS_TUPLE,
+		&&CASE_EEOP_RUNTIME_FILTER_LIVE,
+		&&CASE_EEOP_RUNTIME_FILTER,
 		&&CASE_EEOP_LAST
 	};
 
@@ -1830,6 +1833,23 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 			EEO_NEXT();
 		}
 
+		/* WHPG: a hash join's runtime filter probe */
+		EEO_CASE(EEOP_RUNTIME_FILTER_LIVE)
+		{
+			/* out of line implementation: too large */
+			ExecEvalRuntimeFilterLive(state, op, econtext);
+
+			EEO_NEXT();
+		}
+
+		EEO_CASE(EEOP_RUNTIME_FILTER)
+		{
+			/* out of line implementation: too large */
+			ExecEvalRuntimeFilter(state, op, econtext);
+
+			EEO_NEXT();
+		}
+
 		EEO_CASE(EEOP_LAST)
 		{
 			/* unreachable */
@@ -2408,6 +2428,35 @@ ExecEvalParamExec(ExprState *state, ExprEvalStep *op, ExprContext *econtext)
 	}
 	*op->resvalue = prm->value;
 	*op->resnull = prm->isnull;
+}
+
+/*
+ * WHPG: is a hash join's runtime filter there to be probed? The first step
+ * of a RuntimeFilterExpr (execExpr.c), followed by an EEOP_JUMP_IF_NOT_NULL
+ * over the key's evaluation and the probe: a filter that is not there, or
+ * is dead or at rest, costs the row this test and a jump, not the key.
+ * The result is left as the clause's answer for that case -- true, the row
+ * passes -- and marked NULL only to say "live, go on", which the probe then
+ * overwrites. (The row never sees that NULL: either the jump takes it to
+ * the true, or the probe writes the answer.)
+ */
+void
+ExecEvalRuntimeFilterLive(ExprState *state, ExprEvalStep *op, ExprContext *econtext)
+{
+	*op->resvalue = BoolGetDatum(true);
+	*op->resnull = runtimefilter_probe_live(op->d.rtfilter.probe, econtext);
+}
+
+/*
+ * WHPG: evaluate a hash join's runtime filter probe (RuntimeFilterExpr). The
+ * steps before this one left the key in the probe's state (execExpr.c).
+ */
+void
+ExecEvalRuntimeFilter(ExprState *state, ExprEvalStep *op, ExprContext *econtext)
+{
+	*op->resvalue = BoolGetDatum(runtimefilter_probe(op->d.rtfilter.probe,
+													 econtext));
+	*op->resnull = false;
 }
 
 /*

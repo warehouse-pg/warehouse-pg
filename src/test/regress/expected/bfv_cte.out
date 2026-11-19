@@ -597,6 +597,7 @@ select p.*from t1 p join t2 r on p.isc = r.rc join t2 r1 on p.iscd = r1.rc;
          ->  Hash Join
                Hash Cond: ((rep1.isc)::text = (r.rc)::text)
                ->  Seq Scan on rep1
+                     Runtime Filter: isc
                ->  Hash
                      ->  Subquery Scan on r
                            ->  Seq Scan on rep2

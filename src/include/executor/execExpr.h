@@ -252,6 +252,14 @@ typedef enum ExprEvalOp
 	EEOP_AGG_ORDERED_TRANS_DATUM,
 	EEOP_AGG_ORDERED_TRANS_TUPLE,
 
+	/*
+	 * WHPG: a hash join's runtime filter probe (RuntimeFilterExpr): is the
+	 * filter live (for the jump over the key's evaluation when it is not),
+	 * and the probe itself.
+	 */
+	EEOP_RUNTIME_FILTER_LIVE,
+	EEOP_RUNTIME_FILTER,
+
 	/* non-existent operation, used e.g. to check array lengths */
 	EEOP_LAST
 } ExprEvalOp;
@@ -719,6 +727,12 @@ typedef struct ExprEvalStep
 			int			transno;
 			int			setoff;
 		}			agg_trans;
+
+		/* for EEOP_RUNTIME_FILTER (WHPG) */
+		struct
+		{
+			struct RuntimeFilterProbeState *probe;	/* utils/runtimefilter.h */
+		}			rtfilter;
 	}			d;
 } ExprEvalStep;
 
@@ -783,6 +797,10 @@ extern void ExecEvalParamExec(ExprState *state, ExprEvalStep *op,
 extern void ExecEvalParamExtern(ExprState *state, ExprEvalStep *op,
 								ExprContext *econtext);
 extern void ExecEvalSQLValueFunction(ExprState *state, ExprEvalStep *op);
+extern void ExecEvalRuntimeFilterLive(ExprState *state, ExprEvalStep *op,
+									  ExprContext *econtext);
+extern void ExecEvalRuntimeFilter(ExprState *state, ExprEvalStep *op,
+								  ExprContext *econtext);
 extern void ExecEvalCurrentOfExpr(ExprState *state, ExprEvalStep *op,
 								  ExprContext *econtext);
 extern void ExecEvalNextValueExpr(ExprState *state, ExprEvalStep *op);

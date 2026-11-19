@@ -1957,6 +1957,9 @@ readNodeBinary(void)
 			case T_FuncExpr:
 				return_value = _readFuncExpr();
 				break;
+			case T_RuntimeFilterExpr:
+				return_value = _readRuntimeFilterExpr();
+				break;
 			case T_NamedArgExpr:
 				return_value = _readNamedArgExpr();
 				break;

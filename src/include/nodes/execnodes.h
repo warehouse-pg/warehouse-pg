@@ -1506,7 +1506,27 @@ typedef struct SeqScanState
 	double		staged_blocks_decompressed_reported;
 	double		staged_blocks_skipped_reported;
 	double		staged_blocks_seeked_reported;
+	double		staged_rf_removed_reported;
 	Instrumentation *staged_instr;
+
+	/*
+	 * WHPG: the runtime filter clauses in ss.ps.qual (planrtfilter.c), by
+	 * the exec Params they read, and the qual without them. While none of
+	 * the scan's filters is being probed -- at rest as useless, or never
+	 * published -- the scan runs the shorter qual, none at all if nothing
+	 * else was there (SeqNext). The full qual is kept for the filter that
+	 * wakes, and for a rescan, which may bring a new one. This lives here and not in ScanState,
+	 * which every scan node embeds, so that ScanState keeps its layout for
+	 * extensions built against an earlier release.
+	 */
+	List	   *rf_paramids;	/* clauses still watched; NIL once given up */
+	bool		rf_resting;		/* the shorter qual is in place for a while */
+	List	   *rf_allparamids; /* all of them, for the rescan */
+	ExprState  *rf_fullqual;	/* ss.ps.qual as compiled */
+	ExprState  *rf_lessqual;	/* ss.ps.qual without the clauses, or NULL */
+	uint32		rf_rows;		/* rows fetched, for the periodic check */
+	List	   *rf_probes;		/* the clauses' probe states */
+	double		rf_removed_reported;	/* of their count, already reported */
 } SeqScanState;
 
 /* ----------------
@@ -2379,6 +2399,18 @@ typedef struct HashJoinState
 	/* set if the operator created workfiles */
 	bool workfiles_created;
 	bool reuse_hashtable; /* Do we need to preserve hash table to support rescan */
+
+	/*
+	 * WHPG: the exec Param this join sets to a runtime filter for the probe
+	 * scan (planrtfilter.c), or -1; the hash key the filter is over; the
+	 * filter it points to, if built; and whether the table is built before
+	 * the first probe row is asked for (the probe is a Staged Scan the
+	 * filter leads; see ExecHashJoin).
+	 */
+	int			hj_rfParamId;
+	int			hj_rfKeyIdx;
+	struct varlena *hj_rfFilter;
+	bool		hj_rfBuildFirst;
 } HashJoinState;
 
 
@@ -2826,6 +2858,16 @@ typedef struct HashState
 
 	/* Parallel hash state. */
 	struct ParallelHashJoinState *parallel_state;
+
+	/*
+	 * WHPG: collects the hash values for the probe scan's runtime filter,
+	 * over the hash key at rf_keyidx (HashJoin.rf_keyidx); rf_walkkey is
+	 * that key compiled for the tuples the table stores, which the pass
+	 * over the table evaluates it on (ExecHashInitRuntimeFilterKey()).
+	 */
+	struct RuntimeFilterBuilder *rf_builder;
+	int			rf_keyidx;
+	ExprState  *rf_walkkey;
 } HashState;
 
 /* ----------------

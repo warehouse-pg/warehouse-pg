@@ -762,6 +762,21 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 
 	cdbllize_build_slice_table(root, top_plan, top_slice);
 
+	/*
+	 * WHPG: runtime filters for hash joins whose probe scan is in the same
+	 * slice (planrtfilter.c), over the plan in its final form -- one range
+	 * table for the plan and its subplans, the hash keys as OUTER_VAR
+	 * references, the slice table built -- which is the form GPORCA's plans
+	 * come in, so one pass serves both. After SS_finalize_plan() too: the
+	 * exec Param a filter travels through is set by the join and read by a
+	 * scan below it, which that pass would take for a reference to a
+	 * parameter nothing supplies; nothing rescans by it, so it needs no
+	 * extParam entry.
+	 */
+	runtimefilter_decide_plan(glob, top_plan, glob->subplans,
+							  glob->finalrtable, &glob->paramExecTypes,
+							  parse->hasRowSecurity, false);
+
 	if (Gp_role == GP_ROLE_DISPATCH)
 	{
 		/*

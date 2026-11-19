@@ -9875,6 +9875,7 @@ where c.cid = s.cid and s.date_sk = d.date_sk and
    ->  Hash Join  (cost=738.36..911.92 rows=36 width=72)
          Hash Cond: (c.cid = s.cid)
          ->  Seq Scan on cust c  (cost=0.00..145.33 rows=11133 width=68)
+               Runtime Filter: cid
          ->  Hash  (cost=738.33..738.33 rows=2 width=8)
                ->  Redistribute Motion 3:3  (slice2; segments: 3)  (cost=314.24..738.33 rows=2 width=8)
                      Hash Key: s.cid
@@ -9889,7 +9890,7 @@ where c.cid = s.cid and s.date_sk = d.date_sk and
                                        ->  Seq Scan on sales s  (cost=0.00..313.33 rows=28 width=40)
                                              Filter: ((lower(type) = 't1'::text) OR (upper(type) = 'T2'::text))
  Optimizer: Postgres query optimizer
-(18 rows)
+(19 rows)
 
 -- Bitmap indexes
 drop table if exists orca.bm_test;
@@ -10840,10 +10841,11 @@ explain (costs off) select count(*), t2.c from input_tab1 t1 left join input_tab
                      ->  Hash Right Join
                            Hash Cond: (t2.c = t1.a)
                            ->  Seq Scan on input_tab2 t2
+                                 Runtime Filter: c
                            ->  Hash
                                  ->  Seq Scan on input_tab1 t1
  Optimizer: Postgres query optimizer
-(13 rows)
+(14 rows)
 
 select count(*), t2.c from input_tab1 t1 left join input_tab2 t2 on t1.a = t2.c group by t2.c;
  count | c 
@@ -12650,10 +12652,11 @@ select * from foo join tbtree on foo.a=tbtree.a;
    ->  Hash Join
          Hash Cond: (tbtree.a = foo.a)
          ->  Seq Scan on tbtree
+               Runtime Filter: a
          ->  Hash
                ->  Seq Scan on foo
  Optimizer: Postgres query optimizer
-(7 rows)
+(8 rows)
 
 select * from foo join tbtree on foo.a=tbtree.a;
    a   |   b   |   c   |   a   |   b   |   c   
@@ -12680,10 +12683,11 @@ select * from foo join tbitmap on foo.a=tbitmap.a;
    ->  Hash Join
          Hash Cond: (tbitmap.a = foo.a)
          ->  Seq Scan on tbitmap
+               Runtime Filter: a
          ->  Hash
                ->  Seq Scan on foo
  Optimizer: Postgres query optimizer
-(7 rows)
+(8 rows)
 
 select * from foo join tbitmap on foo.a=tbitmap.a;
    a   |   b   |   c   |   a   |   b   |   c   
@@ -12764,10 +12768,11 @@ select * from foo join (select a, b+c as bc from tbtree) proj on foo.a=proj.a;
    ->  Hash Join
          Hash Cond: (tbtree.a = foo.a)
          ->  Seq Scan on tbtree
+               Runtime Filter: a
          ->  Hash
                ->  Seq Scan on foo
  Optimizer: Postgres query optimizer
-(7 rows)
+(8 rows)
 
 select * from foo join (select a, b+c as bc from tbtree) proj on foo.a=proj.a;
    a   |   b   |   c   |   a   |  bc   
@@ -12794,10 +12799,11 @@ select * from foo join (select a, b+c as bc from tbitmap) proj on foo.a=proj.a;
    ->  Hash Join
          Hash Cond: (tbitmap.a = foo.a)
          ->  Seq Scan on tbitmap
+               Runtime Filter: a
          ->  Hash
                ->  Seq Scan on foo
  Optimizer: Postgres query optimizer
-(7 rows)
+(8 rows)
 
 select * from foo join (select a, b+c as bc from tbitmap) proj on foo.a=proj.a;
    a   |   b   |   c   |   a   |  bc   
@@ -13007,10 +13013,11 @@ select * from foo join (select a, a::bigint*a::bigint as aa from tbtree) proj on
    ->  Hash Join
          Hash Cond: ((tbtree.a = foo.a) AND (((tbtree.a)::bigint * (tbtree.a)::bigint) = foo.b))
          ->  Seq Scan on tbtree
+               Runtime Filter: a
          ->  Hash
                ->  Seq Scan on foo
  Optimizer: Postgres query optimizer
-(7 rows)
+(8 rows)
 
 -- 14 join pred accesses a projected column - no index scan
 explain (costs off)
@@ -13051,11 +13058,12 @@ from foo l1 where b in (select ab
                            ->  Hash Join
                                  Hash Cond: ((tbtree.a = l2.a) AND (tbtree.b = l2.b))
                                  ->  Seq Scan on tbtree
+                                       Runtime Filter: a
                                  ->  Hash
                                        ->  Seq Scan on foo l2
                                              Filter: (c = 1)
  Optimizer: Postgres query optimizer
-(17 rows)
+(18 rows)
 
 -- 16 group by columns are not a superset of the distribution columns - no index scan
 explain (costs off)
@@ -13199,11 +13207,12 @@ explain (costs off) select * from tpart_dim d join t_ao_btree f on d.a=f.a where
    ->  Hash Join
          Hash Cond: (f.a = d.a)
          ->  Seq Scan on t_ao_btree f
+               Runtime Filter: a
          ->  Hash
                ->  Seq Scan on tpart_dim d
                      Filter: (b = 1)
  Optimizer: Postgres query optimizer
-(8 rows)
+(9 rows)
 
 explain (costs off) select * from tpart_dim d join tpart_ao_btree f on d.a=f.a where d.b=1;
                         QUERY PLAN                        

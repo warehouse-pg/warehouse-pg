@@ -4563,6 +4563,7 @@ select count(*) from foo where a + 5 > (select percentile_cont(0.5) within group
                Hash Cond: (foo.a = bar.x)
                Join Filter: (((foo.a + 5))::double precision > (percentile_cont('0.5'::double precision) WITHIN GROUP (ORDER BY ((bar.x)::double precision))))
                ->  Seq Scan on foo
+                     Runtime Filter: a
                ->  Hash
                      ->  GroupAggregate
                            Group Key: bar.x
