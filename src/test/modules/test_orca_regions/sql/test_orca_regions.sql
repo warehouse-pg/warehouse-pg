@@ -165,6 +165,16 @@ SET test_orca_regions.mode = span_motion;
 EXPLAIN (COSTS OFF) SELECT * FROM t;
 SET test_orca_regions.mode = span_scan;
 EXPLAIN (COSTS OFF) SELECT * FROM t LIMIT 1;
+-- nor the root of another region, which would never be translated
+SET test_orca_regions.mode = nested_root;
+EXPLAIN (COSTS OFF) SELECT * FROM (SELECT * FROM t ORDER BY a LIMIT 5) s ORDER BY b;
+-- nor have a subplan (under a scalar), which the leaf can't be either: its
+-- SubPlan expression would never be translated
+SET optimizer_enforce_subplans = on;
+SET test_orca_regions.mode = subplan_leaf;
+EXPLAIN (COSTS OFF) SELECT * FROM (SELECT * FROM t ORDER BY a LIMIT 5) s WHERE b < (SELECT max(d) FROM u WHERE u.c = s.a);
+EXPLAIN (COSTS OFF) SELECT * FROM (SELECT * FROM t ORDER BY a LIMIT 5) s WHERE a IN (SELECT c FROM u);
+RESET optimizer_enforce_subplans;
 -- an ipc region's (segment, payload) rows may only reach other regions:
 -- not the operator above the motion, the client, or a CTE's consumers
 SET test_orca_regions.mode = ipc_unread;

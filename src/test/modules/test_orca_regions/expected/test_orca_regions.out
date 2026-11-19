@@ -711,6 +711,77 @@ DETAIL:  Falling back to Postgres-based planner because GPORCA does not support 
  Optimizer: Postgres-based planner
 (5 rows)
 
+-- nor the root of another region, which would never be translated
+SET test_orca_regions.mode = nested_root;
+EXPLAIN (COSTS OFF) SELECT * FROM (SELECT * FROM t ORDER BY a LIMIT 5) s ORDER BY b;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: invalid extension region
+                      QUERY PLAN                      
+------------------------------------------------------
+ Sort
+   Sort Key: t.b
+   ->  Limit
+         ->  Gather Motion 3:1  (slice1; segments: 3)
+               Merge Key: t.a
+               ->  Limit
+                     ->  Sort
+                           Sort Key: t.a
+                           ->  Seq Scan on t
+ Optimizer: Postgres-based planner
+(10 rows)
+
+-- nor have a subplan (under a scalar), which the leaf can't be either: its
+-- SubPlan expression would never be translated
+SET optimizer_enforce_subplans = on;
+SET test_orca_regions.mode = subplan_leaf;
+EXPLAIN (COSTS OFF) SELECT * FROM (SELECT * FROM t ORDER BY a LIMIT 5) s WHERE b < (SELECT max(d) FROM u WHERE u.c = s.a);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: invalid extension region
+                            QUERY PLAN                            
+------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Hash Join
+         Hash Cond: (t.a = u.c)
+         Join Filter: (t.b < (max(u.d)))
+         ->  Redistribute Motion 1:3  (slice2; segments: 1)
+               Hash Key: t.a
+               ->  Limit
+                     ->  Gather Motion 3:1  (slice3; segments: 3)
+                           Merge Key: t.a
+                           ->  Limit
+                                 ->  Sort
+                                       Sort Key: t.a
+                                       ->  Seq Scan on t
+         ->  Hash
+               ->  HashAggregate
+                     Group Key: u.c
+                     ->  Seq Scan on u
+ Optimizer: Postgres-based planner
+(18 rows)
+
+EXPLAIN (COSTS OFF) SELECT * FROM (SELECT * FROM t ORDER BY a LIMIT 5) s WHERE a IN (SELECT c FROM u);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: invalid extension region
+                            QUERY PLAN                            
+------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Hash Semi Join
+         Hash Cond: (t.a = u.c)
+         ->  Redistribute Motion 1:3  (slice2; segments: 1)
+               Hash Key: t.a
+               ->  Limit
+                     ->  Gather Motion 3:1  (slice3; segments: 3)
+                           Merge Key: t.a
+                           ->  Limit
+                                 ->  Sort
+                                       Sort Key: t.a
+                                       ->  Seq Scan on t
+         ->  Hash
+               ->  Seq Scan on u
+ Optimizer: Postgres-based planner
+(15 rows)
+
+RESET optimizer_enforce_subplans;
 -- an ipc region's (segment, payload) rows may only reach other regions:
 -- not the operator above the motion, the client, or a CTE's consumers
 SET test_orca_regions.mode = ipc_unread;

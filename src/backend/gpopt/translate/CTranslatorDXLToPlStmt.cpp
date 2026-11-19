@@ -656,7 +656,8 @@ IsLeafOfOtherRegion(const SExtensionRegions &ext, int self, ULONG op)
 // its leaves', are ones the extension can execute from their DXL alone.
 // They aren't translated, so neither may need anything of the plan: a slice
 // (a motion), a range table entry and its lock (a scan), a CTE's or
-// partition selector's links to other operators, or a subplan.
+// partition selector's links to other operators, a subplan, or another
+// region's CustomScan.
 BOOL
 ValidRegionInterior(const SExtensionRegions &ext, int self)
 {
@@ -669,7 +670,7 @@ ValidRegionInterior(const SExtensionRegions &ext, int self)
 			op = ext.ends[op];
 			continue;
 		}
-		if (op != root && ext.in_scalar[op])
+		if (op != root && (ext.in_scalar[op] || 0 <= ext.root_region[op]))
 		{
 			return false;
 		}
@@ -816,7 +817,10 @@ ValidRegions(SExtensionRegions *ext)
 		for (int j = 0; j < region->nleaves; j++)
 		{
 			int leaf = region->leaves[j];
-			if (leaf < region->root || ends[region->root] <= (ULONG) leaf)
+			// a subplan's root (under a scalar of the interior) as a leaf
+			// would lose its SubPlan expression, which isn't translated
+			if (leaf < region->root || ends[region->root] <= (ULONG) leaf ||
+				(leaf != region->root && ext->in_scalar[leaf]))
 			{
 				return false;
 			}

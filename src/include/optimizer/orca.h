@@ -52,10 +52,12 @@ extern PGDLLIMPORT const int orca_hooks_abi_version;
  * Each region it returns replaces the subtree at its root operator with a
  * CustomScan of the given methods: custom_private holds the region's dxl, an
  * extension-defined payload, and custom_plans the PG plans translated from
- * its leaves, in the order given. The leaves lie in the root's subtree, and
- * none in another's. A leaf may be the root itself: the region then only
- * converts that operator's output. The CustomScan yields the region's output
- * columns, which the plan above refers to by their DXL column ids.
+ * its leaves, in the order given. The leaves lie in the root's subtree, none
+ * in another's, and none is the root of a subplan (under a scalar expression
+ * of its parent) other than the root itself. A leaf may be the root itself:
+ * the region then only converts that operator's output. The CustomScan
+ * yields the region's output columns, which the plan above refers to by
+ * their DXL column ids.
  *
  * The operators of the root's subtree outside the leaves' subtrees, the
  * region's interior, aren't translated: the extension executes them from
@@ -65,7 +67,7 @@ extern PGDLLIMPORT const int orca_hooks_abi_version;
  * expression of its parent). An operator that needs more than its DXL, such
  * as a motion (its slice), a table scan (its range table entry and lock), a
  * CTE producer or consumer, a sequence or a partition selector, must be a
- * leaf or outside the region.
+ * leaf or outside the region, as must another region's root.
  *
  * The executor treats the CustomScan as any other, without what
  * WarehousePG's executor does for the operators it replaces. The leaves'

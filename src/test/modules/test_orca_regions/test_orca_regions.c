@@ -110,6 +110,8 @@ typedef enum TestMode
 	MODE_SORTED_MOTION,
 	MODE_SPAN_MOTION,
 	MODE_SPAN_SCAN,
+	MODE_NESTED_ROOT,
+	MODE_SUBPLAN_LEAF,
 	MODE_IPC_UNREAD,
 	MODE_IPC_ROOT,
 	MODE_IPC_CTE_UNREAD,
@@ -134,6 +136,8 @@ static const struct config_enum_entry mode_options[] = {
 	{"sorted_motion", MODE_SORTED_MOTION, false},
 	{"span_motion", MODE_SPAN_MOTION, false},
 	{"span_scan", MODE_SPAN_SCAN, false},
+	{"nested_root", MODE_NESTED_ROOT, false},
+	{"subplan_leaf", MODE_SUBPLAN_LEAF, false},
 	{"ipc_unread", MODE_IPC_UNREAD, false},
 	{"ipc_root", MODE_IPC_ROOT, false},
 	{"ipc_cte_unread", MODE_IPC_CTE_UNREAD, false},
@@ -718,6 +722,56 @@ test_plan_regions(const char *plan_dxl, int nops, const char *const *opnames)
 				{
 					region = add_region(regions, &nregions, op, REGION_PASS);
 					region->nleaves = 0;
+					region->ncols = ncols;
+					region->cols = cols;
+				}
+				break;
+
+			case MODE_NESTED_ROOT:
+				/*
+				 * a sort over another operator over a motion, each a region
+				 * down to the motion: the second's root is in the first's
+				 * interior
+				 */
+				if (op + 2 < nops && strcmp(opnames[op], "Sort") == 0 &&
+					!is_motion(opnames[op + 1]) && is_motion(opnames[op + 2]))
+				{
+					for (int r = op; r <= op + 1; r++)
+					{
+						if (!op_columns(find_op(plan_dxl, r, opnames), &ncols,
+										&cols))
+							break;
+						region = add_region(regions, &nregions, r, REGION_PASS);
+						((int *) region->leaves)[0] = op + 2;
+						region->ncols = ncols;
+						region->cols = cols;
+					}
+				}
+				break;
+
+			case MODE_SUBPLAN_LEAF:
+
+				/*
+				 * the plan's root, a result whose filter has a subplan (the
+				 * next operator), with the subplan's root and the result's
+				 * child, a limit, as its leaves
+				 */
+				if (op == 0 && op + 1 < nops &&
+					strcmp(opnames[op], "Result") == 0 &&
+					op_columns(p, &ncols, &cols))
+				{
+					int		   *leaves = palloc(2 * sizeof(int));
+					int			limit = op + 2;
+
+					while (limit < nops && strcmp(opnames[limit], "Limit") != 0)
+						limit++;
+					if (limit == nops)
+						break;
+					region = add_region(regions, &nregions, op, REGION_PASS);
+					leaves[0] = op + 1;
+					leaves[1] = limit;
+					region->nleaves = 2;
+					region->leaves = leaves;
 					region->ncols = ncols;
 					region->cols = cols;
 				}
