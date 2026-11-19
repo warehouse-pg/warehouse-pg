@@ -121,9 +121,10 @@ CTranslatorUtils::GetTableDescr(CMemoryPool *mp, CMDAccessor *md_accessor,
 {
 	OID rel_oid = rte->relid;
 
-	// A table an extension reads itself (orca_relation_hook): the metadata
-	// cache may hold it from a query the extension planned, so ask each time.
-	// ORCA plans only reads of it; the PG planner plans writes.
+	// A table an extension reads itself (orca_relation_hook): ORCA plans
+	// only reads of it, and the PG planner writes, and queries over a table
+	// it plans with the PG planner. The metadata of such a table isn't
+	// cached (CMDProviderRelcache::Cacheable): RetrieveRel() asks again.
 	switch (gpdb::ExtensionRelation(rel_oid))
 	{
 		case ORCA_RELATION_PLANNER:

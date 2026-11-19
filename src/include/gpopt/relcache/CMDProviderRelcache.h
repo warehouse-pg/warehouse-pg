@@ -62,6 +62,9 @@ public:
 							 IMDId *mdid,
 							 IMDCacheObject::Emdtype mdtype) const override;
 
+	// not the metadata of a table an extension reads itself
+	BOOL Cacheable(IMDId *mdid) const override;
+
 	// return the mdid for the requested type
 	IMDId *
 	MDId(CMemoryPool *mp, CSystemId sysid,

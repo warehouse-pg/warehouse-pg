@@ -505,9 +505,22 @@ CMDAccessor::GetImdObj(IMDId *mdid, IMDCacheObject::Emdtype mdtype)
 
 		CMDKey mdkey(mdid);
 
+		// For CTAS mdid, we avoid adding the corresponding object to the MD cache
+		// since those objects have a fixed id, and if caching is enabled and those
+		// objects are cached, then a subsequent CTAS query will attempt to use
+		// the cached object, which has a different schema, resulting in a crash.
+		// The provider may also keep an object out of the cache. Such objects
+		// bypass the MD cache, going from the MD provider directly to the local
+		// hash table.
+		BOOL cacheable =
+			IMDId::EmdidGPDBCtas != mdid->MdidType() && pmdp->Cacheable(mdid);
+
 		CAutoP<CacheAccessorMD> a_pmdcacc;
 		a_pmdcacc = GPOS_NEW(m_mp) CacheAccessorMD(m_pcache);
-		a_pmdcacc->Lookup(&mdkey);
+		if (cacheable)
+		{
+			a_pmdcacc->Lookup(&mdkey);
+		}
 		IMDCacheObject *pmdobjNew = a_pmdcacc->Val();
 		if (nullptr == pmdobjNew)
 		{
@@ -522,10 +535,10 @@ CMDAccessor::GetImdObj(IMDId *mdid, IMDCacheObject::Emdtype mdtype)
 			// different memory pool, so that it is not destroyed at the end of the
 			// query. Since the mdid passed to GetMDObj() may be saved in the object,
 			// make a copy of it here in the right memory pool.
-			// An exception is made for CTAS (see below).
+			// An exception is made for objects bypassing the cache.
 			CMemoryPool *mp = m_mp;
 			IMDId *mdidCopy = mdid;
-			if (IMDId::EmdidGPDBCtas != mdid->MdidType())
+			if (cacheable)
 			{
 				// create the accessor memory pool
 				mp = a_pmdcacc->Pmp();
@@ -544,14 +557,7 @@ CMDAccessor::GetImdObj(IMDId *mdid, IMDCacheObject::Emdtype mdtype)
 				m_dFetchTime = CDouble(m_dFetchTime.Get() + dFetch.Get());
 			}
 
-			// For CTAS mdid, we avoid adding the corresponding object to the MD cache
-			// since those objects have a fixed id, and if caching is enabled and those
-			// objects are cached, then a subsequent CTAS query will attempt to use
-			// the cached object, which has a different schema, resulting in a crash.
-			// so for such objects, we bypass the MD cache, getting them from the
-			// MD provider, directly to the local hash table
-
-			if (IMDId::EmdidGPDBCtas != mdid->MdidType())
+			if (cacheable)
 			{
 				// add to MD cache
 				CAutoP<CMDKey> a_pmdkeyCache;

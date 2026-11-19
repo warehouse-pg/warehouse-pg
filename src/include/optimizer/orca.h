@@ -158,6 +158,11 @@ extern PGDLLIMPORT orca_plan_regions_hook_type orca_plan_regions_hook;
  * run (through SPI) are planned by PG's planner. The size hook is called for
  * the relation's statistics and again for each column's, so it should cache
  * an answer that is costly to find.
+ *
+ * ORCA keeps their answers with the rest of the relation's metadata in its
+ * metadata cache, until an invalidation of the relation's relcache entry,
+ * except for a relation orca_relation_hook says is the extension's: ORCA
+ * caches none of its metadata, and calls the hooks in each query reading it.
  */
 typedef bool (*orca_relation_size_hook_type) (Oid relid, double *tuples,
 											  BlockNumber *pages);
@@ -175,10 +180,11 @@ extern PGDLLIMPORT orca_att_stats_hook_type orca_att_stats_hook;
  * randomly distributed heap table: each segment reads a slice of it. The
  * extension must execute every scan of it, as a leaf of a region it claims
  * through orca_plan_regions_hook, since PG's executor can't: otherwise the
- * query falls back to the PG planner. ORCA considers no indexes of such a
- * table, and a partitioned table only if all of its partitions are what the
- * hook says its root is. The PG planner plans DML on it, and queries over an
- * ORCA_RELATION_PLANNER table.
+ * query falls back to the PG planner. As its metadata isn't cached, the hook
+ * may change its answer for a table between queries. ORCA considers no
+ * indexes of such a table, and a partitioned table only if all of its
+ * partitions are what the hook says its root is. The PG planner plans DML
+ * on it, and queries over an ORCA_RELATION_PLANNER table.
  *
  * It is called several times per relation and query, so it should be cheap.
  */

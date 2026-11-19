@@ -16,12 +16,19 @@
 
 extern "C" {
 #include "postgres.h"
+
+#include "nodes/plannodes.h"
+#include "optimizer/orca.h"
 }
+#include "gpopt/gpdbwrappers.h"
 #include "gpopt/mdcache/CMDAccessor.h"
 #include "gpopt/relcache/CMDProviderRelcache.h"
 #include "gpopt/translate/CTranslatorRelcacheToDXL.h"
 #include "naucrates/dxl/CDXLUtils.h"
 #include "naucrates/exception.h"
+#include "naucrates/md/CMDIdColStats.h"
+#include "naucrates/md/CMDIdGPDB.h"
+#include "naucrates/md/CMDIdRelStats.h"
 
 using namespace gpos;
 using namespace gpdxl;
@@ -45,6 +52,32 @@ CMDProviderRelcache::GetMDObj(CMemoryPool *mp, CMDAccessor *md_accessor,
 	GPOS_ASSERT(nullptr != md_obj);
 
 	return md_obj;
+}
+
+// A table an extension reads itself (orca_relation_hook) has metadata from
+// the extension's hooks, whose answers can change without an invalidation:
+// whether the table is the extension's, its size and its column statistics
+// (which may also depend on the user). Those are looked up for each query.
+BOOL
+CMDProviderRelcache::Cacheable(IMDId *mdid) const
+{
+	IMDId *rel_mdid;
+	switch (mdid->MdidType())
+	{
+		case IMDId::EmdidRel:
+			rel_mdid = mdid;
+			break;
+		case IMDId::EmdidRelStats:
+			rel_mdid = CMDIdRelStats::CastMdid(mdid)->GetRelMdId();
+			break;
+		case IMDId::EmdidColStats:
+			rel_mdid = CMDIdColStats::CastMdid(mdid)->GetRelMdId();
+			break;
+		default:
+			return true;
+	}
+	return ORCA_RELATION_NONE ==
+		   gpdb::ExtensionRelation(CMDIdGPDB::CastMdid(rel_mdid)->Oid());
 }
 
 // EOF
