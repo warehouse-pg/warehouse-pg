@@ -32,7 +32,18 @@ main(void)
 	EXEC SQL SELECT count(id) INTO :id FROM cta_test2;
 	printf("ID = %d\n", id);
 
+	/* DISTRIBUTED clauses must survive preprocessing in both forms */
+	EXEC SQL CREATE TABLE cta_test3 AS SELECT * FROM cta_test DISTRIBUTED REPLICATED;
+	EXEC SQL SELECT (policytype = 'r')::int INTO :id FROM gp_distribution_policy WHERE localoid = 'cta_test3'::regclass;
+	printf("replicated = %d\n", id);
+
+	EXEC SQL CREATE TABLE IF NOT EXISTS cta_test4 AS SELECT * FROM cta_test DISTRIBUTED REPLICATED;
+	EXEC SQL SELECT (policytype = 'r')::int INTO :id FROM gp_distribution_policy WHERE localoid = 'cta_test4'::regclass;
+	printf("replicated = %d\n", id);
+
 	EXEC SQL DROP TABLE cta_test;
+	EXEC SQL DROP TABLE cta_test3;
+	EXEC SQL DROP TABLE cta_test4;
 	EXEC SQL DROP TABLE cta_test1;
 	EXEC SQL DROP TABLE cta_test2;
 	EXEC SQL DISCONNECT all;

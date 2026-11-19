@@ -123,41 +123,104 @@ if (sqlca.sqlcode < 0) sqlprint();}
 
 	printf("ID = %d\n", id);
 
-	{ ECPGdo(__LINE__, 0, 1, NULL, 0, ECPGst_normal, "drop table cta_test", ECPGt_EOIT, ECPGt_EORT);
-#line 35 "createtableas.pgc"
+	/* DISTRIBUTED clauses must survive preprocessing in both forms */
+	{ ECPGdo(__LINE__, 0, 1, NULL, 0, ECPGst_normal, "create table cta_test3 as select * from cta_test distributed replicated", ECPGt_EOIT, ECPGt_EORT);
+#line 36 "createtableas.pgc"
 
 if (sqlca.sqlwarn[0] == 'W') sqlprint();
-#line 35 "createtableas.pgc"
+#line 36 "createtableas.pgc"
 
 if (sqlca.sqlcode < 0) sqlprint();}
-#line 35 "createtableas.pgc"
+#line 36 "createtableas.pgc"
+
+	{ ECPGdo(__LINE__, 0, 1, NULL, 0, ECPGst_normal, "select ( policytype = 'r' ) :: int from gp_distribution_policy where localoid = 'cta_test3' :: regclass", ECPGt_EOIT, 
+	ECPGt_int,&(id),(long)1,(long)1,sizeof(int), 
+	ECPGt_NO_INDICATOR, NULL , 0L, 0L, 0L, ECPGt_EORT);
+#line 37 "createtableas.pgc"
+
+if (sqlca.sqlwarn[0] == 'W') sqlprint();
+#line 37 "createtableas.pgc"
+
+if (sqlca.sqlcode < 0) sqlprint();}
+#line 37 "createtableas.pgc"
+
+	printf("replicated = %d\n", id);
+
+	{ ECPGdo(__LINE__, 0, 1, NULL, 0, ECPGst_normal, "create table if not exists cta_test4 as select * from cta_test distributed replicated", ECPGt_EOIT, ECPGt_EORT);
+#line 40 "createtableas.pgc"
+
+if (sqlca.sqlwarn[0] == 'W') sqlprint();
+#line 40 "createtableas.pgc"
+
+if (sqlca.sqlcode < 0) sqlprint();}
+#line 40 "createtableas.pgc"
+
+	{ ECPGdo(__LINE__, 0, 1, NULL, 0, ECPGst_normal, "select ( policytype = 'r' ) :: int from gp_distribution_policy where localoid = 'cta_test4' :: regclass", ECPGt_EOIT, 
+	ECPGt_int,&(id),(long)1,(long)1,sizeof(int), 
+	ECPGt_NO_INDICATOR, NULL , 0L, 0L, 0L, ECPGt_EORT);
+#line 41 "createtableas.pgc"
+
+if (sqlca.sqlwarn[0] == 'W') sqlprint();
+#line 41 "createtableas.pgc"
+
+if (sqlca.sqlcode < 0) sqlprint();}
+#line 41 "createtableas.pgc"
+
+	printf("replicated = %d\n", id);
+
+	{ ECPGdo(__LINE__, 0, 1, NULL, 0, ECPGst_normal, "drop table cta_test", ECPGt_EOIT, ECPGt_EORT);
+#line 44 "createtableas.pgc"
+
+if (sqlca.sqlwarn[0] == 'W') sqlprint();
+#line 44 "createtableas.pgc"
+
+if (sqlca.sqlcode < 0) sqlprint();}
+#line 44 "createtableas.pgc"
+
+	{ ECPGdo(__LINE__, 0, 1, NULL, 0, ECPGst_normal, "drop table cta_test3", ECPGt_EOIT, ECPGt_EORT);
+#line 45 "createtableas.pgc"
+
+if (sqlca.sqlwarn[0] == 'W') sqlprint();
+#line 45 "createtableas.pgc"
+
+if (sqlca.sqlcode < 0) sqlprint();}
+#line 45 "createtableas.pgc"
+
+	{ ECPGdo(__LINE__, 0, 1, NULL, 0, ECPGst_normal, "drop table cta_test4", ECPGt_EOIT, ECPGt_EORT);
+#line 46 "createtableas.pgc"
+
+if (sqlca.sqlwarn[0] == 'W') sqlprint();
+#line 46 "createtableas.pgc"
+
+if (sqlca.sqlcode < 0) sqlprint();}
+#line 46 "createtableas.pgc"
 
 	{ ECPGdo(__LINE__, 0, 1, NULL, 0, ECPGst_normal, "drop table cta_test1", ECPGt_EOIT, ECPGt_EORT);
-#line 36 "createtableas.pgc"
+#line 47 "createtableas.pgc"
 
 if (sqlca.sqlwarn[0] == 'W') sqlprint();
-#line 36 "createtableas.pgc"
+#line 47 "createtableas.pgc"
 
 if (sqlca.sqlcode < 0) sqlprint();}
-#line 36 "createtableas.pgc"
+#line 47 "createtableas.pgc"
 
 	{ ECPGdo(__LINE__, 0, 1, NULL, 0, ECPGst_normal, "drop table cta_test2", ECPGt_EOIT, ECPGt_EORT);
-#line 37 "createtableas.pgc"
+#line 48 "createtableas.pgc"
 
 if (sqlca.sqlwarn[0] == 'W') sqlprint();
-#line 37 "createtableas.pgc"
+#line 48 "createtableas.pgc"
 
 if (sqlca.sqlcode < 0) sqlprint();}
-#line 37 "createtableas.pgc"
+#line 48 "createtableas.pgc"
 
 	{ ECPGdisconnect(__LINE__, "ALL");
-#line 38 "createtableas.pgc"
+#line 49 "createtableas.pgc"
 
 if (sqlca.sqlwarn[0] == 'W') sqlprint();
-#line 38 "createtableas.pgc"
+#line 49 "createtableas.pgc"
 
 if (sqlca.sqlcode < 0) sqlprint();}
-#line 38 "createtableas.pgc"
+#line 49 "createtableas.pgc"
 
 
 	return 0;
