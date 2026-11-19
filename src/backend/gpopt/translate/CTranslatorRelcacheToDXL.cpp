@@ -537,7 +537,8 @@ CTranslatorRelcacheToDXL::RetrieveRel(CMemoryPool *mp, CMDAccessor *md_accessor,
 
 	// a table an extension reads itself, in random slices
 	// (orca_relation_hook): its own policy doesn't matter
-	BOOL extension_rel = ORCA_RELATION_RANDOM == gpdb::ExtensionRelation(oid);
+	int ext_relation = gpdb::ExtensionRelation(oid);
+	BOOL extension_rel = ORCA_RELATION_RANDOM == ext_relation;
 
 	if (!extension_rel && !GpPolicyIsEntry(rel->rd_cdbpolicy) &&
 		gpdb::GetGPSegmentCount() != rel->rd_cdbpolicy->numsegments)
@@ -614,8 +615,11 @@ CTranslatorRelcacheToDXL::RetrieveRel(CMemoryPool *mp, CMDAccessor *md_accessor,
 
 	convert_hash_to_random = gpdb::IsChildPartDistributionMismatched(rel.get());
 
-	// collect relation indexes
-	md_index_info_array = RetrieveRelIndexInfo(mp, rel.get());
+	// collect relation indexes: none of a table an extension reads itself,
+	// whose only scans are its regions' table scans
+	md_index_info_array = extension_rel
+							  ? GPOS_NEW(mp) CMDIndexInfoArray(mp)
+							  : RetrieveRelIndexInfo(mp, rel.get());
 
 	// An append-optimized relation's indexes find rows through its block
 	// directory, which looks empty to a snapshot older than the directory.
@@ -649,6 +653,14 @@ CTranslatorRelcacheToDXL::RetrieveRel(CMemoryPool *mp, CMDAccessor *md_accessor,
 				// Multi-level partitioned tables are unsupported - fall back
 				GPOS_RAISE(gpdxl::ExmaMD, gpdxl::ExmiMDObjUnsupported,
 						   GPOS_WSZ_LIT("Multi-level partitioned tables"));
+			}
+			// A dynamic scan reads the partitions as its root is read: by
+			// the executor, or by an extension (orca_relation_hook)
+			if (gpdb::ExtensionRelation(part_oid) != ext_relation)
+			{
+				GPOS_RAISE(gpdxl::ExmaMD, gpdxl::ExmiMDObjUnsupported,
+						   GPOS_WSZ_LIT("Partition an extension reads "
+										"differently from its root"));
 			}
 			if (check_blkdir &&
 				!gpdb::IsAppendOnlyBlockDirectoryVisible(rel_part.get()))

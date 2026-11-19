@@ -387,6 +387,11 @@ private:
 
 	BOOL IsExtensionIpcConsumer(const CDXLNode *dxlnode) const;
 
+	// raises an error for a scan of a table an extension reads itself
+	// (ORCA_RELATION_RANDOM) that isn't a leaf of its regions
+	void CheckExtensionRelationScan(const CDXLNode *scan_dxlnode,
+									const CDXLTableDescr *table_descr) const;
+
 	Plan *TranslateDXLExtensionRegion(
 		const CDXLNode *root_dxlnode, const OrcaPlanRegion *region,
 		CDXLTranslateContext *output_context,

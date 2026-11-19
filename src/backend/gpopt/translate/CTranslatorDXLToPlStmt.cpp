@@ -1085,6 +1085,23 @@ CTranslatorDXLToPlStmt::IpcTargetList(Index varno)
 	return target_list;
 }
 
+// The executor can't read a table an extension reads itself: the extension
+// must, as a leaf of one of its regions. Every scan translator checks.
+void
+CTranslatorDXLToPlStmt::CheckExtensionRelationScan(
+	const CDXLNode *scan_dxlnode, const CDXLTableDescr *table_descr) const
+{
+	if (ORCA_RELATION_RANDOM ==
+			gpdb::ExtensionRelation(
+				CMDIdGPDB::CastMdid(table_descr->MDId())->Oid()) &&
+		!IsExtensionRegionLeaf(scan_dxlnode))
+	{
+		GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiDXL2PlStmtConversion,
+				   GPOS_WSZ_LIT("scan of a table an extension reads itself "
+								"outside its regions"));
+	}
+}
+
 //---------------------------------------------------------------------------
 //	@function:
 //		CTranslatorDXLToPlStmt::SetParamIds
@@ -1172,17 +1189,7 @@ CTranslatorDXLToPlStmt::TranslateDXLTblScan(
 	const IMDRelation *md_rel =
 		m_md_accessor->RetrieveRel(dxl_table_descr->MDId());
 
-	// The executor can't read a table an extension reads itself: the
-	// extension must, as a leaf of one of its regions.
-	if (ORCA_RELATION_RANDOM ==
-			gpdb::ExtensionRelation(
-				CMDIdGPDB::CastMdid(dxl_table_descr->MDId())->Oid()) &&
-		!IsExtensionRegionLeaf(tbl_scan_dxlnode))
-	{
-		GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiDXL2PlStmtConversion,
-				   GPOS_WSZ_LIT("scan of a table an extension reads itself "
-								"outside its regions"));
-	}
+	CheckExtensionRelationScan(tbl_scan_dxlnode, dxl_table_descr);
 
 	// Lock any table we are to scan, since it may not have been properly locked
 	// by the parser (e.g in case of generated scans for partitioned tables)
@@ -1434,6 +1441,7 @@ CTranslatorDXLToPlStmt::TranslateDXLIndexScan(
 	GPOS_ASSERT(dxl_table_descr->LockMode() != -1);
 	gpdb::GPDBLockRelationOid(mdid->Oid(), dxl_table_descr->LockMode());
 
+	CheckExtensionRelationScan(index_scan_dxlnode, dxl_table_descr);
 	Index index = ProcessDXLTblDescr(dxl_table_descr, &base_table_context);
 
 	IndexScan *index_scan = nullptr;
@@ -1584,6 +1592,7 @@ CTranslatorDXLToPlStmt::TranslateDXLIndexOnlyScan(
 	const IMDRelation *md_rel = m_md_accessor->RetrieveRel(
 		physical_idx_scan_dxlop->GetDXLTableDescr()->MDId());
 
+	CheckExtensionRelationScan(index_scan_dxlnode, table_desc);
 	Index index = ProcessDXLTblDescr(table_desc, &base_table_context);
 
 	IndexOnlyScan *index_scan = MakeNode(IndexOnlyScan);
@@ -4834,6 +4843,7 @@ CTranslatorDXLToPlStmt::TranslateDXLDynTblScan(
 	// translation context for column mappings in the base relation
 	CDXLTranslateContextBaseTable base_table_context(m_mp);
 
+	CheckExtensionRelationScan(dyn_tbl_scan_dxlnode, dyn_tbl_scan_dxlop->GetDXLTableDescr());
 	Index index = ProcessDXLTblDescr(dyn_tbl_scan_dxlop->GetDXLTableDescr(),
 									 &base_table_context);
 
@@ -4931,6 +4941,7 @@ CTranslatorDXLToPlStmt::TranslateDXLDynIdxOnlyScan(
 		dyn_index_only_scan_dxlop->GetDXLTableDescr();
 	const IMDRelation *md_rel = m_md_accessor->RetrieveRel(table_desc->MDId());
 
+	CheckExtensionRelationScan(dyn_idx_only_scan_dxlnode, table_desc);
 	Index index = ProcessDXLTblDescr(table_desc, &base_table_context);
 
 	DynamicIndexOnlyScan *dyn_idx_only_scan = MakeNode(DynamicIndexOnlyScan);
@@ -5015,6 +5026,7 @@ CTranslatorDXLToPlStmt::TranslateDXLDynIdxScan(
 	const CDXLTableDescr *table_desc = dyn_index_scan_dxlop->GetDXLTableDescr();
 	const IMDRelation *md_rel = m_md_accessor->RetrieveRel(table_desc->MDId());
 
+	CheckExtensionRelationScan(dyn_idx_only_scan_dxlnode, table_desc);
 	Index index = ProcessDXLTblDescr(table_desc, &base_table_context);
 
 	DynamicIndexScan *dyn_idx_only_scan = MakeNode(DynamicIndexScan);
@@ -7070,6 +7082,7 @@ CTranslatorDXLToPlStmt::TranslateDXLBitmapTblScan(
 	GPOS_ASSERT(table_descr->LockMode() != -1);
 	gpdb::GPDBLockRelationOid(mdid->Oid(), table_descr->LockMode());
 
+	CheckExtensionRelationScan(bitmapscan_dxlnode, table_descr);
 	Index index = ProcessDXLTblDescr(table_descr, &base_table_context);
 
 	DynamicBitmapHeapScan *dscan;
