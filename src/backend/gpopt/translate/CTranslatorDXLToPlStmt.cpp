@@ -143,11 +143,6 @@ CTranslatorDXLToPlStmt::CTranslatorDXLToPlStmt(
 {
 	m_translator_dxl_to_scalar = GPOS_NEW(m_mp)
 		CTranslatorDXLToScalar(m_mp, m_md_accessor, m_num_of_segments);
-	// a subplan's translator: the plan's regions cover the subplan's
-	// operators too
-	m_ext_regions = dxl_to_plstmt_context->m_ext_regions;
-	m_ext_ops = dxl_to_plstmt_context->m_ext_ops;
-	m_ext_nops = dxl_to_plstmt_context->m_ext_nops;
 }
 
 //---------------------------------------------------------------------------
@@ -161,10 +156,6 @@ CTranslatorDXLToPlStmt::CTranslatorDXLToPlStmt(
 CTranslatorDXLToPlStmt::~CTranslatorDXLToPlStmt()
 {
 	GPOS_DELETE(m_translator_dxl_to_scalar);
-	if (m_owns_ext_ops)
-	{
-		GPOS_DELETE_ARRAY(m_ext_ops);
-	}
 }
 
 //---------------------------------------------------------------------------
@@ -351,7 +342,7 @@ CTranslatorDXLToPlStmt::TranslateDXLOperatorToPlan(
 	Plan *plan;
 
 	const OrcaPlanRegion *region =
-		dxlnode == m_ext_root_leaf ? nullptr : ExtensionRegion(dxlnode);
+		dxlnode == m_ext_root_leaf ? nullptr : ExtRegions().Region(dxlnode);
 	if (nullptr != region)
 	{
 		return TranslateDXLExtensionRegion(dxlnode, region, output_context,
@@ -591,46 +582,29 @@ CTranslatorDXLToPlStmt::SetRegionTargetList(CustomScan *cscan,
 
 namespace
 {
-// The plan's physical operators, in pre-order. The subtree of operator i
-// is operators i to ends[i] - 1; parents[i] is the operator it is an input
-// of (ulong_max for the plan's root), and in_scalar[i] whether it is under
-// a scalar expression of that operator (a subplan's root).
-struct PlanOps
-{
-	const CDXLNode **ops;
-	ULONG *ends;
-	ULONG *parents;
-	BOOL *in_scalar;
-	ULONG nops;
-};
-
-// Collects the operators at and below the node; with null arrays, only
-// counts them.
+// Collects the physical operators at and below the node, in pre-order.
 void
-CollectPhysicalOps(const CDXLNode *dxlnode, PlanOps *plan,
+CollectPhysicalOps(const CDXLNode *dxlnode, SExtensionRegions *ext,
 				   ULONG parent = gpos::ulong_max, BOOL under_scalar = false)
 {
 	BOOL physical =
 		EdxloptypePhysical == dxlnode->GetOperator()->GetDXLOperatorType();
-	ULONG self = plan->nops;
+	ULONG self = ext->ops.size();
 	if (physical)
 	{
-		if (nullptr != plan->ops)
-		{
-			plan->ops[self] = dxlnode;
-			plan->parents[self] = parent;
-			plan->in_scalar[self] = under_scalar;
-		}
-		plan->nops++;
+		ext->ops.push_back(dxlnode);
+		ext->parents.push_back(parent);
+		ext->in_scalar.push_back(under_scalar);
+		ext->ends.push_back(0);
 	}
 	for (ULONG ul = 0; ul < dxlnode->Arity(); ul++)
 	{
-		CollectPhysicalOps((*dxlnode)[ul], plan, physical ? self : parent,
-						   physical ? false : true);
+		CollectPhysicalOps((*dxlnode)[ul], ext, physical ? self : parent,
+						   !physical);
 	}
-	if (physical && nullptr != plan->ends)
+	if (physical)
 	{
-		plan->ends[self] = plan->nops;
+		ext->ends[self] = ext->ops.size();
 	}
 }
 
@@ -656,35 +630,50 @@ HasRowSecurityWalker(Node *node, void *context)
 									context);
 }
 
+BOOL
+IsLeafOf(const OrcaPlanRegion *region, ULONG op)
+{
+	for (int j = 0; j < region->nleaves; j++)
+	{
+		if ((ULONG) region->leaves[j] == op)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+// Whether the operator is a leaf of a region other than the one numbered
+// self: a region reads its rows.
+BOOL
+IsLeafOfOtherRegion(const SExtensionRegions &ext, int self, ULONG op)
+{
+	ULONG own = IsLeafOf(&ext.regions->regions[self], op) ? 1 : 0;
+	return ext.leaf_of[op] > own;
+}
+
 // Whether the region's interior operators, those of its subtree outside
 // its leaves', are ones the extension can execute from their DXL alone.
 // They aren't translated, so neither may need anything of the plan: a slice
 // (a motion), a range table entry and its lock (a scan), a CTE's or
 // partition selector's links to other operators, or a subplan.
 BOOL
-ValidRegionInterior(const OrcaPlanRegion *region, const PlanOps &plan)
+ValidRegionInterior(const SExtensionRegions &ext, int self)
 {
-	const ULONG *ends = plan.ends;
-	for (ULONG op = (ULONG) region->root; op < ends[region->root];)
+	const OrcaPlanRegion *region = &ext.regions->regions[self];
+	ULONG root = (ULONG) region->root;
+	for (ULONG op = root; op < ext.ends[root];)
 	{
-		BOOL leaf = false;
-		for (int j = 0; j < region->nleaves; j++)
+		if (0 < ext.leaf_of[op] && IsLeafOf(region, op))
 		{
-			if ((ULONG) region->leaves[j] == op)
-			{
-				leaf = true;
-			}
-		}
-		if (leaf)
-		{
-			op = ends[op];
+			op = ext.ends[op];
 			continue;
 		}
-		if (op != (ULONG) region->root && plan.in_scalar[op])
+		if (op != root && ext.in_scalar[op])
 		{
 			return false;
 		}
-		switch (plan.ops[op]->GetOperator()->GetDXLOperator())
+		switch (ext.ops[op]->GetOperator()->GetDXLOperator())
 		{
 			case EdxlopPhysicalResult:
 			case EdxlopPhysicalProjection:
@@ -709,49 +698,34 @@ ValidRegionInterior(const OrcaPlanRegion *region, const PlanOps &plan)
 	return true;
 }
 
-// Whether the operator is a leaf of a region other than the one numbered
-// self: a region reads its rows.
-BOOL
-IsLeafOfOtherRegion(const OrcaPlanRegions *regions, int self, ULONG op)
-{
-	for (int i = 0; i < regions->nregions; i++)
-	{
-		for (int j = 0; i != self && j < regions->regions[i].nleaves; j++)
-		{
-			if ((ULONG) regions->regions[i].leaves[j] == op)
-			{
-				return true;
-			}
-		}
-	}
-	return false;
-}
-
 // Whether the (segment, payload) rows of the ipc region numbered self reach
 // other regions as they are, which only the extension can read: through a
 // motion that only routes them, a CTE's consumers, or a Sequence whose last
-// child the region is. The translator gives each of those the (segment,
-// payload) columns, and their parents expect the operators' own columns.
+// child the region is. If so, marks the operators yielding the rows
+// (ipc_rows), which the translator gives the (segment, payload) columns:
+// their parents expect the operators' own columns.
 BOOL
-ValidIpcRegionOutput(const OrcaPlanRegions *regions, int self,
-					 const PlanOps &plan)
+ValidIpcRegionOutput(SExtensionRegions *ext, int self)
 {
-	ULONG out = (ULONG) regions->regions[self].root;
-	ULONG parent = plan.parents[out];
-	if (gpos::ulong_max != parent && !plan.in_scalar[out] &&
+	ULONG root = (ULONG) ext->regions->regions[self].root;
+	ULONG out = root;
+	ULONG parent = ext->parents[out];
+	if (gpos::ulong_max != parent && !ext->in_scalar[out] &&
 		EdxlopPhysicalSequence ==
-			plan.ops[parent]->GetOperator()->GetDXLOperator() &&
-		plan.ends[parent] == plan.ends[out])
+			ext->ops[parent]->GetOperator()->GetDXLOperator() &&
+		ext->ends[parent] == ext->ends[out])
 	{
 		// the sequence passes on its last child's rows
 		out = parent;
-		parent = plan.parents[out];
+		parent = ext->parents[out];
 	}
-	if (plan.in_scalar[out])
+	if (ext->in_scalar[out])
 	{
 		return false;
 	}
-	if (IsLeafOfOtherRegion(regions, self, out))
+	ext->ipc_rows[root] = true;
+	ext->ipc_rows[out] = true;
+	if (IsLeafOfOtherRegion(*ext, self, out))
 	{
 		return true;
 	}
@@ -760,7 +734,7 @@ ValidIpcRegionOutput(const OrcaPlanRegions *regions, int self,
 		// the plan's root
 		return false;
 	}
-	const CDXLNode *parent_dxlnode = plan.ops[parent];
+	const CDXLNode *parent_dxlnode = ext->ops[parent];
 	switch (parent_dxlnode->GetOperator()->GetDXLOperator())
 	{
 		case EdxlopPhysicalMotionGather:
@@ -769,27 +743,31 @@ ValidIpcRegionOutput(const OrcaPlanRegions *regions, int self,
 		case EdxlopPhysicalMotionRandom:
 			// the payload is opaque to the motion: it can't merge or filter
 			// by it
+			ext->ipc_rows[parent] = true;
 			return 0 == (*parent_dxlnode)[EdxlgmIndexSortColList]->Arity() &&
 				   0 == (*parent_dxlnode)[EdxlgmIndexFilter]->Arity() &&
-				   IsLeafOfOtherRegion(regions, self, parent);
+				   IsLeafOfOtherRegion(*ext, self, parent);
 		case EdxlopPhysicalCTEProducer:
 		{
-			if (out != (ULONG) regions->regions[self].root)
+			if (out != root)
 			{
 				return false;
 			}
 			ULONG cte_id =
 				CDXLPhysicalCTEProducer::Cast(parent_dxlnode->GetOperator())
 					->Id();
-			for (ULONG op = 0; op < plan.nops; op++)
+			for (ULONG op = 0; op < ext->ops.size(); op++)
 			{
 				if (EdxlopPhysicalCTEConsumer ==
-						plan.ops[op]->GetOperator()->GetDXLOperator() &&
-					CDXLPhysicalCTEConsumer::Cast(plan.ops[op]->GetOperator())
-							->Id() == cte_id &&
-					!IsLeafOfOtherRegion(regions, self, op))
+						ext->ops[op]->GetOperator()->GetDXLOperator() &&
+					CDXLPhysicalCTEConsumer::Cast(ext->ops[op]->GetOperator())
+							->Id() == cte_id)
 				{
-					return false;
+					if (!IsLeafOfOtherRegion(*ext, self, op))
+					{
+						return false;
+					}
+					ext->ipc_rows[op] = true;
 				}
 			}
 			return true;
@@ -802,12 +780,17 @@ ValidIpcRegionOutput(const OrcaPlanRegions *regions, int self,
 // Whether the regions are well formed: within the plan, and with their
 // leaves in their subtrees, none in another's, so that the translation
 // visits each operator once, nothing in between that needs translating, and
-// the rows of ipc regions only reaching other regions.
+// the rows of ipc regions only reaching other regions. Indexes them by
+// operator (root_region, leaf_of, ipc_rows).
 BOOL
-ValidRegions(const OrcaPlanRegions *regions, const PlanOps &plan)
+ValidRegions(SExtensionRegions *ext)
 {
-	const ULONG *ends = plan.ends;
-	ULONG nops = plan.nops;
+	const OrcaPlanRegions *regions = ext->regions;
+	const std::vector<ULONG> &ends = ext->ends;
+	ULONG nops = ext->ops.size();
+	ext->root_region.assign(nops, -1);
+	ext->leaf_of.assign(nops, 0);
+	ext->ipc_rows.assign(nops, false);
 	for (int i = 0; i < regions->nregions; i++)
 	{
 		const OrcaPlanRegion *region = &regions->regions[i];
@@ -817,17 +800,12 @@ ValidRegions(const OrcaPlanRegions *regions, const PlanOps &plan)
 			region->ncols < 0 ||
 			(0 < region->ncols && nullptr == region->cols) ||
 			(!region->ipc && 0 == region->ncols) ||
-			(region->ipc && region->pg_filter))
+			(region->ipc && region->pg_filter) ||
+			0 <= ext->root_region[region->root])
 		{
 			return false;
 		}
-		for (int j = 0; j < i; j++)
-		{
-			if (regions->regions[j].root == region->root)
-			{
-				return false;
-			}
-		}
+		ext->root_region[region->root] = i;
 		for (int j = 0; j < region->ncols; j++)
 		{
 			if (nullptr == region->cols[j].name)
@@ -851,9 +829,13 @@ ValidRegions(const OrcaPlanRegions *regions, const PlanOps &plan)
 					return false;
 				}
 			}
+			ext->leaf_of[leaf]++;
 		}
-		if (!ValidRegionInterior(region, plan) ||
-			(region->ipc && !ValidIpcRegionOutput(regions, i, plan)))
+	}
+	for (int i = 0; i < regions->nregions; i++)
+	{
+		if (!ValidRegionInterior(*ext, i) ||
+			(regions->regions[i].ipc && !ValidIpcRegionOutput(ext, i)))
 		{
 			return false;
 		}
@@ -873,24 +855,15 @@ CTranslatorDXLToPlStmt::FindExtensionRegions(const CDXLNode *plan_dxlnode)
 	{
 		return;
 	}
-	PlanOps plan = {nullptr, nullptr, nullptr, nullptr, 0};
-	CollectPhysicalOps(plan_dxlnode, &plan);
-	ULONG nops = plan.nops;
-	// freed by the destructor
-	m_ext_ops = GPOS_NEW_ARRAY(m_mp, const CDXLNode *, nops);
-	m_owns_ext_ops = true;
-	CAutoRg<ULONG> ends(GPOS_NEW_ARRAY(m_mp, ULONG, nops));
-	CAutoRg<ULONG> parents(GPOS_NEW_ARRAY(m_mp, ULONG, nops));
-	CAutoRg<BOOL> in_scalar(GPOS_NEW_ARRAY(m_mp, BOOL, nops));
-	plan = {m_ext_ops, ends.Rgt(), parents.Rgt(), in_scalar.Rgt(), 0};
-	CollectPhysicalOps(plan_dxlnode, &plan);
-	const CDXLNode **ops = m_ext_ops;
+	SExtensionRegions ext;
+	CollectPhysicalOps(plan_dxlnode, &ext);
+	ULONG nops = ext.ops.size();
 	const char **opnames =
 		(const char **) gpdb::GPDBAlloc((nops > 0 ? nops : 1) * sizeof(char *));
 	for (ULONG ul = 0; ul < nops; ul++)
 	{
 		opnames[ul] = CTranslatorUtils::CreateMultiByteCharStringFromWCString(
-			ops[ul]->GetOperator()->GetOpNameStr()->GetBuffer());
+			ext.ops[ul]->GetOperator()->GetOpNameStr()->GetBuffer());
 	}
 	const OrcaPlanRegions *regions =
 		gpdb::PlanRegions(SerializeDXL(plan_dxlnode), (int) nops, opnames);
@@ -914,74 +887,15 @@ CTranslatorDXLToPlStmt::FindExtensionRegions(const CDXLNode *plan_dxlnode)
 			gpdxl::ExmaDXL, gpdxl::ExmiDXL2PlStmtConversion,
 			GPOS_WSZ_LIT("extension regions without CustomScan methods"));
 	}
+	ext.regions = regions;
 	if (regions->nregions < 0 || nullptr == regions->regions ||
-		!ValidRegions(regions, plan))
+		!ValidRegions(&ext))
 	{
 		GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiDXL2PlStmtConversion,
 				   GPOS_WSZ_LIT("invalid extension region"));
 	}
-	m_ext_regions = regions;
-	m_ext_nops = nops;
-	m_dxl_to_plstmt_context->m_ext_regions = regions;
-	m_dxl_to_plstmt_context->m_ext_ops = m_ext_ops;
-	m_dxl_to_plstmt_context->m_ext_nops = nops;
-}
-
-// whether the operator is a leaf of an extension region: a PG input the
-// extension reads
-BOOL
-CTranslatorDXLToPlStmt::IsExtensionRegionLeaf(const CDXLNode *dxlnode) const
-{
-	for (int i = 0; nullptr != m_ext_regions && i < m_ext_regions->nregions;
-		 i++)
-	{
-		const OrcaPlanRegion *region = &m_ext_regions->regions[i];
-		for (int j = 0; j < region->nleaves; j++)
-		{
-			if (m_ext_ops[region->leaves[j]] == dxlnode)
-			{
-				return true;
-			}
-		}
-	}
-	return false;
-}
-
-const OrcaPlanRegion *
-CTranslatorDXLToPlStmt::ExtensionRegion(const CDXLNode *dxlnode) const
-{
-	for (int i = 0; nullptr != m_ext_regions && i < m_ext_regions->nregions;
-		 i++)
-	{
-		const OrcaPlanRegion *region = &m_ext_regions->regions[i];
-		if (m_ext_ops[region->root] == dxlnode)
-		{
-			return region;
-		}
-	}
-	return nullptr;
-}
-
-// a CTE consumer whose producer's child is an ipc extension region
-BOOL
-CTranslatorDXLToPlStmt::IsExtensionIpcConsumer(const CDXLNode *dxlnode) const
-{
-	if (EdxlopPhysicalCTEConsumer != dxlnode->GetOperator()->GetDXLOperator())
-	{
-		return false;
-	}
-	ULONG cte_id = CDXLPhysicalCTEConsumer::Cast(dxlnode->GetOperator())->Id();
-	for (ULONG ul = 0; ul < m_ext_nops; ul++)
-	{
-		const CDXLNode *op = m_ext_ops[ul];
-		if (EdxlopPhysicalCTEProducer == op->GetOperator()->GetDXLOperator() &&
-			CDXLPhysicalCTEProducer::Cast(op->GetOperator())->Id() == cte_id)
-		{
-			const OrcaPlanRegion *region = ExtensionRegion((*op)[1]);
-			return nullptr != region && region->ipc;
-		}
-	}
-	return false;
+	ext.IndexNodes();
+	m_dxl_to_plstmt_context->m_ext_regions = std::move(ext);
 }
 
 // An extension region becomes a CustomScan of the extension's methods:
@@ -994,7 +908,8 @@ CTranslatorDXLToPlStmt::TranslateDXLExtensionRegion(
 	CDXLTranslationContextArray *ctxt_translation_prev_siblings)
 {
 	CustomScan *cscan = MakeNode(CustomScan);
-	cscan->methods = m_ext_regions->methods;
+	const SExtensionRegions &ext = ExtRegions();
+	cscan->methods = ext.regions->methods;
 	cscan->scan.scanrelid = 0;
 	Plan *plan = &(cscan->scan.plan);
 	plan->plan_node_id = m_dxl_to_plstmt_context->GetNextPlanId();
@@ -1006,14 +921,16 @@ CTranslatorDXLToPlStmt::TranslateDXLExtensionRegion(
 		CDXLTranslateContext child_context(
 			m_mp, false, output_context->GetColIdToParamIdMap());
 		// a leaf that is the root translates as the plain operator
-		const CDXLNode *leaf_dxlnode = m_ext_ops[region->leaves[i]];
+		const CDXLNode *leaf_dxlnode = ext.ops[region->leaves[i]];
 		const CDXLNode *outer_root_leaf = m_ext_root_leaf;
 		m_ext_root_leaf = leaf_dxlnode == root_dxlnode ? root_dxlnode : nullptr;
 		Plan *leaf = TranslateDXLOperatorToPlan(leaf_dxlnode, &child_context,
 												ctxt_translation_prev_siblings);
 		m_ext_root_leaf = outer_root_leaf;
 		// the consumer of an ipc producer reads its (segment, payload) rows
-		if (IsExtensionIpcConsumer(leaf_dxlnode))
+		if (EdxlopPhysicalCTEConsumer ==
+				leaf_dxlnode->GetOperator()->GetDXLOperator() &&
+			ext.ipc_rows[region->leaves[i]])
 		{
 			leaf->targetlist = IpcTargetList(OUTER_VAR);
 		}
@@ -1151,22 +1068,10 @@ CTranslatorDXLToPlStmt::TranslateDXLIpcMotion(const CDXLNode *motion_dxlnode,
 	}
 }
 
-BOOL
-CTranslatorDXLToPlStmt::IsIpcRegion(const CDXLNode *dxlnode) const
+const SExtensionRegions &
+CTranslatorDXLToPlStmt::ExtRegions() const
 {
-	const OrcaPlanRegion *region = ExtensionRegion(dxlnode);
-	return nullptr != region && region->ipc;
-}
-
-// An ipc region's rows, or those a sequence passes from its last region
-BOOL
-CTranslatorDXLToPlStmt::IsIpcOutput(const CDXLNode *dxlnode) const
-{
-	if (EdxlopPhysicalSequence == dxlnode->GetOperator()->GetDXLOperator())
-	{
-		return IsIpcRegion((*dxlnode)[dxlnode->Arity() - 1]);
-	}
-	return IsIpcRegion(dxlnode);
+	return m_dxl_to_plstmt_context->m_ext_regions;
 }
 
 List *
@@ -1196,7 +1101,7 @@ CTranslatorDXLToPlStmt::CheckExtensionRelationScan(
 	if (ORCA_RELATION_RANDOM ==
 			gpdb::ExtensionRelation(
 				CMDIdGPDB::CastMdid(table_descr->MDId())->Oid()) &&
-		!IsExtensionRegionLeaf(scan_dxlnode))
+		!ExtRegions().IsLeaf(scan_dxlnode))
 	{
 		GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiDXL2PlStmtConversion,
 				   GPOS_WSZ_LIT("scan of a table an extension reads itself "
@@ -1317,7 +1222,7 @@ CTranslatorDXLToPlStmt::TranslateDXLTblScan(
 	// reads: the region's CustomScan has its filter and projection, which
 	// would otherwise be translated twice, subplans and all.
 	const OrcaPlanRegion *region = tbl_scan_dxlnode == m_ext_root_leaf
-									   ? ExtensionRegion(tbl_scan_dxlnode)
+									   ? ExtRegions().Region(tbl_scan_dxlnode)
 									   : nullptr;
 	BOOL bare = nullptr != region && region->pg_filter;
 
@@ -3102,7 +3007,7 @@ CTranslatorDXLToPlStmt::TranslateDXLMotion(
 	Plan *child_plan = TranslateDXLOperatorToPlan(
 		child_dxlnode, &child_context, ctxt_translation_prev_siblings);
 
-	if (IsIpcOutput(child_dxlnode))
+	if (ExtRegions().IpcRows(child_dxlnode))
 	{
 		TranslateDXLIpcMotion(motion_dxlnode, motion);
 		m_dxl_to_plstmt_context->SetCurrentSlice(recvslice);
@@ -4762,7 +4667,7 @@ CTranslatorDXLToPlStmt::TranslateDXLCTEProducerToSharedScan(
 	CDXLTranslationContextArray *child_contexts =
 		GPOS_NEW(m_mp) CDXLTranslationContextArray(m_mp);
 	child_contexts->Append(&child_context);
-	if (IsIpcRegion(child_dxlnode))
+	if (ExtRegions().IpcRows(child_dxlnode))
 	{
 		// the producer shares the (segment, payload) rows of its region
 		plan->targetlist = IpcTargetList(OUTER_VAR);
@@ -4903,7 +4808,7 @@ CTranslatorDXLToPlStmt::TranslateDXLSequence(
 		GPOS_NEW(m_mp) CDXLTranslationContextArray(m_mp);
 	child_contexts->Append(&child_context);
 
-	if (IsIpcRegion((*sequence_dxlnode)[arity - 1]))
+	if (ExtRegions().IpcRows((*sequence_dxlnode)[arity - 1]))
 	{
 		// the sequence passes its last region's (segment, payload) rows
 		plan->targetlist = IpcTargetList(OUTER_VAR);
@@ -4945,7 +4850,8 @@ CTranslatorDXLToPlStmt::TranslateDXLDynTblScan(
 	// translation context for column mappings in the base relation
 	CDXLTranslateContextBaseTable base_table_context(m_mp);
 
-	CheckExtensionRelationScan(dyn_tbl_scan_dxlnode, dyn_tbl_scan_dxlop->GetDXLTableDescr());
+	CheckExtensionRelationScan(dyn_tbl_scan_dxlnode,
+							   dyn_tbl_scan_dxlop->GetDXLTableDescr());
 	Index index = ProcessDXLTblDescr(dyn_tbl_scan_dxlop->GetDXLTableDescr(),
 									 &base_table_context);
 

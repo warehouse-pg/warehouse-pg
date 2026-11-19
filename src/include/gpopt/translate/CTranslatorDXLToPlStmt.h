@@ -137,14 +137,6 @@ private:
 	// command type
 	CmdType m_cmd_type;
 
-	// the plan's regions an extension executes (orca_plan_regions_hook),
-	// and its physical operators in pre-order, which the regions refer to
-	const OrcaPlanRegions *m_ext_regions{nullptr};
-	const CDXLNode **m_ext_ops{nullptr};
-	ULONG m_ext_nops{0};
-	// whether this translator found the regions, rather than taking those
-	// of the plan whose subplan it translates
-	BOOL m_owns_ext_ops{false};
 	// a region root being translated as its own leaf
 	const CDXLNode *m_ext_root_leaf{nullptr};
 
@@ -367,11 +359,8 @@ private:
 	// sets a region's targetlist, and its scan tuple's
 	static void SetRegionTargetList(CustomScan *cscan, List *target_list);
 
-	// whether the node is the root of an ipc extension region
-	BOOL IsIpcRegion(const CDXLNode *dxlnode) const;
-
-	// whether the node outputs an ipc region's rows, itself or via a sequence
-	BOOL IsIpcOutput(const CDXLNode *dxlnode) const;
+	// the plan's extension regions (orca_plan_regions_hook)
+	const SExtensionRegions &ExtRegions() const;
 
 	// a motion routing the (segment, payload) rows of the region below it
 	static void TranslateDXLIpcMotion(const CDXLNode *motion_dxlnode,
@@ -379,13 +368,6 @@ private:
 
 	// asks orca_plan_regions_hook for the plan's extension regions
 	void FindExtensionRegions(const CDXLNode *plan_dxlnode);
-
-	// the extension region rooted at the node, if any
-	const OrcaPlanRegion *ExtensionRegion(const CDXLNode *dxlnode) const;
-
-	BOOL IsExtensionRegionLeaf(const CDXLNode *dxlnode) const;
-
-	BOOL IsExtensionIpcConsumer(const CDXLNode *dxlnode) const;
 
 	// raises an error for a scan of a table an extension reads itself
 	// (ORCA_RELATION_RANDOM) that isn't a leaf of its regions

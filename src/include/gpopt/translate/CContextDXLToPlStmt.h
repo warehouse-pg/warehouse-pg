@@ -43,6 +43,49 @@ using HMUlDxltrctx =
 			 gpos::Equals<ULONG>, CleanupDelete<ULONG>,
 			 CleanupDelete<CDXLTranslateContext>>;
 
+// The extension regions of a plan (orca_plan_regions_hook), and the plan's
+// physical operators, numbered in pre-order as the regions refer to them,
+// with their places in the regions. Empty when the plan has none.
+struct SExtensionRegions
+{
+	const struct OrcaPlanRegions *regions{nullptr};
+
+	// The operators. The subtree of operator i is operators i to
+	// ends[i] - 1; parents[i] is the operator it is an input of (ulong_max
+	// for the plan's root), and in_scalar[i] whether it is under a scalar
+	// expression of that operator (a subplan's root).
+	std::vector<const CDXLNode *> ops;
+	std::vector<ULONG> ends;
+	std::vector<ULONG> parents;
+	std::vector<bool> in_scalar;
+
+	// the region rooted at each operator, or -1
+	std::vector<INT> root_region;
+	// the number of regions each operator is a leaf of
+	std::vector<ULONG> leaf_of;
+	// whether each operator yields an ipc region's (segment, payload) rows:
+	// the region's root, and the sequence, motion or CTE consumers passing
+	// them on
+	std::vector<bool> ipc_rows;
+	// the operators' numbers, in the order of their nodes' addresses
+	std::vector<ULONG> by_node;
+
+	// the node's operator number, or ulong_max
+	ULONG OpNumber(const CDXLNode *dxlnode) const;
+
+	// the region rooted at the node, if any
+	const struct OrcaPlanRegion *Region(const CDXLNode *dxlnode) const;
+
+	// whether the node is a leaf of a region: a PG input the extension reads
+	BOOL IsLeaf(const CDXLNode *dxlnode) const;
+
+	// whether the node yields an ipc region's (segment, payload) rows
+	BOOL IpcRows(const CDXLNode *dxlnode) const;
+
+	// orders by_node, once the operators and regions are set
+	void IndexNodes();
+};
+
 //---------------------------------------------------------------------------
 //	@class:
 //		CContextDXLToPlStmt
@@ -136,12 +179,10 @@ private:
 	HMUlIndex *m_used_rte_indexes;
 
 public:
-	// the extension regions of the plan being translated and its physical
-	// operators (CTranslatorDXLToPlStmt::FindExtensionRegions), which the
-	// translators of its subplans share
-	const struct OrcaPlanRegions *m_ext_regions{nullptr};
-	const CDXLNode **m_ext_ops{nullptr};
-	ULONG m_ext_nops{0};
+	// the extension regions of the plan being translated
+	// (CTranslatorDXLToPlStmt::FindExtensionRegions), which the translators
+	// of its subplans share
+	SExtensionRegions m_ext_regions;
 
 	// ctor/dtor
 	CContextDXLToPlStmt(CMemoryPool *mp, CIdGenerator *plan_id_counter,
