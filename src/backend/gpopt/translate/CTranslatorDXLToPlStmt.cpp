@@ -592,10 +592,11 @@ CTranslatorDXLToPlStmt::SetRegionTargetList(CustomScan *cscan,
 namespace
 {
 // The physical operators below and at the node, in pre-order. The subtree
-// of operator i is operators i to ends[i] - 1.
+// of operator i is operators i to ends[i] - 1; in_scalar[i] is whether it
+// is under a scalar expression of its parent operator (a subplan's root).
 void
 CollectPhysicalOps(const CDXLNode *dxlnode, const CDXLNode **ops, ULONG *ends,
-				   ULONG *nops)
+				   BOOL *in_scalar, ULONG *nops, BOOL under_scalar = false)
 {
 	BOOL physical =
 		EdxloptypePhysical == dxlnode->GetOperator()->GetDXLOperatorType();
@@ -605,12 +606,14 @@ CollectPhysicalOps(const CDXLNode *dxlnode, const CDXLNode **ops, ULONG *ends,
 		if (nullptr != ops)
 		{
 			ops[self] = dxlnode;
+			in_scalar[self] = under_scalar;
 		}
 		(*nops)++;
 	}
 	for (ULONG ul = 0; ul < dxlnode->Arity(); ul++)
 	{
-		CollectPhysicalOps((*dxlnode)[ul], ops, ends, nops);
+		CollectPhysicalOps((*dxlnode)[ul], ops, ends, in_scalar, nops,
+						   !physical);
 	}
 	if (physical && nullptr != ends)
 	{
@@ -640,11 +643,65 @@ HasRowSecurityWalker(Node *node, void *context)
 									context);
 }
 
+// Whether the region's interior operators, those of its subtree outside
+// its leaves', are ones the extension can execute from their DXL alone.
+// They aren't translated, so neither may need anything of the plan: a slice
+// (a motion), a range table entry and its lock (a scan), a CTE's or
+// partition selector's links to other operators, or a subplan.
+BOOL
+ValidRegionInterior(const OrcaPlanRegion *region, const CDXLNode *const *ops,
+					const ULONG *ends, const BOOL *in_scalar)
+{
+	for (ULONG op = (ULONG) region->root; op < ends[region->root];)
+	{
+		BOOL leaf = false;
+		for (int j = 0; j < region->nleaves; j++)
+		{
+			if ((ULONG) region->leaves[j] == op)
+			{
+				leaf = true;
+			}
+		}
+		if (leaf)
+		{
+			op = ends[op];
+			continue;
+		}
+		if (op != (ULONG) region->root && in_scalar[op])
+		{
+			return false;
+		}
+		switch (ops[op]->GetOperator()->GetDXLOperator())
+		{
+			case EdxlopPhysicalResult:
+			case EdxlopPhysicalProjection:
+			case EdxlopPhysicalValuesScan:
+			case EdxlopPhysicalConstTable:
+			case EdxlopPhysicalNLJoin:
+			case EdxlopPhysicalHashJoin:
+			case EdxlopPhysicalMergeJoin:
+			case EdxlopPhysicalLimit:
+			case EdxlopPhysicalAgg:
+			case EdxlopPhysicalSort:
+			case EdxlopPhysicalAppend:
+			case EdxlopPhysicalMaterialize:
+			case EdxlopPhysicalWindow:
+			case EdxlopPhysicalAssert:
+				break;
+			default:
+				return false;
+		}
+		op++;
+	}
+	return true;
+}
+
 // Whether the regions are well formed: within the plan, and with their
 // leaves in their subtrees, none in another's, so that the translation
-// visits each operator once.
+// visits each operator once, and nothing in between that needs translating.
 BOOL
-ValidRegions(const OrcaPlanRegions *regions, const ULONG *ends, ULONG nops)
+ValidRegions(const OrcaPlanRegions *regions, const CDXLNode *const *ops,
+			 const ULONG *ends, const BOOL *in_scalar, ULONG nops)
 {
 	for (int i = 0; i < regions->nregions; i++)
 	{
@@ -690,6 +747,10 @@ ValidRegions(const OrcaPlanRegions *regions, const ULONG *ends, ULONG nops)
 				}
 			}
 		}
+		if (!ValidRegionInterior(region, ops, ends, in_scalar))
+		{
+			return false;
+		}
 	}
 	return true;
 }
@@ -707,13 +768,15 @@ CTranslatorDXLToPlStmt::FindExtensionRegions(const CDXLNode *plan_dxlnode)
 		return;
 	}
 	ULONG nops = 0;
-	CollectPhysicalOps(plan_dxlnode, nullptr, nullptr, &nops);
+	CollectPhysicalOps(plan_dxlnode, nullptr, nullptr, nullptr, &nops);
 	// freed by the destructor
 	m_ext_ops = GPOS_NEW_ARRAY(m_mp, const CDXLNode *, nops);
 	m_owns_ext_ops = true;
 	CAutoRg<ULONG> ends(GPOS_NEW_ARRAY(m_mp, ULONG, nops));
+	CAutoRg<BOOL> in_scalar(GPOS_NEW_ARRAY(m_mp, BOOL, nops));
 	nops = 0;
-	CollectPhysicalOps(plan_dxlnode, m_ext_ops, ends.Rgt(), &nops);
+	CollectPhysicalOps(plan_dxlnode, m_ext_ops, ends.Rgt(), in_scalar.Rgt(),
+					   &nops);
 	const CDXLNode **ops = m_ext_ops;
 	const char **opnames =
 		(const char **) gpdb::GPDBAlloc((nops > 0 ? nops : 1) * sizeof(char *));
@@ -745,7 +808,7 @@ CTranslatorDXLToPlStmt::FindExtensionRegions(const CDXLNode *plan_dxlnode)
 			GPOS_WSZ_LIT("extension regions without CustomScan methods"));
 	}
 	if (regions->nregions < 0 || nullptr == regions->regions ||
-		!ValidRegions(regions, ends.Rgt(), nops))
+		!ValidRegions(regions, m_ext_ops, ends.Rgt(), in_scalar.Rgt(), nops))
 	{
 		GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiDXL2PlStmtConversion,
 				   GPOS_WSZ_LIT("invalid extension region"));
