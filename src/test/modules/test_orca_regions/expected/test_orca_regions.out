@@ -335,6 +335,70 @@ WITH c AS (SELECT * FROM t) SELECT * FROM c c1 JOIN c c2 USING (a) WHERE c1.a < 
  4 | 1 | 1
 (4 rows)
 
+-- the last child of a sequence: the sequence passes the rows on, to the
+-- motion above it, or as the leaf of a region (on the coordinator)
+SET test_orca_regions.mode = ipc_sequence;
+EXPLAIN (COSTS OFF) WITH c AS (SELECT * FROM t WHERE a < 5) SELECT * FROM c c1 JOIN c c2 USING (a);
+                                 QUERY PLAN                                 
+----------------------------------------------------------------------------
+ Custom Scan (TestOrcaRegion)
+   Region: decode
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Sequence
+               ->  Shared Scan (share slice:id 1:0)
+                     ->  Seq Scan on t
+                           Filter: (a < 5)
+               ->  Custom Scan (TestOrcaRegion)
+                     Region: encode
+                     ->  Hash Join
+                           Hash Cond: (share0_ref3.a = share0_ref2.a)
+                           ->  Result
+                                 Filter: (share0_ref3.a < 5)
+                                 ->  Shared Scan (share slice:id 1:0)
+                           ->  Hash
+                                 ->  Result
+                                       Filter: (share0_ref2.a < 5)
+                                       ->  Shared Scan (share slice:id 1:0)
+ Optimizer: GPORCA
+(19 rows)
+
+WITH c AS (SELECT * FROM t WHERE a < 5) SELECT * FROM c c1 JOIN c c2 USING (a) ORDER BY 1;
+ a | b | b 
+---+---+---
+ 1 | 1 | 1
+ 2 | 2 | 2
+ 3 | 0 | 0
+ 4 | 1 | 1
+(4 rows)
+
+EXPLAIN (COSTS OFF) WITH c AS (SELECT i AS a FROM generate_series(1, 5) i) SELECT * FROM c c1 JOIN c c2 USING (a);
+                                         QUERY PLAN                                         
+--------------------------------------------------------------------------------------------
+ Custom Scan (TestOrcaRegion)
+   Region: decode
+   ->  Sequence
+         ->  Shared Scan (share slice:id 0:0)
+               ->  Function Scan on generate_series
+         ->  Custom Scan (TestOrcaRegion)
+               Region: encode
+               ->  Hash Join
+                     Hash Cond: (share0_ref3.generate_series = share0_ref2.generate_series)
+                     ->  Shared Scan (share slice:id 0:0)
+                     ->  Hash
+                           ->  Shared Scan (share slice:id 0:0)
+ Optimizer: GPORCA
+(13 rows)
+
+WITH c AS (SELECT i AS a FROM generate_series(1, 5) i) SELECT * FROM c c1 JOIN c c2 USING (a) ORDER BY 1;
+ a 
+---
+ 1
+ 2
+ 3
+ 4
+ 5
+(5 rows)
+
 SET test_orca_regions.mode = ipc;
 -- the executor checks the segments a region sends rows to: those of the
 -- motion
@@ -403,6 +467,55 @@ SELECT enable_xform('CXformSplitLimit');
  CXformSplitLimit is enabled
 (1 row)
 
+-- large payloads: all of a sender's rows for a segment in one, of hundreds
+-- of kB, across a redistribute and a gather motion
+SET test_orca_regions.batch_rows = 1000000;
+EXPLAIN (COSTS OFF) SELECT count(*), sum(b1.a), sum(b2.b) FROM big b1 JOIN big b2 ON b1.b = b2.a;
+                                      QUERY PLAN                                       
+---------------------------------------------------------------------------------------
+ Finalize Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Partial Aggregate
+               ->  Hash Join
+                     Hash Cond: ((NULL::integer) = b2.a)
+                     ->  Custom Scan (TestOrcaRegion)
+                           Region: decode
+                           ->  Explicit Redistribute Motion 3:3  (slice2; segments: 3)
+                                 ->  Custom Scan (TestOrcaRegion)
+                                       Region: encode
+                                       ->  Seq Scan on big b1
+                     ->  Hash
+                           ->  Seq Scan on big b2
+ Optimizer: GPORCA
+(14 rows)
+
+SELECT count(*), sum(b1.a), sum(b2.b) FROM big b1 JOIN big b2 ON b1.b = b2.a;
+ count  |    sum     |    sum     
+--------+------------+------------
+ 100000 | 5000050000 | 5000050000
+(1 row)
+
+EXPLAIN (COSTS OFF) SELECT count(*), sum(n), sum(a) FROM (SELECT a, row_number() OVER () n FROM big) s;
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Aggregate
+   ->  WindowAgg
+         ->  Custom Scan (TestOrcaRegion)
+               Region: decode
+               ->  Gather Motion 3:1  (slice1; segments: 3)
+                     ->  Custom Scan (TestOrcaRegion)
+                           Region: encode
+                           ->  Seq Scan on big
+ Optimizer: GPORCA
+(9 rows)
+
+SELECT count(*), sum(n), sum(a) FROM (SELECT a, row_number() OVER () n FROM big) s;
+ count  |    sum     |    sum     
+--------+------------+------------
+ 100000 | 5000050000 | 5000050000
+(1 row)
+
+RESET test_orca_regions.batch_rows;
 DROP TABLE big;
 -- a region with two leaves: it reads the inner one before the outer, as
 -- a join does when both have motions in them
@@ -639,6 +752,38 @@ DETAIL:  Falling back to Postgres-based planner because GPORCA does not support 
                            Filter: (a < 5)
  Optimizer: Postgres-based planner
 (10 rows)
+
+-- nor the operator above a sequence, or the client
+SET test_orca_regions.mode = ipc_sequence_unread;
+EXPLAIN (COSTS OFF) WITH c AS (SELECT * FROM t WHERE a < 5) SELECT * FROM c c1 JOIN c c2 USING (a);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: invalid extension region
+                QUERY PLAN                 
+-------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Hash Join
+         Hash Cond: (t.a = c2.a)
+         ->  Seq Scan on t
+               Filter: (a < 5)
+         ->  Hash
+               ->  Subquery Scan on c2
+                     ->  Seq Scan on t t_1
+                           Filter: (a < 5)
+ Optimizer: Postgres-based planner
+(10 rows)
+
+EXPLAIN (COSTS OFF) WITH c AS (SELECT i AS a FROM generate_series(1, 5) i) SELECT * FROM c c1 JOIN c c2 USING (a);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: invalid extension region
+                    QUERY PLAN                    
+--------------------------------------------------
+ Hash Join
+   Hash Cond: (i.i = i_1.i)
+   ->  Function Scan on generate_series i
+   ->  Hash
+         ->  Function Scan on generate_series i_1
+ Optimizer: Postgres-based planner
+(6 rows)
 
 -- no regions under row-level security: their DXL lacks the security quals
 CREATE ROLE regress_orca_regions;
@@ -951,6 +1096,41 @@ SELECT a + 1 FROM e WHERE b = 1 ORDER BY 1;
        29
 (10 rows)
 
+-- with a parameter, of a generic plan: the segments get its values. (An
+-- outer query's parameter stays above the motion a subplan reads e through)
+SET plan_cache_mode = force_generic_plan;
+PREPARE e_by_b(int) AS SELECT count(*), sum(a) FROM e WHERE b = $1;
+EXPLAIN (COSTS OFF, VERBOSE) EXECUTE e_by_b(1);
+                      QUERY PLAN                       
+-------------------------------------------------------
+ Finalize Aggregate
+   Output: count(), sum(a)
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         Output: (PARTIAL count()), (PARTIAL sum(a))
+         ->  Partial Aggregate
+               Output: PARTIAL count(), PARTIAL sum(a)
+               ->  Custom Scan (TestOrcaRegion)
+                     Output: a
+                     Filter: (e.b = $1)
+                     Region: read
+ Optimizer: GPORCA
+ Settings: plan_cache_mode = 'force_generic_plan'
+(12 rows)
+
+EXECUTE e_by_b(1);
+ count | sum 
+-------+-----
+    10 | 145
+(1 row)
+
+EXECUTE e_by_b(2);
+ count | sum 
+-------+-----
+    10 | 155
+(1 row)
+
+DEALLOCATE e_by_b;
+RESET plan_cache_mode;
 EXPLAIN (COSTS OFF) SELECT count(*) FROM e JOIN t ON e.a = t.a;
                                QUERY PLAN                               
 ------------------------------------------------------------------------

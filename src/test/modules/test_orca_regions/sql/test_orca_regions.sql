@@ -62,6 +62,13 @@ RESET test_orca_regions.batch_rows;
 SET test_orca_regions.mode = ipc_cte;
 EXPLAIN (COSTS OFF) WITH c AS (SELECT * FROM t) SELECT * FROM c c1 JOIN c c2 USING (a) WHERE c1.a < 5;
 WITH c AS (SELECT * FROM t) SELECT * FROM c c1 JOIN c c2 USING (a) WHERE c1.a < 5 ORDER BY 1;
+-- the last child of a sequence: the sequence passes the rows on, to the
+-- motion above it, or as the leaf of a region (on the coordinator)
+SET test_orca_regions.mode = ipc_sequence;
+EXPLAIN (COSTS OFF) WITH c AS (SELECT * FROM t WHERE a < 5) SELECT * FROM c c1 JOIN c c2 USING (a);
+WITH c AS (SELECT * FROM t WHERE a < 5) SELECT * FROM c c1 JOIN c c2 USING (a) ORDER BY 1;
+EXPLAIN (COSTS OFF) WITH c AS (SELECT i AS a FROM generate_series(1, 5) i) SELECT * FROM c c1 JOIN c c2 USING (a);
+WITH c AS (SELECT i AS a FROM generate_series(1, 5) i) SELECT * FROM c c1 JOIN c c2 USING (a) ORDER BY 1;
 SET test_orca_regions.mode = ipc;
 
 -- the executor checks the segments a region sends rows to: those of the
@@ -106,6 +113,14 @@ END
 $$;
 RESET statement_timeout;
 SELECT enable_xform('CXformSplitLimit');
+-- large payloads: all of a sender's rows for a segment in one, of hundreds
+-- of kB, across a redistribute and a gather motion
+SET test_orca_regions.batch_rows = 1000000;
+EXPLAIN (COSTS OFF) SELECT count(*), sum(b1.a), sum(b2.b) FROM big b1 JOIN big b2 ON b1.b = b2.a;
+SELECT count(*), sum(b1.a), sum(b2.b) FROM big b1 JOIN big b2 ON b1.b = b2.a;
+EXPLAIN (COSTS OFF) SELECT count(*), sum(n), sum(a) FROM (SELECT a, row_number() OVER () n FROM big) s;
+SELECT count(*), sum(n), sum(a) FROM (SELECT a, row_number() OVER () n FROM big) s;
+RESET test_orca_regions.batch_rows;
 DROP TABLE big;
 
 -- a region with two leaves: it reads the inner one before the outer, as
@@ -158,6 +173,10 @@ SET test_orca_regions.mode = ipc_root;
 EXPLAIN (COSTS OFF) SELECT * FROM t;
 SET test_orca_regions.mode = ipc_cte_unread;
 EXPLAIN (COSTS OFF) WITH c AS (SELECT * FROM t) SELECT * FROM c c1 JOIN c c2 USING (a) WHERE c1.a < 5;
+-- nor the operator above a sequence, or the client
+SET test_orca_regions.mode = ipc_sequence_unread;
+EXPLAIN (COSTS OFF) WITH c AS (SELECT * FROM t WHERE a < 5) SELECT * FROM c c1 JOIN c c2 USING (a);
+EXPLAIN (COSTS OFF) WITH c AS (SELECT i AS a FROM generate_series(1, 5) i) SELECT * FROM c c1 JOIN c c2 USING (a);
 
 
 -- no regions under row-level security: their DXL lacks the security quals
@@ -248,6 +267,15 @@ SET test_orca_regions.ext_relation = random;
 SET test_orca_regions.mode = ext_scan;
 EXPLAIN (COSTS OFF, VERBOSE) SELECT a + 1 FROM e WHERE b = 1;
 SELECT a + 1 FROM e WHERE b = 1 ORDER BY 1;
+-- with a parameter, of a generic plan: the segments get its values. (An
+-- outer query's parameter stays above the motion a subplan reads e through)
+SET plan_cache_mode = force_generic_plan;
+PREPARE e_by_b(int) AS SELECT count(*), sum(a) FROM e WHERE b = $1;
+EXPLAIN (COSTS OFF, VERBOSE) EXECUTE e_by_b(1);
+EXECUTE e_by_b(1);
+EXECUTE e_by_b(2);
+DEALLOCATE e_by_b;
+RESET plan_cache_mode;
 EXPLAIN (COSTS OFF) SELECT count(*) FROM e JOIN t ON e.a = t.a;
 SELECT count(*) FROM e JOIN t ON e.a = t.a;
 -- a subplan in a filter is translated once: no unused slice

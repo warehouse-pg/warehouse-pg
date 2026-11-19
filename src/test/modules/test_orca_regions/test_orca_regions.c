@@ -21,6 +21,11 @@
  * ipc_cte: the child of a CTE producer as an ipc region, and each consumer
  * of the CTE as a region decoding its rows.
  *
+ * ipc_sequence: the last child of a sequence of a CTE producer over a scan
+ * and the rest of the query, as an ipc region converting that child's
+ * output. The sequence passes its rows on: to the motion above it, as a
+ * leaf of a region decoding them, or else, as such a leaf itself.
+ *
  * spool: a materialize over a motion, the motion its leaf. The CustomScan
  * keeps its leaf's rows, and passes them on again when rescanned.
  *
@@ -37,9 +42,10 @@
  * and the table scan below it as a region over the scan, span_scan an
  * operator above a table scan as a region with no leaves: their interiors
  * hold operators that need translating. ipc_unread, ipc_root and
- * ipc_cte_unread claim ipc regions whose rows reach no region: those of
- * ipc mode without the regions above the motions, the plan's root, and
- * those of ipc_cte without the consumers' regions.
+ * ipc_cte_unread and ipc_sequence_unread claim ipc regions whose rows reach
+ * no region: those of ipc mode without the regions above the motions, the
+ * plan's root, and those of ipc_cte and ipc_sequence without the regions
+ * decoding them.
  *
  * Tables of the test_orca_ext table AM stand for tables an extension reads
  * itself. test_orca_regions.ext_relation is what orca_relation_hook says of
@@ -94,6 +100,7 @@ typedef enum TestMode
 	MODE_SPOOL,
 	MODE_JOIN,
 	MODE_IPC_CTE,
+	MODE_IPC_SEQUENCE,
 	MODE_BAD_VERSION,
 	MODE_NO_METHODS,
 	MODE_BAD_ROOT,
@@ -105,7 +112,8 @@ typedef enum TestMode
 	MODE_SPAN_SCAN,
 	MODE_IPC_UNREAD,
 	MODE_IPC_ROOT,
-	MODE_IPC_CTE_UNREAD
+	MODE_IPC_CTE_UNREAD,
+	MODE_IPC_SEQUENCE_UNREAD
 } TestMode;
 
 static const struct config_enum_entry mode_options[] = {
@@ -116,6 +124,7 @@ static const struct config_enum_entry mode_options[] = {
 	{"spool", MODE_SPOOL, false},
 	{"join", MODE_JOIN, false},
 	{"ipc_cte", MODE_IPC_CTE, false},
+	{"ipc_sequence", MODE_IPC_SEQUENCE, false},
 	{"bad_version", MODE_BAD_VERSION, false},
 	{"no_methods", MODE_NO_METHODS, false},
 	{"bad_root", MODE_BAD_ROOT, false},
@@ -128,6 +137,7 @@ static const struct config_enum_entry mode_options[] = {
 	{"ipc_unread", MODE_IPC_UNREAD, false},
 	{"ipc_root", MODE_IPC_ROOT, false},
 	{"ipc_cte_unread", MODE_IPC_CTE_UNREAD, false},
+	{"ipc_sequence_unread", MODE_IPC_SEQUENCE_UNREAD, false},
 	{NULL, 0, false}
 };
 
@@ -752,6 +762,37 @@ test_plan_regions(const char *plan_dxl, int nops, const char *const *opnames)
 					region->cols = cols;
 				}
 				break;
+
+			case MODE_IPC_SEQUENCE:
+			case MODE_IPC_SEQUENCE_UNREAD:
+				{
+					/* where the sequence's rows go: a motion, or nowhere */
+					int			to = op > 0 && is_motion(opnames[op - 1]) ? op - 1 : op;
+					const char *to_dxl = find_op(plan_dxl, to, opnames);
+					const char *spec = NULL;
+
+					/* the producer's subtree is one operator: the last child */
+					if (op + 3 < nops && strcmp(opnames[op], "Sequence") == 0 &&
+						strcmp(opnames[op + 1], "CTEProducer") == 0 &&
+						(strcmp(opnames[op + 2], "TableScan") == 0 ||
+						 strcmp(opnames[op + 2], "TableValuedFunction") == 0) &&
+						op_columns(find_op(plan_dxl, op + 3, opnames), &ncols, &cols))
+						spec = to == op ?
+							psprintf("%s %d gather", REGION_ENCODE, batch_rows) :
+							encode_spec(to_dxl, find_op(plan_dxl, op + 3, opnames),
+										opnames[to]);
+					if (spec != NULL && op_columns(to_dxl, &ncols, &cols))
+					{
+						if (test_mode == MODE_IPC_SEQUENCE)
+						{
+							region = add_region(regions, &nregions, to, REGION_DECODE);
+							region->ncols = ncols;
+							region->cols = cols;
+						}
+						add_region(regions, &nregions, op + 3, spec)->ipc = true;
+					}
+					break;
+				}
 
 			default:
 				break;
