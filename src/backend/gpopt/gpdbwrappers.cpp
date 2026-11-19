@@ -783,6 +783,18 @@ gpdb::GetAttType(Oid relid, AttrNumber attnum)
 	return InvalidOid;
 }
 
+char
+gpdb::GetAttGenerated(Oid relid, AttrNumber attnum)
+{
+	GP_WRAP_START;
+	{
+		/* catalog tables: pg_attribute */
+		return get_attgenerated(relid, attnum);
+	}
+	GP_WRAP_END;
+	return '\0';
+}
+
 List *
 gpdb::GetExtStats(Relation rel)
 {

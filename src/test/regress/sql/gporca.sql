@@ -4004,6 +4004,69 @@ explain (costs off) select count(*) from notnot_chk where b = 1;
 select count(*) from notnot_chk where b = 2;
 reset optimizer_array_expansion_threshold;
 drop table notnot_chk;
+-- A column the INSERT gives no value gets NULL coerced to its domain, as in
+-- the planner, so a NOT NULL domain without a default rejects it, whatever
+-- the target table or the source.  An INSERT that inserts no row raises
+-- nothing, a domain over such a domain is checked too, and a CHECK domain, a
+-- domain with a default and a generated column of a NOT NULL domain behave
+-- as usual.
+create domain insdom_nn varchar(15) not null;
+create domain insdom_nested insdom_nn;
+create domain insdom_chk int check (value > 0);
+create domain insdom_def int not null default 7;
+create domain insdom_gen int check (value is not null);
+create domain insdom_arr int[] not null;
+create table insdom_t (a int, b insdom_nn, c insdom_chk, d insdom_def,
+  e insdom_nested, g insdom_gen generated always as (a * 2) stored)
+  distributed by (a);
+explain (verbose, costs off) insert into insdom_t (a, c, e) select 1, 1, 'e';
+insert into insdom_t (a, c, e) select 1, 1, 'e';
+insert into insdom_t (a, c, e) values (2, 1, 'e');
+insert into insdom_t (a, b, c, d, e) values (3, default, 1, 1, 'e');
+insert into insdom_t (a, b, c, d, e) values (4, 'x', 1, 1, 'e'), (5, default, 1, 1, 'e');
+insert into insdom_t (a, c, e) select 6, 1, 'e' where false;
+insert into insdom_t (a, b, c) select 7, 'x', 1;
+insert into insdom_t (a, b, e) select 8, 'x', 'e';
+insert into insdom_t (a, b, c, e) select 9, 'x', 1, 'e';
+insert into insdom_t (a, b, c, e) select null, 'x', 1, 'e';
+select * from insdom_t order by a;
+-- other targets and sources
+create table insdom_arr_t (a int, b insdom_arr) distributed by (a);
+insert into insdom_arr_t (a) select 1;
+insert into insdom_arr_t values (2, '{1,2}');
+create table insdom_part (a int, k int, b insdom_nn) distributed by (a)
+  partition by range (k);
+create table insdom_part_1 partition of insdom_part for values from (0) to (5);
+create table insdom_part_2 partition of insdom_part for values from (5) to (10);
+insert into insdom_part (a, k) select 1, 3;
+insert into insdom_part select 2, 7, 'x';
+create table insdom_ao (a int, b insdom_nn)
+  with (appendonly=true, orientation=column) distributed by (a);
+create table insdom_src (a int, b text) distributed by (b);
+insert into insdom_src select g, 'v' || g from generate_series(1, 20) g;
+insert into insdom_ao (a) select 1;
+insert into insdom_ao (a) select a from insdom_src;
+insert into insdom_ao select a, b from insdom_src;
+-- a prepared INSERT, past the switch to a generic plan
+prepare insdom_p(int) as insert into insdom_ao (a) values ($1);
+execute insdom_p(1);
+execute insdom_p(2);
+execute insdom_p(3);
+execute insdom_p(4);
+execute insdom_p(5);
+execute insdom_p(6);
+execute insdom_p(7);
+deallocate insdom_p;
+select 'arr' t, count(*), count(b) from insdom_arr_t
+union all select 'part', count(*), count(b) from insdom_part
+union all select 'ao', count(*), count(b) from insdom_ao order by 1;
+drop table insdom_t, insdom_arr_t, insdom_part, insdom_ao, insdom_src;
+drop domain insdom_arr;
+drop domain insdom_gen;
+drop domain insdom_def;
+drop domain insdom_chk;
+drop domain insdom_nested;
+drop domain insdom_nn;
 
 -- start_ignore
 DROP SCHEMA orca CASCADE;

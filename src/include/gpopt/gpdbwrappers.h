@@ -213,6 +213,9 @@ HeapTuple GetAttStats(Oid relid, AttrNumber attnum);
 // type oid of a given attribute of the given relation
 Oid GetAttType(Oid relid, AttrNumber attnum);
 
+// attgenerated of a column ('\0' if it is not generated)
+char GetAttGenerated(Oid relid, AttrNumber attnum);
+
 List *GetExtStats(Relation rel);
 
 char *GetExtStatsName(Oid statOid);

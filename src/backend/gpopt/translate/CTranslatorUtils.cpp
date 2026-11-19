@@ -53,6 +53,7 @@ extern "C" {
 #include "naucrates/dxl/operators/CDXLPhysicalRandomMotion.h"
 #include "naucrates/dxl/operators/CDXLPhysicalRedistributeMotion.h"
 #include "naucrates/dxl/operators/CDXLScalarAssertConstraint.h"
+#include "naucrates/dxl/operators/CDXLScalarCoerceToDomain.h"
 #include "naucrates/dxl/operators/CDXLScalarIdent.h"
 #include "naucrates/dxl/operators/CDXLScalarProjElem.h"
 #include "naucrates/dxl/operators/CDXLSpoolInfo.h"
@@ -2012,23 +2013,51 @@ CTranslatorUtils::HasProjElem(CDXLNode *project_list_dxlnode, Edxlopid dxl_opid)
 //		CTranslatorUtils::CreateDXLProjElemConstNULL
 //
 //	@doc:
-//		Create a DXL project element node with a Const NULL of type provided
-//		by the column descriptor.
+//		Create a DXL project element node with the NULL a column gets when
+//		the statement supplies no value for it, as the planner's
+//		expand_targetlist() does: a column of a domain type gets a NULL
+//		coerced to the domain, so that the domain's constraints (NOT NULL)
+//		are checked.  A generated column only gets a placeholder, which
+//		ExecComputeStoredGenerated() overwrites, so nothing checks it.
 //
 //---------------------------------------------------------------------------
 CDXLNode *
 CTranslatorUtils::CreateDXLProjElemConstNULL(CMemoryPool *mp,
 											 CMDAccessor *md_accessor,
 											 CIdGenerator *pidgtorCol,
-											 const IMDColumn *md_col)
+											 const IMDColumn *md_col,
+											 BOOL is_generated)
 {
 	GPOS_ASSERT(nullptr != md_col);
 	GPOS_ASSERT(!md_col->IsSystemColumn());
 
 	const WCHAR *col_name = md_col->Mdname().GetMDName()->GetBuffer();
 	ULONG colid = pidgtorCol->next_id();
+
+	OID type_oid = CMDIdGPDB::CastMdid(md_col->MdidType())->Oid();
+	OID base_type_oid = gpdb::GetBaseType(type_oid);
+	if (is_generated || base_type_oid == type_oid)
+	{
+		return CreateDXLProjElemConstNULL(mp, md_accessor, md_col->MdidType(),
+										  colid, col_name);
+	}
+
+	CMDIdGPDB *base_mdid =
+		GPOS_NEW(mp) CMDIdGPDB(IMDId::EmdidGeneral, base_type_oid);
 	CDXLNode *dxl_project_element = CreateDXLProjElemConstNULL(
-		mp, md_accessor, md_col->MdidType(), colid, col_name);
+		mp, md_accessor, base_mdid, colid, col_name);
+	base_mdid->Release();
+
+	CDXLNode *null_dxlnode = (*dxl_project_element)[0];
+	null_dxlnode->AddRef();
+	md_col->MdidType()->AddRef();
+	CDXLNode *coerce_dxlnode = GPOS_NEW(mp) CDXLNode(
+		mp,
+		GPOS_NEW(mp) CDXLScalarCoerceToDomain(
+			mp, md_col->MdidType(), default_type_modifier, EdxlcfImplicitCast,
+			-1 /* location */),
+		null_dxlnode);
+	dxl_project_element->ReplaceChild(0, coerce_dxlnode);
 
 	return dxl_project_element;
 }
