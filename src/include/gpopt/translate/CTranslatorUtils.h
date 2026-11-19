@@ -333,12 +333,13 @@ public:
 												IMDId *mdid, ULONG colid,
 												CHAR *alias_name);
 
-	// create a DXL project element node with a Const NULL of type provided
-	// by the column descriptor
+	// create a DXL project element node with the NULL a column the
+	// statement supplies no value for gets
 	static CDXLNode *CreateDXLProjElemConstNULL(CMemoryPool *mp,
 												CMDAccessor *md_accessor,
 												CIdGenerator *colid_generator,
-												const IMDColumn *col);
+												const IMDColumn *col,
+												BOOL is_generated);
 
 	// check required permissions for the range table
 	static void CheckRTEPermissions(List *range_table_list);

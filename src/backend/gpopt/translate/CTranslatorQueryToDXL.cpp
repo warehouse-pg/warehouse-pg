@@ -930,9 +930,12 @@ CTranslatorQueryToDXL::TranslateInsertQueryToDXL()
 
 		// target entry corresponding to the tables column not found, therefore
 		// add a project element with null value scalar child
+		BOOL is_generated =
+			'\0' != gpdb::GetAttGenerated(rte->relid, mdcol->AttrNum());
 		CDXLNode *project_elem_dxlnode =
 			CTranslatorUtils::CreateDXLProjElemConstNULL(
-				m_mp, m_md_accessor, m_context->m_colid_counter, mdcol);
+				m_mp, m_md_accessor, m_context->m_colid_counter, mdcol,
+				is_generated);
 		ULONG colid =
 			CDXLScalarProjElem::Cast(project_elem_dxlnode->GetOperator())->Id();
 		project_list_dxlnode->AddChild(project_elem_dxlnode);
