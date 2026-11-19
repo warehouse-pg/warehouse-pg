@@ -67,9 +67,28 @@ extern PGDLLIMPORT const int orca_hooks_abi_version;
  * CTE producer or consumer, a sequence or a partition selector, must be a
  * leaf or outside the region.
  *
+ * The executor treats the CustomScan as any other, without what
+ * WarehousePG's executor does for the operators it replaces. The leaves'
+ * plan states must be in custom_ps, and the extension must also:
+ *
+ * - Read a join's inner input to its end before its outer one, when both
+ *   have a motion in them, as the executor's joins do (prefetch_inner):
+ *   the senders of a motion not being read can hold up those of the other,
+ *   on other segments, in a deadlock.
+ * - Not rescan a leaf with a motion in it after reading from it, which
+ *   raises an error (ExecReScanMotion): a region that is rescanned, such as
+ *   one replacing a Materialize, keeps the leaf's rows as a Materialize does
+ *   (cdb_shield_child_from_rescans).
+ * - Only set up in BeginCustomScan, and start reading in ExecCustomScan: the
+ *   coordinator initializes the whole plan, the regions of the segments'
+ *   slices too, and runs only its own slice.
+ * - Size the memory it sorts, hashes or keeps rows in itself: the resource
+ *   manager doesn't count a CustomScan as memory intensive, so
+ *   plan.operatorMemKB is small.
+ *
  * When the plan above stops reading a region early, the executor squelches
  * its CustomScan (ExecSquelchNode): it calls ShutdownCustomScan, and then
- * squelches custom_ps, which is where the leaves' plan states must be.
+ * squelches custom_ps.
  *
  * A region marked ipc instead yields (segment int4, payload bytea) rows for
  * the motion right above its root, which only routes them: by the segment
