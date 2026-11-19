@@ -19,8 +19,12 @@ INSERT INTO t SELECT i, i % 3 FROM generate_series(1, 10) i;
 INSERT INTO t VALUES (NULL, 1), (11, NULL);
 CREATE TABLE u (c int, d int) DISTRIBUTED BY (c);
 INSERT INTO u SELECT i, i FROM generate_series(1, 10) i;
+-- distributed by its join column with t
+CREATE TABLE u2 (c int, d int) DISTRIBUTED BY (d);
+INSERT INTO u2 SELECT i, i % 4 FROM generate_series(1, 20) i;
 ANALYZE t;
 ANALYZE u;
+ANALYZE u2;
 
 -- no regions: the plan as ORCA chose it
 SET test_orca_regions.mode = off;
@@ -41,6 +45,62 @@ SELECT * FROM t WHERE b = 1 ORDER BY a;
 SELECT * FROM t ORDER BY a;
 EXPLAIN (COSTS OFF) SELECT t.a, u.c FROM t JOIN u ON t.b = u.d;
 SELECT t.a, u.c FROM t JOIN u ON t.b = u.d ORDER BY 1, 2;
+-- only t moves, to u2's segments: the region puts each row where u2's
+-- matching rows are, by the motion's hash
+EXPLAIN (COSTS OFF) SELECT t.a, u2.c FROM t JOIN u2 ON t.b = u2.d;
+SELECT t.a, u2.c FROM t JOIN u2 ON t.b = u2.d ORDER BY 1, 2;
+-- with one row per payload, and all of a segment's rows in one
+SET test_orca_regions.batch_rows = 1;
+SELECT count(*), sum(t.a), sum(u2.c) FROM t JOIN u2 ON t.b = u2.d;
+SELECT * FROM t ORDER BY a;
+SET test_orca_regions.batch_rows = 1000;
+SELECT count(*), sum(t.a), sum(u2.c) FROM t JOIN u2 ON t.b = u2.d;
+SELECT * FROM t ORDER BY a;
+RESET test_orca_regions.batch_rows;
+
+-- the executor checks the segments a region sends rows to: those of the
+-- motion
+DO $$
+DECLARE
+	seg int;
+	n bigint;
+BEGIN
+	FOREACH seg IN ARRAY ARRAY[-1, 0, 2, 3] LOOP
+		EXECUTE format('SET test_orca_regions.segment = %s', seg);
+		BEGIN
+			-- planned anew, for the segment
+			EXECUTE 'SELECT count(*) FROM t JOIN u2 ON t.b = u2.d' INTO n;
+			RAISE NOTICE 'segment %: no error', seg;
+		EXCEPTION WHEN internal_error THEN
+			-- without the segment that raised it
+			RAISE NOTICE 'segment %: %', seg, split_part(SQLERRM, ' (', 1);
+		END;
+	END LOOP;
+END
+$$;
+RESET test_orca_regions.segment;
+
+-- a limit over a region over a motion squelches the motion when it has
+-- its row, instead of waiting for the senders, which block on a full
+-- interconnect: the CustomScan's children are squelched too
+CREATE TABLE big (a int, b int) DISTRIBUTED BY (a);
+INSERT INTO big SELECT i, i FROM generate_series(1, 100000) i;
+ANALYZE big;
+SELECT disable_xform('CXformSplitLimit');
+EXPLAIN (COSTS OFF) SELECT * FROM big LIMIT 1;
+SET statement_timeout = '60s';
+DO $$
+DECLARE
+	r record;
+BEGIN
+	-- its output varies
+	FOR r IN EXPLAIN (ANALYZE, COSTS OFF) SELECT * FROM big LIMIT 1 LOOP
+	END LOOP;
+END
+$$;
+RESET statement_timeout;
+SELECT enable_xform('CXformSplitLimit');
+DROP TABLE big;
 
 -- the PG planner doesn't call the hook
 SET optimizer = off;
@@ -64,6 +124,12 @@ EXPLAIN (COSTS OFF) SELECT * FROM t;
 SET test_orca_regions.mode = sorted_motion;
 EXPLAIN (COSTS OFF) SELECT * FROM t ORDER BY a;
 SELECT * FROM t ORDER BY a LIMIT 3;
+-- a region's operators between its root and its leaves aren't translated,
+-- so none may be a motion or a scan
+SET test_orca_regions.mode = span_motion;
+EXPLAIN (COSTS OFF) SELECT * FROM t;
+SET test_orca_regions.mode = span_scan;
+EXPLAIN (COSTS OFF) SELECT * FROM t LIMIT 1;
 
 
 -- no regions under row-level security: their DXL lacks the security quals
@@ -118,6 +184,27 @@ SELECT * FROM e WHERE b = 1 ORDER BY a;
 -- randomly distributed: a join on its distribution key moves it
 EXPLAIN (COSTS OFF) SELECT count(*) FROM e JOIN t ON e.a = t.a;
 SELECT count(*) FROM e JOIN t ON e.a = t.a;
+-- nor index scans, or a dynamic scan of its partitions unless its root is
+-- read the same way: ORCA plans neither
+CREATE INDEX e_a ON e (a);
+CREATE TABLE pe (a int, b int) DISTRIBUTED BY (a) PARTITION BY RANGE (a);
+CREATE TABLE pe1 PARTITION OF pe FOR VALUES FROM (0) TO (15) USING test_orca_ext;
+CREATE TABLE pe2 PARTITION OF pe FOR VALUES FROM (15) TO (40) USING test_orca_ext;
+SET optimizer_trace_fallback = off;
+INSERT INTO pe SELECT i, i % 3 FROM generate_series(1, 30) i;
+SET optimizer_trace_fallback = on;
+ANALYZE pe;
+SET enable_seqscan = off;
+EXPLAIN (COSTS OFF) SELECT * FROM e WHERE a = 5;
+SELECT * FROM e WHERE a = 5;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM pe WHERE b = 1;
+SELECT count(*) FROM pe WHERE b = 1;
+RESET test_orca_regions.mode;
+EXPLAIN (COSTS OFF) SELECT * FROM e WHERE a = 5;
+SET test_orca_regions.mode = scan;
+RESET enable_seqscan;
+DROP TABLE pe;
+DROP INDEX e_a;
 
 -- its size and column statistics from the extension, which the hooks look
 -- up with ORCA off (the module raises an error otherwise)
@@ -161,5 +248,5 @@ EXPLAIN (COSTS OFF) SELECT * FROM e;
 RESET test_orca_regions.mode;
 RESET test_orca_regions.ext_relation;
 DROP FUNCTION plan_rows(text);
-DROP TABLE t, u, e, s;
+DROP TABLE t, u, u2, e, s;
 DROP ACCESS METHOD test_orca_ext;

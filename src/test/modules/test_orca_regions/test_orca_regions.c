@@ -13,14 +13,20 @@
  *
  * ipc: a motion right above a table scan, as its own leaf, and the scan
  * below it as an ipc region. The scan's rows cross the motion encoded as
- * (segment, payload) rows, and the CustomScan above the motion decodes them.
+ * (segment, payload) rows, test_orca_regions.batch_rows of them per payload
+ * for each segment, and the CustomScan above the motion decodes them. Below
+ * a redistribute motion, the segment is the motion's cdbhash of the row, or
+ * test_orca_regions.segment if set (to test the executor's checks of it).
  *
  * ext_scan: every table scan of an extension table (below), as a region
  * with pg_filter: the CustomScan reads the table itself, and the executor
  * evaluates the scan's filter and projection over its rows.
  *
  * The remaining modes return malformed regions, which ORCA rejects: the
- * query falls back to the PG planner.
+ * query falls back to the PG planner. span_motion claims a gather motion
+ * and the table scan below it as a region over the scan, span_scan an
+ * operator above a table scan as a region with no leaves: their interiors
+ * hold operators that need translating.
  *
  * Tables of the test_orca_ext table AM stand for tables an extension reads
  * itself. test_orca_regions.ext_relation is what orca_relation_hook says of
@@ -29,7 +35,7 @@
  * whose column statistics orca_att_stats_hook gives for them.
  *
  * Only regions of int4 columns are claimed, which keeps the encoding of the
- * ipc rows trivial.
+ * ipc rows, and their hashing, trivial.
  *
  * Portions Copyright (c) 2026, EnterpriseDB Corporation
  *
@@ -46,10 +52,12 @@
 #include "catalog/pg_class.h"
 #include "catalog/pg_statistic.h"
 #include "catalog/pg_type.h"
+#include "cdb/cdbhash.h"
 #include "commands/defrem.h"
 #include "commands/explain.h"
 #include "executor/executor.h"
 #include "fmgr.h"
+#include "lib/stringinfo.h"
 #include "nodes/extensible.h"
 #include "optimizer/orca.h"
 #include "utils/builtins.h"
@@ -74,7 +82,9 @@ typedef enum TestMode
 	MODE_LEAF_OUTSIDE,
 	MODE_NESTED_LEAVES,
 	MODE_DUPLICATE_ROOT,
-	MODE_SORTED_MOTION
+	MODE_SORTED_MOTION,
+	MODE_SPAN_MOTION,
+	MODE_SPAN_SCAN
 } TestMode;
 
 static const struct config_enum_entry mode_options[] = {
@@ -89,6 +99,8 @@ static const struct config_enum_entry mode_options[] = {
 	{"nested_leaves", MODE_NESTED_LEAVES, false},
 	{"duplicate_root", MODE_DUPLICATE_ROOT, false},
 	{"sorted_motion", MODE_SORTED_MOTION, false},
+	{"span_motion", MODE_SPAN_MOTION, false},
+	{"span_scan", MODE_SPAN_SCAN, false},
 	{NULL, 0, false}
 };
 
@@ -104,13 +116,16 @@ static const struct config_enum_entry relation_options[] = {
 static int	ext_relation = ORCA_RELATION_NONE;
 static int	ext_rows = -1;
 static char *ext_stats_from = NULL;
+static int	batch_rows = 4;
+static char *ipc_segment = NULL;
 
 /* the table AM of the tables an extension reads itself */
 #define EXT_AM "test_orca_ext"
 
 /* what a region's CustomScan does, its custom_private payload */
 #define REGION_PASS "pass"		/* passes its leaf's rows on */
-#define REGION_ENCODE "encode"	/* encodes them as (segment, payload) rows */
+#define REGION_ENCODE "encode"	/* encodes them as (segment, payload) rows:
+								 * "encode <rows per payload> <route>" */
 #define REGION_DECODE "decode"	/* decodes (segment, payload) rows */
 #define REGION_READ "read"		/* reads its leaf's table itself */
 
@@ -335,6 +350,76 @@ is_motion(const char *opname)
 		strcmp(opname, "RandomMotion") == 0;
 }
 
+/* the oid of a mdid <type>.<oid>.<major>.<minor> */
+static Oid
+mdid_oid(const char *mdid)
+{
+	return mdid && strchr(mdid, '.') ?
+		(Oid) strtoul(strchr(mdid, '.') + 1, NULL, 10) : InvalidOid;
+}
+
+/*
+ * The payload of the ipc region of the table scan at scan below the motion
+ * at motion, with its route: how it computes each row's segment. "gather"
+ * or "broadcast" (any segment), "random <segments>", "fixed <segment>" (the
+ * test_orca_regions.segment setting), or "hash <segments> <attno>:<hash
+ * function>..." for a redistribute motion whose hash keys are int4 columns
+ * of the scan. NULL if it is none of those.
+ */
+static const char *
+encode_spec(const char *motion, const char *scan, const char *motion_name)
+{
+	StringInfoData spec;
+	const char *segs = attr_value(motion, "OutputSegments");
+	int			nsegs = 1;
+
+	initStringInfo(&spec);
+	appendStringInfo(&spec, "%s %d ", REGION_ENCODE, batch_rows);
+	for (const char *c = segs; c && *c; c++)
+		nsegs += *c == ',';
+	if (strcmp(motion_name, "GatherMotion") == 0)
+		appendStringInfoString(&spec, "gather");
+	else if (strcmp(motion_name, "BroadcastMotion") == 0)
+		appendStringInfoString(&spec, "broadcast");
+	else if (ipc_segment != NULL && ipc_segment[0] != '\0')
+		appendStringInfo(&spec, "fixed %d", atoi(ipc_segment));
+	else if (strcmp(motion_name, "RandomMotion") == 0)
+		appendStringInfo(&spec, "random %d", nsegs);
+	else
+	{
+		/* the motion's own hash keys, before its child's element */
+		const char *list = strstr(motion, "<dxl:HashExprList>");
+		const char *end = list ? strstr(list, "</dxl:HashExprList>") : NULL;
+		int			ncols;
+		OrcaPlanRegionCol *cols;
+
+		if (end == NULL || end > scan || !op_columns(scan, &ncols, &cols))
+			return NULL;
+		appendStringInfo(&spec, "hash %d", nsegs);
+		for (const char *key = strstr(list, "<dxl:HashExpr ");
+			 key != NULL && key < end; key = strstr(key + 1, "<dxl:HashExpr "))
+		{
+			const char *ident = strchr(key, '>') + 1;
+			char	   *colid;
+			int			attno = 0;
+
+			if (strncmp(ident, "<dxl:Ident ", 11) != 0 ||
+				mdid_oid(attr_value(ident, "TypeMdid")) != INT4OID)
+				return NULL;
+			colid = attr_value(ident, "ColId");
+			for (int i = 0; i < ncols; i++)
+				if (cols[i].colid == (uint32) atoi(colid))
+					attno = i + 1;
+			if (attno == 0)
+				return NULL;
+			appendStringInfo(&spec, " %d:%u", attno,
+							 cdb_hashproc_in_opfamily(mdid_oid(attr_value(key, "Opfamily")),
+													  INT4OID));
+		}
+	}
+	return spec.data;
+}
+
 static CustomScanMethods region_scan_methods;
 
 static OrcaPlanRegion *
@@ -392,18 +477,23 @@ test_plan_regions(const char *plan_dxl, int nops, const char *const *opnames)
 				break;
 
 			case MODE_IPC:
-				if (op + 1 < nops && is_motion(opnames[op]) &&
-					strcmp(opnames[op + 1], "TableScan") == 0 &&
-					op_columns(p, &ncols, &cols))
 				{
-					region = add_region(regions, &nregions, op, REGION_DECODE);
-					region->ncols = ncols;
-					region->cols = cols;
-					region = add_region(regions, &nregions, op + 1,
-										REGION_ENCODE);
-					region->ipc = true;
+					const char *spec;
+
+					if (op + 1 < nops && is_motion(opnames[op]) &&
+						strcmp(opnames[op + 1], "TableScan") == 0 &&
+						op_columns(p, &ncols, &cols) &&
+						(spec = encode_spec(p, find_op(plan_dxl, op + 1, opnames),
+											opnames[op])) != NULL)
+					{
+						region = add_region(regions, &nregions, op, REGION_DECODE);
+						region->ncols = ncols;
+						region->cols = cols;
+						region = add_region(regions, &nregions, op + 1, spec);
+						region->ipc = true;
+					}
+					break;
 				}
-				break;
 
 			case MODE_EXT_SCAN:
 				if (strcmp(opnames[op], "TableScan") == 0 &&
@@ -428,13 +518,39 @@ test_plan_regions(const char *plan_dxl, int nops, const char *const *opnames)
 				}
 				break;
 
+			case MODE_SPAN_MOTION:
+				/* the gather is in the region, not a leaf */
+				if (op + 1 < nops && strcmp(opnames[op], "GatherMotion") == 0 &&
+					strcmp(opnames[op + 1], "TableScan") == 0 &&
+					op_columns(p, &ncols, &cols))
+				{
+					region = add_region(regions, &nregions, op, REGION_PASS);
+					((int *) region->leaves)[0] = op + 1;
+					region->ncols = ncols;
+					region->cols = cols;
+				}
+				break;
+
+			case MODE_SPAN_SCAN:
+				/* the scan is in the region, not a leaf */
+				if (op + 1 < nops && !is_motion(opnames[op]) &&
+					strcmp(opnames[op + 1], "TableScan") == 0 &&
+					op_columns(p, &ncols, &cols))
+				{
+					region = add_region(regions, &nregions, op, REGION_PASS);
+					region->nleaves = 0;
+					region->ncols = ncols;
+					region->cols = cols;
+				}
+				break;
+
 			default:
 				break;
 		}
 	}
 
 	if (nops > 0 && test_mode >= MODE_BAD_VERSION &&
-		test_mode != MODE_SORTED_MOTION)
+		test_mode < MODE_SORTED_MOTION)
 	{
 		OrcaPlanRegionCol *col = palloc0(sizeof(OrcaPlanRegionCol));
 		OrcaPlanRegion *region;
@@ -499,7 +615,199 @@ typedef struct RegionScanState
 	TableScanDesc scan;			/* REGION_READ's scan of its table */
 	TupleTableSlot *table_slot;
 	AttrNumber *attnos;			/* the table's attribute of each column */
+
+	/* REGION_ENCODE: its route, and the rows it holds for each segment */
+	const char *route;			/* "gather", "hash", ... (encode_spec) */
+	int			batch;			/* rows per payload */
+	int			nsegs;			/* the segments it sends to */
+	int			fixed;			/* the segment of "fixed" */
+	int			nkeys;			/* the hash keys of "hash" */
+	AttrNumber *keys;
+	CdbHash    *hash;
+	uint32		next_random;
+	StringInfoData *bufs;		/* one per segment, one for a gather or
+								 * broadcast */
+	int		   *nrows;
+	int			nbufs;
+	bool		done;			/* its leaf has no more rows */
+	int			flushed;		/* the buffers sent after that */
+
+	/* REGION_DECODE: the payload it reads rows from */
+	const char *pos;
+	int			left;
 } RegionScanState;
+
+/* each column of an encoded row: a null flag and an int4 */
+#define ENCODED_COL (1 + sizeof(int32))
+
+static void
+encode_reset(RegionScanState *state)
+{
+	for (int i = 0; i < state->nbufs; i++)
+	{
+		resetStringInfo(&state->bufs[i]);
+		state->nrows[i] = 0;
+	}
+	state->done = false;
+	state->flushed = 0;
+	state->next_random = 0;
+}
+
+/* parses the region's "encode <rows> <route>" payload */
+static void
+encode_begin(RegionScanState *state, const char *spec)
+{
+	char	   *copy = pstrdup(spec);
+	char	   *save;
+	char	   *tok;
+
+	strtok_r(copy, " ", &save);
+	state->batch = atoi(strtok_r(NULL, " ", &save));
+	state->route = pstrdup(strtok_r(NULL, " ", &save));
+	state->nsegs = 1;
+	state->nbufs = 1;
+	if (strcmp(state->route, "fixed") == 0)
+		state->fixed = atoi(strtok_r(NULL, " ", &save));
+	else if (strcmp(state->route, "random") == 0 ||
+			 strcmp(state->route, "hash") == 0)
+	{
+		state->nsegs = atoi(strtok_r(NULL, " ", &save));
+		state->nbufs = state->nsegs;
+	}
+	if (strcmp(state->route, "hash") == 0)
+	{
+		Oid		   *funcs = palloc(sizeof(Oid) * 64);
+
+		state->keys = palloc(sizeof(AttrNumber) * 64);
+		while ((tok = strtok_r(NULL, " ", &save)) != NULL)
+		{
+			state->keys[state->nkeys] = atoi(tok);
+			funcs[state->nkeys++] = (Oid) strtoul(strchr(tok, ':') + 1, NULL, 10);
+		}
+		state->hash = makeCdbHash(state->nsegs, state->nkeys, funcs);
+	}
+	state->bufs = palloc0(sizeof(StringInfoData) * state->nbufs);
+	state->nrows = palloc0(sizeof(int) * state->nbufs);
+	for (int i = 0; i < state->nbufs; i++)
+		initStringInfo(&state->bufs[i]);
+	encode_reset(state);
+}
+
+/* the buffer, and the segment, of the row in the slot */
+static int
+encode_target(RegionScanState *state, TupleTableSlot *in, int *segment)
+{
+	if (strcmp(state->route, "hash") == 0)
+	{
+		cdbhashinit(state->hash);
+		for (int i = 0; i < state->nkeys; i++)
+			cdbhash(state->hash, i + 1, in->tts_values[state->keys[i] - 1],
+					in->tts_isnull[state->keys[i] - 1]);
+		*segment = cdbhashreduce(state->hash);
+		return *segment;
+	}
+	if (strcmp(state->route, "random") == 0)
+	{
+		*segment = state->next_random++ % state->nsegs;
+		return *segment;
+	}
+	*segment = strcmp(state->route, "fixed") == 0 ? state->fixed : 0;
+	return 0;
+}
+
+/* the (segment, payload) row of the buffer's rows */
+static TupleTableSlot *
+encode_send(RegionScanState *state, int buf, int segment, TupleTableSlot *out)
+{
+	bytea	   *payload = palloc(VARHDRSZ + state->bufs[buf].len);
+
+	SET_VARSIZE(payload, VARHDRSZ + state->bufs[buf].len);
+	memcpy(VARDATA(payload), state->bufs[buf].data, state->bufs[buf].len);
+	resetStringInfo(&state->bufs[buf]);
+	state->nrows[buf] = 0;
+	out->tts_values[0] = Int32GetDatum(segment);
+	out->tts_isnull[0] = false;
+	out->tts_values[1] = PointerGetDatum(payload);
+	out->tts_isnull[1] = false;
+	return ExecStoreVirtualTuple(out);
+}
+
+/* the next payload, of a full buffer, or after the last row of a buffer */
+static TupleTableSlot *
+encode_next(RegionScanState *state, TupleTableSlot *out)
+{
+	while (!state->done)
+	{
+		TupleTableSlot *in = ExecProcNode(linitial(state->css.custom_ps));
+		int			segment;
+		int			buf;
+
+		if (TupIsNull(in))
+		{
+			state->done = true;
+			break;
+		}
+		slot_getallattrs(in);
+		buf = encode_target(state, in, &segment);
+		for (int i = 0; i < in->tts_tupleDescriptor->natts; i++)
+		{
+			int32		value = in->tts_isnull[i] ? 0 :
+				DatumGetInt32(in->tts_values[i]);
+
+			appendStringInfoChar(&state->bufs[buf], in->tts_isnull[i]);
+			appendBinaryStringInfo(&state->bufs[buf], (char *) &value,
+								   sizeof(int32));
+		}
+		if (++state->nrows[buf] == state->batch)
+			return encode_send(state, buf, segment, out);
+	}
+	for (; state->flushed < state->nbufs; state->flushed++)
+	{
+		int			buf = state->flushed;
+
+		if (state->nrows[buf] > 0)
+			return encode_send(state, buf,
+							   state->nbufs > 1 ? buf :
+							   strcmp(state->route, "fixed") == 0 ? state->fixed : 0,
+							   out);
+	}
+	return out;
+}
+
+/* the next row of the payloads it reads */
+static TupleTableSlot *
+decode_next(RegionScanState *state, TupleTableSlot *out)
+{
+	int			nout = out->tts_tupleDescriptor->natts;
+
+	if (state->left == 0)
+	{
+		TupleTableSlot *in = ExecProcNode(linitial(state->css.custom_ps));
+		bytea	   *payload;
+		int			len;
+
+		if (TupIsNull(in))
+			return out;
+		slot_getallattrs(in);
+		payload = DatumGetByteaPP(in->tts_values[1]);
+		len = VARSIZE_ANY_EXHDR(payload);
+		if (len == 0 || len % (nout * ENCODED_COL) != 0)
+			elog(ERROR, "malformed region payload");
+		state->pos = VARDATA_ANY(payload);
+		state->left = len / (nout * ENCODED_COL);
+	}
+	for (int i = 0; i < nout; i++)
+	{
+		int32		value;
+
+		out->tts_isnull[i] = *state->pos++;
+		memcpy(&value, state->pos, sizeof(int32));
+		state->pos += sizeof(int32);
+		out->tts_values[i] = Int32GetDatum(value);
+	}
+	state->left--;
+	return ExecStoreVirtualTuple(out);
+}
 
 static void
 region_begin(CustomScanState *node, EState *estate, int eflags)
@@ -529,6 +837,8 @@ region_begin(CustomScanState *node, EState *estate, int eflags)
 			state->scan = table_beginscan(rel, estate->es_snapshot, 0, NULL);
 		return;
 	}
+	if (strcmp(state->what, REGION_ENCODE) == 0)
+		encode_begin(state, strVal(linitial(cscan->custom_private)));
 	foreach(lc, cscan->custom_plans)
 		node->custom_ps = lappend(node->custom_ps,
 								  ExecInitNode(lfirst(lc), estate, eflags));
@@ -558,63 +868,20 @@ region_next(ScanState *ss)
 		}
 		return ExecStoreVirtualTuple(out);
 	}
+	if (strcmp(state->what, REGION_ENCODE) == 0)
+		return encode_next(state, out);
+	if (strcmp(state->what, REGION_DECODE) == 0)
+		return decode_next(state, out);
+
+	/* REGION_PASS */
 	in = ExecProcNode(linitial(state->css.custom_ps));
 	if (TupIsNull(in))
 		return out;
 	slot_getallattrs(in);
 	natts = in->tts_tupleDescriptor->natts;
-
-	if (strcmp(state->what, REGION_PASS) == 0)
-	{
-		Assert(natts == out->tts_tupleDescriptor->natts);
-		memcpy(out->tts_values, in->tts_values, natts * sizeof(Datum));
-		memcpy(out->tts_isnull, in->tts_isnull, natts * sizeof(bool));
-	}
-	else if (strcmp(state->what, REGION_ENCODE) == 0)
-	{
-		/* each column as a null flag and an int4 */
-		bytea	   *payload = palloc(VARHDRSZ + natts * (1 + sizeof(int32)));
-		char	   *p = VARDATA(payload);
-
-		SET_VARSIZE(payload, VARHDRSZ + natts * (1 + sizeof(int32)));
-		for (int i = 0; i < natts; i++)
-		{
-			int32		value = in->tts_isnull[i] ? 0 :
-				DatumGetInt32(in->tts_values[i]);
-
-			*p++ = in->tts_isnull[i];
-			memcpy(p, &value, sizeof(int32));
-			p += sizeof(int32);
-		}
-
-		/*
-		 * A gather or a broadcast ignores the segment. A redistribute must
-		 * place rows as ORCA's hash spec does, which this module doesn't
-		 * read: sending them all to one segment keeps any join co-located.
-		 */
-		out->tts_values[0] = Int32GetDatum(0);
-		out->tts_isnull[0] = false;
-		out->tts_values[1] = PointerGetDatum(payload);
-		out->tts_isnull[1] = false;
-	}
-	else
-	{
-		bytea	   *payload = DatumGetByteaPP(in->tts_values[1]);
-		const char *p = VARDATA_ANY(payload);
-		int			nout = out->tts_tupleDescriptor->natts;
-
-		if (VARSIZE_ANY_EXHDR(payload) != nout * (1 + sizeof(int32)))
-			elog(ERROR, "malformed region payload");
-		for (int i = 0; i < nout; i++)
-		{
-			int32		value;
-
-			out->tts_isnull[i] = *p++;
-			memcpy(&value, p, sizeof(int32));
-			p += sizeof(int32);
-			out->tts_values[i] = Int32GetDatum(value);
-		}
-	}
+	Assert(natts == out->tts_tupleDescriptor->natts);
+	memcpy(out->tts_values, in->tts_values, natts * sizeof(Datum));
+	memcpy(out->tts_isnull, in->tts_isnull, natts * sizeof(bool));
 	return ExecStoreVirtualTuple(out);
 }
 
@@ -650,6 +917,9 @@ region_rescan(CustomScanState *node)
 
 	if (state->scan != NULL)
 		table_rescan(state->scan, NULL);
+	if (state->bufs != NULL)
+		encode_reset(state);
+	state->left = 0;
 	foreach(lc, node->custom_ps)
 		ExecReScan(lfirst(lc));
 }
@@ -673,10 +943,12 @@ static Node *
 region_create_state(CustomScan *cscan)
 {
 	RegionScanState *state = palloc0(sizeof(RegionScanState));
+	const char *payload = strVal(linitial(cscan->custom_private));
 
 	NodeSetTag(state, T_CustomScanState);
 	state->css.methods = &region_exec_methods;
-	state->what = strVal(linitial(cscan->custom_private));
+	/* its first word */
+	state->what = pnstrdup(payload, strcspn(payload, " "));
 	return (Node *) state;
 }
 
@@ -722,6 +994,23 @@ _PG_init(void)
 							   "The table whose column statistics extension tables have.",
 							   NULL,
 							   &ext_stats_from,
+							   "",
+							   PGC_USERSET,
+							   0,
+							   NULL, NULL, NULL);
+	DefineCustomIntVariable("test_orca_regions.batch_rows",
+							"The rows of each payload of the ipc regions.",
+							NULL,
+							&batch_rows,
+							4,
+							1, INT_MAX,
+							PGC_USERSET,
+							0,
+							NULL, NULL, NULL);
+	DefineCustomStringVariable("test_orca_regions.segment",
+							   "The segment of the ipc regions' rows below a redistribute motion, if not their cdbhash.",
+							   NULL,
+							   &ipc_segment,
 							   "",
 							   PGC_USERSET,
 							   0,
