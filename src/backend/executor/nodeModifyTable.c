@@ -122,7 +122,17 @@ ExecCheckPlanOutput(Relation resultRel, List *targetList)
 		attr = TupleDescAttr(resultDesc, attno);
 		attno++;
 
-		if (!attr->attisdropped)
+		if (!attr->attisdropped && attr->attgenerated &&
+			IsA(tle->expr, Const) && ((Const *) tle->expr)->constisnull)
+		{
+			/*
+			 * A generated column: the planner inserts a NULL of the column's
+			 * base type (so as not to fail on a domain NOT NULL constraint),
+			 * and the value is computed later anyway.  A null value is
+			 * type-independent, so accept a NULL constant of any type.
+			 */
+		}
+		else if (!attr->attisdropped)
 		{
 			/* Normal case: demand type match */
 			if (exprType((Node *) tle->expr) != attr->atttypid)
