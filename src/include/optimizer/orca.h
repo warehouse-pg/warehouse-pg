@@ -57,6 +57,10 @@ extern PGDLLIMPORT const int orca_hooks_abi_version;
  * converts that operator's output. The CustomScan yields the region's output
  * columns, which the plan above refers to by their DXL column ids.
  *
+ * When the plan above stops reading a region early, the executor squelches
+ * its CustomScan (ExecSquelchNode): it calls ShutdownCustomScan, and then
+ * squelches custom_ps, which is where the leaves' plan states must be.
+ *
  * A region marked ipc instead yields (segment int4, payload bytea) rows for
  * the motion right above its root, which only routes them: by the segment
  * column, or as a gather or broadcast, and neither sorts nor filters them.
