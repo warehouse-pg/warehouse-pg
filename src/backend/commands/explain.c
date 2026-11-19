@@ -44,6 +44,7 @@
 #include "utils/rel.h"
 #include "utils/resgroup.h"
 #include "utils/ruleutils.h"
+#include "utils/runtimefilter.h"
 #include "utils/snapmgr.h"
 #include "utils/tuplesort.h"
 #include "utils/typcache.h"
@@ -100,6 +101,8 @@ static void show_expression(Node *node, const char *qlabel,
 static void show_qual(List *qual, const char *qlabel,
 					  PlanState *planstate, List *ancestors,
 					  bool useprefix, ExplainState *es);
+static void show_runtime_filters(List *rfilters, PlanState *planstate,
+								 List *ancestors, ExplainState *es);
 static void show_staged_scan(SeqScan *plan, PlanState *planstate,
 									ExplainState *es);
 static void show_scan_qual(List *qual, const char *qlabel,
@@ -2381,10 +2384,21 @@ ExplainNode(PlanState *planstate, List *ancestors,
 					"Number of partitions to scan", buf,
 					list_length(((DynamicSeqScan *)plan)->partOids),es);
 			}
-			show_scan_qual(plan->qual, "Filter", planstate, ancestors, es);
-			if (plan->qual)
-				show_instrumentation_count("Rows Removed by Filter", 1,
-										   planstate, es);
+			{
+				List	   *rfilters;
+				List	   *filter;
+
+				/*
+				 * WHPG: a runtime filter clause (runtimefilter.c) is shown
+				 * by the column it filters on, apart from the predicate.
+				 */
+				runtimefilter_split_qual(plan->qual, &rfilters, &filter);
+				show_scan_qual(filter, "Filter", planstate, ancestors, es);
+				show_runtime_filters(rfilters, planstate, ancestors, es);
+				if (plan->qual)
+					show_instrumentation_count("Rows Removed by Filter", 1,
+											   planstate, es);
+			}
 			if (IsA(plan, SeqScan) || IsA(plan, DynamicSeqScan))
 				show_staged_scan((SeqScan *) plan, planstate, es);
 			break;
@@ -2587,6 +2601,28 @@ ExplainNode(PlanState *planstate, List *ancestors,
 							"Hash Cond", planstate, ancestors, es);
 			show_upper_qual(((HashJoin *) plan)->join.joinqual,
 							"Join Filter", planstate, ancestors, es);
+			/*
+			 * WHPG: why this join got no runtime filter (planrtfilter.c), when
+			 * asked for; the join that got one shows it at its probe scan.
+			 */
+			if (whpg_runtime_filter_explain && hash_join->rf_paramids == NIL &&
+				runtimefilter_decline_reason(hash_join->rf_decline) != NULL)
+			{
+				const char *why = runtimefilter_decline_reason(hash_join->rf_decline);
+				Plan	   *probe = outerPlan(plan);
+				char	   *txt;
+
+				if (hash_join->rf_decline == RF_DECLINE_UNSELECTIVE &&
+					probe != NULL && probe->plan_rows > 0)
+					txt = psprintf("declined: %s (%.0f%% of %.0f)", why,
+								   100.0 * Min(1.0, plan->plan_rows / probe->plan_rows),
+								   hash_join->rf_probe_rows > 0 ?
+								   hash_join->rf_probe_rows : probe->plan_rows);
+				else
+					txt = psprintf("declined: %s", why);
+				ExplainPropertyText("Runtime Filter", txt, es);
+				pfree(txt);
+			}
 			if (((HashJoin *) plan)->join.joinqual)
 				show_instrumentation_count("Rows Removed by Join Filter", 1,
 										   planstate, es);
@@ -3147,6 +3183,56 @@ show_scan_qual(List *qual, const char *qlabel,
 
 	useprefix = (IsA(planstate->plan, SubqueryScan) ||es->verbose);
 	show_qual(qual, qlabel, planstate, ancestors, useprefix, es);
+}
+
+/*
+ * WHPG: show a scan's runtime filter clauses (runtimefilter.c) by the
+ * column each filters on: one "Runtime Filter: k" line each in text, one
+ * list under the key in the other formats, where a key must not repeat.
+ */
+static void
+show_runtime_filters(List *rfilters, PlanState *planstate, List *ancestors,
+					 ExplainState *es)
+{
+	bool		useprefix = (IsA(planstate->plan, SubqueryScan) || es->verbose);
+	List	   *context;
+	List	   *strs = NIL;
+	ListCell   *lc;
+
+	if (rfilters == NIL)
+		return;
+
+	/*
+	 * A plan made while whpg_enable_runtime_filter was on keeps its clauses,
+	 * but with the switch off no join builds a filter for them (nodeHashjoin.c);
+	 * show the plan as it runs.
+	 */
+	if (!whpg_enable_runtime_filter)
+		return;
+
+	context = set_deparse_context_planstate(es->deparse_cxt,
+											(Node *) planstate, ancestors);
+	foreach(lc, rfilters)
+	{
+		Node	   *key = runtimefilter_clause_key((Node *) lfirst(lc));
+		char	   *exprstr = deparse_expression(key, context, useprefix, false);
+
+		if (es->format == EXPLAIN_FORMAT_TEXT)
+			ExplainPropertyText("Runtime Filter", exprstr, es);
+		else
+			strs = lappend(strs, exprstr);
+	}
+	if (strs != NIL)
+		ExplainPropertyList("Runtime Filter", strs, es);
+
+	/*
+	 * What the filters removed, summed over the segments like the Staged
+	 * Scan's counts (explain_gp.c). "Rows Removed by Filter" is the scan's
+	 * own predicate's count and leaves these rows out (nodeSeqscan.c).
+	 */
+	if (es->analyze && planstate->instrument != NULL)
+		ExplainPropertyFloat("Rows Removed by Runtime Filter", NULL,
+							 planstate->instrument->rfRowsRemoved, 0, es);
 }
 
 /*

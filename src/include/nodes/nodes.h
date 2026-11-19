@@ -648,6 +648,7 @@ typedef enum NodeTag
 	T_WindowTopN,				/* in nodes/plannodes.h */
 	T_WindowTopNState,			/* in nodes/execnodes.h */
 	T_WindowTopNPath,			/* in nodes/pathnodes.h */
+	T_RuntimeFilterExpr,		/* in nodes/primnodes.h */
 
 } NodeTag;
 

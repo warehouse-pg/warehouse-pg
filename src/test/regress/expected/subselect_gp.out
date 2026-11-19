@@ -3511,12 +3511,13 @@ explain (costs off) select * from r where b in (select b from s where c=10 order
    ->  Hash Semi Join
          Hash Cond: (r.b = s.b)
          ->  Seq Scan on r
+               Runtime Filter: b
          ->  Hash
                ->  Broadcast Motion 3:3  (slice2; segments: 3)
                      ->  Seq Scan on s
                            Filter: (c = 10)
  Optimizer: Postgres query optimizer
-(9 rows)
+(10 rows)
 
 select * from r where b in (select b from s where c=10 order by r.c);
  a | b | c 
@@ -3553,12 +3554,13 @@ explain (costs off) select * from r where b in (select b from s where c=10 order
    ->  Hash Semi Join
          Hash Cond: (r.b = s.b)
          ->  Seq Scan on r
+               Runtime Filter: b
          ->  Hash
                ->  Broadcast Motion 3:3  (slice2; segments: 3)
                      ->  Seq Scan on s
                            Filter: (c = 10)
  Optimizer: Postgres query optimizer
-(9 rows)
+(10 rows)
 
 select * from r where b in (select b from s where c=10 order by r.c, b);
  a | b | c 
@@ -3597,12 +3599,13 @@ explain (costs off) select * from r where b in (select b from s where c=10 order
    ->  Hash Semi Join
          Hash Cond: (r.b = s.b)
          ->  Seq Scan on r
+               Runtime Filter: b
          ->  Hash
                ->  Broadcast Motion 3:3  (slice2; segments: 3)
                      ->  Seq Scan on s
                            Filter: (c = 10)
  Optimizer: Postgres query optimizer
-(9 rows)
+(10 rows)
 
 select * from r where b in (select b from s where c=10 order by c);
  a | b | c 
@@ -3617,6 +3620,7 @@ explain (costs off) select * from r where b in (select b from s where c=10 order
    ->  Hash Semi Join
          Hash Cond: (r.b = "ANY_subquery".b)
          ->  Seq Scan on r
+               Runtime Filter: b
          ->  Hash
                ->  Broadcast Motion 1:3  (slice2; segments: 1)
                      ->  Subquery Scan on "ANY_subquery"
@@ -3626,7 +3630,7 @@ explain (costs off) select * from r where b in (select b from s where c=10 order
                                              ->  Seq Scan on s
                                                    Filter: (c = 10)
  Optimizer: Postgres query optimizer
-(13 rows)
+(14 rows)
 
 select * from r where b in (select b from s where c=10 order by c limit 2);
  a | b | c 
@@ -4381,13 +4385,14 @@ select count(*) from foo where a > (select max(x)  from bar where foo.a = bar.x)
                Hash Cond: (foo.a = bar.x)
                Join Filter: (foo.a > (max(bar.x)))
                ->  Seq Scan on foo
+                     Runtime Filter: a
                ->  Hash
                      ->  HashAggregate
                            Group Key: bar.x
                            Filter: (bar.x > max(bar.x))
                            ->  Seq Scan on bar
  Optimizer: Postgres-based planner
-(12 rows)
+(13 rows)
 
 select count(*) from foo where a > (select max(x)  from bar where foo.a = bar.x);
  count 
@@ -4405,13 +4410,14 @@ select count(*) from foo where a > (select max(x + 3) / 2  from bar where foo.a 
                Hash Cond: (foo.a = bar.x)
                Join Filter: (foo.a > ((max((bar.x + 3)) / 2)))
                ->  Seq Scan on foo
+                     Runtime Filter: a
                ->  Hash
                      ->  HashAggregate
                            Group Key: bar.x
                            Filter: (bar.x > (max((bar.x + 3)) / 2))
                            ->  Seq Scan on bar
  Optimizer: Postgres-based planner
-(12 rows)
+(13 rows)
 
 select count(*) from foo where a > (select max(x + 3) / 2  from bar where foo.a = bar.x);
  count 
@@ -4456,6 +4462,7 @@ select count(*) from foo where a + 5 > (select percentile_cont(0.5) within group
                Hash Cond: (foo.a = bar.x)
                Join Filter: (((foo.a + 5))::double precision > (percentile_cont('0.5'::double precision) WITHIN GROUP (ORDER BY ((bar.x)::double precision))))
                ->  Seq Scan on foo
+                     Runtime Filter: a
                ->  Hash
                      ->  GroupAggregate
                            Group Key: bar.x
@@ -4463,7 +4470,7 @@ select count(*) from foo where a + 5 > (select percentile_cont(0.5) within group
                                  Sort Key: bar.x
                                  ->  Seq Scan on bar
  Optimizer: Postgres-based planner
-(13 rows)
+(14 rows)
 
 select count(*) from foo where a + 5 > (select percentile_cont(0.5) within group(order by x) from bar where foo.a = bar.x);
  count 

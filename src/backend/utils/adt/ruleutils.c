@@ -9237,6 +9237,17 @@ get_rule_expr(Node *node, deparse_context *context,
 			appendStringInfo(buf, "DMLAction");
 			break;
 
+		case T_RuntimeFilterExpr:
+			{
+				/* WHPG: EXPLAIN shows the key under its own heading (explain.c) */
+				RuntimeFilterExpr *rfexpr = (RuntimeFilterExpr *) node;
+
+				appendStringInfoString(buf, "RUNTIME_FILTER(");
+				get_rule_expr((Node *) rfexpr->key, context, showimplicit);
+				appendStringInfoChar(buf, ')');
+			}
+			break;
+
 		case T_AggExprId:
 			appendStringInfo(buf, "AggExprId");
 			break;

@@ -36,6 +36,8 @@ Finalize Aggregate  (cost=475.67..475.68 rows=1 width=8) (actual time=3.018..3.0
               ->  Hash Join  (cost=35.95..474.81 rows=321 width=0) (never executed)
                     Hash Cond: (t2.i = t1.i)
                     ->  Seq Scan on t2  (cost=0.00..355.00 rows=32100 width=4) (never executed)
+                          Runtime Filter: i
+                          Rows Removed by Runtime Filter: 0
                     ->  Hash  (cost=35.90..35.90 rows=3 width=4) (never executed)
                           Buckets: 524288  Batches: 1  Memory Usage: 4096kB
                           ->  Redistribute Motion 1:3  (slice2; segments: 1)  (cost=35.50..35.90 rows=3 width=4) (never executed)

@@ -3660,9 +3660,10 @@ explain (analyze, costs off, summary off, timing off) execute mt_q1(15);
                ->  Dynamic Seq Scan on ma_test (actual rows=1 loops=1)
                      Number of partitions to scan: 3 (out of 3)
                      Filter: ((a >= $1) AND ((a % 10) = 5))
+                     Rows Removed by Filter: 6
                      Partitions scanned:  Avg 3.0 x 3 workers.  Max 3 parts (seg0).
  Optimizer: GPORCA
-(12 rows)
+(13 rows)
 
 execute mt_q1(15);
  a  
@@ -3684,9 +3685,10 @@ explain (analyze, costs off, summary off, timing off) execute mt_q1(25);
                ->  Dynamic Seq Scan on ma_test (actual rows=1 loops=1)
                      Number of partitions to scan: 3 (out of 3)
                      Filter: ((a >= $1) AND ((a % 10) = 5))
+                     Rows Removed by Filter: 10
                      Partitions scanned:  Avg 3.0 x 3 workers.  Max 3 parts (seg0).
  Optimizer: GPORCA
-(12 rows)
+(13 rows)
 
 execute mt_q1(25);
  a  

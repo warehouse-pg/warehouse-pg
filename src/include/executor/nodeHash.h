@@ -42,6 +42,15 @@ extern void ExecParallelHashTableSetCurrentBatch(HashJoinTable hashtable,
 extern bool ExecHashTableInsert(HashState *hashState, HashJoinTable hashtable,
 								TupleTableSlot *slot,
 								uint32 hashvalue);
+extern void ExecHashInitRuntimeFilterKey(HashState *node, int keyidx);
+extern void ExecHashRebuildRuntimeFilter(HashState *node,
+										 HashJoinTable hashtable);
+extern bool ExecHashRuntimeFilterKeyRange(HashState *node,
+										  HashJoinTable hashtable,
+										  int intlen, int64 *lo, int64 *hi);
+extern void ExecHashRuntimeFilterBitmap(HashState *node,
+										HashJoinTable hashtable,
+										int intlen, struct varlena *bitmap);
 extern void ExecParallelHashTableInsert(HashJoinTable hashtable,
 										TupleTableSlot *slot,
 										uint32 hashvalue);

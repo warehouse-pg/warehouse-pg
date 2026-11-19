@@ -27,13 +27,14 @@ QUERY PLAN
 Hash Join                                               
   Hash Cond: (t.id = s.id)                              
   ->  Seq Scan on epq_lock t                            
+        Runtime Filter: id                              
   ->  Hash                                              
         ->  Subquery Scan on s                          
               ->  Sort                                  
                     Sort Key: (('x'::epq_enum)::integer)
                     ->  Result                          
 Optimizer: Postgres-based planner                       
-(9 rows)
+(10 rows)
 
 step begin1: BEGIN;
 step update1: UPDATE epq_lock SET n = n + 1 WHERE id = 1;

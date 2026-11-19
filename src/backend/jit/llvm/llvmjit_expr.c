@@ -1155,6 +1155,18 @@ llvm_compile_expr(ExprState *state)
 				LLVMBuildBr(b, opblocks[i + 1]);
 				break;
 
+			case EEOP_RUNTIME_FILTER_LIVE:
+				build_EvalXFunc(b, mod, "ExecEvalRuntimeFilterLive",
+								v_state, v_econtext, op);
+				LLVMBuildBr(b, opblocks[i + 1]);
+				break;
+
+			case EEOP_RUNTIME_FILTER:
+				build_EvalXFunc(b, mod, "ExecEvalRuntimeFilter",
+								v_state, v_econtext, op);
+				LLVMBuildBr(b, opblocks[i + 1]);
+				break;
+
 			case EEOP_PARAM_CALLBACK:
 				{
 					LLVMValueRef v_params[3];

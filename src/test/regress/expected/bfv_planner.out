@@ -457,6 +457,7 @@ explain (costs off) select * from t_hashdist where a in (select random()::int fr
    ->  Hash Semi Join
          Hash Cond: (t_hashdist.a = ((random())::integer))
          ->  Seq Scan on t_hashdist
+               Runtime Filter: a
          ->  Hash
                ->  Redistribute Motion 1:3  (slice2; segments: 1)
                      Hash Key: ((random())::integer)

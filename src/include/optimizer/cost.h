@@ -99,6 +99,8 @@ extern bool cost_aocs_stagedscan(PlannerInfo *root, RelOptInfo *rel,
 extern void stagedscan_decide_orca_plan(PlannerGlobal *glob,
 										struct PlannedStmt *stmt,
 										bool hasRowSecurity);
+extern void stagedscan_decide_plan_scan(PlannerGlobal *glob, List *rtable,
+										struct SeqScan *scan, bool dynamic);
 extern void cost_seqscan(Path *path, PlannerInfo *root, RelOptInfo *baserel,
 						 ParamPathInfo *param_info);
 extern void cost_samplescan(Path *path, PlannerInfo *root, RelOptInfo *baserel,

@@ -118,6 +118,7 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "utils/memutils.h"
+#include "utils/runtimefilter.h"
 #include "utils/sharedtuplestore.h"
 
 #include "cdb/cdbvars.h"
@@ -164,6 +165,231 @@ static bool ExecHashJoinReloadHashTable(HashJoinState *hjstate);
 static void ExecEagerFreeHashJoin(HashJoinState *node);
 
 static inline void SaveWorkFileSetStatsInfo(HashJoinTable hashtable);
+
+/*
+ * WHPG: the runtime filter for the probe side (planrtfilter.c).
+ *
+ * The planner gave this join an exec Param that the probe scan's qual reads
+ * through a RuntimeFilterExpr. While the Hash node builds the table it inserts
+ * every hash value into a filter (nodeHash.c); once the table is complete
+ * the join points the Param at the finished filter. A NULL Param means "no
+ * filter" -- not built yet, dropped as too dense for the keys it got, or a
+ * Parallel Hash, whose table several processes build -- and lets every row
+ * through. So the one probe row the join may fetch before it builds the
+ * table, to end without one when the outer side is empty, is only a row the
+ * filter did not get to test; it is probed in the table like any row the
+ * filter lets through. The exception is a Staged Scan the filter leads
+ * (hj_rfBuildFirst): its first batch of survivors is the sample that decides
+ * whether the staged read pays, and a sample taken without the filter would
+ * have it fall back to a plain scan, so that probe gets no row to read
+ * before the filter is in place.
+ */
+static void
+ExecHashJoinResetRuntimeFilter(HashJoinState *node)
+{
+	EState	   *estate = node->js.ps.state;
+	ParamExecData *prm;
+
+	if (node->hj_rfParamId < 0)
+		return;
+
+	Assert(estate->es_param_exec_vals != NULL);
+	prm = &estate->es_param_exec_vals[node->hj_rfParamId];
+	prm->execPlan = NULL;
+	prm->value = (Datum) 0;
+	prm->isnull = true;
+	if (node->hj_rfFilter != NULL)
+	{
+		pfree(node->hj_rfFilter);
+		node->hj_rfFilter = NULL;
+	}
+}
+
+static void
+ExecHashJoinStartRuntimeFilter(HashJoinState *node, HashState *hashNode,
+							   bool parallel)
+{
+	EState	   *estate = node->js.ps.state;
+
+	if (node->hj_rfParamId < 0)
+		return;
+
+	ExecHashJoinResetRuntimeFilter(node);
+
+	/*
+	 * whpg_enable_runtime_filter is the planner's switch, and it is read
+	 * here too, for a plan made while it was on: a cached plan must stop
+	 * filtering when the switch goes off. No filter is built, and the dead
+	 * one is published in its place.
+	 */
+	if (!parallel && whpg_enable_runtime_filter)
+	{
+#ifdef FAULT_INJECTOR
+		/* the filter's allocation failing, as an out-of-memory error would */
+		SIMPLE_FAULT_INJECTOR("runtime_filter_create");
+#endif
+		hashNode->rf_builder =
+			runtimefilter_create(hashNode->ps.plan->plan_rows,
+								 estate->es_query_cxt);
+		hashNode->rf_keyidx = node->hj_rfKeyIdx;
+	}
+}
+
+static void
+ExecHashJoinPublishRuntimeFilter(HashJoinState *node, HashState *hashNode)
+{
+	EState	   *estate = node->js.ps.state;
+	ParamExecData *prm;
+
+	if (node->hj_rfParamId < 0)
+		return;
+
+	if (hashNode->rf_builder != NULL)
+	{
+		HashJoinTable hashtable = node->hj_HashTable;
+		bool		inMemory = (hashtable != NULL && hashtable->nbatch == 1);
+		double		rows = (double) runtimefilter_builder_rows(hashNode->rf_builder);
+		int			intlen = 0;
+		int64		lo = 0;
+		int64		hi = 0;
+		bool		haveRange = false;
+
+		/*
+		 * The filter was built from the estimate of the inner rows. Now the
+		 * rows are in, and when every inner tuple is still in memory (one
+		 * batch) the table itself can say what filter they call for; a pass
+		 * over it is far cheaper than the probes.
+		 *
+		 * Over an integer-like key the table gives the keys' range. When a
+		 * bitmap over the range is no larger than the Bloom filter for that
+		 * many rows, it takes the Bloom filter's place: exact, and a probe is
+		 * a subtraction and a bit test. Otherwise the Bloom filter stands,
+		 * tagged with the range, and rejects a key outside it before hashing.
+		 */
+		if (inMemory && hashtable->totalTuples > 0)
+		{
+			int			idx = (list_length(hashNode->hashkeys) == 1) ? 0 : hashNode->rf_keyidx;
+
+			intlen = runtimefilter_int_width(hashtable->inner_hashfunctions[idx].fn_oid);
+			if (intlen > 0)
+				haveRange = ExecHashRuntimeFilterKeyRange(hashNode, hashtable,
+														  intlen, &lo, &hi);
+		}
+		if (haveRange && runtimefilter_bitmap_worth(lo, hi, rows))
+		{
+			node->hj_rfFilter = runtimefilter_bitmap_create(lo, hi, estate->es_query_cxt);
+			if (node->hj_rfFilter != NULL)
+			{
+				ExecHashRuntimeFilterBitmap(hashNode, hashtable, intlen, node->hj_rfFilter);
+				runtimefilter_discard(hashNode->rf_builder);
+				hashNode->rf_builder = NULL;
+#ifdef FAULT_INJECTOR
+				SIMPLE_FAULT_INJECTOR("runtime_filter_bitmap");
+#endif
+			}
+		}
+
+		/*
+		 * The Bloom filter. One the rows have filled past the point of use
+		 * is built again from the table, at the size that many rows call
+		 * for, when that size is within the limit, and otherwise dropped by
+		 * runtimefilter_finish(). One they left nearly empty is folded down
+		 * to the size its keys need, so that the probes stay in cache.
+		 */
+		if (hashNode->rf_builder != NULL)
+		{
+			if (inMemory && runtimefilter_overfull(hashNode->rf_builder) &&
+				runtimefilter_fits(rows))
+			{
+				runtimefilter_restart(hashNode->rf_builder, rows);
+				ExecHashRebuildRuntimeFilter(hashNode, hashtable);
+#ifdef FAULT_INJECTOR
+				SIMPLE_FAULT_INJECTOR("runtime_filter_rebuilt");
+#endif
+			}
+			node->hj_rfFilter = runtimefilter_finish(hashNode->rf_builder);
+			hashNode->rf_builder = NULL;
+			if (node->hj_rfFilter != NULL && haveRange)
+				runtimefilter_set_range(node->hj_rfFilter, lo, hi);
+		}
+
+		if (node->hj_rfFilter != NULL)
+		{
+			uint32		blocks = ((RuntimeFilter *) node->hj_rfFilter)->log2_blocks;
+
+			node->hj_rfFilter = runtimefilter_fold(node->hj_rfFilter);
+#ifdef FAULT_INJECTOR
+			if (((RuntimeFilter *) node->hj_rfFilter)->log2_blocks != blocks)
+				SIMPLE_FAULT_INJECTOR("runtime_filter_folded");
+#endif
+		}
+	}
+
+#ifdef FAULT_INJECTOR
+	/* once per filter built, for the tests to count */
+	if (node->hj_rfFilter != NULL)
+		SIMPLE_FAULT_INJECTOR("runtime_filter_published");
+#endif
+
+	/*
+	 * No filter to publish -- not built, dropped as too full -- is published
+	 * as the dead filter, one that is never probed: the scan then knows
+	 * the join is done deciding and gives the clause up for good (SeqNext),
+	 * where a Param still NULL would mean a filter yet to come.
+	 */
+	prm = &estate->es_param_exec_vals[node->hj_rfParamId];
+	prm->execPlan = NULL;
+	prm->value = PointerGetDatum(node->hj_rfFilter != NULL ?
+								 node->hj_rfFilter : runtimefilter_dead());
+	prm->isnull = false;
+}
+
+/*
+ * Is the probe a Staged Scan that reads this join's filter column in one of
+ * its stages? The scan is the join's outer input, through Result nodes and
+ * the outer side of lower joins, as the planner pass found it; any other
+ * shape, or a plain scan, answers no.
+ */
+static bool
+ExecHashJoinFilterLeadsStagedScan(HashJoin *hj)
+{
+	int			paramid = linitial_int(hj->rf_paramids);
+	Plan	   *plan = outerPlan(hj);
+
+	while (plan != NULL &&
+		   (IsA(plan, Result) || IsA(plan, HashJoin) ||
+			IsA(plan, NestLoop) || IsA(plan, MergeJoin)))
+		plan = outerPlan(plan);
+
+	if (plan != NULL && (IsA(plan, SeqScan) || IsA(plan, DynamicSeqScan)))
+	{
+		SeqScan    *scan = (SeqScan *) plan;
+		ListCell   *lc;
+
+		if (!scan->staged.enabled)
+			return false;
+
+		foreach(lc, plan->qual)
+		{
+			Node	   *clause = (Node *) lfirst(lc);
+			Node	   *key;
+
+			if (!runtimefilter_is_clause(clause) ||
+				((RuntimeFilterExpr *) clause)->paramid != paramid)
+				continue;
+
+			key = (Node *) ((RuntimeFilterExpr *) clause)->key;
+			while (key != NULL && IsA(key, RelabelType))
+				key = (Node *) ((RelabelType *) key)->arg;
+
+			return key != NULL && IsA(key, Var) &&
+				list_member_int(scan->staged.filterAttnos,
+								((Var *) key)->varattno);
+		}
+	}
+
+	return false;
+}
 
 /* ----------------------------------------------------------------
  *		ExecHashJoinImpl
@@ -290,6 +516,20 @@ ExecHashJoinImpl(PlanState *pstate, bool parallel)
 						 */
 						node->hj_FirstOuterTupleSlot = NULL;
 					}
+					else if (node->hj_rfBuildFirst)
+					{
+						/*
+						 * WHPG: the probe is a Staged Scan led by this
+						 * join's runtime filter, and its first batch of
+						 * survivors is the sample that decides the staged
+						 * read: it gets no row to read before the filter is
+						 * in place. Any other probe takes the shortcut; the
+						 * one row it yields before the table is built went
+						 * untested by the filter and is probed in the table
+						 * like any row the filter lets through.
+						 */
+						node->hj_FirstOuterTupleSlot = NULL;
+					}
 					else if (HJ_FILL_OUTER(node) ||
 						 (outerNode->plan->startup_cost < hashNode->ps.plan->total_cost &&
 						  !node->hj_OuterNotEmpty))
@@ -348,7 +588,9 @@ ExecHashJoinImpl(PlanState *pstate, bool parallel)
 				 * arrived too late.
 				 */
 				hashNode->hashtable = hashtable;
+				ExecHashJoinStartRuntimeFilter(node, hashNode, parallel);
 				(void) MultiExecProcNode((PlanState *) hashNode);
+				ExecHashJoinPublishRuntimeFilter(node, hashNode);
 
 #ifdef HJDEBUG
 				elog(gp_workfile_caching_loglevel, "HashJoin built table with %.1f tuples by executing subplan for batch 0", hashtable->totalTuples);
@@ -809,6 +1051,19 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 	hjstate->prefetch_inner = node->join.prefetch_inner;
 
 	/*
+	 * WHPG: the runtime filter Param reads as "no filter" until the hash
+	 * table is built; set it before the children are initialized, as the
+	 * probe scan's qual reads it.
+	 */
+	hjstate->hj_rfParamId =
+		node->rf_paramids != NIL ? linitial_int(node->rf_paramids) : -1;
+	hjstate->hj_rfKeyIdx = node->rf_keyidx;
+	hjstate->hj_rfFilter = NULL;
+	hjstate->hj_rfBuildFirst = hjstate->hj_rfParamId >= 0 &&
+		ExecHashJoinFilterLeadsStagedScan(node);
+	ExecHashJoinResetRuntimeFilter(hjstate);
+
+	/*
 	 * initialize child nodes
 	 *
 	 * Note: we could suppress the REWIND flag for the inner input, which
@@ -829,6 +1084,14 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
     innerPlanState(hjstate) = ExecInitNode((Plan *) hashNode, estate, eflags);
     innerDesc = ExecGetResultType(innerPlanState(hjstate));
 	((HashState *) innerPlanState(hjstate))->hs_keepnull = hjstate->hj_nonequijoin;
+
+	/*
+	 * WHPG: the key the runtime filter is over, compiled for the pass over
+	 * the hash table (nodeHash.c), when the join has a filter to build.
+	 */
+	if (hjstate->hj_rfParamId >= 0)
+		ExecHashInitRuntimeFilterKey((HashState *) innerPlanState(hjstate),
+									 hjstate->hj_rfKeyIdx);
 
 	outerPlanState(hjstate) = ExecInitNode(outerNode, estate, eflags);
 	outerDesc = ExecGetResultType(outerPlanState(hjstate));
@@ -1653,6 +1916,9 @@ ExecReScanHashJoin(HashJoinState *node)
 
 			node->hj_HashTable = NULL;
 			node->hj_JoinState = HJ_BUILD_HASHTABLE;
+
+			/* WHPG: the filter described the old table; the rebuild makes a new one */
+			ExecHashJoinResetRuntimeFilter(node);
 
 			/*
 			 * if chgParam of subnode is not null then plan will be re-scanned

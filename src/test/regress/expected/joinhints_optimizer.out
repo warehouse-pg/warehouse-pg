@@ -3134,6 +3134,7 @@ not used hint:
          ->  Nested Loop
                Join Filter: true
                ->  Seq Scan on t1
+                     Runtime Filter: b
                ->  Index Scan using i2 on t2
                      Index Cond: (a = t1.a)
          ->  Hash
