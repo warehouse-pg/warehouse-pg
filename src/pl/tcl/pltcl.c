@@ -816,9 +816,20 @@ pltcl_func_handler(PG_FUNCTION_ARGS, bool pltrusted)
 								   -1);
 	else
 	{
+		/*
+		 * Copy the interpreter's result out of Tcl-owned memory before
+		 * passing it to InputFunctionCall().  If the target type is a
+		 * domain, its CHECK constraint can re-enter this same Tcl
+		 * interpreter (e.g. by calling another PL/Tcl function), which can
+		 * free or overwrite the string Tcl_GetStringResult() returned while
+		 * we are still using it.  Taking our own pstrdup'd copy first avoids
+		 * that use-after-free (CVE-2026-116323).
+		 */
+		char	   *resstr = pstrdup((char *) Tcl_GetStringResult(interp));
+
 		UTF_BEGIN;
 		retval = InputFunctionCall(&prodesc->result_in_func,
-							   UTF_U2E((char *) Tcl_GetStringResult(interp)),
+								   UTF_U2E(resstr),
 								   prodesc->result_typioparam,
 								   -1);
 		UTF_END;
