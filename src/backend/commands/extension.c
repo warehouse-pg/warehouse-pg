@@ -50,6 +50,7 @@
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "storage/fd.h"
+#include "storage/lmgr.h"
 #include "tcop/utility.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
@@ -869,10 +870,13 @@ execute_extension_script(Node *stmt,
 	 * of any prerequisite extensions, and nothing else.  In particular this
 	 * makes the target schema be the default creation target namespace.
 	 *
-	 * Note: it might look tempting to use PushOverrideSearchPath for this,
-	 * but we cannot do that.  We have to actually set the search_path GUC in
-	 * case the extension script examines or changes it.  In any case, the
-	 * GUC_ACTION_SAVE method is just as convenient.
+	 * This is an exception to the usual <sect1 id="perm-functions"> standard,
+	 * "Remove from search_path any schemas that permit untrusted users to
+	 * create objects."  These schemas may have any owner and any ACL.  To
+	 * make that safe, assure a lock on each schema, and expect scripts to
+	 * follow <sect2 id="extend-extensions-security">.  Without the lock,
+	 * concurrent ALTER SCHEMA extschema RENAME could cause commands in the
+	 * script to reach the wrong objects.
 	 */
 	initStringInfo(&pathbuf);
 	appendStringInfoString(&pathbuf, quote_identifier(schemaName));
@@ -881,8 +885,17 @@ execute_extension_script(Node *stmt,
 		Oid			reqschema = lfirst_oid(lc);
 		char	   *reqname = get_namespace_name(reqschema);
 
-		if (reqname)
-			appendStringInfo(&pathbuf, ", %s", quote_identifier(reqname));
+		/*
+		 * While it can't happen apart from catalog corruption, schema lookup
+		 * failure must be a hard failure.  Suppose we just ignored missing
+		 * schemas.  For an object the script intended to find in the schema,
+		 * the script could then find attacker-controlled substitutes later in
+		 * this search_path.
+		 */
+		if (!reqname)
+			elog(ERROR, "cache lookup failed for schema %u", reqschema);
+
+		appendStringInfo(&pathbuf, ", %s", quote_identifier(reqname));
 	}
 
 	(void) set_config_option("search_path", pathbuf.data,
@@ -1276,6 +1289,9 @@ CreateExtension(CreateExtensionStmt *stmt)
 	List	   *requiredSchemas;
 	Oid			extensionOid;
 	ListCell   *lc;
+	Relation	relation;
+	ObjectAddress schemaAddress;
+	ObjectAddress reqAddress;
 
 	/* Check extension name validity before any filesystem access */
 	check_valid_extension_name(stmt->extname);
@@ -1465,7 +1481,12 @@ CreateExtension(CreateExtensionStmt *stmt)
 					   control->schema)));
 
 		/* If the user is giving us the schema name, it must exist already */
-		schemaOid = get_namespace_oid(schemaName, false);
+		schemaAddress = get_object_address(OBJECT_SCHEMA,
+										   list_make1(makeString(schemaName)),
+										   NIL, &relation, AccessShareLock,
+										   false);
+		Assert(relation == NULL);
+		schemaOid = schemaAddress.objectId;
 	}
 	else if (control->schema != NULL)
 	{
@@ -1474,7 +1495,11 @@ CreateExtension(CreateExtensionStmt *stmt)
 		 * for it.  We create the schema here if it does not already exist.
 		 */
 		schemaName = control->schema;
-		schemaOid = get_namespace_oid(schemaName, true);
+		schemaAddress = get_object_address(OBJECT_SCHEMA,
+										   list_make1(makeString(schemaName)),
+										   NIL, &relation, AccessShareLock,
+										   true);
+		schemaOid = schemaAddress.objectId;
 
 		if (schemaOid == InvalidOid)
 		{
@@ -1490,8 +1515,15 @@ CreateExtension(CreateExtensionStmt *stmt)
 			 * CreateSchemaCommand includes CommandCounterIncrement, so new
 			 * schema is now visible
 			 */
-			schemaOid = get_namespace_oid(schemaName, false);
+			schemaAddress =
+				get_object_address(OBJECT_SCHEMA,
+								   list_make1(makeString(schemaName)),
+								   NIL, &relation, AccessShareLock, false);
+			Assert(relation == NULL);
+			schemaOid = schemaAddress.objectId;
 		}
+		else
+			Assert(relation == NULL);
 	}
 	else
 	{
@@ -1506,6 +1538,8 @@ CreateExtension(CreateExtensionStmt *stmt)
 					(errcode(ERRCODE_UNDEFINED_SCHEMA),
 					 errmsg("no schema has been selected to create in")));
 		schemaOid = linitial_oid(search_path);
+		LockDatabaseObject(NamespaceRelationId, schemaOid, 0,
+						   AccessShareLock);
 		schemaName = get_namespace_name(schemaOid);
 		if (schemaName == NULL) /* recently-deleted namespace? */
 			ereport(ERROR,
@@ -1539,14 +1573,23 @@ CreateExtension(CreateExtensionStmt *stmt)
 		/*
 		 * We intentionally don't use get_extension_oid's default error
 		 * message here, because it would be confusing in this context.
+		 *
+		 * Lock the extension to block concurrent ALTER EXTENSION UPDATE.
 		 */
-		reqext = get_extension_oid(curreq, true);
+		reqAddress = get_object_address(OBJECT_EXTENSION,
+										list_make1(makeString(curreq)),
+										NIL, &relation,
+										ShareUpdateExclusiveLock, true);
+		reqext = reqAddress.objectId;
 		if (!OidIsValid(reqext))
 			ereport(ERROR,
 					(errcode(ERRCODE_UNDEFINED_OBJECT),
 					 errmsg("required extension \"%s\" is not installed",
 							curreq)));
+		Assert(relation == NULL);
 		reqschema = get_extension_schema(reqext);
+		LockDatabaseObject(NamespaceRelationId, reqschema, 0,
+						   AccessShareLock);
 		requiredExtensions = lappend_oid(requiredExtensions, reqext);
 		requiredSchemas = lappend_oid(requiredSchemas, reqschema);
 	}
@@ -2196,7 +2239,9 @@ pg_extension_config_dump(PG_FUNCTION_ARGS)
 
 	/*
 	 * We only allow this to be called from an extension's SQL script. We
-	 * shouldn't need any permissions check beyond that.
+	 * shouldn't need any permissions check beyond that.  No concurrent
+	 * session can mutate the extension: ALTER EXTENSION UPDATE locks the
+	 * extension; during CREATE EXTENSION, it is not yet committed.
 	 */
 	if (!creating_extension)
 		ereport(ERROR,
@@ -2551,6 +2596,8 @@ AlterExtensionNamespace(List *names, const char *newschema)
 	SysScanDesc depScan;
 	HeapTuple	depTup;
 	ObjectAddresses *objsMoved;
+	Relation	addressRelation;
+	ObjectAddress extAddr;
 
 	if (list_length(names) != 1)
 		ereport(ERROR,
@@ -2558,7 +2605,11 @@ AlterExtensionNamespace(List *names, const char *newschema)
 				 errmsg("extension name cannot be qualified")));
 	extensionName = strVal(linitial(names));
 
-	extensionOid = get_extension_oid(extensionName, false);
+	extAddr = get_object_address(OBJECT_EXTENSION, names, NIL,
+								 &addressRelation,
+								 ShareUpdateExclusiveLock, false);
+	Assert(addressRelation == NULL);
+	extensionOid = extAddr.objectId;
 
 	nspOid = LookupCreationNamespace(newschema);
 
@@ -2732,6 +2783,8 @@ ExecAlterExtensionStmt(AlterExtensionStmt *stmt)
 	Datum		datum;
 	bool		isnull;
 	ListCell   *lc;
+	Relation	addressRelation;
+	ObjectAddress address;
 
 	if (Gp_role == GP_ROLE_EXECUTE)
 	{
@@ -2764,28 +2817,37 @@ ExecAlterExtensionStmt(AlterExtensionStmt *stmt)
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("nested ALTER EXTENSION is not supported")));
 
-	/*
-	 * Look up the extension --- it must already exist in pg_extension
+	/*----------
+	 * Lock the extension --- it must already exist in pg_extension.  Exclude
+	 * other ALTER EXTENSION UPDATE backends; the alternative is not useful
+	 * beyond constructing attacks and would allow this sequence of events:
+	 *
+	 * - I choose script files based on the latest committed extversion.
+	 * - Concurrent ALTER EXTENSION UPDATE commits.
+	 * - I enter ApplyExtensionUpdates() and run script files not appropriate
+	 *   for the latest committed extversion.
 	 */
+	address = get_object_address(OBJECT_EXTENSION,
+								 list_make1(makeString(stmt->extname)), NIL,
+								 &addressRelation,
+								 ShareUpdateExclusiveLock, false);
+	Assert(addressRelation == NULL);
+	extensionOid = address.objectId;
+
 	extRel = heap_open(ExtensionRelationId, AccessShareLock);
 
 	ScanKeyInit(&key[0],
-				Anum_pg_extension_extname,
-				BTEqualStrategyNumber, F_NAMEEQ,
-				CStringGetDatum(stmt->extname));
+				ObjectIdAttributeNumber,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(extensionOid));
 
-	extScan = systable_beginscan(extRel, ExtensionNameIndexId, true,
+	extScan = systable_beginscan(extRel, ExtensionOidIndexId, true,
 								 NULL, 1, key);
 
 	extTup = systable_getnext(extScan);
 
-	if (!HeapTupleIsValid(extTup))
-		ereport(ERROR,
-				(errcode(ERRCODE_UNDEFINED_OBJECT),
-				 errmsg("extension \"%s\" does not exist",
-						stmt->extname)));
-
-	extensionOid = HeapTupleGetOid(extTup);
+	if (!HeapTupleIsValid(extTup))	/* should not happen */
+		elog(ERROR, "could not find tuple for extension %u", extensionOid);
 
 	/*
 	 * Determine the existing version we are updating from
@@ -2915,6 +2977,8 @@ ApplyExtensionUpdates(Oid extensionOid,
 		bool		repl[Natts_pg_extension];
 		ObjectAddress myself;
 		ListCell   *lc;
+		Relation	relation;
+		ObjectAddress reqAddress;
 
 		/*
 		 * Fetch parameters for specific version (pcontrol is not changed)
@@ -2944,7 +3008,11 @@ ApplyExtensionUpdates(Oid extensionOid,
 		 * Determine the target schema (set by original install)
 		 */
 		schemaOid = extForm->extnamespace;
+		LockDatabaseObject(NamespaceRelationId, schemaOid, 0,
+						   AccessShareLock);
 		schemaName = get_namespace_name(schemaOid);
+		if (!schemaName)
+			elog(ERROR, "cache lookup failed for schema %u", schemaOid);
 
 		/*
 		 * Modify extrelocatable and extversion in the pg_extension tuple
@@ -2985,14 +3053,23 @@ ApplyExtensionUpdates(Oid extensionOid,
 			/*
 			 * We intentionally don't use get_extension_oid's default error
 			 * message here, because it would be confusing in this context.
+			 *
+			 * Lock the extension to block concurrent ALTER EXTENSION UPDATE.
 			 */
-			reqext = get_extension_oid(curreq, true);
+			reqAddress = get_object_address(OBJECT_EXTENSION,
+											list_make1(makeString(curreq)),
+											NIL, &relation,
+											ShareUpdateExclusiveLock, true);
+			reqext = reqAddress.objectId;
 			if (!OidIsValid(reqext))
 				ereport(ERROR,
 						(errcode(ERRCODE_UNDEFINED_OBJECT),
 						 errmsg("required extension \"%s\" is not installed",
 								curreq)));
+			Assert(relation == NULL);
 			reqschema = get_extension_schema(reqext);
+			LockDatabaseObject(NamespaceRelationId, reqschema, 0,
+							   AccessShareLock);
 			requiredExtensions = lappend_oid(requiredExtensions, reqext);
 			requiredSchemas = lappend_oid(requiredSchemas, reqschema);
 		}
@@ -3061,9 +3138,14 @@ ExecAlterExtensionContentsStmt_internal(AlterExtensionContentsStmt *stmt)
 	Relation	relation;
 	Oid			oldExtension;
 
-	extension.classId = ExtensionRelationId;
-	extension.objectId = get_extension_oid(stmt->extname, false);
-	extension.objectSubId = 0;
+	/*
+	 * Exclude other mutations of the same extension.  The dependency loop
+	 * check below assumes no concurrent ALTER EXTENSION SET SCHEMA.
+	 */
+	extension = get_object_address(OBJECT_EXTENSION,
+								   list_make1(makeString(stmt->extname)), NIL,
+								   &relation, ShareUpdateExclusiveLock, false);
+	Assert(relation == NULL);
 
 	/* Permission check: must own extension */
 	if (!pg_extension_ownercheck(extension.objectId, GetUserId()))
