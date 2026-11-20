@@ -30,9 +30,27 @@ typedef struct ICProxyDelay ICProxyDelay;
  *
  * TODO: allocate the name buffer on demand.
  */
+/* Forward decl — full type in ic_proxy_tls.h. */
+typedef struct ICProxyTlsConn ICProxyTlsConn;
+
 struct ICProxyPeer
 {
 	uv_tcp_t	tcp;			/* the libuv handle */
+
+	/*
+	 * TLS state, NULL on a plain-TCP peer (gp_interconnect_proxy_tls_enable
+	 * off).  The TLS layer is a filter between the socket and the peer
+	 * protocol: the ciphertext libuv reads from tcp is fed to OpenSSL
+	 * through a memory BIO and the plaintext goes to tls_real_read_cb, the
+	 * reader the peer state machine registered through
+	 * ic_proxy_peer_uv_read_start; the plaintext the router writes is
+	 * encrypted into a memory BIO and the ciphertext written with uv_write.
+	 * libuv keeps owning the socket, so connect, shutdown and close work
+	 * exactly as on a plain peer.
+	 */
+	ICProxyTlsConn *tls;
+	uv_read_cb	tls_real_read_cb;
+	bool		tls_in_read;	/* inside the ciphertext read callback */
 
 	int16		content;		/* content, aka segid, only for logging */
 	uint16		dbid;			/* dbid is peerid */

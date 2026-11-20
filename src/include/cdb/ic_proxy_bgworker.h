@@ -15,7 +15,17 @@
 
 #include "port/atomics.h"
 
-/* flag (in SHM) for incidaing if peer listener bind/listen failed */
+/*
+ * Flag (in SHM) telling the backends why the ic-proxy process cannot serve
+ * them, so that a proxy-mode query fails at interconnect setup instead of
+ * retrying the connection to the proxy until gp_interconnect_setup_timeout.
+ */
+#define IC_PROXY_FAILURE_NONE			0
+#define IC_PROXY_FAILURE_LISTEN			1	/* peer listener bind / listen failed,
+											 * retried every second */
+#define IC_PROXY_FAILURE_TLS_CONFIG		2	/* TLS settings invalid, the process
+											 * exited and stays down until the
+											 * postmaster restarts */
 extern pg_atomic_uint32 *ic_proxy_peer_listener_failed;
 
 extern bool ICProxyStartRule(Datum main_arg);
