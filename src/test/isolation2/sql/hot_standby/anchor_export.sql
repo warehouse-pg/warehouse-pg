@@ -252,6 +252,10 @@
 !\retcode pg_ctl reload -D "$COORDINATOR_DATA_DIRECTORY/../../standby";
 -1M: select pg_wal_replay_resume();
 1: insert into hs_anchor_t select generate_series(571, 600);
+-- pg_wal_replay_resume() does not wake the startup process, which checks
+-- the pause flag once a second; the reload's SIGHUP can wake it just before
+-- the resume and cost a full second, so wait for the publication
+-1M: do $$ begin for i in 1..300 loop exit when (select string_agg(rp_name, ',' order by rp_name) from gp_toolkit.whpg_anchor_snapshots()) = 'hs_anchor_pend_y'; perform pg_sleep(0.1); end loop; end $$;
 -1M: select rp_name from gp_toolkit.whpg_anchor_snapshots() order by 1;
 !\retcode sdir="$COORDINATOR_DATA_DIRECTORY/../../standby"; grep -q 'replay reached the restore-point record of pending anchor snapshot ..hs_anchor_pend_y.. at [0-9A-F/]*; registered from its file' "$sdir"/log/*.csv && test "$(ls -A "$sdir/pg_anchor_snapshots" | wc -l)" = 1 && grep -q 'anchor snapshot for restore point ..hs_anchor_pend_y.. not exported: a snapshot file of that name from an earlier run is pending registration' "$sdir"/log/*.csv && test "$(cat "$sdir"/log/*.csv | grep -c 'exported anchor snapshot for restore point ..hs_anchor_pend_y.. (xmin')" = 2 && grep -q "^lsn:$(cat "$COORDINATOR_DATA_DIRECTORY/hs_anchor_pend_y.lsn")$" "$sdir/pg_anchor_snapshots/hs_anchor_pend_y"; rm -f "$COORDINATOR_DATA_DIRECTORY/hs_anchor_pend_y.lsn";
 

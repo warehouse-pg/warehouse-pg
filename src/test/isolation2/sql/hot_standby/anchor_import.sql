@@ -348,6 +348,10 @@
 !\retcode pg_ctl reload -D "$COORDINATOR_DATA_DIRECTORY/../../standby";
 -1M: select pg_wal_replay_resume();
 1: insert into hs_imp_t select generate_series(291, 300);
+-- pg_wal_replay_resume() does not wake the startup process, which checks
+-- the pause flag once a second; the reload's SIGHUP can wake it just before
+-- the resume and cost a full second, so wait for the publication
+-1M: do $$ begin for i in 1..300 loop exit when (select string_agg(rp_name, ',' order by rp_name) from gp_toolkit.whpg_anchor_snapshots()) = 'hs_imp_g'; perform pg_sleep(0.1); end loop; end $$;
 -1M: select rp_name from gp_toolkit.whpg_anchor_snapshots() order by 1;
 -1S: select txid_snapshot_xmin(txid_current_snapshot()) = (select xmin::text::bigint from gp_toolkit.whpg_anchor_snapshots() where rp_name = 'hs_imp_g') as snapshot_at_anchor;
 -1S: select relname from pg_class where relname like 'hs_imp_after_%' order by 1;
