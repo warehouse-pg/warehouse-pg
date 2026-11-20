@@ -72,6 +72,75 @@ class GpExpand(GpTestCase):
         sys.argv = self.old_sys_argv
         super(GpExpand, self).tearDown()
 
+    def _make_hostname_cmd(self, remote_host, reported_name):
+        cmd = Mock()
+        cmd.remoteHost = remote_host
+        cmd.was_successful.return_value = True
+        cmd.get_hostname.return_value = reported_name
+        return cmd
+
+    def test_consolidate_hosts_returns_configured_names_not_reported_fqdn(self):
+        pool = Mock()
+        pool.getCompletedItems.return_value = [
+            self._make_hostname_cmd('sdw1', 'sdw1.internal.example.com'),
+            self._make_hostname_cmd('sdw2', 'sdw2.internal.example.com'),
+        ]
+
+        hosts = self.subject.SegmentTemplate.consolidate_hosts(pool, ['sdw1', 'sdw2', 'sdw1'])
+
+        self.assertEqual(sorted(hosts), ['sdw1', 'sdw2'])
+        # each configured name is only probed once
+        self.assertEqual(pool.addCommand.call_count, 2)
+
+    def test_consolidate_hosts_dedups_names_of_the_same_machine(self):
+        pool = Mock()
+        pool.getCompletedItems.return_value = [
+            self._make_hostname_cmd('sdw1-1', 'sdw1.internal.example.com'),
+            self._make_hostname_cmd('sdw1-2', 'sdw1.internal.example.com'),
+            self._make_hostname_cmd('sdw2', 'sdw2.internal.example.com'),
+        ]
+
+        hosts = self.subject.SegmentTemplate.consolidate_hosts(pool, ['sdw1-1', 'sdw1-2', 'sdw2'])
+
+        self.assertEqual(len(hosts), 2)
+        self.assertIn('sdw2', hosts)
+        self.assertEqual(len(set(hosts) & {'sdw1-1', 'sdw1-2'}), 1)
+
+    def test_consolidate_hosts_keeps_hosts_with_empty_hostname(self):
+        pool = Mock()
+        pool.getCompletedItems.return_value = [
+            self._make_hostname_cmd('sdw1', ''),
+            self._make_hostname_cmd('sdw2', ''),
+        ]
+
+        hosts = self.subject.SegmentTemplate.consolidate_hosts(pool, ['sdw1', 'sdw2'])
+
+        self.assertEqual(sorted(hosts), ['sdw1', 'sdw2'])
+
+    def test_consolidate_hosts_keeps_host_with_empty_hostname_named_like_reported_one(self):
+        # sdw1 reports no hostname, and sdw2 reports "sdw1": two machines
+        cmds = [
+            self._make_hostname_cmd('sdw1', ''),
+            self._make_hostname_cmd('sdw2', 'sdw1'),
+        ]
+
+        for completed in (cmds, cmds[::-1]):
+            pool = Mock()
+            pool.getCompletedItems.return_value = completed
+
+            hosts = self.subject.SegmentTemplate.consolidate_hosts(pool, ['sdw1', 'sdw2'])
+
+            self.assertEqual(sorted(hosts), ['sdw1', 'sdw2'])
+
+    def test_consolidate_hosts_raises_when_hostname_fails(self):
+        pool = Mock()
+        failed = self._make_hostname_cmd('sdw1', '')
+        failed.was_successful.return_value = False
+        pool.getCompletedItems.return_value = [failed]
+
+        with self.assertRaises(self.subject.SegmentTemplateError):
+            self.subject.SegmentTemplate.consolidate_hosts(pool, ['sdw1'])
+
     @patch('gpexpand.is_cluster_up_and_balanced', return_value=True)
     def test_validate_heap_checksums_aborts_when_cluster_inconsistent(self, mock1):
         self.options.filename = '/tmp/doesnotexist' # Replacement of the sys.argv
