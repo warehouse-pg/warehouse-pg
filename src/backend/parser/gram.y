@@ -6186,9 +6186,12 @@ CreateAsStmt:
 					$4->skipData = !($7);
 					$$ = (Node *) ctas;
 				}
-		| CREATE OptTemp TABLE IF_P NOT EXISTS create_as_target AS SelectStmt opt_with_data
+		| CREATE OptTemp TABLE IF_P NOT EXISTS create_as_target AS SelectStmt opt_with_data OptDistributedBy OptFirstPartitionSpec
 				{
 					CreateTableAsStmt *ctas = makeNode(CreateTableAsStmt);
+
+					/* reset the hack set in OptFirstPartitionSpec */
+					pg_yyget_extra(yyscanner)->tail_partition_magic = false;
 					ctas->query = $9;
 					ctas->into = $7;
 					ctas->relkind = OBJECT_TABLE;
@@ -6197,6 +6200,14 @@ CreateAsStmt:
 					/* cram additional flags into the IntoClause */
 					$7->rel->relpersistence = $2;
 					$7->skipData = !($10);
+					ctas->into->distributedBy = $11;
+
+					if ($12)
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("cannot create a partitioned table using CREATE TABLE AS SELECT"),
+								 errhint("Use CREATE TABLE...LIKE (followed by INSERT...SELECT) instead.")));
+
 					$$ = (Node *) ctas;
 				}
 		;

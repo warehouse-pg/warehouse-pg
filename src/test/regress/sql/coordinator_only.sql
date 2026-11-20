@@ -220,6 +220,23 @@ SELECT count(*) FROM ctas_coordinator_only_nodata;
 INSERT INTO ctas_coordinator_only_nodata SELECT * FROM distributed_table_aux;
 SELECT count(*) FROM ctas_coordinator_only_nodata;
 
+-- IF NOT EXISTS: the table is created on the coordinator only, and a second
+-- run is skipped and leaves it unchanged
+CREATE TABLE IF NOT EXISTS ctas_coordinator_only_ine AS
+SELECT * FROM distributed_table_aux
+DISTRIBUTED COORDINATOR ONLY;
+
+SELECT policytype, numsegments FROM gp_distribution_policy
+WHERE localoid = 'ctas_coordinator_only_ine'::regclass;
+SELECT count(*) FROM ctas_coordinator_only_ine;
+SELECT count(*) FROM gp_dist_random('ctas_coordinator_only_ine');
+
+CREATE TABLE IF NOT EXISTS ctas_coordinator_only_ine AS
+SELECT * FROM distributed_table_aux WHERE c1 < 0
+DISTRIBUTED COORDINATOR ONLY;
+
+SELECT count(*) FROM ctas_coordinator_only_ine;
+
 -- CTAS from coordinator-only table (should create hash-distributed table by default)
 CREATE TABLE ctas_from_coordinator_only_no_distribution AS
 SELECT * FROM coordinator_only_heap
@@ -376,7 +393,7 @@ FROM gp_dist_random('pg_class')
 WHERE relname IN ('coordinator_only_heap', 'coordinator_only_ao', 'coordinator_only_aoco',
                   'like_coordinator_only', 'coordinator_only_constraints',
                   'ctas_from_distributed', 'ctas_from_coordinator_only_to_only',
-                  'ctas_coordinator_only_nodata')
+                  'ctas_coordinator_only_nodata', 'ctas_coordinator_only_ine')
 GROUP BY gp_segment_id
 ORDER BY gp_segment_id;
 
@@ -389,6 +406,7 @@ DROP TABLE IF EXISTS coordinator_only_constraints CASCADE;
 DROP TABLE IF EXISTS ctas_from_distributed CASCADE;
 DROP TABLE IF EXISTS ctas_from_coordinator_only_to_only CASCADE;
 DROP TABLE IF EXISTS ctas_coordinator_only_nodata CASCADE;
+DROP TABLE IF EXISTS ctas_coordinator_only_ine CASCADE;
 DROP FUNCTION IF EXISTS get_coordinator_only_data() CASCADE;
 DROP FUNCTION IF EXISTS get_coordinator_only_data_on_coordinator() CASCADE;
 
@@ -402,6 +420,6 @@ FROM gp_dist_random('pg_class')
 WHERE relname IN ('coordinator_only_heap', 'coordinator_only_ao', 'coordinator_only_aoco',
                   'like_coordinator_only', 'coordinator_only_constraints',
                   'ctas_from_distributed', 'ctas_from_coordinator_only_to_only',
-                  'ctas_coordinator_only_nodata')
+                  'ctas_coordinator_only_nodata', 'ctas_coordinator_only_ine')
 GROUP BY gp_segment_id
 ORDER BY gp_segment_id;

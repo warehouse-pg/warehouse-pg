@@ -218,3 +218,22 @@ SELECT * FROM test_tmp2;
 DROP FUNCTION public.exception_func();
 DROP TABLE test_tmp1;
 DROP TABLE test_tmp2;
+
+-- CREATE TABLE IF NOT EXISTS ... AS takes the same DISTRIBUTED clauses as
+-- plain CTAS, and an existing name is skipped without touching its policy.
+CREATE TABLE IF NOT EXISTS ctas_ine_hash AS SELECT 1 AS a, 2 AS b DISTRIBUTED BY (b);
+CREATE TABLE IF NOT EXISTS ctas_ine_rand AS SELECT 1 AS a DISTRIBUTED RANDOMLY;
+CREATE TABLE IF NOT EXISTS ctas_ine_repl AS SELECT 1 AS a DISTRIBUTED REPLICATED;
+CREATE TABLE IF NOT EXISTS ctas_ine_nodata AS SELECT 1 AS a WITH NO DATA DISTRIBUTED BY (a);
+SELECT localoid::regclass AS tbl, policytype, distkey
+FROM gp_distribution_policy
+WHERE localoid::regclass::text LIKE 'ctas_ine%' ORDER BY localoid::regclass::text;
+SELECT count(*) FROM ctas_ine_nodata;
+CREATE TABLE IF NOT EXISTS ctas_ine_hash AS SELECT 3 AS a, 4 AS b DISTRIBUTED RANDOMLY;
+SELECT * FROM ctas_ine_hash;
+SELECT policytype, distkey FROM gp_distribution_policy WHERE localoid = 'ctas_ine_hash'::regclass;
+-- A partition spec is rejected for the IF NOT EXISTS form as well.
+CREATE TABLE IF NOT EXISTS ctas_ine_part AS SELECT 1 AS a
+DISTRIBUTED BY (a) PARTITION BY RANGE (a) (START (1) END (30) EVERY (10));
+
+DROP TABLE ctas_ine_hash, ctas_ine_rand, ctas_ine_repl, ctas_ine_nodata;
