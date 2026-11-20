@@ -56,6 +56,8 @@
 #include "pg_backup_utils.h"
 #include "parallel.h"
 
+#include <sys/stat.h>
+
 /*----------------------
  * Compressor API
  *----------------------
@@ -532,7 +534,20 @@ cfopen_write(const char *path, const char *mode, int compression)
 cfp *
 cfopen(const char *path, const char *mode, int compression)
 {
-	cfp		   *fp = pg_malloc(sizeof(cfp));
+	cfp		   *fp;
+	struct stat st;
+
+	/*
+	 * When reading, refuse anything that isn't a regular file, so that a
+	 * symbolic link can't lead us outside the archive directory.  This check
+	 * is racy, but we're guarding against a compromised dump, not against a
+	 * directory under the active control of a hostile party.
+	 */
+	if (strchr(mode, 'r') != NULL &&
+		lstat(path, &st) == 0 && !S_ISREG(st.st_mode))
+		exit_horribly(modulename, "\"%s\" is not a regular file\n", path);
+
+	fp = pg_malloc(sizeof(cfp));
 
 	if (compression != 0)
 	{
