@@ -3279,6 +3279,40 @@ DropDatabaseBuffers(Oid dbid)
 	}
 }
 
+/* ---------------------------------------------------------------------
+ *		DropDatabaseTablespaceBuffers
+ *
+ *		WHPG: like DropDatabaseBuffers, but only for the database's relations
+ *		that live in the given tablespace. Used when a single
+ *		<tablespace>/<database> directory is removed while the database may
+ *		keep files in other tablespaces (ALTER DATABASE SET TABLESPACE's
+ *		source directory, DROP DATABASE's directories at COMMIT PREPARED).
+ * --------------------------------------------------------------------
+ */
+void
+DropDatabaseTablespaceBuffers(Oid spcOid, Oid dbid)
+{
+	int			i;
+
+	for (i = 0; i < NBuffers; i++)
+	{
+		BufferDesc *bufHdr = GetBufferDescriptor(i);
+		uint32		buf_state;
+
+		/* unlocked precheck, as in DropDatabaseBuffers */
+		if (bufHdr->tag.rnode.dbNode != dbid ||
+			bufHdr->tag.rnode.spcNode != spcOid)
+			continue;
+
+		buf_state = LockBufHdr(bufHdr);
+		if (bufHdr->tag.rnode.dbNode == dbid &&
+			bufHdr->tag.rnode.spcNode == spcOid)
+			InvalidateBuffer(bufHdr);   /* releases spinlock */
+		else
+			UnlockBufHdr(bufHdr, buf_state);
+	}
+}
+
 /* -----------------------------------------------------------------
  *		PrintBufferDescs
  *

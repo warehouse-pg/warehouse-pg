@@ -1,0 +1,559 @@
+-- WHPG (PTT-2078): DROP DATABASE whose COMMIT PREPARED
+-- lands on a mirror promoted between PREPARE and COMMIT PREPARED.
+--
+-- The promoted node never ran dropdb(): it reconstructed the prepared
+-- transaction from WAL, so its shared buffers still hold the database's
+-- pages from replay (dirty until the next restartpoint) and its checkpointer
+-- may hold fsync requests for them. COMMIT PREPARED must discard both before
+-- it removes the directories; otherwise every later checkpoint on that node
+-- fails with "could not open file" and the segment cannot shut down cleanly.
+--
+-- Pattern as in twophase_tolerance_with_mirror_promotion: FTS is made to
+-- believe the content-1 primary is down while the coordinator is suspended
+-- right before it broadcasts COMMIT PREPARED; the DTM then retries the
+-- COMMIT PREPARED against the promoted mirror. The old primary is recovered
+-- at the end.
+
+-- start_matchsubs
+--
+-- m/ERROR:  FTS detected connection lost during dispatch to seg1.*/
+-- s/seg\d+.*/seg_DUMMY/gm
+--
+-- end_matchsubs
+
+CREATE EXTENSION IF NOT EXISTS gp_inject_fault;
+CREATE EXTENSION
+
+!\retcode gpconfig -c gp_fts_probe_retries -v 2 --coordinatoronly;
+-- start_ignore
+20261105:13:15:10:072057 gpconfig:MAC-LYXNMH52K4:tkepe-[INFO]:-completed successfully with parameters '-c gp_fts_probe_retries -v 2 --coordinatoronly'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpconfig -c gp_gang_creation_retry_count -v 127 --skipvalidation --coordinatoronly;
+-- start_ignore
+20261105:13:15:15:072078 gpconfig:MAC-LYXNMH52K4:tkepe-[INFO]:-completed successfully with parameters '-c gp_gang_creation_retry_count -v 127 --skipvalidation --coordinatoronly'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpconfig -c gp_gang_creation_retry_timer -v 250 --skipvalidation --coordinatoronly;
+-- start_ignore
+20261105:13:15:21:072101 gpconfig:MAC-LYXNMH52K4:tkepe-[INFO]:-completed successfully with parameters '-c gp_gang_creation_retry_timer -v 250 --skipvalidation --coordinatoronly'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -u;
+-- start_ignore
+20261105:13:15:21:072133 gpstop:MAC-LYXNMH52K4:tkepe-[INFO]:-Starting gpstop with args: -u
+20261105:13:15:21:072133 gpstop:MAC-LYXNMH52K4:tkepe-[INFO]:-Gathering information and validating the environment...
+20261105:13:15:21:072133 gpstop:MAC-LYXNMH52K4:tkepe-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20261105:13:15:21:072133 gpstop:MAC-LYXNMH52K4:tkepe-[INFO]:-Obtaining Segment details from coordinator...
+20261105:13:15:21:072133 gpstop:MAC-LYXNMH52K4:tkepe-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.6.1-WHPG+dev.42.g5a1159cc3a0 build dev'
+20261105:13:15:21:072133 gpstop:MAC-LYXNMH52K4:tkepe-[INFO]:-Signalling all postmaster processes to reload
+
+-- end_ignore
+(exited with code 0)
+1: SELECT role, preferred_role, content FROM gp_segment_configuration ORDER BY content, role;
+ role | preferred_role | content 
+------+----------------+---------
+ m    | m              | -1      
+ p    | p              | -1      
+ m    | m              | 0       
+ p    | p              | 0       
+ m    | m              | 1       
+ p    | p              | 1       
+ m    | m              | 2       
+ p    | p              | 2       
+(8 rows)
+
+-- A database with enough data for its pages to sit in the mirror's shared
+-- buffers when the mirror is promoted.
+1: CREATE DATABASE dropdb_promo_db;
+CREATE DATABASE
+1: CREATE TABLE dropdb_promo_oid AS SELECT oid AS dboid FROM pg_database WHERE datname = 'dropdb_promo_db' DISTRIBUTED REPLICATED;
+SELECT 1
+2:@db_name dropdb_promo_db: CREATE TABLE t AS SELECT g, repeat('x', 100) AS pad FROM generate_series(1, 100000) g DISTRIBUTED BY (g);
+SELECT 100000
+2q: ... <quitting>
+
+-- Suspend the coordinator once every segment has prepared, right before it
+-- broadcasts COMMIT PREPARED.
+1: SELECT gp_inject_fault_infinite('dtm_broadcast_commit_prepared', 'suspend', dbid) FROM gp_segment_configuration WHERE content = -1 AND role = 'p';
+ gp_inject_fault_infinite 
+--------------------------
+ Success:                 
+(1 row)
+1&: DROP DATABASE dropdb_promo_db;  <waiting ...>
+3: SELECT gp_wait_until_triggered_fault('dtm_broadcast_commit_prepared', 1, dbid) FROM gp_segment_configuration WHERE content = -1 AND role = 'p';
+ gp_wait_until_triggered_fault 
+-------------------------------
+ Success:                      
+(1 row)
+
+-- Promote the content-1 mirror: it has the prepared DROP from WAL and the
+-- database's pages in its buffers.
+3: SELECT gp_inject_fault_infinite('fts_handle_message', 'error', dbid) FROM gp_segment_configuration WHERE content = 1 AND role = 'p';
+ gp_inject_fault_infinite 
+--------------------------
+ Success:                 
+(1 row)
+-- do fts probe request twice to guarantee the fault is triggered
+3: SELECT gp_request_fts_probe_scan();
+ gp_request_fts_probe_scan 
+---------------------------
+ t                         
+(1 row)
+3: SELECT gp_request_fts_probe_scan();
+ gp_request_fts_probe_scan 
+---------------------------
+ t                         
+(1 row)
+3: SELECT role, preferred_role FROM gp_segment_configuration WHERE content = 1;
+ role | preferred_role 
+------+----------------
+ m    | p              
+ p    | m              
+(2 rows)
+
+-- Let the coordinator go on: the DTM retries COMMIT PREPARED on the promoted
+-- mirror and the DROP completes.
+3: SELECT gp_inject_fault('dtm_broadcast_commit_prepared', 'resume', dbid) FROM gp_segment_configuration WHERE content = -1 AND role = 'p';
+ gp_inject_fault 
+-----------------
+ Success:        
+(1 row)
+1<:  <... completed>
+DROP DATABASE
+1: SELECT gp_inject_fault('dtm_broadcast_commit_prepared', 'reset', dbid) FROM gp_segment_configuration WHERE content = -1 AND role = 'p';
+ gp_inject_fault 
+-----------------
+ Success:        
+(1 row)
+-- the fault lives in the old primary, which is now the (down) mirror
+1: SELECT gp_inject_fault('fts_handle_message', 'reset', dbid) FROM gp_segment_configuration WHERE content = 1 AND preferred_role = 'p';
+ gp_inject_fault 
+-----------------
+ Success:        
+(1 row)
+
+-- The database is gone everywhere ...
+4: SELECT count(*) FROM pg_database WHERE datname = 'dropdb_promo_db';
+ count 
+-------
+ 0     
+(1 row)
+4: SELECT count(*) FROM gp_dist_random('pg_database') WHERE datname = 'dropdb_promo_db';
+ count 
+-------
+ 0     
+(1 row)
+-- ... including its directory on the promoted node ...
+4: SELECT c.content, c.role, coalesce((pg_stat_file(c.datadir || '/base/' || o.dboid, true)).isdir, false) AS has_dir FROM gp_segment_configuration c, dropdb_promo_oid o WHERE c.content = 1 AND c.role = 'p';
+ content | role | has_dir 
+---------+------+---------
+ 1       | p    | f       
+(1 row)
+-- ... and the promoted node can still complete a checkpoint, i.e. no buffer
+-- or fsync request of the dropped database was left behind the unlinked files.
+1U: CHECKPOINT;
+CHECKPOINT
+1U: SELECT count(*) FROM pg_database WHERE datname = 'dropdb_promo_db';
+ count 
+-------
+ 0     
+(1 row)
+1Uq: ... <quitting>
+
+-- Recover the old primary and bring the pair back to its preferred roles.
+4: !\retcode gprecoverseg -aF \-\-no-progress;
+-- start_ignore
+20261105:13:15:33:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Starting gprecoverseg with args: -aF --no-progress
+20261105:13:15:33:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-local Greenplum Version: 'postgres (Greenplum Database) 7.6.1-WHPG+dev.42.g5a1159cc3a0 build dev'
+20261105:13:15:33:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-coordinator Greenplum Version: 'PostgreSQL 12.12 (Greenplum Database 7.6.1-WHPG+dev.42.g5a1159cc3a0 build dev) on arm-apple-darwin25.6.0, compiled by Apple clang version 17.0.0 (clang-1700.0.13.5), 64-bit compiled on Nov  3 2026 11:11:40 (with assert checking) Bhuvnesh C. WarehousePG'
+20261105:13:15:33:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Obtaining Segment details from coordinator...
+20261105:13:15:44:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Successfully finished pg_controldata /tmp/whpg7-mirror-cluster/dbfast_mirror2/demoDataDir1 for dbid 6:
+stdout: pg_control version number:            12010700
+Catalog version number:               302307241
+Database system identifier:           7704665338704944538
+Database cluster state:               in production
+pg_control last modified:             Thu Nov  5 13:15:33 2026
+Latest checkpoint location:           0/78A431C0
+Latest checkpoint's REDO location:    0/78A43188
+Latest checkpoint's REDO WAL file:    00000008000000000000001E
+Latest checkpoint's TimeLineID:       8
+Latest checkpoint's PrevTimeLineID:   8
+Latest checkpoint's full_page_writes: on
+Latest checkpoint's NextXID:          0:1053
+Latest checkpoint's NextGxid:         254
+Latest checkpoint's NextOID:          65913
+Latest checkpoint's NextRelfilenode:  49154
+Latest checkpoint's NextMultiXactId:  1
+Latest checkpoint's NextMultiOffset:  0
+Latest checkpoint's oldestXID:        535
+Latest checkpoint's oldestXID's DB:   13718
+Latest checkpoint's oldestActiveXID:  1053
+Latest checkpoint's oldestMultiXid:   1
+Latest checkpoint's oldestMulti's DB: 13719
+Latest checkpoint's oldestCommitTsXid:0
+Latest checkpoint's newestCommitTsXid:0
+Time of latest checkpoint:            Thu Nov  5 13:15:33 2026
+Fake LSN counter for unlogged rels:   0/3E8
+Minimum recovery ending location:     0/0
+Min recovery ending loc's timeline:   0
+Backup start location:                0/0
+Backup end location:                  0/0
+End-of-backup record required:        no
+wal_level setting:                    replica
+wal_log_hints setting:                off
+max_connections setting:              750
+max_worker_processes setting:         12
+max_wal_senders setting:              10
+max_prepared_xacts setting:           250
+max_locks_per_xact setting:           128
+track_commit_timestamp setting:       off
+Maximum data alignment:               8
+Database block size:                  32768
+Blocks per segment of large relation: 32768
+WAL block size:                       32768
+Bytes per WAL segment:                67108864
+Maximum length of identifiers:        64
+Maximum columns in an index:          32
+Maximum size of a TOAST chunk:        8140
+Size of a large-object chunk:         8192
+Date/time type storage:               64-bit integers
+Float4 argument passing:              by value
+Float8 argument passing:              by value
+Data page checksum version:           1
+Mock authentication nonce:            6591afb1e3a4b1dbbd55d56f02da95174fb0f751132d84a119f96b059f46d35f
+
+stderr: 
+20261105:13:15:44:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Successfully finished pg_controldata /tmp/whpg7-mirror-cluster/dbfast2/demoDataDir1 for dbid 3:
+stdout: pg_control version number:            12010700
+Catalog version number:               302307241
+Database system identifier:           7704665338704944538
+Database cluster state:               in production
+pg_control last modified:             Thu Nov  5 13:15:27 2026
+Latest checkpoint location:           0/78A42E08
+Latest checkpoint's REDO location:    0/78A42DD0
+Latest checkpoint's REDO WAL file:    00000007000000000000001E
+Latest checkpoint's TimeLineID:       7
+Latest checkpoint's PrevTimeLineID:   7
+Latest checkpoint's full_page_writes: on
+Latest checkpoint's NextXID:          0:1053
+Latest checkpoint's NextGxid:         527
+Latest checkpoint's NextOID:          65913
+Latest checkpoint's NextRelfilenode:  49154
+Latest checkpoint's NextMultiXactId:  1
+Latest checkpoint's NextMultiOffset:  0
+Latest checkpoint's oldestXID:        535
+Latest checkpoint's oldestXID's DB:   13718
+Latest checkpoint's oldestActiveXID:  1052
+Latest checkpoint's oldestMultiXid:   1
+Latest checkpoint's oldestMulti's DB: 13719
+Latest checkpoint's oldestCommitTsXid:0
+Latest checkpoint's newestCommitTsXid:0
+Time of latest checkpoint:            Thu Nov  5 13:15:27 2026
+Fake LSN counter for unlogged rels:   0/3E8
+Minimum recovery ending location:     0/0
+Min recovery ending loc's timeline:   0
+Backup start location:                0/0
+Backup end location:                  0/0
+End-of-backup record required:        no
+wal_level setting:                    replica
+wal_log_hints setting:                off
+max_connections setting:              750
+max_worker_processes setting:         12
+max_wal_senders setting:              10
+max_prepared_xacts setting:           250
+max_locks_per_xact setting:           128
+track_commit_timestamp setting:       off
+Maximum data alignment:               8
+Database block size:                  32768
+Blocks per segment of large relation: 32768
+WAL block size:                       32768
+Bytes per WAL segment:                67108864
+Maximum length of identifiers:        64
+Maximum columns in an index:          32
+Maximum size of a TOAST chunk:        8140
+Size of a large-object chunk:         8192
+Date/time type storage:               64-bit integers
+Float4 argument passing:              by value
+Float8 argument passing:              by value
+Data page checksum version:           1
+Mock authentication nonce:            6591afb1e3a4b1dbbd55d56f02da95174fb0f751132d84a119f96b059f46d35f
+
+stderr: 
+20261105:13:15:44:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Heap checksum setting is consistent between coordinator and the segments that are candidates for recoverseg
+20261105:13:15:44:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Greenplum instance recovery parameters
+20261105:13:15:44:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:----------------------------------------------------------
+20261105:13:15:44:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Recovery type              = Standard
+20261105:13:15:44:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:----------------------------------------------------------
+20261105:13:15:44:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Recovery 1 of 1
+20261105:13:15:44:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:----------------------------------------------------------
+20261105:13:15:44:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Synchronization mode                 = Full
+20261105:13:15:44:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Failed instance host                 = MAC-LYXNMH52K4
+20261105:13:15:44:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Failed instance address              = MAC-LYXNMH52K4
+20261105:13:15:44:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Failed instance directory            = /tmp/whpg7-mirror-cluster/dbfast2/demoDataDir1
+20261105:13:15:44:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Failed instance port                 = 7103
+20261105:13:15:44:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Recovery Source instance host        = MAC-LYXNMH52K4
+20261105:13:15:44:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Recovery Source instance address     = MAC-LYXNMH52K4
+20261105:13:15:44:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Recovery Source instance directory   = /tmp/whpg7-mirror-cluster/dbfast_mirror2/demoDataDir1
+20261105:13:15:44:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Recovery Source instance port        = 7106
+20261105:13:15:44:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Recovery Target                      = in-place
+20261105:13:15:44:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:----------------------------------------------------------
+20261105:13:15:44:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Starting to create new pg_hba.conf on primary segments
+20261105:13:15:44:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-killing existing walsender process on primary MAC-LYXNMH52K4:7106 to refresh replication connection
+20261105:13:15:49:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Successfully modified pg_hba.conf on primary segments to allow replication connections
+20261105:13:15:49:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-1 segment(s) to recover
+20261105:13:15:49:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Ensuring 1 failed segment(s) are stopped
+20261105:13:15:50:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[WARNING]:-command "pwdx" is not found on host MAC-LYXNMH52K4. cannot check postmaster status, assuming it is running
+20261105:13:15:51:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Setting up the required segments for recovery
+20261105:13:15:51:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Updating configuration for mirrors
+20261105:13:15:51:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Initiating segment recovery. Upon completion, will start the successfully recovered segments
+20261105:13:15:51:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-era is 94f09a6ea6723b8c_261105125943
+..
+20261105:13:15:53:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Triggering FTS probe
+20261105:13:15:54:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-********************************
+20261105:13:15:54:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Future gprecoverseg executions might remove the currently created pg_basebackup/pg_rewind/rsync progress files, please save these files if needed.
+20261105:13:15:54:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-********************************
+20261105:13:15:54:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Segments successfully recovered.
+20261105:13:15:54:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-********************************
+20261105:13:15:54:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Recovered mirror segments need to sync WAL with primary segments.
+20261105:13:15:54:072211 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Use 'gpstate -e' to check progress of WAL sync remaining bytes
+
+-- end_ignore
+(exited with code 0)
+4: !\retcode gprecoverseg -ar;
+-- start_ignore
+20261105:13:15:54:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Starting gprecoverseg with args: -ar
+20261105:13:15:54:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-local Greenplum Version: 'postgres (Greenplum Database) 7.6.1-WHPG+dev.42.g5a1159cc3a0 build dev'
+20261105:13:15:54:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-coordinator Greenplum Version: 'PostgreSQL 12.12 (Greenplum Database 7.6.1-WHPG+dev.42.g5a1159cc3a0 build dev) on arm-apple-darwin25.6.0, compiled by Apple clang version 17.0.0 (clang-1700.0.13.5), 64-bit compiled on Nov  3 2026 11:11:40 (with assert checking) Bhuvnesh C. WarehousePG'
+20261105:13:15:54:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Obtaining Segment details from coordinator...
+20261105:13:15:54:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Greenplum instance recovery parameters
+20261105:13:15:54:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:----------------------------------------------------------
+20261105:13:15:54:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Recovery type              = Rebalance
+20261105:13:15:54:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:----------------------------------------------------------
+20261105:13:15:54:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Unbalanced segment 1 of 2
+20261105:13:15:54:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:----------------------------------------------------------
+20261105:13:15:54:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Unbalanced instance host        = MAC-LYXNMH52K4
+20261105:13:15:54:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Unbalanced instance address     = MAC-LYXNMH52K4
+20261105:13:15:54:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Unbalanced instance directory   = /tmp/whpg7-mirror-cluster/dbfast_mirror2/demoDataDir1
+20261105:13:15:54:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Unbalanced instance port        = 7106
+20261105:13:15:54:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Balanced role                   = Mirror
+20261105:13:15:54:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Current role                    = Primary
+20261105:13:15:54:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:----------------------------------------------------------
+20261105:13:15:54:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Unbalanced segment 2 of 2
+20261105:13:15:54:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:----------------------------------------------------------
+20261105:13:15:54:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Unbalanced instance host        = MAC-LYXNMH52K4
+20261105:13:15:54:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Unbalanced instance address     = MAC-LYXNMH52K4
+20261105:13:15:54:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Unbalanced instance directory   = /tmp/whpg7-mirror-cluster/dbfast2/demoDataDir1
+20261105:13:15:54:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Unbalanced instance port        = 7103
+20261105:13:15:54:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Balanced role                   = Primary
+20261105:13:15:54:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Current role                    = Mirror
+20261105:13:15:54:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:----------------------------------------------------------
+20261105:13:15:54:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Determining primary and mirror segment pairs to rebalance
+20261105:13:15:54:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Allowed replay lag during rebalance is 10 GB
+20261105:13:15:54:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Stopping unbalanced primary segments...
+20261105:13:15:55:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Triggering segment reconfiguration
+20261105:13:16:07:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Starting segment synchronization
+20261105:13:16:07:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-=============================START ANOTHER RECOVER=========================================
+20261105:13:16:07:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-local Greenplum Version: 'postgres (Greenplum Database) 7.6.1-WHPG+dev.42.g5a1159cc3a0 build dev'
+20261105:13:16:07:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-coordinator Greenplum Version: 'PostgreSQL 12.12 (Greenplum Database 7.6.1-WHPG+dev.42.g5a1159cc3a0 build dev) on arm-apple-darwin25.6.0, compiled by Apple clang version 17.0.0 (clang-1700.0.13.5), 64-bit compiled on Nov  3 2026 11:11:40 (with assert checking) Bhuvnesh C. WarehousePG'
+20261105:13:16:07:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Obtaining Segment details from coordinator...
+20261105:13:16:27:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Successfully finished pg_controldata /tmp/whpg7-mirror-cluster/dbfast2/demoDataDir1 for dbid 3:
+stdout: pg_control version number:            12010700
+Catalog version number:               302307241
+Database system identifier:           7704665338704944538
+Database cluster state:               in production
+pg_control last modified:             Thu Nov  5 13:16:05 2026
+Latest checkpoint location:           0/80000118
+Latest checkpoint's REDO location:    0/800000E0
+Latest checkpoint's REDO WAL file:    000000090000000000000020
+Latest checkpoint's TimeLineID:       9
+Latest checkpoint's PrevTimeLineID:   9
+Latest checkpoint's full_page_writes: on
+Latest checkpoint's NextXID:          0:1053
+Latest checkpoint's NextGxid:         254
+Latest checkpoint's NextOID:          65913
+Latest checkpoint's NextRelfilenode:  49154
+Latest checkpoint's NextMultiXactId:  1
+Latest checkpoint's NextMultiOffset:  0
+Latest checkpoint's oldestXID:        535
+Latest checkpoint's oldestXID's DB:   13718
+Latest checkpoint's oldestActiveXID:  1053
+Latest checkpoint's oldestMultiXid:   1
+Latest checkpoint's oldestMulti's DB: 13719
+Latest checkpoint's oldestCommitTsXid:0
+Latest checkpoint's newestCommitTsXid:0
+Time of latest checkpoint:            Thu Nov  5 13:16:05 2026
+Fake LSN counter for unlogged rels:   0/3E8
+Minimum recovery ending location:     0/0
+Min recovery ending loc's timeline:   0
+Backup start location:                0/0
+Backup end location:                  0/0
+End-of-backup record required:        no
+wal_level setting:                    replica
+wal_log_hints setting:                off
+max_connections setting:              750
+max_worker_processes setting:         12
+max_wal_senders setting:              10
+max_prepared_xacts setting:           250
+max_locks_per_xact setting:           128
+track_commit_timestamp setting:       off
+Maximum data alignment:               8
+Database block size:                  32768
+Blocks per segment of large relation: 32768
+WAL block size:                       32768
+Bytes per WAL segment:                67108864
+Maximum length of identifiers:        64
+Maximum columns in an index:          32
+Maximum size of a TOAST chunk:        8140
+Size of a large-object chunk:         8192
+Date/time type storage:               64-bit integers
+Float4 argument passing:              by value
+Float8 argument passing:              by value
+Data page checksum version:           1
+Mock authentication nonce:            6591afb1e3a4b1dbbd55d56f02da95174fb0f751132d84a119f96b059f46d35f
+
+stderr: 
+20261105:13:16:27:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Successfully finished pg_controldata /tmp/whpg7-mirror-cluster/dbfast_mirror2/demoDataDir1 for dbid 6:
+stdout: pg_control version number:            12010700
+Catalog version number:               302307241
+Database system identifier:           7704665338704944538
+Database cluster state:               shut down
+pg_control last modified:             Thu Nov  5 13:15:55 2026
+Latest checkpoint location:           0/80000028
+Latest checkpoint's REDO location:    0/80000028
+Latest checkpoint's REDO WAL file:    000000080000000000000020
+Latest checkpoint's TimeLineID:       8
+Latest checkpoint's PrevTimeLineID:   8
+Latest checkpoint's full_page_writes: on
+Latest checkpoint's NextXID:          0:1053
+Latest checkpoint's NextGxid:         254
+Latest checkpoint's NextOID:          65913
+Latest checkpoint's NextRelfilenode:  49154
+Latest checkpoint's NextMultiXactId:  1
+Latest checkpoint's NextMultiOffset:  0
+Latest checkpoint's oldestXID:        535
+Latest checkpoint's oldestXID's DB:   13718
+Latest checkpoint's oldestActiveXID:  0
+Latest checkpoint's oldestMultiXid:   1
+Latest checkpoint's oldestMulti's DB: 13719
+Latest checkpoint's oldestCommitTsXid:0
+Latest checkpoint's newestCommitTsXid:0
+Time of latest checkpoint:            Thu Nov  5 13:15:55 2026
+Fake LSN counter for unlogged rels:   0/3E8
+Minimum recovery ending location:     0/0
+Min recovery ending loc's timeline:   0
+Backup start location:                0/0
+Backup end location:                  0/0
+End-of-backup record required:        no
+wal_level setting:                    replica
+wal_log_hints setting:                off
+max_connections setting:              750
+max_worker_processes setting:         12
+max_wal_senders setting:              10
+max_prepared_xacts setting:           250
+max_locks_per_xact setting:           128
+track_commit_timestamp setting:       off
+Maximum data alignment:               8
+Database block size:                  32768
+Blocks per segment of large relation: 32768
+WAL block size:                       32768
+Bytes per WAL segment:                67108864
+Maximum length of identifiers:        64
+Maximum columns in an index:          32
+Maximum size of a TOAST chunk:        8140
+Size of a large-object chunk:         8192
+Date/time type storage:               64-bit integers
+Float4 argument passing:              by value
+Float8 argument passing:              by value
+Data page checksum version:           1
+Mock authentication nonce:            6591afb1e3a4b1dbbd55d56f02da95174fb0f751132d84a119f96b059f46d35f
+
+stderr: 
+20261105:13:16:27:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Heap checksum setting is consistent between coordinator and the segments that are candidates for recoverseg
+20261105:13:16:27:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Greenplum instance recovery parameters
+20261105:13:16:27:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:----------------------------------------------------------
+20261105:13:16:27:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Recovery type              = Standard
+20261105:13:16:27:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:----------------------------------------------------------
+20261105:13:16:27:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Recovery 1 of 1
+20261105:13:16:27:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:----------------------------------------------------------
+20261105:13:16:27:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Synchronization mode                 = Incremental
+20261105:13:16:27:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Failed instance host                 = MAC-LYXNMH52K4
+20261105:13:16:27:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Failed instance address              = MAC-LYXNMH52K4
+20261105:13:16:27:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Failed instance directory            = /tmp/whpg7-mirror-cluster/dbfast_mirror2/demoDataDir1
+20261105:13:16:27:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Failed instance port                 = 7106
+20261105:13:16:27:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Recovery Source instance host        = MAC-LYXNMH52K4
+20261105:13:16:27:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Recovery Source instance address     = MAC-LYXNMH52K4
+20261105:13:16:27:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Recovery Source instance directory   = /tmp/whpg7-mirror-cluster/dbfast2/demoDataDir1
+20261105:13:16:27:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Recovery Source instance port        = 7103
+20261105:13:16:27:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-   Recovery Target                      = in-place
+20261105:13:16:27:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:----------------------------------------------------------
+20261105:13:16:27:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Starting to create new pg_hba.conf on primary segments
+20261105:13:16:28:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-killing existing walsender process on primary MAC-LYXNMH52K4:7103 to refresh replication connection
+20261105:13:16:33:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Successfully modified pg_hba.conf on primary segments to allow replication connections
+20261105:13:16:33:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-1 segment(s) to recover
+20261105:13:16:33:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Ensuring 1 failed segment(s) are stopped
+20261105:13:16:33:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Setting up the required segments for recovery
+.....
+20261105:13:16:38:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Updating configuration for mirrors
+20261105:13:16:38:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Initiating segment recovery. Upon completion, will start the successfully recovered segments
+20261105:13:16:38:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-era is 94f09a6ea6723b8c_261105125943
+2026-11-05 13:16:40.006287: MAC-LYXNMH52K4 (dbid 6): pg_rewind: no rewind required
+2026-11-05 13:16:40.289809: MAC-LYXNMH52K4 (dbid 6): pg_rewind: no rewind required
+20261105:13:16:40:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Triggering FTS probe
+20261105:13:16:40:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-********************************
+20261105:13:16:40:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Future gprecoverseg executions might remove the currently created pg_basebackup/pg_rewind/rsync progress files, please save these files if needed.
+20261105:13:16:40:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-********************************
+20261105:13:16:40:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Segments successfully recovered.
+20261105:13:16:40:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-********************************
+20261105:13:16:40:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Recovered mirror segments need to sync WAL with primary segments.
+20261105:13:16:40:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-Use 'gpstate -e' to check progress of WAL sync remaining bytes
+20261105:13:16:40:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-==============================END ANOTHER RECOVER==========================================
+20261105:13:16:40:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-******************************************************************
+20261105:13:16:40:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-The rebalance operation has completed successfully.
+20261105:13:16:40:072354 gprecoverseg:MAC-LYXNMH52K4:tkepe-[INFO]:-******************************************************************
+
+-- end_ignore
+(exited with code 0)
+
+!\retcode gpconfig -r gp_fts_probe_retries --coordinatoronly;
+-- start_ignore
+20261105:13:16:41:072571 gpconfig:MAC-LYXNMH52K4:tkepe-[INFO]:-completed successfully with parameters '-r gp_fts_probe_retries --coordinatoronly'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpconfig -r gp_gang_creation_retry_count --skipvalidation --coordinatoronly;
+-- start_ignore
+20261105:13:16:42:072591 gpconfig:MAC-LYXNMH52K4:tkepe-[INFO]:-completed successfully with parameters '-r gp_gang_creation_retry_count --skipvalidation --coordinatoronly'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpconfig -r gp_gang_creation_retry_timer --skipvalidation --coordinatoronly;
+-- start_ignore
+20261105:13:16:43:072609 gpconfig:MAC-LYXNMH52K4:tkepe-[INFO]:-completed successfully with parameters '-r gp_gang_creation_retry_timer --skipvalidation --coordinatoronly'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -u;
+-- start_ignore
+20261105:13:16:44:072626 gpstop:MAC-LYXNMH52K4:tkepe-[INFO]:-Starting gpstop with args: -u
+20261105:13:16:44:072626 gpstop:MAC-LYXNMH52K4:tkepe-[INFO]:-Gathering information and validating the environment...
+20261105:13:16:44:072626 gpstop:MAC-LYXNMH52K4:tkepe-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20261105:13:16:44:072626 gpstop:MAC-LYXNMH52K4:tkepe-[INFO]:-Obtaining Segment details from coordinator...
+20261105:13:16:44:072626 gpstop:MAC-LYXNMH52K4:tkepe-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.6.1-WHPG+dev.42.g5a1159cc3a0 build dev'
+20261105:13:16:44:072626 gpstop:MAC-LYXNMH52K4:tkepe-[INFO]:-Signalling all postmaster processes to reload
+
+-- end_ignore
+(exited with code 0)
+
+-- loop while segments come in sync
+select wait_until_all_segments_synchronized();
+ wait_until_all_segments_synchronized 
+--------------------------------------
+ OK                                   
+(1 row)
+
+DROP TABLE dropdb_promo_oid;
+DROP TABLE

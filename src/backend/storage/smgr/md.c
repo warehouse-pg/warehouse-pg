@@ -1087,6 +1087,35 @@ ForgetDatabaseSyncRequests(Oid dbid)
 }
 
 /*
+ * ForgetDatabaseTablespaceSyncRequests -- forget any fsyncs and unlinks for
+ * the files of a DB that live in one tablespace
+ *
+ * WHPG: used when a single <tablespace>/<database> directory is removed while
+ * the database may still have files in other tablespaces (ALTER DATABASE SET
+ * TABLESPACE's source directory, DROP DATABASE's directories at COMMIT
+ * PREPARED).
+ */
+void
+ForgetDatabaseTablespaceSyncRequests(Oid spcOid, Oid dbid)
+{
+	FileTag		tag;
+	RelFileNode rnode;
+
+	rnode.dbNode = dbid;
+	rnode.spcNode = spcOid;
+	rnode.relNode = 0;
+
+	INIT_MD_FILETAG(tag, rnode, InvalidForkNumber, InvalidBlockNumber);
+
+	RegisterSyncRequest(&tag, SYNC_FILTER_REQUEST, true /* retryOnError */ );
+
+	/* the filter is per handler, as in ForgetDatabaseSyncRequests() */
+	INIT_FILETAG(tag, rnode, InvalidForkNumber, InvalidBlockNumber, SYNC_HANDLER_AO);
+
+	RegisterSyncRequest(&tag, SYNC_FILTER_REQUEST, true /* retryOnError */ );
+}
+
+/*
  * DropRelationFiles -- drop files of all given relations
  */
 void
@@ -1483,6 +1512,12 @@ mdfiletagmatches(const FileTag *ftag, const FileTag *candidate)
 	 * callbacks relating to a given database, when dropping the database.
 	 * We'll return true for all candidates that have the same database OID as
 	 * the ftag from the SYNC_FILTER_REQUEST request, so they're forgotten.
+	 *
+	 * WHPG: a filter request may name a tablespace too, in which case only
+	 * the database's files in that tablespace are forgotten (see
+	 * ForgetDatabaseTablespaceSyncRequests()).
 	 */
-	return ftag->rnode.dbNode == candidate->rnode.dbNode;
+	return ftag->rnode.dbNode == candidate->rnode.dbNode &&
+		(!OidIsValid(ftag->rnode.spcNode) ||
+		 ftag->rnode.spcNode == candidate->rnode.spcNode);
 }

@@ -115,7 +115,7 @@ static bool get_db_info(const char *name, LOCKMODE lockmode,
 						MultiXactId *dbMinMultiP,
 						Oid *dbTablespace, char **dbCollate, char **dbCtype);
 static bool have_createdb_privilege(void);
-static void remove_dbtablespaces(Oid db_id);
+static void schedule_dbtablespaces_delete(Oid db_id);
 static bool check_db_file_conflict(Oid db_id);
 static int	errdetail_busy_db(int notherbackends, int npreparedxacts);
 
@@ -864,8 +864,11 @@ createdb_failure_callback(int code, Datum arg)
 	UnlockSharedObject(DatabaseRelationId, fparms->src_dboid, 0, ShareLock);
 
 #if 0 /* Upstream code not applicable to GPDB */
-	/* Throw away any successfully copied subdirectories */
-	remove_dbtablespaces(fparms->dest_dboid);
+	/*
+	 * Throw away any successfully copied subdirectories. (GPDB schedules
+	 * their removal on abort with ScheduleDbDirDelete() instead; upstream's
+	 * remove_dbtablespaces() is gone, see schedule_dbtablespaces_delete().)
+	 */
 #endif
 }
 
@@ -1005,6 +1008,10 @@ dropdb(const char *dbname, bool missing_ok)
 
 	/*
 	 * Free the database on the segDBs
+	 *
+	 * WHPG: the segments run dropdb() inside the same distributed
+	 * transaction; its effects on every node are undone if the transaction
+	 * aborts (see below).
 	 */
 	if (Gp_role == GP_ROLE_DISPATCH)
 	{
@@ -1058,13 +1065,6 @@ dropdb(const char *dbname, bool missing_ok)
 	ReplicationSlotsDropDBSlots(db_id);
 
 	/*
-	 * Drop pages for this database that are in the shared buffer cache. This
-	 * is important to ensure that no remaining backend tries to write out a
-	 * dirty buffer to the dead database later...
-	 */
-	DropDatabaseBuffers(db_id);
-
-	/*
 	 * Tell the stats collector to forget it immediately, too.
 	 */
 	pgstat_drop_database(db_id);
@@ -1079,25 +1079,50 @@ dropdb(const char *dbname, bool missing_ok)
 	pgstat_drop_database(db_id);
 
 	/*
+	 * WHPG: this function runs on every node inside a distributed
+	 * transaction that can still abort after it returns -- a check that
+	 * fails on another segment, or a PREPARE that fails -- so everything from
+	 * here on must leave the database intact and usable on abort. The catalog
+	 * changes are transactional; the database's pages are written out before
+	 * its buffers are discarded; and its directories are removed only once
+	 * the transaction commits, through the pending-deletes list that travels
+	 * in the PREPARE state and in the commit record (which the mirrors
+	 * replay). Nothing irreversible happens before the commit record is
+	 * written, so a failed DROP DATABASE can simply be retried.
+	 *
+	 * Same order as movedb(): force a checkpoint, which writes every dirty
+	 * page of the database to disk (including those of unlogged relations)
+	 * and lets the checkpointer process the fsync and unlink requests queued
+	 * for it so far, then discard the now-clean buffers, then tell the
+	 * checkpointer to forget what is left.
+	 */
+	RequestCheckpoint(CHECKPOINT_IMMEDIATE | CHECKPOINT_FORCE | CHECKPOINT_WAIT
+					  | CHECKPOINT_FLUSH_ALL);
+
+	/*
+	 * Drop pages for this database that are in the shared buffer cache. This
+	 * is important to ensure that no remaining backend tries to write out a
+	 * buffer to the dead database later. They are clean after the checkpoint
+	 * above, and the database lock keeps other backends from dirtying any
+	 * until the transaction ends.
+	 */
+	DropDatabaseBuffers(db_id);
+
+	/*
 	 * Tell checkpointer to forget any pending fsync and unlink requests for
 	 * files in the database; else the fsyncs will fail at next checkpoint, or
 	 * worse, it will delete files that belong to a newly created database
-	 * with the same OID.
+	 * with the same OID. The checkpoint above already processed every request
+	 * queued before it, and no buffer of the database is left to generate new
+	 * ones.
 	 */
 	ForgetDatabaseSyncRequests(db_id);
 
 	/*
-	 * Force a checkpoint to make sure the checkpointer has received the
-	 * message sent by ForgetDatabaseSyncRequests. On Windows, this also
-	 * ensures that background procs don't hold any open files, which would
-	 * cause rmdir() to fail.
+	 * Schedule the removal of all tablespace subdirs belonging to the
+	 * database for transaction commit.
 	 */
-	RequestCheckpoint(CHECKPOINT_IMMEDIATE | CHECKPOINT_FORCE | CHECKPOINT_WAIT);
-
-	/*
-	 * Remove all tablespace subdirs belonging to the database.
-	 */
-	remove_dbtablespaces(db_id);
+	schedule_dbtablespaces_delete(db_id);
 
 	/*
 	 * Remove all error logs belonging to the database.
@@ -1111,10 +1136,11 @@ dropdb(const char *dbname, bool missing_ok)
 	table_close(pgdbrel, NoLock);
 
 	/*
-	 * Force synchronous commit, thus minimizing the window between removal of
-	 * the database files and committal of the transaction. If we crash before
-	 * committing, we'll have a DB that's gone on disk but still there
-	 * according to pg_database, which is not good.
+	 * Force synchronous commit: the commit record, with its list of
+	 * directories to remove, must be on disk before the removal starts at
+	 * commit. A crash in between then replays the removal, instead of leaving
+	 * a DB that's gone on disk but still there according to pg_database,
+	 * which is not good.
 	 */
 	ForceSyncCommit();
 }
@@ -2091,13 +2117,20 @@ have_createdb_privilege(void)
 }
 
 /*
- * Remove tablespace directories
+ * WHPG: Schedule the removal of a database's tablespace directories for
+ * transaction commit
  *
- * We don't know what tablespaces db_id is using, so iterate through all
- * tablespaces removing <tablespace>/db_id
+ * DROP DATABASE runs on every node of a distributed transaction that may
+ * still abort, so the directories cannot be removed inline. We don't know
+ * what tablespaces db_id is using, so iterate through all tablespaces and
+ * schedule <tablespace>/db_id for each one that has it. The directories are
+ * removed by DoPendingDbDeletes() at local commit, by
+ * FinishPreparedTransaction() at COMMIT PREPARED, and by the mirrors when
+ * they replay the commit record's deldbs list; an aborting transaction
+ * leaves them untouched.
  */
 static void
-remove_dbtablespaces(Oid db_id)
+schedule_dbtablespaces_delete(Oid db_id)
 {
 	Relation	rel;
 	TableScanDesc scan;
@@ -2125,24 +2158,7 @@ remove_dbtablespaces(Oid db_id)
 			continue;
 		}
 
-		if (!rmtree(dstpath, true))
-			ereport(WARNING,
-					(errmsg("some useless files may be left behind in old database directory \"%s\"",
-							dstpath)));
-
-		/* Record the filesystem change in XLOG */
-		{
-			xl_dbase_drop_rec xlrec;
-
-			xlrec.db_id = db_id;
-			xlrec.tablespace_id = dsttablespace;
-
-			XLogBeginInsert();
-			XLogRegisterData((char *) &xlrec, sizeof(xl_dbase_drop_rec));
-
-			(void) XLogInsert(RM_DBASE_ID,
-							  XLOG_DBASE_DROP | XLR_SPECIAL_REL_UPDATE);
-		}
+		ScheduleDbDirDelete(db_id, dsttablespace, true);
 
 		pfree(dstpath);
 	}

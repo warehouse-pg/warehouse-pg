@@ -4,9 +4,11 @@
 #include "catalog/pg_database.h"
 #include "catalog/storage_database.h"
 #include "common/relpath.h"
+#include "replication/slot.h"
 #include "utils/faultinjector.h"
 #include "storage/lmgr.h"
 #include "storage/md.h"
+#include "storage/standby.h"
 
 typedef struct PendingDbDelete
 {
@@ -16,6 +18,7 @@ typedef struct PendingDbDelete
 } PendingDbDelete;
 
 static void dropDatabaseDirectory(DbDirNode *deldb, bool isRedo);
+static bool firstDirOfDatabase(DbDirNode *deldbs, int i);
 
 static PendingDbDelete *pendingDbDeletes = NULL; /* head of linked list */
 static Oid sessionLockMoveDbOid = InvalidOid;
@@ -118,17 +121,75 @@ GetPendingDbDeletes(bool forCommit, DbDirNode **ptr)
 }
 
 /*
- * This functions contains non-catalog modifications to be performed for movedb().
- * Its called after successfully marking the transaction as committed via pending
- * deletes.
+ * Remove the database directories a transaction scheduled for deletion
+ * (ALTER DATABASE SET TABLESPACE, DROP DATABASE). Called once the
+ * transaction's outcome is durable: at COMMIT/ROLLBACK PREPARED, and in
+ * redo of the commit or abort record that carries the list.
+ *
+ * At a commit, a directory going away means the database is being dropped or
+ * has moved to another tablespace, so in redo this also does what
+ * dbase_redo() does for XLOG_DBASE_DROP (DROP DATABASE no longer writes that
+ * record; it removes its directories from here): sessions a hot standby has
+ * connected to the database are terminated and the database's replication
+ * slots are dropped, once per database rather than per directory. An abort
+ * leaves the database where it was (a CREATE DATABASE's new directory, a SET
+ * TABLESPACE's destination), so none of that applies.
  */
 void
-DropDatabaseDirectories(DbDirNode *deldbs, int ndeldbs, bool isRedo)
+DropDatabaseDirectories(DbDirNode *deldbs, int ndeldbs, bool isRedo,
+						bool forCommit)
 {
-	int i;
-	for (i = 0; i < ndeldbs; i++)
+	bool		resolveConflicts = isRedo && forCommit;
+	int			i;
+
+	if (resolveConflicts)
 	{
+		for (i = 0; i < ndeldbs; i++)
+		{
+			if (!firstDirOfDatabase(deldbs, i))
+				continue;
+
+			if (InHotStandby)
+			{
+				/*
+				 * Lock database while we resolve conflicts to ensure that
+				 * InitPostgres() cannot fully re-execute concurrently. This
+				 * avoids backends re-connecting automatically to same
+				 * database, which can happen in some cases.
+				 *
+				 * This will lock out walsenders trying to connect to
+				 * db-specific slots for logical decoding too, so it's safe
+				 * for us to drop slots.
+				 */
+				LockSharedObjectForSession(DatabaseRelationId,
+										   deldbs[i].database, 0,
+										   AccessExclusiveLock);
+				ResolveRecoveryConflictWithDatabase(deldbs[i].database);
+			}
+
+			/* Drop any database-specific replication slots */
+			ReplicationSlotsDropDBSlots(deldbs[i].database);
+		}
+	}
+
+	for (i = 0; i < ndeldbs; i++)
 		dropDatabaseDirectory(&deldbs[i], isRedo);
+
+	if (resolveConflicts && InHotStandby)
+	{
+		/*
+		 * Release the session locks. The transaction has already been marked
+		 * committed in redo, so a backend that reconnects now sees the
+		 * database's final catalog state: gone, or living in another
+		 * tablespace.
+		 */
+		for (i = 0; i < ndeldbs; i++)
+		{
+			if (firstDirOfDatabase(deldbs, i))
+				UnlockSharedObjectForSession(DatabaseRelationId,
+											 deldbs[i].database, 0,
+											 AccessExclusiveLock);
+		}
 	}
 
 #ifdef FAULT_INJECTOR
@@ -190,4 +251,21 @@ dropDatabaseDirectory(DbDirNode *deldb, bool isRedo)
 						dbpath)));
 
 	pfree(dbpath);
+}
+
+/*
+ * Is entry i the first in the list for its database? The list may hold one
+ * directory per tablespace of the same database.
+ */
+static bool
+firstDirOfDatabase(DbDirNode *deldbs, int i)
+{
+	int			j;
+
+	for (j = 0; j < i; j++)
+	{
+		if (deldbs[j].database == deldbs[i].database)
+			return false;
+	}
+	return true;
 }
