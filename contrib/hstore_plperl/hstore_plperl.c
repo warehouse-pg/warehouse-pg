@@ -109,15 +109,24 @@ plperl_to_hstore(PG_FUNCTION_ARGS)
 	Pairs	   *pairs;
 
 	/* Dereference references recursively. */
-	while (SvROK(in))
+	plperl_materialize_sv(in);
+	while (in && SvROK(in))
+	{
 		in = SvRV(in);
+		plperl_materialize_sv(in);
+	}
 
 	/* Now we must have a hash. */
-	if (SvTYPE(in) != SVt_PVHV)
+	if (!in || SvTYPE(in) != SVt_PVHV)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 (errmsg("cannot transform non-hash Perl value to hstore"))));
 	hv = (HV *) in;
+
+	/* Hold a reference on the hash while we scan it */
+	ENTER;
+	SAVETMPS;
+	sv_2mortal(newRV((SV *) hv));
 
 	(void) hv_iterinit(hv);
 
@@ -128,7 +137,9 @@ plperl_to_hstore(PG_FUNCTION_ARGS)
 	while ((he = hv_iternext(hv)))
 	{
 		char	   *key = sv2cstr(HeSVKEY_force(he));
-		SV		   *value = HeVAL(he);
+		SV		   *value = hv_iterval(hv, he);
+
+		plperl_materialize_sv(value);
 
 		if (i >= pcount)
 		{
@@ -155,6 +166,10 @@ plperl_to_hstore(PG_FUNCTION_ARGS)
 
 		i++;
 	}
+
+	/* release our reference on the hash */
+	FREETMPS;
+	LEAVE;
 
 	pcount = hstoreUniquePairs(pairs, i, &buflen);
 	out = hstorePairs(pairs, pcount, buflen);
