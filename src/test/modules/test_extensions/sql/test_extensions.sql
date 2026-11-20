@@ -245,5 +245,21 @@ drop schema issue6716 cascade;
 -- Test @extschema@ syntax.
 --
 CREATE SCHEMA "has space";
+CREATE SCHEMA "has
+newline";
+CREATE SCHEMA "has@extschema@";
+CREATE SCHEMA "has--comment";
+CREATE SCHEMA "has/*comment";
+CREATE SCHEMA "has*/comment";
+CREATE SCHEMA "has@extowner@";
+CREATE SCHEMA "hasMODULE_PATHNAME";
 CREATE EXTENSION test_ext_extschema SCHEMA has$dollar;
+CREATE EXTENSION test_ext_extschema SCHEMA "has
+newline";
+CREATE EXTENSION test_ext_extschema SCHEMA "has@extschema@";
+CREATE EXTENSION test_ext_extschema SCHEMA "has--comment";
+CREATE EXTENSION test_ext_extschema SCHEMA "has/*comment";
+CREATE EXTENSION test_ext_extschema SCHEMA "has*/comment";
+CREATE EXTENSION test_ext_extschema SCHEMA "has@extowner@";
+CREATE EXTENSION test_ext_extschema SCHEMA "hasMODULE_PATHNAME";
 CREATE EXTENSION test_ext_extschema SCHEMA "has space";
