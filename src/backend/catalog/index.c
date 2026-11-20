@@ -560,7 +560,7 @@ AppendAttributeTuples(Relation indexRelation, int numatts)
 
 		Assert(attr->attnum == i + 1);
 
-		InsertPgAttributeTuple(pg_attribute, attr, indstate);
+		InsertPgAttributeTuple(pg_attribute, attr, (Datum) 0, indstate);
 	}
 
 	CatalogCloseIndexes(indstate);

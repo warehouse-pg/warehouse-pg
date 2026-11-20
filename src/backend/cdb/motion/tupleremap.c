@@ -621,10 +621,22 @@ TRRemapRecord(TupleRemapper *remapper, RecordRemapInfo *remapinfo,
 							remapinfo->field_remap,
 							&htup);
 
-		/* Apply the correct labeling for a local Datum. */
-		HeapTupleHeaderSetTypeId(atup->t_data, typid);
-		HeapTupleHeaderSetTypMod(atup->t_data, typmod);
-		HeapTupleHeaderSetDatumLength(atup->t_data, htup.t_len);
+		/*
+		 * Apply the correct labeling for a local Datum.
+		 *
+		 * Only a transient record needs it: its typmod is the local one now.
+		 * A datum of a named composite type either is the received datum
+		 * itself or was re-formed with the type's descriptor, and in both
+		 * cases it carries the right type and attribute version already.
+		 * Its typmod field holds part of that version and must not be
+		 * overwritten.
+		 */
+		if (typid == RECORDOID)
+		{
+			HeapTupleHeaderSetTypeId(atup->t_data, typid);
+			HeapTupleHeaderSetTypMod(atup->t_data, typmod);
+			HeapTupleHeaderSetDatumLength(atup->t_data, htup.t_len);
+		}
 
 		/* And return the results. */
 		return PointerGetDatum(atup->t_data);

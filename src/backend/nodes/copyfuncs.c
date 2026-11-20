@@ -221,6 +221,7 @@ _copyOidAssignment(const OidAssignment *from)
 	COPY_SCALAR_FIELD(keyOid1);
 	COPY_SCALAR_FIELD(keyOid2);
 	COPY_SCALAR_FIELD(oid);
+	COPY_SCALAR_FIELD(attversion);
 
 	return newnode;
 }
