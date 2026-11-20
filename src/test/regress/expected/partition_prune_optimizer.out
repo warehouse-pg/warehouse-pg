@@ -739,6 +739,61 @@ explain (costs off) select * from rlp where (a = 1 and a = 3) or (a > 1 and a = 
  Optimizer: Postgres query optimizer
 (13 rows)
 
+-- Test cases for range partitioned tables with IN clauses.
+create table rangepart (a int) partition by range (a);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+create table rangepart1 partition of rangepart for values from (0) to (10);
+NOTICE:  table has parent, setting distribution columns to match parent table
+create table rangepart2 partition of rangepart for values from (10) to (20);
+NOTICE:  table has parent, setting distribution columns to match parent table
+create table rangepart_def partition of rangepart default;
+NOTICE:  table has parent, setting distribution columns to match parent table
+-- Ensure we scan all apart from the default partition
+explain (costs off) select * from rangepart where a in(5,15);
+                     QUERY PLAN                     
+----------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Dynamic Seq Scan on rangepart
+         Number of partitions to scan: 2 (out of 3)
+         Filter: (a = ANY ('{5,15}'::integer[]))
+ Optimizer: Pivotal Optimizer (GPORCA)
+(5 rows)
+
+-- Ensure we scan only the default
+explain (costs off) select * from rangepart where a in(20,21);
+                     QUERY PLAN                     
+----------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Dynamic Seq Scan on rangepart
+         Number of partitions to scan: 1 (out of 3)
+         Filter: (a = ANY ('{20,21}'::integer[]))
+ Optimizer: Pivotal Optimizer (GPORCA)
+(5 rows)
+
+-- Ensure we scan only the default
+explain (costs off) select * from rangepart where a in(-1,20);
+                     QUERY PLAN                     
+----------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Dynamic Seq Scan on rangepart
+         Number of partitions to scan: 1 (out of 3)
+         Filter: (a = ANY ('{-1,20}'::integer[]))
+ Optimizer: Pivotal Optimizer (GPORCA)
+(5 rows)
+
+-- Ensure we scan all partitions
+explain (costs off) select * from rangepart where a is not null and a in(-1,5,15,20);
+                                  QUERY PLAN                                   
+-------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Dynamic Seq Scan on rangepart
+         Number of partitions to scan: 3 (out of 3)
+         Filter: ((NOT (a IS NULL)) AND (a = ANY ('{-1,5,15,20}'::integer[])))
+ Optimizer: Pivotal Optimizer (GPORCA)
+(5 rows)
+
+drop table rangepart;
 -- multi-column keys
 create table mc3p (a int, b int, c int) partition by range (a, abs(b), c);
 create table mc3p_default partition of mc3p default;
@@ -1157,6 +1212,180 @@ explain (costs off) select * from mc2p where b is null;
  Optimizer: Postgres query optimizer
 (4 rows)
 
+create table mc2ap (a int, b int) partition by range (a, b);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+create table mc2ap1 partition of mc2ap for values from (1, 4) to (1, 7);
+NOTICE:  table has parent, setting distribution columns to match parent table
+create table mc2ap2 partition of mc2ap for values from (1, 7) to (3, 8);
+NOTICE:  table has parent, setting distribution columns to match parent table
+create table mc2ap3 partition of mc2ap for values from (4, 8) to (6, 9);
+NOTICE:  table has parent, setting distribution columns to match parent table
+create table mc2ap_def partition of mc2ap default;
+NOTICE:  table has parent, setting distribution columns to match parent table
+-- Ensure we scan all partitions apart from mc2ap3
+explain (costs off) select count(*) from mc2ap where a <= 1;
+                   QUERY PLAN                   
+------------------------------------------------
+ Finalize Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Partial Aggregate
+               ->  Append
+                     ->  Seq Scan on mc2ap1
+                           Filter: (a <= 1)
+                     ->  Seq Scan on mc2ap2
+                           Filter: (a <= 1)
+                     ->  Seq Scan on mc2ap_def
+                           Filter: (a <= 1)
+ Optimizer: Postgres query optimizer
+(11 rows)
+
+drop table mc2ap;
+create table mc2bp (c1 int, c2 int) partition by range (c1, c2);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'c1' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+create table mc2bp1 partition of mc2bp for values from (7, 2) to (7, 7);
+NOTICE:  table has parent, setting distribution columns to match parent table
+create table mc2bp_def partition of mc2bp default;
+NOTICE:  table has parent, setting distribution columns to match parent table
+-- Ensure mc2bp1 is pruned and we only scan mc2bp_def
+explain (costs off) select count(*) from mc2bp where c1 > 7;
+                   QUERY PLAN                   
+------------------------------------------------
+ Finalize Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Partial Aggregate
+               ->  Seq Scan on mc2bp_def
+                     Filter: (c1 > 7)
+ Optimizer: Postgres query optimizer
+(6 rows)
+
+drop table mc2bp;
+-- Ensure the default partition is not pruned when a bound is unbounded only
+-- in a trailing key
+create table mc2pdmax (a int, b int) partition by range (a, b);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+create table mc2pdmax_default partition of mc2pdmax default;
+NOTICE:  table has parent, setting distribution columns to match parent table
+create table mc2pdmax1 partition of mc2pdmax for values from (13, 0) to (19, maxvalue);
+NOTICE:  table has parent, setting distribution columns to match parent table
+-- Ensure we only scan the default partition in the following two cases
+explain (costs off) select * from mc2pdmax where a = 32 and b >= -7;
+                     QUERY PLAN                      
+-----------------------------------------------------
+ Gather Motion 1:1  (slice1; segments: 1)
+   ->  Seq Scan on mc2pdmax_default
+         Filter: ((b >= '-7'::integer) AND (a = 32))
+ Optimizer: Postgres query optimizer
+(4 rows)
+
+explain (costs off) select * from mc2pdmax where a >= 25 and b >= 0;
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Seq Scan on mc2pdmax_default
+         Filter: ((a >= 25) AND (b >= 0))
+ Optimizer: Postgres query optimizer
+(4 rows)
+
+-- Ensure we don't scan the default when the MAXVALUE bound makes it so
+-- no rows matching the WHERE clause can exist there.
+explain (costs off) select * from mc2pdmax where a = 19 and b >= 5;
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 1:1  (slice1; segments: 1)
+   ->  Seq Scan on mc2pdmax1
+         Filter: ((b >= 5) AND (a = 19))
+ Optimizer: Postgres query optimizer
+(4 rows)
+
+-- Ensure we do scan the default to get the values with a > 19.
+explain (costs off) select * from mc2pdmax where a >= 19 and b >= 5;
+                   QUERY PLAN                   
+------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Append
+         ->  Seq Scan on mc2pdmax1
+               Filter: ((a >= 19) AND (b >= 5))
+         ->  Seq Scan on mc2pdmax_default
+               Filter: ((a >= 19) AND (b >= 5))
+ Optimizer: Postgres query optimizer
+(7 rows)
+
+drop table mc2pdmax;
+create table mc2pdmin (a int, b int) partition by range (a, b);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+create table mc2pdmin_default partition of mc2pdmin default;
+NOTICE:  table has parent, setting distribution columns to match parent table
+create table mc2pdmin1 partition of mc2pdmin for values from (13, minvalue) to (19, 5);
+NOTICE:  table has parent, setting distribution columns to match parent table
+-- Ensure we only scan the default
+explain (costs off) select * from mc2pdmin where a = 5 and b <= 7;
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 1:1  (slice1; segments: 1)
+   ->  Seq Scan on mc2pdmin_default
+         Filter: ((b <= 7) AND (a = 5))
+ Optimizer: Postgres query optimizer
+(4 rows)
+
+-- Ensure we don't scan the default when the MINVALUE bound results in no rows
+-- matching in the default partition.
+explain (costs off) select * from mc2pdmin where a = 13 and b <= 7;
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 1:1  (slice1; segments: 1)
+   ->  Seq Scan on mc2pdmin1
+         Filter: ((b <= 7) AND (a = 13))
+ Optimizer: Postgres query optimizer
+(4 rows)
+
+-- Ensure we do scan the default to get rows with a < 13.
+explain (costs off) select * from mc2pdmin where a <= 13 and b <= 7;
+                   QUERY PLAN                   
+------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Append
+         ->  Seq Scan on mc2pdmin1
+               Filter: ((a <= 13) AND (b <= 7))
+         ->  Seq Scan on mc2pdmin_default
+               Filter: ((a <= 13) AND (b <= 7))
+ Optimizer: Postgres query optimizer
+(7 rows)
+
+drop table mc2pdmin;
+create table mc2pinf (a int, b int) partition by range (a, b);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+create table mc2pinf_default partition of mc2pinf default;
+NOTICE:  table has parent, setting distribution columns to match parent table
+create table mc2pinf1 partition of mc2pinf for values from (0, 0) to (maxvalue, maxvalue);
+NOTICE:  table has parent, setting distribution columns to match parent table
+create table mc2pinf2 partition of mc2pinf for values from (minvalue, minvalue) to (0, 0);
+NOTICE:  table has parent, setting distribution columns to match parent table
+-- Ensure the default partition is still pruned when the first key is
+-- unbounded
+explain (costs off) select * from mc2pinf where a = 32 and b >= -7;
+                     QUERY PLAN                      
+-----------------------------------------------------
+ Gather Motion 1:1  (slice1; segments: 1)
+   ->  Seq Scan on mc2pinf1
+         Filter: ((b >= '-7'::integer) AND (a = 32))
+ Optimizer: Postgres query optimizer
+(4 rows)
+
+explain (costs off) select * from mc2pinf where a = -32 and b <= 7;
+                     QUERY PLAN                      
+-----------------------------------------------------
+ Gather Motion 1:1  (slice1; segments: 1)
+   ->  Seq Scan on mc2pinf2
+         Filter: ((b <= 7) AND (a = '-32'::integer))
+ Optimizer: Postgres query optimizer
+(4 rows)
+
+drop table mc2pinf;
 -- boolean partitioning
 create table boolpart (a bool) partition by list (a);
 create table boolpart_default partition of boolpart default;
