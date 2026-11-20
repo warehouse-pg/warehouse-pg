@@ -1800,3 +1800,59 @@ select get_ao_compression_ratio(oid) from gp_dist_random('pg_class') where relna
 -- end_ignore
 drop table compression_ao;
 drop table compression_aocs;
+-- WHPG: A row larger than the block size is written as large content in
+-- blocks of its own.  The varblock after it must start at the next row
+-- number, and the large row needs a block directory entry, or the rows after
+-- it are read back with the wrong row numbers (the first one sharing the
+-- large row's ctid) and index fetches return the wrong rows.  The index
+-- lookups run under the Postgres planner, which honours enable_seqscan.
+create table ao_large_row (a int, k int, t text)
+  with (appendonly=true, orientation=row, compresstype=none, blocksize=8192)
+  distributed by (a);
+alter table ao_large_row alter column t set storage plain;
+create index ao_large_row_k on ao_large_row (k);
+insert into ao_large_row
+  select 1, g, case when g in (1, 50, 51, 100) then repeat('x', 10000) else 'small' || g end
+  from generate_series(1, 100) g;
+select count(*), count(distinct ctid) from ao_large_row;
+ count | count 
+-------+-------
+   100 |   100
+(1 row)
+
+set optimizer = off;
+set enable_seqscan = off;
+set enable_bitmapscan = off;
+select k, length(t) from ao_large_row where k in (1, 2, 49, 50, 51, 52, 99, 100) order by k;
+  k  | length 
+-----+--------
+   1 |  10000
+   2 |      6
+  49 |      7
+  50 |  10000
+  51 |  10000
+  52 |      7
+  99 |      7
+ 100 |  10000
+(8 rows)
+
+set enable_indexscan = off;
+set enable_bitmapscan = on;
+select k, length(t) from ao_large_row where k in (1, 2, 49, 50, 51, 52, 99, 100) order by k;
+  k  | length 
+-----+--------
+   1 |  10000
+   2 |      6
+  49 |      7
+  50 |  10000
+  51 |  10000
+  52 |      7
+  99 |      7
+ 100 |  10000
+(8 rows)
+
+reset enable_seqscan;
+reset enable_indexscan;
+reset enable_bitmapscan;
+reset optimizer;
+drop table ao_large_row;
