@@ -66,10 +66,20 @@ CLogicalDynamicIndexGet::CLogicalDynamicIndexGet(
 	// create the index descriptor
 	m_pindexdesc = CIndexDescriptor::Pindexdesc(mp, ptabdesc, pmdindex);
 
-	// Assumes scan direction always Forward as Backwards Scan isn't supported
-	// for partition tables yet.
-	m_pos = PosFromIndex(m_mp, pmdindex, m_pdrgpcrOutput, ptabdesc,
-						 EForwardScan /*scan direction*/);
+	// WHPG: the scan reads one partition after another, so the index order
+	// holds only within each partition. Derive it only when a single
+	// partition is left to scan; otherwise the output has no order.
+	if (1 == partition_mdids->Size())
+	{
+		// Assumes scan direction always Forward as Backwards Scan isn't
+		// supported for partition tables yet.
+		m_pos = PosFromIndex(m_mp, pmdindex, m_pdrgpcrOutput, ptabdesc,
+							 EForwardScan /*scan direction*/);
+	}
+	else
+	{
+		m_pos = GPOS_NEW(m_mp) COrderSpec(m_mp);
+	}
 	m_ulUnindexedPredColCount = ulUnindexedPredColCount;
 }
 
