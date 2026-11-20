@@ -3074,11 +3074,12 @@ select * from my_locks order by 1;
 alter table alterlock2 add foreign key (f1) references alterlock (f1);
 WARNING:  referential integrity (FOREIGN KEY) constraints are not supported in Greenplum Database, will not be enforced
 select * from my_locks order by 1;
-  relname   |     max_lockmode      
-------------+-----------------------
- alterlock  | ShareRowExclusiveLock
- alterlock2 | ShareRowExclusiveLock
-(2 rows)
+    relname     |     max_lockmode      
+----------------+-----------------------
+ alterlock      | ShareRowExclusiveLock
+ alterlock2     | ShareRowExclusiveLock
+ alterlock_pkey | AccessShareLock
+(3 rows)
 
 rollback;
 begin;
@@ -3086,11 +3087,12 @@ alter table alterlock2
 add constraint alterlock2nv foreign key (f1) references alterlock (f1) NOT VALID;
 WARNING:  referential integrity (FOREIGN KEY) constraints are not supported in Greenplum Database, will not be enforced
 select * from my_locks order by 1;
-  relname   |     max_lockmode      
-------------+-----------------------
- alterlock  | ShareRowExclusiveLock
- alterlock2 | ShareRowExclusiveLock
-(2 rows)
+    relname     |     max_lockmode      
+----------------+-----------------------
+ alterlock      | ShareRowExclusiveLock
+ alterlock2     | ShareRowExclusiveLock
+ alterlock_pkey | AccessShareLock
+(3 rows)
 
 commit;
 begin;
