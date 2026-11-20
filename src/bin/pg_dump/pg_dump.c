@@ -723,13 +723,15 @@ main(int argc, char **argv)
 
 	/* archiveFormat specific setup */
 	if (archiveFormat == archNull)
-	{
 		plainText = 1;
-
+	if (archiveFormat == archNull ||
+		archiveFormat == archTar)
+	{
 		/*
 		 * Restrict the psql meta-commands that the plain-text output may run
 		 * at restore time.  If no restrict key is provided, one is generated
-		 * for you.  (CVE-2025-8714)
+		 * for you.  (CVE-2025-8714)  tar format uses this for its
+		 * undocumented restore.sql file.  (CVE-2026-116330)
 		 */
 		if (!restrict_key)
 			restrict_key = generate_restrict_key();
@@ -739,7 +741,8 @@ main(int argc, char **argv)
 			exit_horribly(NULL, "invalid restrict key\n");
 	}
 	else if (restrict_key)
-		exit_horribly(NULL, "option --restrict-key can only be used with --format=plain\n");
+		exit_horribly(NULL, "option %s can only be used with %s or %s\n",
+					  "--restrict-key", "--format=plain", "--format=tar");
 
 	/* Custom and directory formats are compressed by default, others not */
 	if (compressLevel == -1)
