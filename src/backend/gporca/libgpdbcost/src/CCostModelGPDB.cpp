@@ -31,6 +31,7 @@
 #include "gpopt/operators/CPhysicalMotionBroadcast.h"
 #include "gpopt/operators/CPhysicalPartitionSelector.h"
 #include "gpopt/operators/CPhysicalSequenceProject.h"
+#include "gpopt/operators/CPhysicalWindowTopN.h"
 #include "gpopt/operators/CPhysicalStreamAgg.h"
 #include "gpopt/operators/CPhysicalUnionAll.h"
 #include "gpopt/operators/CPredicateUtils.h"
@@ -680,6 +681,66 @@ CCostModelGPDB::CostSequence(CMemoryPool *mp, CExpressionHandle &exprhdl,
 	return costLocal + costChild;
 }
 
+
+//---------------------------------------------------------------------------
+//	@function:
+//		CCostModelGPDB::CostWindowTopN
+//
+//	@doc:
+//		Cost of per-partition top-N: every input row is hashed on the
+//		partition columns and compared once against the worst kept row of
+//		its partition; only the kept rows pay for the heap and are output.
+//
+//---------------------------------------------------------------------------
+CCost
+CCostModelGPDB::CostWindowTopN(CMemoryPool *mp, CExpressionHandle &exprhdl,
+							   const CCostModelGPDB *pcmgpdb,
+							   const SCostingInfo *pci)
+{
+	GPOS_ASSERT(nullptr != pcmgpdb);
+	GPOS_ASSERT(nullptr != pci);
+	GPOS_ASSERT(COperator::EopPhysicalWindowTopN == exprhdl.Pop()->Eopid());
+
+	const CDouble num_rows_outer = pci->PdRows()[0];
+	const CDouble dWidthOuter = pci->GetWidth()[0];
+	const CDouble rows = CDouble(std::max(2.0, pci->Rows()));
+	const CDouble num_rebinds = CDouble(pci->NumRebinds());
+
+	CPhysicalWindowTopN *popTopN =
+		CPhysicalWindowTopN::PopConvert(exprhdl.Pop());
+	const ULONG ulSortCols = popTopN->Pos()->UlSortColumns();
+	CColRefSet *pcrsPart = popTopN->Pds()->PcrsUsed(mp);
+	const ULONG ulPartCols = pcrsPart->Size();
+	pcrsPart->Release();
+
+	const CDouble dHashInputColCost =
+		pcmgpdb->GetCostModelParams()
+			->PcpLookup(CCostModelParamsGPDB::EcpHashAggInputTupColumnCostUnit)
+			->Get();
+	const CDouble dTupDefaultProcCostUnit =
+		pcmgpdb->GetCostModelParams()
+			->PcpLookup(CCostModelParamsGPDB::EcpTupDefaultProcCostUnit)
+			->Get();
+	const CDouble dOutputTupWidthCost =
+		pcmgpdb->GetCostModelParams()
+			->PcpLookup(CCostModelParamsGPDB::EcpHashAggOutputTupWidthCostUnit)
+			->Get();
+
+	// per input row: hash the partition columns, compare the sort columns
+	CCost costInput = CCost(
+		num_rebinds *
+		(num_rows_outer * (ulPartCols * dHashInputColCost +
+						   (ulSortCols + 1) * dTupDefaultProcCostUnit)));
+	// per kept row: about log2(rows) heap comparisons and the output
+	CCost costKept = CCost(
+		num_rebinds * (rows * (rows.Log2() * (ulSortCols + 1) *
+								   dTupDefaultProcCostUnit +
+							   dWidthOuter * dOutputTupWidthCost)));
+	CCost costChild =
+		CostChildren(mp, exprhdl, pci, pcmgpdb->GetCostModelParams());
+
+	return costInput + costKept + costChild;
+}
 
 //---------------------------------------------------------------------------
 //	@function:
@@ -2497,6 +2558,11 @@ CCostModelGPDB::Cost(
 		case COperator::EopPhysicalSort:
 		{
 			return CostSort(m_mp, exprhdl, this, pci);
+		}
+
+		case COperator::EopPhysicalWindowTopN:
+		{
+			return CostWindowTopN(m_mp, exprhdl, this, pci);
 		}
 
 		case COperator::EopPhysicalTVF:

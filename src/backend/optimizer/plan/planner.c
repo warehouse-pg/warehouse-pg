@@ -227,6 +227,14 @@ static void create_one_window_path(PlannerInfo *root,
 								   PathTarget *output_target,
 								   WindowFuncLists *wflists,
 								   List *activeWindows);
+static Path *create_window_prefilter_path(PlannerInfo *root,
+										  RelOptInfo *window_rel,
+										  Path *path,
+										  bool is_sorted,
+										  List *window_pathkeys,
+										  WindowClause *wc,
+										  List *wfuncs,
+										  bool *keep_sorted_p);
 static RelOptInfo *create_distinct_paths(PlannerInfo *root,
 										 RelOptInfo *input_rel);
 static RelOptInfo *create_ordered_paths(PlannerInfo *root,
@@ -914,6 +922,8 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	root->non_recursive_path = NULL;
 	root->partColsUpdated = false;
 	root->is_correlated_subplan = false;
+	root->window_prefilters = parent_root ? parent_root->subquery_window_prefilters : NIL;
+	root->subquery_window_prefilters = NIL;
 
 	/*
 	 * If there is a WITH list, process each WITH query and either convert it
@@ -5380,10 +5390,32 @@ create_one_window_path(PlannerInfo *root,
 	{
 		WindowClause *wc = lfirst_node(WindowClause, l);
 		List	   *window_pathkeys;
+		bool		is_sorted;
+		Path	   *prepath = NULL;
+		bool		prepath_sorted = false;
 
 		window_pathkeys = make_pathkeys_for_window(root,
 												   wc,
 												   root->processed_tlist);
+		is_sorted = pathkeys_contained_in(window_pathkeys, path->pathkeys);
+
+		/*
+		 * WHPG: if the parent query filters this window's rank-like output
+		 * with "<= N", consider a top-N pre-filter that applies the filter on
+		 * each segment before the Motion, or, when no Motion is needed,
+		 * before the Sort.  Only the topmost window clause qualifies: a
+		 * lower WindowAgg feeds further window clauses, whose results would
+		 * change if rows were removed early.  Both variants are built and
+		 * the cheaper one is kept, see below.
+		 */
+		if (whpg_enable_window_topn &&
+			root->window_prefilters != NIL &&
+			lnext(l) == NULL)
+			prepath = create_window_prefilter_path(root, window_rel, path,
+												   is_sorted, window_pathkeys,
+												   wc,
+												   wflists->windowFuncs[wc->winref],
+												   &prepath_sorted);
 
 		/*
 		 * Unless the PARTITION BY in the window happens to match the
@@ -5398,7 +5430,7 @@ create_one_window_path(PlannerInfo *root,
 		 * This is the same logic that is used for sorted Aggregates.
 		 */
 		path = cdb_prepare_path_for_sorted_agg(root,
-											   pathkeys_contained_in(window_pathkeys, path->pathkeys),
+											   is_sorted,
 											   window_rel,
 											   path,
 											   path->pathtarget,
@@ -5406,6 +5438,16 @@ create_one_window_path(PlannerInfo *root,
 											   -1.0,
 											   wc->partitionClause,
 											   NIL);
+		if (prepath)
+			prepath = cdb_prepare_path_for_sorted_agg(root,
+													  prepath_sorted,
+													  window_rel,
+													  prepath,
+													  prepath->pathtarget,
+													  window_pathkeys,
+													  -1.0,
+													  wc->partitionClause,
+													  NIL);
 
 		if (lnext(l))
 		{
@@ -5438,9 +5480,103 @@ create_one_window_path(PlannerInfo *root,
 			create_windowagg_path(root, window_rel, path, window_target,
 								  wflists->windowFuncs[wc->winref],
 								  wc);
+
+		if (prepath)
+		{
+			prepath = (Path *)
+				create_windowagg_path(root, window_rel, prepath, window_target,
+									  wflists->windowFuncs[wc->winref],
+									  wc);
+
+			/*
+			 * Keep the cheaper variant, comparing the totals exactly.  We
+			 * cannot leave this to add_path(): the two totals differ only by
+			 * the window stage, which is usually within add_path's fuzzy
+			 * margin of a total dominated by the shared input (an aggregate,
+			 * typically), and the tie would then be broken by startup cost,
+			 * where the pre-filter variant always looks worse because all of
+			 * its first stage counts as startup.
+			 */
+			if (prepath->total_cost < path->total_cost)
+				path = prepath;
+		}
 	}
 
 	add_path(window_rel, path);
+}
+
+/*
+ * create_window_prefilter_path
+ *
+ * Match the WindowPrefilter entries the parent query handed down (see
+ * find_window_prefilters() in allpaths.c) against the window functions of
+ * window clause 'wc', and build the top-N pre-filter for them.  Returns
+ * NULL if no entry applies or the pre-filter cannot help (see
+ * cdb_create_window_prefilter_path()).
+ */
+static Path *
+create_window_prefilter_path(PlannerInfo *root,
+							 RelOptInfo *window_rel,
+							 Path *path,
+							 bool is_sorted,
+							 List *window_pathkeys,
+							 WindowClause *wc,
+							 List *wfuncs,
+							 bool *keep_sorted_p)
+{
+	List	   *pre_prefilters = NIL;
+	List	   *pre_wfuncs = NIL;
+	List	   *pre_quals = NIL;
+	double		bound_rows = -1.0;
+	ListCell   *lc;
+
+	foreach(lc, root->window_prefilters)
+	{
+		WindowPrefilter *prefilter = (WindowPrefilter *) lfirst(lc);
+		WindowFunc *match = NULL;
+		OpExpr	   *clause;
+		double		n;
+		ListCell   *lc2;
+
+		if (prefilter->winref != wc->winref)
+			continue;
+
+		/*
+		 * Use the planner's own WindowFunc node in the qual, so that
+		 * setrefs matches it against the first-stage WindowAgg's tlist.
+		 */
+		foreach(lc2, wfuncs)
+		{
+			WindowFunc *wfunc = lfirst_node(WindowFunc, lc2);
+
+			if (equal(wfunc, prefilter->wfunc))
+			{
+				match = wfunc;
+				break;
+			}
+		}
+		if (match == NULL)
+			continue;
+
+		clause = copyObject(prefilter->clause);
+		linitial(clause->args) = match;
+		pre_prefilters = lappend(pre_prefilters, prefilter);
+		pre_wfuncs = list_append_unique_ptr(pre_wfuncs, match);
+		pre_quals = lappend(pre_quals, clause);
+
+		/* smallest constant bound, for the row estimate */
+		n = cdb_window_prefilter_bound(prefilter);
+		if (n >= 0 && (bound_rows < 0 || n < bound_rows))
+			bound_rows = n;
+	}
+
+	if (pre_quals == NIL)
+		return NULL;
+
+	return cdb_create_window_prefilter_path(root, window_rel, path,
+											is_sorted, window_pathkeys, wc,
+											pre_prefilters, pre_wfuncs, pre_quals,
+											bound_rows, keep_sorted_p);
 }
 
 /*

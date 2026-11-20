@@ -238,6 +238,11 @@ private:
 						CDistributionSpecArray *pdrgpdsBaseTables,
 						ULONG *pulNonGatherMotions, BOOL *pfDML);
 
+	CDXLNode *PdxlnWindowTopN(CExpression *pexprTopN,
+							  CColRefArray *colref_array,
+							  CDistributionSpecArray *pdrgpdsBaseTables,
+							  ULONG *pulNonGatherMotions, BOOL *pfDML);
+
 	CDXLNode *PdxlnLimit(CExpression *pexprLimit, CColRefArray *colref_array,
 						 CDistributionSpecArray *pdrgpdsBaseTables,
 						 ULONG *pulNonGatherMotions, BOOL *pfDML);

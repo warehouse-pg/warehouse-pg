@@ -84,6 +84,7 @@ extern "C" {
 #include "naucrates/dxl/operators/CDXLPhysicalTableScan.h"
 #include "naucrates/dxl/operators/CDXLPhysicalValuesScan.h"
 #include "naucrates/dxl/operators/CDXLPhysicalWindow.h"
+#include "naucrates/dxl/operators/CDXLPhysicalWindowTopN.h"
 #include "naucrates/dxl/operators/CDXLScalarBitmapBoolOp.h"
 #include "naucrates/dxl/operators/CDXLScalarBitmapIndexProbe.h"
 #include "naucrates/dxl/operators/CDXLScalarBoolExpr.h"
@@ -412,6 +413,12 @@ CTranslatorDXLToPlStmt::TranslateDXLOperatorToPlan(
 		{
 			plan = TranslateDXLWindow(dxlnode, output_context,
 									  ctxt_translation_prev_siblings);
+			break;
+		}
+		case EdxlopPhysicalWindowTopN:
+		{
+			plan = TranslateDXLWindowTopN(dxlnode, output_context,
+										  ctxt_translation_prev_siblings);
 			break;
 		}
 		case EdxlopPhysicalSort:
@@ -3204,6 +3211,137 @@ CTranslatorDXLToPlStmt::TranslateDXLWindow(
 	child_contexts->Release();
 
 	return (Plan *) window;
+}
+
+//---------------------------------------------------------------------------
+//	@function:
+//		CTranslatorDXLToPlStmt::TranslateDXLWindowTopN
+//
+//	@doc:
+//		Translate DXL WindowTopN node into a WindowTopN plan node
+//
+//---------------------------------------------------------------------------
+Plan *
+CTranslatorDXLToPlStmt::TranslateDXLWindowTopN(
+	const CDXLNode *topn_dxlnode, CDXLTranslateContext *output_context,
+	CDXLTranslationContextArray *ctxt_translation_prev_siblings)
+{
+	GPOS_ASSERT(nullptr != topn_dxlnode->GetOperator());
+	GPOS_ASSERT(EdxlopPhysicalWindowTopN ==
+				topn_dxlnode->GetOperator()->GetDXLOperator());
+
+	WindowTopN *topn = MakeNode(WindowTopN);
+	Plan *plan = &(topn->plan);
+	plan->plan_node_id = m_dxl_to_plstmt_context->GetNextPlanId();
+
+	CDXLPhysicalWindowTopN *topn_dxlop =
+		CDXLPhysicalWindowTopN::Cast(topn_dxlnode->GetOperator());
+
+	// translate operator costs
+	TranslatePlanCosts(topn_dxlnode, plan);
+
+	// translate the child
+	CDXLNode *child_dxlnode = (*topn_dxlnode)[EdxlwindowtopnIndexChild];
+	CDXLNode *project_list_dxlnode =
+		(*topn_dxlnode)[EdxlwindowtopnIndexProjList];
+	CDXLNode *filter_dxlnode = (*topn_dxlnode)[EdxlwindowtopnIndexFilter];
+
+	CDXLTranslateContext child_context(m_mp, false,
+									   output_context->GetColIdToParamIdMap());
+
+	Plan *child_plan = TranslateDXLOperatorToPlan(
+		child_dxlnode, &child_context, ctxt_translation_prev_siblings);
+
+	CDXLTranslationContextArray *child_contexts =
+		GPOS_NEW(m_mp) CDXLTranslationContextArray(m_mp);
+	child_contexts->Append(&child_context);
+
+	// translate proj list and filter
+	TranslateProjListAndFilter(project_list_dxlnode, filter_dxlnode,
+							   nullptr,	 // translate context for the base table
+							   child_contexts, &plan->targetlist, &plan->qual,
+							   output_context);
+
+	plan->lefttree = child_plan;
+
+	// partition columns
+	const ULongPtrArray *part_by_cols_array = topn_dxlop->GetPartByColsArray();
+	topn->partNumCols = part_by_cols_array->Size();
+	topn->partColIdx = (AttrNumber *) gpdb::GPDBAlloc(
+		topn->partNumCols * sizeof(AttrNumber));
+	topn->partOperators =
+		(Oid *) gpdb::GPDBAlloc(topn->partNumCols * sizeof(Oid));
+	topn->partCollations =
+		(Oid *) gpdb::GPDBAlloc(topn->partNumCols * sizeof(Oid));
+
+	for (ULONG ul = 0; ul < part_by_cols_array->Size(); ul++)
+	{
+		ULONG part_colid = *((*part_by_cols_array)[ul]);
+		const TargetEntry *te_part_colid =
+			child_context.GetTargetEntry(part_colid);
+		if (nullptr == te_part_colid)
+		{
+			GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiDXL2PlStmtAttributeNotFound,
+					   part_colid);
+		}
+		topn->partColIdx[ul] = te_part_colid->resno;
+
+		Oid type_id = gpdb::ExprType((Node *) te_part_colid->expr);
+		topn->partOperators[ul] = gpdb::GetEqualityOp(type_id);
+		topn->partCollations[ul] =
+			gpdb::ExprCollation((Node *) te_part_colid->expr);
+	}
+
+	// ordering columns, as ordering operators (unlike WindowAgg)
+	const CDXLNode *sort_col_list_dxl =
+		(*topn_dxlnode)[EdxlwindowtopnIndexSortColList];
+	const ULONG num_of_cols = sort_col_list_dxl->Arity();
+	topn->ordNumCols = num_of_cols;
+	topn->ordColIdx =
+		(AttrNumber *) gpdb::GPDBAlloc(num_of_cols * sizeof(AttrNumber));
+	topn->sortOperators = (Oid *) gpdb::GPDBAlloc(num_of_cols * sizeof(Oid));
+	topn->ordCollations = (Oid *) gpdb::GPDBAlloc(num_of_cols * sizeof(Oid));
+	topn->nullsFirst = (bool *) gpdb::GPDBAlloc(num_of_cols * sizeof(bool));
+
+	TranslateSortCols(sort_col_list_dxl, &child_context, topn->ordColIdx,
+					  topn->sortOperators, topn->ordCollations,
+					  topn->nullsFirst);
+
+	// the bound
+	switch (topn_dxlop->Kind())
+	{
+		case 0:
+			topn->kind = WINDOWTOPN_ROW_NUMBER;
+			break;
+		case 1:
+			topn->kind = WINDOWTOPN_RANK;
+			break;
+		case 2:
+			topn->kind = WINDOWTOPN_DENSE_RANK;
+			break;
+		default:
+			GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiDXL2PlStmtConversion,
+					   GPOS_WSZ_LIT("WindowTopN kind"));
+	}
+	// the planner keeps the user's constant here, which is an int4 unless
+	// written otherwise; do the same so that EXPLAIN reads the same way
+	if (topn_dxlop->Limit() <= PG_INT32_MAX)
+	{
+		topn->limitExpr =
+			(Node *) gpdb::MakeIntConst((int32) topn_dxlop->Limit());
+	}
+	else
+	{
+		topn->limitExpr = (Node *) gpdb::MakeInt8Const(topn_dxlop->Limit());
+	}
+	topn->limitInclusive = true;
+
+	SetParamIds(plan);
+
+	// cleanup
+	child_contexts->Release();
+
+	return (Plan *) topn;
 }
 
 //---------------------------------------------------------------------------
