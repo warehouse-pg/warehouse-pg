@@ -289,3 +289,31 @@ $$ LANGUAGE plperl;
 SELECT perl_forged_array();
 ERROR:  PL/Perl function must return reference to hash or array
 CONTEXT:  PL/Perl function "perl_forged_array"
+-- CVE-2026-116320: converting a Perl array can run arbitrary Perl code (a
+-- tied element's FETCH) that drops the last reference to a sub-array that
+-- is being scanned.  The conversion must hold its own reference so the
+-- sub-array survives; without it the sub-array is freed mid-scan and its
+-- remaining elements are read from freed memory (use-after-free).
+CREATE OR REPLACE FUNCTION perl_free_subarray_during_scan() RETURNS int[] AS $$
+	our $top;
+	package PLPerlFreeInner;
+	sub TIESCALAR { bless \(my $s), $_[0] }
+	sub FETCH
+	{
+		@$main::top = ();				# drop the only reference to the sub-array
+		my @churn;
+		push @churn, [ 0, 0, 0, 0, 0 ] for (1 .. 5000);	# reuse the freed memory
+		return 99;
+	}
+	sub STORE { }
+	package main;
+	$top = [ [ (7) x 5 ] ];				# sub-array referenced only by $top->[0]
+	tie $top->[0][0], 'PLPerlFreeInner';	# tie element 0 of the sub-array in place
+	return $top;
+$$ LANGUAGE plperl;
+SELECT perl_free_subarray_during_scan();
+ perl_free_subarray_during_scan 
+--------------------------------
+ {{99,7,7,7,7}}
+(1 row)
+
