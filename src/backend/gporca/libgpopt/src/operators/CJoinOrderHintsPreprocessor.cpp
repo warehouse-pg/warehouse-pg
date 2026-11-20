@@ -206,6 +206,15 @@ CJoinOrderHintsPreprocessor::ConstructNAryJoinChildren(
 	{
 		if ((*naryJoinPexpr)[ul]->DeriveTableDescriptor()->Size() == 0)
 		{
+			// A child without a table descriptor (a VALUES list or a
+			// constant subquery, a function scan, or an expression built
+			// on one) has no alias a hint could name, so no hint used it:
+			// keep it as an unused child, preprocessed like a named one no
+			// hint names. Leaving it out would drop its columns from the
+			// join, and no plan could be built.
+			naryChildren->Append(CJoinOrderHintsPreprocessor::PexprPreprocess(
+				mp, (*naryJoinPexpr)[ul], nullptr /* joinnode */));
+			(*sourceChildIndexes)->Append(GPOS_NEW(mp) ULONG(ul));
 			continue;
 		}
 
