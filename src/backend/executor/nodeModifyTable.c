@@ -354,6 +354,139 @@ ExecComputeStoredGenerated(EState *estate, TupleTableSlot *slot)
 	MemoryContextSwitchTo(oldContext);
 }
 
+/*
+ * dist_key_target_segment
+ *		Segment that the distribution key of 'slot' hashes to under 'policy'.
+ */
+static int
+dist_key_target_segment(CdbHash *hash, GpPolicy *policy, TupleTableSlot *slot)
+{
+	cdbhashinit(hash);
+	for (int i = 0; i < policy->nattrs; i++)
+	{
+		bool		isnull;
+		Datum		value = slot_getattr(slot, policy->attrs[i], &isnull);
+
+		cdbhash(hash, i + 1, value, isnull);
+	}
+	return cdbhashreduce(hash);
+}
+
+/*
+ * ExecReportDistKeyMisplaced
+ *		Raise the error for a row that is about to be stored on a segment
+ *		other than the one its distribution key hashes to.
+ *
+ * The check that leads here compares the row's final distribution key with
+ * the segment that is storing it, so it fires both when a BEFORE ROW trigger
+ * rewrote a key column and when the row was already stored on the wrong
+ * segment before the statement ran; the message covers both.  The relation
+ * named is the one the user addressed: the root of a partitioned table when
+ * the row was routed.  'sqlerrcode' lets COPY raise a data exception, the
+ * class that single-row error handling can reject and log instead of
+ * aborting the load.  The segment ids stay in DETAIL: several QEs can raise
+ * this concurrently and the QD reports whichever arrives first, so ids on
+ * the primary line would make the message non-deterministic.
+ */
+void
+ExecReportDistKeyMisplaced(ResultRelInfo *resultRelInfo, const char *cmdname,
+						   int target_seg, int sqlerrcode)
+{
+	ResultRelInfo *named = resultRelInfo->ri_RootResultRelInfo ?
+		resultRelInfo->ri_RootResultRelInfo : resultRelInfo;
+
+	ereport(ERROR,
+			(errcode(sqlerrcode),
+			 errmsg("%s cannot store a row of relation \"%s\" that belongs to another segment",
+					cmdname, RelationGetRelationName(named->ri_RelationDesc)),
+			 errdetail("The row's distribution key hashes to segment %d, but the row is being stored on segment %d.  Either the statement or a BEFORE ROW trigger changed a distribution-key column, or the row was already stored on the wrong segment.",
+					   target_seg, GpIdentity.segindex),
+			 errhint("Assign distribution-key columns in the statement, or with a column DEFAULT or an identity column, which the coordinator evaluates before routing the row -- not in a BEFORE ROW trigger.  Redistribute a table that already holds misplaced rows with ALTER TABLE ... SET WITH (REORGANIZE=true).")));
+}
+
+/*
+ * ExecDistKeyMisplaced
+ *		Does the final tuple in 'slot' belong on a segment other than this
+ *		one?  Returns false on the QD and for a relation that is not
+ *		hash-distributed; on true, *target_seg is the segment it belongs to.
+ *
+ * Segment placement is decided before BEFORE ROW triggers run.  The QD
+ * routes an INSERT or COPY row from the original NEW tuple, and a plain
+ * UPDATE whose statement target list does not name a distribution-key
+ * column is applied in place on the segment that already stores the row
+ * (only a key column named in the statement arms SplitUpdate, which moves
+ * the row by hashing the plan's output).  A BEFORE ROW trigger that rewrites
+ * a distribution-key column after that decision would leave the row on the
+ * wrong segment: invisible to direct dispatch and to co-located joins on the
+ * new key.  Hashing the final tuple catches that, and also a row that was
+ * already misplaced before the statement ran.
+ *
+ * 'slot' is the final tuple, in the result relation's row format, after the
+ * BEFORE ROW trigger has run.  For a partitioned target the caller passes
+ * the leaf the row currently sits in; every partition shares the root's
+ * distribution policy, so that leaf's policy and attribute numbers describe
+ * the row even when it is about to move to another partition.  Callers arm
+ * the check only for a relation that has the relevant BEFORE ROW trigger,
+ * so a relation without such a trigger pays nothing.  The CdbHash is built
+ * once per result relation and cached in ri_distKeyHash, in the query
+ * context, so per-row cost is the hash alone.
+ */
+bool
+ExecDistKeyMisplaced(ResultRelInfo *resultRelInfo, EState *estate,
+					 TupleTableSlot *slot, int *target_seg)
+{
+	Relation	rel = resultRelInfo->ri_RelationDesc;
+	GpPolicy   *policy = rel->rd_cdbpolicy;
+	CdbHash    *hash;
+
+	if (Gp_role != GP_ROLE_EXECUTE)
+		return false;
+	if (policy == NULL || !GpPolicyIsHashPartitioned(policy))
+		return false;
+
+	hash = resultRelInfo->ri_distKeyHash;
+	if (hash == NULL)
+	{
+		MemoryContext oldcxt = MemoryContextSwitchTo(estate->es_query_cxt);
+
+		hash = makeCdbHashForRelation(rel);
+		resultRelInfo->ri_distKeyHash = hash;
+		MemoryContextSwitchTo(oldcxt);
+	}
+
+	*target_seg = dist_key_target_segment(hash, policy, slot);
+	return *target_seg != GpIdentity.segindex;
+}
+
+/*
+ * ExecCheckDistKeyAfterBRTrigger
+ *		Refuse a row whose BEFORE ROW trigger left it belonging to another
+ *		segment.  See ExecDistKeyMisplaced().
+ *
+ * The error names the relation the statement addressed.  A routed row's
+ * ResultRelInfo points at the root itself; the per-subplan ResultRelInfo of
+ * an UPDATE on a partitioned table does not, so fall back to the
+ * ModifyTable's root relation when it has one.
+ */
+static void
+ExecCheckDistKeyAfterBRTrigger(ModifyTableState *mtstate,
+							   ResultRelInfo *resultRelInfo, EState *estate,
+							   TupleTableSlot *slot, const char *cmdname)
+{
+	int			target_seg;
+
+	if (ExecDistKeyMisplaced(resultRelInfo, estate, slot, &target_seg))
+	{
+		ResultRelInfo *named = resultRelInfo;
+
+		if (named->ri_RootResultRelInfo == NULL &&
+			mtstate->rootResultRelInfo != NULL)
+			named = mtstate->rootResultRelInfo;
+		ExecReportDistKeyMisplaced(named, cmdname, target_seg,
+								   ERRCODE_FEATURE_NOT_SUPPORTED);
+	}
+}
+
 /* ----------------------------------------------------------------
  *		ExecInsert
  *
@@ -525,6 +658,27 @@ ExecInsert(ModifyTableState *mtstate,
 			 (resultRelInfo->ri_TrigDesc &&
 			  resultRelInfo->ri_TrigDesc->trig_insert_before_row)))
 			ExecPartitionCheck(resultRelInfo, slot, estate, true);
+
+		/*
+		 * The QD routed this row from the original NEW tuple.  If a BEFORE
+		 * ROW trigger rewrote a distribution-key column the row now belongs
+		 * on another segment, so refuse rather than misplace it.  Checked
+		 * after the constraint and partition checks so those more specific
+		 * errors take precedence, and skipped for the INSERT half of a
+		 * SplitUpdate (which is routed, not trigger-fired).
+		 *
+		 * The re-inserted half of a cross-partition UPDATE is checked here
+		 * too (mt_cpCheckDistKey): the source partition's BEFORE ROW UPDATE
+		 * trigger may have rewritten the key, and this is the first point
+		 * after partition routing has found the destination.
+		 */
+		if (!splitUpdate &&
+			((resultRelInfo->ri_TrigDesc &&
+			  resultRelInfo->ri_TrigDesc->trig_insert_before_row) ||
+			 mtstate->mt_cpCheckDistKey))
+			ExecCheckDistKeyAfterBRTrigger(mtstate, resultRelInfo, estate, slot,
+										   mtstate->operation == CMD_UPDATE ?
+										   "UPDATE" : "INSERT");
 
 		/*
 		 * Everything has been checked, if we set the GUC gp_detect_data_correctness to true,
@@ -1424,6 +1578,23 @@ lreplace:;
 		}
 
 		/*
+		 * A plain in-place UPDATE whose statement did not name a
+		 * distribution-key column stays on the segment that stores the row
+		 * (a key column named in the statement arms SplitUpdate, routed
+		 * elsewhere and never through here).  The BEFORE ROW trigger that
+		 * ran above may have rewritten a key column, which would misplace
+		 * the row, so refuse it.  A row that is moving to another partition
+		 * is checked by ExecInsert instead, after routing, so that a missing
+		 * destination partition is reported first.  Armed only for a
+		 * relation with a BEFORE ROW UPDATE trigger so others pay nothing.
+		 */
+		if (!partition_constraint_failed &&
+			resultRelInfo->ri_TrigDesc &&
+			resultRelInfo->ri_TrigDesc->trig_update_before_row)
+			ExecCheckDistKeyAfterBRTrigger(mtstate, resultRelInfo, estate,
+										   slot, "UPDATE");
+
+		/*
 		 * If a partition check failed, try to move the row into the right
 		 * partition.
 		 */
@@ -1539,9 +1710,20 @@ lreplace:;
 			slot = ExecPrepareTupleRouting(mtstate, estate, proute,
 										   mtstate->rootResultRelInfo, slot);
 
+			/*
+			 * The row is re-inserted on this same segment.  If the source
+			 * partition's BEFORE ROW UPDATE trigger rewrote a
+			 * distribution-key column it now belongs elsewhere; ExecInsert
+			 * verifies that once the row is routed, so that a missing
+			 * destination partition is still reported as such.
+			 */
+			mtstate->mt_cpCheckDistKey =
+				(resultRelInfo->ri_TrigDesc &&
+				 resultRelInfo->ri_TrigDesc->trig_update_before_row);
 			ret_slot = ExecInsert(mtstate, slot, planSlot,
 								  orig_slot, resultRelInfo,
 								  estate, canSetTag, false /* splitUpdate */);
+			mtstate->mt_cpCheckDistKey = false;
 
 			/* Revert ExecPrepareTupleRouting's node change. */
 			estate->es_result_relation_info = resultRelInfo;
@@ -2806,6 +2988,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 
 	mtstate->mt_arowmarks = (List **) palloc0(sizeof(List *) * nplans);
 	mtstate->mt_nplans = nplans;
+	mtstate->mt_cpCheckDistKey = false;
 
 	/* set up epqstate with dummy subplan data for the moment */
 	EvalPlanQualInit(&mtstate->mt_epqstate, estate, NULL, NIL, node->epqParam);

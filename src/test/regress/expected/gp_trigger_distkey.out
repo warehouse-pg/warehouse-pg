@@ -1,0 +1,316 @@
+--
+-- A BEFORE ROW trigger that rewrites a hash-distribution-key column is
+-- refused for INSERT, COPY and plain UPDATE.  Segment placement is decided
+-- before the trigger runs (the QD routes INSERT and COPY rows from the
+-- original NEW tuple; an UPDATE whose SET list omits the key is applied in
+-- place), so the row would otherwise be stored on the wrong segment, where
+-- direct dispatch and co-located joins on the new key miss it.  A trigger
+-- that leaves the key alone passes.
+--
+-- Multi-row statements make at least one row change segment whatever the
+-- hash, so the refusals are deterministic.  A replicated witness copy of each
+-- row's segment shows that nothing moved.
+--
+CREATE TABLE trigdk_t (k int, v int) DISTRIBUTED BY (k);
+INSERT INTO trigdk_t SELECT g, g FROM generate_series(1, 20) g;
+CREATE TABLE trigdk_w AS SELECT k, gp_segment_id AS seg FROM trigdk_t
+  DISTRIBUTED REPLICATED;
+CREATE FUNCTION trigdk_movek() RETURNS trigger LANGUAGE plpgsql AS
+  $$ BEGIN NEW.k := NEW.k + 1000; RETURN NEW; END $$;
+CREATE FUNCTION trigdk_bumpv() RETURNS trigger LANGUAGE plpgsql AS
+  $$ BEGIN NEW.v := NEW.v + 1; RETURN NEW; END $$;
+-- 1. INSERT whose BEFORE ROW trigger rewrites the key: refused.
+CREATE TRIGGER trigdk_i BEFORE INSERT ON trigdk_t
+  FOR EACH ROW EXECUTE FUNCTION trigdk_movek();
+INSERT INTO trigdk_t SELECT g, g FROM generate_series(21, 40) g;
+ERROR:  INSERT cannot store a row of relation "trigdk_t" that belongs to another segment  (seg1 127.0.0.1:7003 pid=97622)
+DETAIL:  The row's distribution key hashes to segment N, but the row is being stored on segment N.  Either the statement or a BEFORE ROW trigger changed a distribution-key column, or the row was already stored on the wrong segment.
+HINT:  Assign distribution-key columns in the statement, or with a column DEFAULT or an identity column, which the coordinator evaluates before routing the row -- not in a BEFORE ROW trigger.  Redistribute a table that already holds misplaced rows with ALTER TABLE ... SET WITH (REORGANIZE=true).
+DROP TRIGGER trigdk_i ON trigdk_t;
+-- 2. Plain UPDATE whose SET omits the key but whose BEFORE ROW trigger
+--    rewrites it: refused (no SplitUpdate, so the row would stay put).
+CREATE TRIGGER trigdk_u BEFORE UPDATE ON trigdk_t
+  FOR EACH ROW EXECUTE FUNCTION trigdk_movek();
+UPDATE trigdk_t SET v = v + 1;
+ERROR:  UPDATE cannot store a row of relation "trigdk_t" that belongs to another segment  (seg0 127.0.0.1:7002 pid=97621)
+DETAIL:  The row's distribution key hashes to segment N, but the row is being stored on segment N.  Either the statement or a BEFORE ROW trigger changed a distribution-key column, or the row was already stored on the wrong segment.
+HINT:  Assign distribution-key columns in the statement, or with a column DEFAULT or an identity column, which the coordinator evaluates before routing the row -- not in a BEFORE ROW trigger.  Redistribute a table that already holds misplaced rows with ALTER TABLE ... SET WITH (REORGANIZE=true).
+-- A no-op SET of the key also stays in place (no SplitUpdate): refused too.
+UPDATE trigdk_t SET k = k;
+ERROR:  UPDATE cannot store a row of relation "trigdk_t" that belongs to another segment  (seg0 127.0.0.1:7002 pid=97621)
+DETAIL:  The row's distribution key hashes to segment N, but the row is being stored on segment N.  Either the statement or a BEFORE ROW trigger changed a distribution-key column, or the row was already stored on the wrong segment.
+HINT:  Assign distribution-key columns in the statement, or with a column DEFAULT or an identity column, which the coordinator evaluates before routing the row -- not in a BEFORE ROW trigger.  Redistribute a table that already holds misplaced rows with ALTER TABLE ... SET WITH (REORGANIZE=true).
+DROP TRIGGER trigdk_u ON trigdk_t;
+-- 1 and 2 were refused: nothing inserted or moved, every row on its segment.
+SELECT count(*) AS rows_with_new_key FROM trigdk_t WHERE k > 1000;
+ rows_with_new_key 
+-------------------
+                 0
+(1 row)
+
+SELECT count(*) AS rows_total FROM trigdk_t;
+ rows_total 
+------------
+         20
+(1 row)
+
+SELECT (SELECT array_agg(k::text || ':' || gp_segment_id::text ORDER BY k)
+          FROM trigdk_t)
+     = (SELECT array_agg(k::text || ':' || seg::text ORDER BY k)
+          FROM trigdk_w) AS placement_ok;
+ placement_ok 
+--------------
+ t
+(1 row)
+
+-- 3. Control: a BEFORE ROW UPDATE trigger that leaves the key alone pays the
+--    check but passes, and the non-key update goes through.
+CREATE TRIGGER trigdk_c BEFORE UPDATE ON trigdk_t
+  FOR EACH ROW EXECUTE FUNCTION trigdk_bumpv();
+UPDATE trigdk_t SET v = v;
+DROP TRIGGER trigdk_c ON trigdk_t;
+SELECT count(*) AS updated FROM trigdk_t WHERE v = k + 1;
+ updated 
+---------
+      20
+(1 row)
+
+SELECT (SELECT array_agg(k::text || ':' || gp_segment_id::text ORDER BY k)
+          FROM trigdk_t)
+     = (SELECT array_agg(k::text || ':' || seg::text ORDER BY k)
+          FROM trigdk_w) AS placement_ok;
+ placement_ok 
+--------------
+ t
+(1 row)
+
+-- 4. COPY fires the same BEFORE ROW INSERT trigger on the segment the QD
+--    chose from the incoming row, so a key rewrite is refused there too.
+--    (terse: the COPY line-number CONTEXT names whichever row hit first.)
+CREATE TRIGGER trigdk_i BEFORE INSERT ON trigdk_t
+  FOR EACH ROW EXECUTE FUNCTION trigdk_movek();
+\set VERBOSITY terse
+COPY trigdk_t FROM stdin;
+ERROR:  COPY cannot store a row of relation "trigdk_t" that belongs to another segment
+\set VERBOSITY default
+DROP TRIGGER trigdk_i ON trigdk_t;
+SELECT count(*) AS rows_with_new_key FROM trigdk_t WHERE k > 1000;
+ rows_with_new_key 
+-------------------
+                 0
+(1 row)
+
+SELECT count(*) AS copied FROM trigdk_t WHERE k > 20;
+ copied 
+--------
+      0
+(1 row)
+
+-- 5. Under single-row error handling COPY rejects and logs such a row instead
+--    of aborting the load; rows the trigger left on the right segment are
+--    kept.  How many of the 20 rows end up on either side depends on the
+--    hash, so only the invariants are checked (and the reject-count NOTICE is
+--    silenced).
+CREATE TABLE trigdk_c (k int, v int) DISTRIBUTED BY (k);
+CREATE TRIGGER trigdk_ci BEFORE INSERT ON trigdk_c
+  FOR EACH ROW EXECUTE FUNCTION trigdk_movek();
+SET client_min_messages = warning;
+COPY trigdk_c FROM stdin LOG ERRORS SEGMENT REJECT LIMIT 100 ROWS;
+RESET client_min_messages;
+DROP TRIGGER trigdk_ci ON trigdk_c;
+SELECT (SELECT count(*) FROM trigdk_c) +
+       (SELECT count(*) FROM gp_read_error_log('trigdk_c')) AS kept_plus_rejected;
+ kept_plus_rejected 
+--------------------
+                 20
+(1 row)
+
+SELECT count(*) > 0 AS some_rejected FROM gp_read_error_log('trigdk_c');
+ some_rejected 
+---------------
+ t
+(1 row)
+
+SELECT count(*) AS kept_on_wrong_key FROM trigdk_c WHERE k <= 1000;
+ kept_on_wrong_key 
+-------------------
+                 0
+(1 row)
+
+SELECT DISTINCT errmsg FROM gp_read_error_log('trigdk_c');
+                                     errmsg                                     
+--------------------------------------------------------------------------------
+ COPY cannot store a row of relation "trigdk_c" that belongs to another segment
+(1 row)
+
+-- 6. INSERT ... ON CONFLICT DO UPDATE takes the UPDATE path for the
+--    conflicting rows, so a BEFORE ROW UPDATE trigger that rewrites the key
+--    is refused there too.
+CREATE TABLE trigdk_u (k int PRIMARY KEY, v int) DISTRIBUTED BY (k);
+INSERT INTO trigdk_u SELECT g, g FROM generate_series(1, 20) g;
+CREATE TRIGGER trigdk_uu BEFORE UPDATE ON trigdk_u
+  FOR EACH ROW EXECUTE FUNCTION trigdk_movek();
+INSERT INTO trigdk_u SELECT g, 0 FROM generate_series(1, 20) g
+  ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v;
+ERROR:  UPDATE cannot store a row of relation "trigdk_u" that belongs to another segment  (seg0 127.0.0.1:7002 pid=97621)
+DETAIL:  The row's distribution key hashes to segment N, but the row is being stored on segment N.  Either the statement or a BEFORE ROW trigger changed a distribution-key column, or the row was already stored on the wrong segment.
+HINT:  Assign distribution-key columns in the statement, or with a column DEFAULT or an identity column, which the coordinator evaluates before routing the row -- not in a BEFORE ROW trigger.  Redistribute a table that already holds misplaced rows with ALTER TABLE ... SET WITH (REORGANIZE=true).
+DROP TRIGGER trigdk_uu ON trigdk_u;
+SELECT count(*) AS rows_with_new_key FROM trigdk_u WHERE k > 1000;
+ rows_with_new_key 
+-------------------
+                 0
+(1 row)
+
+SELECT count(*) AS updated FROM trigdk_u WHERE v = 0;
+ updated 
+---------
+       0
+(1 row)
+
+-- 7. Partitioned target whose partition key is the distribution key: the
+--    trigger moves the row to another partition AND another segment.  The
+--    cross-partition move is a local DELETE + re-routed INSERT on the same
+--    segment, so the check runs on the re-insert, once routing has found the
+--    destination partition (a missing partition is reported first); the error
+--    names the table the statement addressed, not the leaf.  (BEFORE ROW
+--    triggers cannot be created on the partitioned root itself, so they are
+--    created on the partition that holds the rows.)
+CREATE TABLE trigdk_p (k int, v int) DISTRIBUTED BY (k)
+  PARTITION BY RANGE (k) (PARTITION low START (1) END (1001),
+                          PARTITION high START (1001) END (3000));
+INSERT INTO trigdk_p SELECT g, g FROM generate_series(1, 20) g;
+CREATE TRIGGER trigdk_pu BEFORE UPDATE ON trigdk_p_1_prt_low
+  FOR EACH ROW EXECUTE FUNCTION trigdk_movek();
+UPDATE trigdk_p SET v = v + 1;
+ERROR:  UPDATE cannot store a row of relation "trigdk_p" that belongs to another segment  (seg0 127.0.0.1:7002 pid=97621)
+DETAIL:  The row's distribution key hashes to segment N, but the row is being stored on segment N.  Either the statement or a BEFORE ROW trigger changed a distribution-key column, or the row was already stored on the wrong segment.
+HINT:  Assign distribution-key columns in the statement, or with a column DEFAULT or an identity column, which the coordinator evaluates before routing the row -- not in a BEFORE ROW trigger.  Redistribute a table that already holds misplaced rows with ALTER TABLE ... SET WITH (REORGANIZE=true).
+DROP TRIGGER trigdk_pu ON trigdk_p_1_prt_low;
+SELECT count(*) AS rows_with_new_key FROM trigdk_p WHERE k > 1000;
+ rows_with_new_key 
+-------------------
+                 0
+(1 row)
+
+SELECT (SELECT array_agg(k::text || ':' || gp_segment_id::text ORDER BY k)
+          FROM trigdk_p)
+     = (SELECT array_agg(k::text || ':' || seg::text ORDER BY k)
+          FROM trigdk_w) AS placement_ok;
+ placement_ok 
+--------------
+ t
+(1 row)
+
+-- 8. Control: a trigger that moves the row to another partition but leaves
+--    the distribution key alone still passes, and the cross-partition move
+--    goes through on the same segment.
+CREATE TABLE trigdk_pb (k int, p int, v int) DISTRIBUTED BY (k)
+  PARTITION BY RANGE (p) (PARTITION low START (1) END (1001),
+                          PARTITION high START (1001) END (3000));
+INSERT INTO trigdk_pb SELECT g, g, g FROM generate_series(1, 20) g;
+CREATE FUNCTION trigdk_movep() RETURNS trigger LANGUAGE plpgsql AS
+  $$ BEGIN NEW.p := NEW.p + 1000; RETURN NEW; END $$;
+CREATE TRIGGER trigdk_pbu BEFORE UPDATE ON trigdk_pb_1_prt_low
+  FOR EACH ROW EXECUTE FUNCTION trigdk_movep();
+UPDATE trigdk_pb SET v = v + 1;
+DROP TRIGGER trigdk_pbu ON trigdk_pb_1_prt_low;
+SELECT count(*) AS moved_to_high FROM trigdk_pb_1_prt_high WHERE v = k + 1;
+ moved_to_high 
+---------------
+            20
+(1 row)
+
+SELECT (SELECT array_agg(k::text || ':' || gp_segment_id::text ORDER BY k)
+          FROM trigdk_pb)
+     = (SELECT array_agg(k::text || ':' || seg::text ORDER BY k)
+          FROM trigdk_w) AS placement_ok;
+ placement_ok 
+--------------
+ t
+(1 row)
+
+-- 9. The check compares the row's final key with the storing segment, so it
+--    also surfaces rows that were already on the wrong segment before the
+--    statement ran (loaded under an older release through a key-rewriting
+--    trigger, or via COPY ... ON SEGMENT with the placement check off), as
+--    soon as a statement with a BEFORE ROW trigger touches them -- even one
+--    that never changes the key.  Seed such rows: every segment loads keys
+--    1..20 from its own ON SEGMENT input, so the copies on all but one
+--    segment are misplaced whatever the hash.  Then the recipe from the
+--    release note: find them with gp_detect_data_correctness (checks every
+--    row, inserts nothing) and fix them with REORGANIZE, after which the
+--    same UPDATE goes through.
+CREATE TABLE trigdk_m (k int, v int) DISTRIBUTED BY (k);
+SET gp_enable_segment_copy_checking = off;
+COPY trigdk_m FROM PROGRAM 'seq 1 20 | sed "s/$/,1/" # <SEGID>' ON SEGMENT CSV;
+RESET gp_enable_segment_copy_checking;
+SELECT count(*) > 0 AS some_misplaced
+  FROM trigdk_m m JOIN trigdk_w w ON m.k = w.k WHERE m.gp_segment_id <> w.seg;
+ some_misplaced 
+----------------
+ t
+(1 row)
+
+CREATE TRIGGER trigdk_mu BEFORE UPDATE ON trigdk_m
+  FOR EACH ROW EXECUTE FUNCTION trigdk_bumpv();
+UPDATE trigdk_m SET v = v;
+ERROR:  UPDATE cannot store a row of relation "trigdk_m" that belongs to another segment  (seg0 127.0.0.1:7002 pid=97621)
+DETAIL:  The row's distribution key hashes to segment N, but the row is being stored on segment N.  Either the statement or a BEFORE ROW trigger changed a distribution-key column, or the row was already stored on the wrong segment.
+HINT:  Assign distribution-key columns in the statement, or with a column DEFAULT or an identity column, which the coordinator evaluates before routing the row -- not in a BEFORE ROW trigger.  Redistribute a table that already holds misplaced rows with ALTER TABLE ... SET WITH (REORGANIZE=true).
+SELECT count(*) AS updated FROM trigdk_m WHERE v = 2;
+ updated 
+---------
+       0
+(1 row)
+
+SET gp_detect_data_correctness = on;
+INSERT INTO trigdk_m SELECT * FROM trigdk_m;
+ERROR:  trying to insert row into wrong segment  (seg0 127.0.0.1:7002 pid=97621)
+RESET gp_detect_data_correctness;
+ALTER TABLE trigdk_m SET WITH (REORGANIZE=true);
+SELECT count(*) AS still_misplaced
+  FROM trigdk_m m JOIN trigdk_w w ON m.k = w.k WHERE m.gp_segment_id <> w.seg;
+ still_misplaced 
+-----------------
+               0
+(1 row)
+
+SET gp_detect_data_correctness = on;
+INSERT INTO trigdk_m SELECT * FROM trigdk_m;
+RESET gp_detect_data_correctness;
+UPDATE trigdk_m SET v = v;
+SELECT count(DISTINCT k) AS keys, bool_and(v = 2) AS all_updated FROM trigdk_m;
+ keys | all_updated 
+------+-------------
+   20 | t
+(1 row)
+
+DROP TRIGGER trigdk_mu ON trigdk_m;
+-- 10. Tables that are not hash-distributed are never checked: the trigger's
+--     rewrite is fine on a randomly distributed or replicated table.
+CREATE TABLE trigdk_r (k int, v int) DISTRIBUTED RANDOMLY;
+CREATE TABLE trigdk_rep (k int, v int) DISTRIBUTED REPLICATED;
+CREATE TRIGGER trigdk_ri BEFORE INSERT ON trigdk_r
+  FOR EACH ROW EXECUTE FUNCTION trigdk_movek();
+CREATE TRIGGER trigdk_repi BEFORE INSERT ON trigdk_rep
+  FOR EACH ROW EXECUTE FUNCTION trigdk_movek();
+INSERT INTO trigdk_r SELECT g, g FROM generate_series(1, 20) g;
+INSERT INTO trigdk_rep SELECT g, g FROM generate_series(1, 20) g;
+SELECT count(*) AS random_rows FROM trigdk_r WHERE k > 1000;
+ random_rows 
+-------------
+          20
+(1 row)
+
+SELECT count(*) AS replicated_rows FROM trigdk_rep WHERE k > 1000;
+ replicated_rows 
+-----------------
+              20
+(1 row)
+
+DROP TABLE trigdk_t, trigdk_w, trigdk_c, trigdk_u, trigdk_p, trigdk_pb,
+           trigdk_m, trigdk_r, trigdk_rep;
+DROP FUNCTION trigdk_movek();
+DROP FUNCTION trigdk_bumpv();
+DROP FUNCTION trigdk_movep();
