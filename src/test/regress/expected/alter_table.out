@@ -2133,9 +2133,8 @@ ERROR:  cannot alter table "at_tab1" because column "at_tab2.y" uses its row typ
 drop table at_tab2;
 -- Use of row type in an expression is defended differently
 create table at_tab2 (x int, y text, check((x,y)::at_tab1 = (1,'42')::at_tab1));
-alter table at_tab1 alter column b type varchar; -- allowed, but ...
-insert into at_tab2 values(1,'42'); -- ... this will fail
-ERROR:  ROW() column has type text instead of type character varying
+alter table at_tab1 alter column b type varchar; -- fails
+ERROR:  cannot alter table "at_tab1" because constraint at_tab2_check on table at_tab2 uses its row type
 drop table at_tab1, at_tab2;
 -- Check it for a partitioned table, too
 create table at_tab1 (a int, b text) partition by list(a);
@@ -3074,11 +3073,12 @@ select * from my_locks order by 1;
 alter table alterlock2 add foreign key (f1) references alterlock (f1);
 WARNING:  referential integrity (FOREIGN KEY) constraints are not supported in Greenplum Database, will not be enforced
 select * from my_locks order by 1;
-  relname   |     max_lockmode      
-------------+-----------------------
- alterlock  | ShareRowExclusiveLock
- alterlock2 | ShareRowExclusiveLock
-(2 rows)
+    relname     |     max_lockmode      
+----------------+-----------------------
+ alterlock      | ShareRowExclusiveLock
+ alterlock2     | ShareRowExclusiveLock
+ alterlock_pkey | AccessShareLock
+(3 rows)
 
 rollback;
 begin;
@@ -3086,11 +3086,12 @@ alter table alterlock2
 add constraint alterlock2nv foreign key (f1) references alterlock (f1) NOT VALID;
 WARNING:  referential integrity (FOREIGN KEY) constraints are not supported in Greenplum Database, will not be enforced
 select * from my_locks order by 1;
-  relname   |     max_lockmode      
-------------+-----------------------
- alterlock  | ShareRowExclusiveLock
- alterlock2 | ShareRowExclusiveLock
-(2 rows)
+    relname     |     max_lockmode      
+----------------+-----------------------
+ alterlock      | ShareRowExclusiveLock
+ alterlock2     | ShareRowExclusiveLock
+ alterlock_pkey | AccessShareLock
+(3 rows)
 
 commit;
 begin;
@@ -4795,3 +4796,46 @@ create index float2double_table_idx_c1c2c3 on float2double_table(c1,c2,c3);
 create unique index float2double_table_uniqidx_c1c2c3 on float2double_table(c1,c2,c3);
 ALTER TABLE float2double_table ALTER COLUMN c1 TYPE double precision;
 DROP TABLE float2double_table;
+-- The reserved attribute option that stores the attribute's version is
+-- maintained internally.  A spuriously supplied value (e.g. emitted by an
+-- older pg_dump that predates the reserved key) is ignored (with a debug
+-- message) rather than rejected, so such dumps still restore; other options
+-- are still applied.
+CREATE TABLE attresv (a int);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+ALTER TABLE attresv ALTER COLUMN a SET (pg_attver = '0/1');
+ALTER TABLE attresv ALTER COLUMN a
+  SET (pg_attver = '0/1', n_distinct = 5); -- keeps n_distinct
+-- the non-reserved option was applied ...
+SELECT o FROM pg_attribute a, unnest(a.attoptions) o
+  WHERE a.attrelid = 'attresv'::regclass AND a.attname = 'a'
+    AND NOT starts_with(o, 'pg_attver=');
+      o       
+--------------
+ n_distinct=5
+(1 row)
+
+-- ... and the spurious version value was not stored
+SELECT count(*) FROM pg_attribute a, unnest(a.attoptions) o
+  WHERE a.attrelid = 'attresv'::regclass AND a.attname = 'a'
+    AND o = 'pg_attver=0/1';
+ count 
+-------
+     0
+(1 row)
+
+-- RESET of the reserved option is ignored as well; other options are reset
+ALTER TABLE attresv ALTER COLUMN a RESET (pg_attver, n_distinct);
+SELECT o FROM pg_attribute a, unnest(a.attoptions) o
+  WHERE a.attrelid = 'attresv'::regclass AND a.attname = 'a'
+    AND NOT starts_with(o, 'pg_attver=');
+ o 
+---
+(0 rows)
+
+-- A namespace-qualified option should be rejected as an unrecognized
+-- parameter namespace, like any other namespace-qualified attribute option.
+ALTER TABLE attresv ALTER COLUMN a SET (x.pg_attver = '0/1'); -- errors
+ERROR:  unrecognized parameter namespace "x"
+DROP TABLE attresv;

@@ -78,6 +78,7 @@
 
 #include "postgres.h"
 
+#include "access/xlog.h"
 #include "catalog/catalog.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_am.h"
@@ -1451,6 +1452,60 @@ AddPreassignedOidFromBinaryUpgrade(Oid oid, Oid catalog, char *objname,
  * Functions for use in the coordinator node.
  * ----------------------------------------------------------------
  */
+
+/*
+ * Return the attribute version to use for attribute 'attnum' of relation
+ * 'relid' (attnum 0 = all attributes of a relation being created).
+ *
+ * In the QD, the version is the WAL insert position, remembered for dispatch.
+ * In a QE, the version received from the QD is used, so that all nodes store
+ * the same version.
+ */
+uint64
+GetNewOrPreassignedAttributeVersion(Oid relid, AttrNumber attnum)
+{
+	uint64		version;
+
+	if (Gp_role == GP_ROLE_EXECUTE)
+	{
+		ListCell   *cur_item;
+		ListCell   *prev_item = NULL;
+
+		for (cur_item = list_head(preassigned_oids); cur_item != NULL;
+			 prev_item = cur_item, cur_item = lnext(cur_item))
+		{
+			OidAssignment *p = (OidAssignment *) lfirst(cur_item);
+
+			if (p->catalog == ATTRIBUTE_VERSION_ASSIGNMENT &&
+				p->keyOid1 == relid && p->keyOid2 == (Oid) attnum)
+			{
+				version = p->attversion;
+				preassigned_oids = list_delete_cell(preassigned_oids, cur_item, prev_item);
+				pfree(p);
+				return version;
+			}
+		}
+		elog(ERROR, "no pre-assigned attribute version for attribute %d of relation %u",
+			 attnum, relid);
+	}
+
+	version = GetXLogInsertRecPtr();
+
+	if (Gp_role == GP_ROLE_DISPATCH)
+	{
+		MemoryContext oldcontext = MemoryContextSwitchTo(get_oids_context());
+		OidAssignment *p = makeNode(OidAssignment);
+
+		p->catalog = ATTRIBUTE_VERSION_ASSIGNMENT;
+		p->keyOid1 = relid;
+		p->keyOid2 = (Oid) attnum;
+		p->attversion = version;
+		dispatch_oids = lappend(dispatch_oids, p);
+		MemoryContextSwitchTo(oldcontext);
+	}
+
+	return version;
+}
 
 /*
  * Get list of OIDs assigned in this transaction, since the last call.

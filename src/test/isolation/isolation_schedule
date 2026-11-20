@@ -145,3 +145,7 @@ test: ao-repeatable-read-vacuum
 
 test: ao-insert-eof create_index_hot udf-insert-deadlock heap-repeatable-read ao-repeatable-read
 test: vacuum-ao-concurrent-drop
+test: ddl-dependency-locking
+test: type-ddl-locking
+test: rowtypes-alter
+test: eval-plan-qual-rowtype-alter

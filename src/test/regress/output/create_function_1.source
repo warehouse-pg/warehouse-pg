@@ -23,6 +23,14 @@ CREATE FUNCTION int44out(city_budget)
    AS '@libdir@/regress@DLSUFFIX@'
    LANGUAGE C IMMUTABLE STRICT NO SQL;
 NOTICE:  argument type city_budget is only a shell
+CREATE FUNCTION make_tuple_unversioned(anyelement)
+    RETURNS anyelement
+    AS '@libdir@/regress@DLSUFFIX@', 'make_tuple_unversioned'
+    LANGUAGE C STRICT;
+CREATE FUNCTION clear_attribute_versions(regclass)
+    RETURNS void
+    AS '@libdir@/regress@DLSUFFIX@', 'clear_attribute_versions'
+    LANGUAGE C STRICT;
 CREATE FUNCTION check_primary_key ()
 	RETURNS trigger
 	AS '@libdir@/refint@DLSUFFIX@'

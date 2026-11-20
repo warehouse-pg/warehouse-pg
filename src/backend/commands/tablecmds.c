@@ -40,7 +40,9 @@
 #include "catalog/objectaccess.h"
 #include "catalog/partition.h"
 #include "catalog/pg_appendonly.h"
+#include "catalog/pg_attrdef.h"
 #include "catalog/pg_attribute_encoding.h"
+#include "catalog/pg_cast.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_compression.h"
 #include "catalog/pg_constraint.h"
@@ -49,7 +51,13 @@
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_opclass.h"
-#include "catalog/pg_proc_d.h"
+#include "catalog/pg_operator.h"
+#include "catalog/pg_partitioned_table.h"
+#include "catalog/pg_policy.h"
+#include "catalog/pg_proc.h"
+#include "catalog/pg_publication_rel.h"
+#include "catalog/pg_rewrite.h"
+#include "catalog/pg_statistic_ext.h"
 #include "catalog/pg_tablespace.h"
 #include "catalog/pg_trigger.h"
 #include "catalog/pg_tablespace.h"
@@ -341,6 +349,17 @@ static void ATTypedTableRecursion(List **wqueue, Relation rel, AlterTableCmd *cm
 								  LOCKMODE lockmode);
 static List *find_typed_table_dependencies(Oid typeOid, const char *typeName,
 										   DropBehavior behavior);
+static void find_composite_type_dependencies_recurse(Oid typeOid, Relation origRelation,
+													 const char *origTypeName, HTAB *visited);
+static void check_composite_type_dependency(ObjectAddress *depobj, Oid typeOid,
+											Relation origRelation, const char *origTypeName,
+											HTAB *visited);
+static void report_type_used_in_column(const char *relname, const char *attname,
+									   Relation origRelation, const char *origTypeName);
+static void report_type_used_in_expr(const ObjectAddress *obj, Relation origRelation,
+									 const char *origTypeName);
+static Node *get_node_tree_attr(enum SysCacheIdentifier cacheId, HeapTuple tup, AttrNumber attnum);
+static void find_missing_composite_type_dependencies(HTAB *types, Relation origRelation, const char *origTypeName);
 static void ATPrepAddColumn(List **wqueue, Relation rel, bool recurse, bool recursing,
 							bool is_view, AlterTableCmd *cmd, LOCKMODE lockmode);
 static ObjectAddress ATExecAddColumn(List **wqueue, AlteredTableInfo *tab,
@@ -6033,8 +6052,15 @@ ATRewriteTables(AlterTableStmt *parsetree, List **wqueue, LOCKMODE lockmode)
 		 * rewrite, but at the moment a composite type does not enforce any
 		 * constraints, so it's not necessary/appropriate to enforce them just
 		 * during ALTER.)
+		 *
+		 * Rewrites that leave the row type as it is (a change of persistence,
+		 * access method or storage options, a REPACK) need no such check.
 		 */
-		if (tab->newvals != NIL || tab->rewrite > 0)
+		if (tab->newvals != NIL ||
+			(tab->rewrite & (AT_REWRITE_DEFAULT_VAL |
+							 AT_REWRITE_COLUMN_REWRITE |
+							 AT_REWRITE_NEW_COLUMNS_ONLY |
+							 AT_REWRITE_REWRITE_COLUMNS_ONLY)) != 0)
 		{
 			Relation	rel;
 
@@ -7105,33 +7131,80 @@ ATTypedTableRecursion(List **wqueue, Relation rel, AlterTableCmd *cmd,
 /*
  * find_composite_type_dependencies
  *
- * Check to see if the type "typeOid" is being used as a column in some table
- * (possibly nested several levels deep in composite types, arrays, etc!).
- * Eventually, we'd like to propagate the check or rewrite operation
- * into such tables, but for now, just error out if we find any.
+ * Check to see if the type "typeOid" is being used in a way that prevents
+ * ALTER COLUMN / ALTER ATTRIBUTE on it.  For example, if it's used as a
+ * column in some table (possibly nested several levels deep in composite
+ * types, arrays, etc!), we must not allow it.  Eventually, we'd like to
+ * propagate the check or rewrite operation into such tables, but for now,
+ * just error out if we find any.
  *
- * Caller should provide either the associated relation of a rowtype,
- * or a type name (not both) for use in the error message, if any.
+ * Caller should provide either the associated relation of a rowtype, or a
+ * type name (not both) for use in the error message, if any.
  *
  * Note that "typeOid" is not necessarily a composite type; it could also be
  * another container type such as an array or range, or a domain over one of
  * these things.  The name of this function is therefore somewhat historical,
  * but it's not worth changing.
- *
- * We assume that functions and views depending on the type are not reasons
- * to reject the ALTER.  (How safe is this really?)
  */
 void
 find_composite_type_dependencies(Oid typeOid, Relation origRelation,
 								 const char *origTypeName)
 {
+	HASHCTL		hctl;
+	HTAB	   *visited;
+
+	memset(&hctl, 0, sizeof(HASHCTL));
+	hctl.keysize = sizeof(Oid);
+	hctl.entrysize = sizeof(Oid);
+	hctl.hcxt = CurrentMemoryContext;
+
+	visited = hash_create("visited types",
+						  32,	/* start small and extend */
+						  &hctl,
+						  HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+
+	find_composite_type_dependencies_recurse(typeOid, origRelation, origTypeName,
+											 visited);
+
+	/*
+	 * We used to not record pg_depend entries in some cases where we really
+	 * should have.  Scan the catalog tables for those, too.
+	 */
+	find_missing_composite_type_dependencies(visited, origRelation, origTypeName);
+
+	hash_destroy(visited);
+}
+
+/*
+ * Recursive part of find_composite_type_dependencies.  'visited' keeps track
+ * of types that have already been visited, to avoid duplicating work.
+ */
+static void
+find_composite_type_dependencies_recurse(Oid typeOid, Relation origRelation,
+										 const char *origTypeName, HTAB *visited)
+{
 	Relation	depRel;
 	ScanKeyData key[2];
 	SysScanDesc depScan;
 	HeapTuple	depTup;
+	bool		visited_already;
 
 	/* since this function recurses, it could be driven to stack overflow */
 	check_stack_depth();
+
+	/* skip if we visited this type already */
+	hash_search(visited, &typeOid, HASH_ENTER, &visited_already);
+	if (visited_already)
+		return;
+
+	/*
+	 * We already hold a lock on the relation being ALTERed, but also lock its
+	 * rowtype (on first call), and its array type, domains, composite types
+	 * etc. that depend on the ALTERed type (as we recurse).  This ensures
+	 * that if a concurrent command is adding a new dependency to any of those
+	 * types, we will see it.
+	 */
+	LockDatabaseObject(TypeRelationId, typeOid, 0, AccessExclusiveLock);
 
 	/*
 	 * We scan pg_depend to find those things that depend on the given type.
@@ -7154,76 +7227,13 @@ find_composite_type_dependencies(Oid typeOid, Relation origRelation,
 	while (HeapTupleIsValid(depTup = systable_getnext(depScan)))
 	{
 		Form_pg_depend pg_depend = (Form_pg_depend) GETSTRUCT(depTup);
-		Relation	rel;
-		Form_pg_attribute att;
+		ObjectAddress depobj;
 
-		/* Check for directly dependent types */
-		if (pg_depend->classid == TypeRelationId)
-		{
-			/*
-			 * This must be an array, domain, or range containing the given
-			 * type, so recursively check for uses of this type.  Note that
-			 * any error message will mention the original type not the
-			 * container; this is intentional.
-			 */
-			find_composite_type_dependencies(pg_depend->objid,
-											 origRelation, origTypeName);
-			continue;
-		}
+		ObjectAddressSubSet(depobj, pg_depend->classid, pg_depend->objid,
+							pg_depend->objsubid);
 
-		/* Else, ignore dependees that aren't user columns of relations */
-		/* (we assume system columns are never of interesting types) */
-		if (pg_depend->classid != RelationRelationId ||
-			pg_depend->objsubid <= 0)
-			continue;
-
-		rel = relation_open(pg_depend->objid, AccessShareLock);
-		att = TupleDescAttr(rel->rd_att, pg_depend->objsubid - 1);
-
-		if (rel->rd_rel->relkind == RELKIND_RELATION ||
-			rel->rd_rel->relkind == RELKIND_MATVIEW ||
-			rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
-		{
-			if (origTypeName)
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("cannot alter type \"%s\" because column \"%s.%s\" uses it",
-								origTypeName,
-								RelationGetRelationName(rel),
-								NameStr(att->attname))));
-			else if (origRelation->rd_rel->relkind == RELKIND_COMPOSITE_TYPE)
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("cannot alter type \"%s\" because column \"%s.%s\" uses it",
-								RelationGetRelationName(origRelation),
-								RelationGetRelationName(rel),
-								NameStr(att->attname))));
-			else if (origRelation->rd_rel->relkind == RELKIND_FOREIGN_TABLE)
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("cannot alter foreign table \"%s\" because column \"%s.%s\" uses its row type",
-								RelationGetRelationName(origRelation),
-								RelationGetRelationName(rel),
-								NameStr(att->attname))));
-			else
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("cannot alter table \"%s\" because column \"%s.%s\" uses its row type",
-								RelationGetRelationName(origRelation),
-								RelationGetRelationName(rel),
-								NameStr(att->attname))));
-		}
-		else if (OidIsValid(rel->rd_rel->reltype))
-		{
-			/*
-			 * A view or composite type itself isn't a problem, but we must
-			 * recursively check for indirect dependencies via its rowtype.
-			 */
-			find_composite_type_dependencies(rel->rd_rel->reltype,
-											 origRelation, origTypeName);
-		}
-
-		relation_close(rel, AccessShareLock);
+		check_composite_type_dependency(&depobj, typeOid, origRelation, origTypeName,
+										visited);
 	}
 
 	systable_endscan(depScan);
@@ -7231,6 +7241,569 @@ find_composite_type_dependencies(Oid typeOid, Relation origRelation,
 	relation_close(depRel, AccessShareLock);
 }
 
+/*
+ * check_composite_type_dependency
+ *
+ * Subroutine of find_composite_type_dependencies, to check whether a
+ * dependency from "depobj" makes it unsafe to alter a column of "typeOid".
+ * Some dependencies that would prevent dropping a composite type entirely
+ * don't prevent ALTERing it.  This function is called after we have
+ * established that there is a dependency, to look closer at whether the
+ * dependency prevents ALTER or not.
+ *
+ * Caller should provide either the associated relation of a rowtype, or a
+ * type name (not both) for use in the error message, if any.
+ *
+ * Note that "typeOid" is not necessarily a composite type; it could also be
+ * another container type such as an array or range, or a domain over one of
+ * these things.
+ */
+static void
+check_composite_type_dependency(ObjectAddress *depobj, Oid typeOid,
+								Relation origRelation, const char *origTypeName,
+								HTAB *visited)
+{
+	Oid			classid = depobj->classId;
+	Oid			objid = depobj->objectId;
+	int32		objsubid = depobj->objectSubId;
+	HeapTuple	catalog_tup;
+	Node	   *expr;
+	Relation	rel;
+	TupleDesc	tupleDesc;
+	Form_pg_attribute att;
+	Form_pg_constraint cform;
+
+	/*
+	 * By default, a dependency on a type prevents ALTERing it.  But we make
+	 * many exceptions for cases that are safe:
+	 */
+	switch (classid)
+	{
+		case OperatorRelationId:
+
+			/*
+			 * Operators are OK.  The function implementing the operator will
+			 * have a dependency of its own and will be checked separately.
+			 */
+			break;
+
+		case CastRelationId:
+
+			/*
+			 * Casts are also OK.  If the cast uses a function, the function
+			 * will have a dependency of its own.
+			 */
+			break;
+
+		case ProcedureRelationId:
+
+			/*
+			 * A function that uses the composite type as its return or
+			 * argument type doesn't prevent ALTERing it.  But if the type is
+			 * used in the DEFAULT expressions, we need to reject, because the
+			 * expression might contain Consts or other things that would
+			 * become invalid.
+			 *
+			 * Fetch the procedure definition to see which parts are using the
+			 * type.  Lock it to make sure that a DEFAULT expression is not
+			 * added to it concurrently with CREATE OR REPLACE FUNCTION.
+			 */
+			LockDatabaseObject(ProcedureRelationId, objid, 0, AccessShareLock);
+			catalog_tup = SearchSysCache1(PROCOID, ObjectIdGetDatum(objid));
+			if (!HeapTupleIsValid(catalog_tup))
+				elog(ERROR, "cache lookup failed for function %u", objid);
+
+			/* Is it used in the argument DEFAULTs? */
+			expr = get_node_tree_attr(PROCOID, catalog_tup, Anum_pg_proc_proargdefaults);
+			if (expr && CheckTypeDependencyInExpr(expr, NIL, typeOid))
+				report_type_used_in_expr(depobj, origRelation, origTypeName);
+
+			/*
+			 * Otherwise, it must be used as a return or parameter type, which
+			 * is OK.
+			 */
+			ReleaseSysCache(catalog_tup);
+			break;
+
+		case ConstraintRelationId:
+
+			/*
+			 * Constraints referencing the type usually forbid ALTERing it,
+			 * but there's one exception: a CHECK constraint on a domain
+			 * referencing the type itself is ignored, if the expression
+			 * doesn't refer to the type.  In other words, if the dependency
+			 * exists just because it's a CHECK constraint on the domain, that
+			 * doesn't prevent altering the underlying type.  (We assume that
+			 * the constraint cannot be reassigned to a different type, so no
+			 * need to hold the lock just to check 'contypid'.)
+			 */
+			catalog_tup = SearchSysCache1(CONSTROID, ObjectIdGetDatum(objid));
+			if (!HeapTupleIsValid(catalog_tup))
+				elog(ERROR, "cache lookup failed for constraint %u", objid);
+			cform = (Form_pg_constraint) GETSTRUCT(catalog_tup);
+			if (cform->contypid == typeOid)
+			{
+				/*
+				 * This is a CHECK constraint on the domain.  Look closer if
+				 * the expression actually refers to the target type.
+				 */
+				LockDatabaseObject(ConstraintRelationId, objid, 0, AccessShareLock);
+				expr = get_node_tree_attr(CONSTROID, catalog_tup,
+										  Anum_pg_constraint_conbin);
+				if (expr && CheckTypeDependencyInExpr(expr, NIL, typeOid))
+					report_type_used_in_expr(depobj, origRelation, origTypeName);
+			}
+			else
+			{
+				/* This is some other constraint using the type */
+				report_type_used_in_expr(depobj, origRelation, origTypeName);
+			}
+			ReleaseSysCache(catalog_tup);
+			break;
+
+		case TypeRelationId:
+
+			/*
+			 * An array, domain, or range containing the given type doesn't
+			 * prevent altering it.  But recursively check for uses of this
+			 * type.  Note that any error message will mention the original
+			 * type not the container; this is intentional.
+			 */
+			find_composite_type_dependencies_recurse(objid,
+													 origRelation, origTypeName,
+													 visited);
+
+			/*
+			 * A domain's default expression can embed a Const of the altered
+			 * type, however.  We must reject that.
+			 *
+			 * find_composite_type_dependencies_recurse() acquired a lock on
+			 * the type, so we don't need to acquire it here again to inspect
+			 * the default.
+			 */
+			catalog_tup = SearchSysCache1(TYPEOID, ObjectIdGetDatum(objid));
+			if (!HeapTupleIsValid(catalog_tup))
+				elog(ERROR, "cache lookup failed for type %u", objid);
+
+			expr = get_node_tree_attr(TYPEOID, catalog_tup, Anum_pg_type_typdefaultbin);
+			if (expr && CheckTypeDependencyInExpr(expr, NIL, typeOid))
+				report_type_used_in_expr(depobj, origRelation, origTypeName);
+
+			ReleaseSysCache(catalog_tup);
+			break;
+
+		case RelationRelationId:
+			rel = relation_open(objid, AccessShareLock);
+			tupleDesc = RelationGetDescr(rel);
+
+			/*
+			 * First check for a dependency from a specific column.  (We
+			 * assume system columns are never of interesting types.)
+			 */
+			if (objsubid > 0 && objsubid <= tupleDesc->natts)
+				att = TupleDescAttr(tupleDesc, objsubid - 1);
+			else
+			{
+				/*
+				 * We treat a whole-row dependency the same as a dependency
+				 * from a specific column, if the relation also has a column
+				 * of the given type.  This is because we used to have a gap
+				 * in dependency tracking: expression indexes didn't store a
+				 * dependency on the indexed type returned by the expression.
+				 * That was a bug, but in many typical cases, the expression
+				 * still had a dependency on the row type, so we can often
+				 * still catch it here.  Treat it as if the dependency was on
+				 * the column.  (It could also be that the target type is
+				 * embedded in some container type that is stored in an index
+				 * column, but the previous recursion should catch such
+				 * cases.)
+				 *
+				 * Any cases of missing dependencies not caught here are
+				 * handled by find_missing_composite_type_dependencies().
+				 */
+				att = NULL;
+				for (int attno = 1; attno <= tupleDesc->natts; attno++)
+				{
+					att = TupleDescAttr(tupleDesc, attno - 1);
+					if (att->atttypid == typeOid && !att->attisdropped)
+						break;
+					att = NULL;
+				}
+			}
+			if (att)
+			{
+				/*
+				 * A column uses the datatype.
+				 *
+				 * We definitely should reject if the relation has storage.
+				 *
+				 * If it's partitioned, then perhaps we wouldn't have to
+				 * reject: if there are partitions then we'll fail when we
+				 * find one, else there is no stored data to worry about.
+				 * However, it's possible that the type change would affect
+				 * conclusions about whether the type is sortable or hashable
+				 * and thus (if it's a partitioning column) break the
+				 * partitioning rule.  For now, reject for partitioned rels
+				 * too.
+				 *
+				 * Foreign tables don't have storage as such, but they can
+				 * have statistics stored in the pg_statistic table.  (It
+				 * might be better to remove the statistics than fail the
+				 * operation, but with the current code structure, it'd be
+				 * inconvenient to memorize the need for removing the
+				 * statistics.  Note that if we allowed partitioned tables
+				 * here, they could also have statistics.)
+				 */
+				if (RELKIND_HAS_STORAGE(rel->rd_rel->relkind) ||
+					rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE ||
+					rel->rd_rel->relkind == RELKIND_PARTITIONED_INDEX ||
+					rel->rd_rel->relkind == RELKIND_FOREIGN_TABLE)
+				{
+					report_type_used_in_column(RelationGetRelationName(rel),
+											   NameStr(att->attname),
+											   origRelation, origTypeName);
+				}
+
+				if (OidIsValid(rel->rd_rel->reltype) && rel->rd_rel->reltype != typeOid)
+				{
+					/*
+					 * A view or composite type itself isn't a problem, but we
+					 * must recursively check for indirect dependencies via
+					 * its rowtype.
+					 */
+					find_composite_type_dependencies_recurse(rel->rd_rel->reltype,
+															 origRelation, origTypeName,
+															 visited);
+				}
+			}
+
+			/*
+			 * If it's a dependency on the type as whole, look closer what
+			 * exactly in the relation uses it.  Some uses don't prevent
+			 * ALTERing the rowtype, but others do.
+			 *
+			 * NOTE: We must not use the expressions cached in the relcache,
+			 * because they go through eval_const_expressions(), which could
+			 * fold away the thing that caused the dependency.
+			 */
+			if (objsubid == 0)
+			{
+				/*
+				 * If the type is used in a PARTITION BY expression, must be
+				 * rejected.
+				 */
+				if (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+				{
+					List	   *partexprs;
+					ListCell   *lc;
+
+					catalog_tup = SearchSysCache1(PARTRELID,
+												  ObjectIdGetDatum(RelationGetRelid(rel)));
+					if (!HeapTupleIsValid(catalog_tup))
+						elog(ERROR, "cache lookup failed for partition key of relation %u",
+							 RelationGetRelid(rel));
+					partexprs = (List *)
+						get_node_tree_attr(PARTRELID, catalog_tup,
+										   Anum_pg_partitioned_table_partexprs);
+					foreach(lc, partexprs)
+					{
+						Node	   *partexpr = lfirst(lc);
+
+						/*
+						 * Check if it's the PARTITION BY's return type.
+						 *
+						 * (This could be allowed as long as the table has no
+						 * partitions.  The problem really only arises from
+						 * the partition bounds stored in the 'relpartbound'
+						 * of the partitions.  But it's not worth
+						 * distinguishing that case.)
+						 *
+						 * We had a gap in our dependency tracking in the
+						 * past, and didn't record a pg_depend entry for
+						 * these.  Any missing dependencies not caught here
+						 * are handled by
+						 * find_missing_composite_type_dependencies().
+						 */
+						if (exprType(partexpr) == typeOid)
+							report_type_used_in_expr(depobj, origRelation, origTypeName);
+
+						/*
+						 * Check if the expression uses the rowtype.  We must
+						 * reject that case because otherwise we'd need to
+						 * rewrite the expression stored in the catalog, as
+						 * well as the partition bounds of all the partitions,
+						 * and also because the data might no longer be in the
+						 * correct partitions according to the new datatype's
+						 * sort order.
+						 */
+						if (CheckTypeDependencyInSingleRelExpr(partexpr, RelationGetRelid(rel), typeOid))
+							report_type_used_in_expr(depobj, origRelation, origTypeName);
+					}
+					ReleaseSysCache(catalog_tup);
+				}
+
+				/*
+				 * If it's an expression or partial index, must reject if the
+				 * expressions use the rowtype (it might include Consts).
+				 *
+				 * If an index uses the target type as a column, we will
+				 * rebuild it, but RememberAllDependentForRebuilding() doesn't
+				 * handle whole-row dependencies.
+				 */
+				if (rel->rd_indextuple)
+				{
+					expr = get_node_tree_attr(INDEXRELID, rel->rd_indextuple,
+											  Anum_pg_index_indexprs);
+					if (expr)
+					{
+						if (CheckTypeDependencyInSingleRelExpr(expr, RelationGetRelid(rel), typeOid))
+							report_type_used_in_expr(depobj, origRelation, origTypeName);
+
+						/*
+						 * If it's the *return type* of an index expression,
+						 * it becomes a column type and we checked that above
+						 * already.
+						 */
+					}
+					expr = get_node_tree_attr(INDEXRELID, rel->rd_indextuple,
+											  Anum_pg_index_indpred);
+					if (expr)
+					{
+						if (CheckTypeDependencyInSingleRelExpr(expr, RelationGetRelid(rel), typeOid))
+							report_type_used_in_expr(depobj, origRelation, origTypeName);
+					}
+				}
+
+				/*
+				 * We have now checked for all the known reasons that a
+				 * relation might depend on a type that prevents ALTERing it.
+				 * There are two reasons left that don't prevent ALTER: the
+				 * type is the table's reltype, or its TYPE OF type.  (The
+				 * TYPE OF case might still prevent the operation, but that's
+				 * handled separately by find_typed_table_dependencies())
+				 */
+				if (rel->rd_rel->reltype == typeOid || rel->rd_rel->reloftype == typeOid)
+				{
+					/* ok */
+				}
+				else
+				{
+					/*
+					 * We've covered all reasons for this dependency to exist,
+					 * so why are we here?  Better play safe and reject it.
+					 */
+					Assert(false);
+					report_type_used_in_expr(depobj, origRelation, origTypeName);
+				}
+			}
+
+			relation_close(rel, AccessShareLock);
+			break;
+
+		case PublicationRelRelationId:
+
+			/*
+			 * pg_publication_rel.prqual contains an expression.  It should
+			 * not contain user-defined types, but CREATE PUBLICATION's
+			 * definition of a user-defined type is different from a pinned
+			 * object, so we might see these.
+			 */
+			report_type_used_in_expr(depobj, origRelation, origTypeName);
+			break;
+
+		case RewriteRelationId:
+		case AttrDefaultRelationId:
+		case TriggerRelationId:
+		case PolicyRelationId:
+		case StatisticExtRelationId:
+		default:
+			/* Forbid anything else */
+			report_type_used_in_expr(depobj, origRelation, origTypeName);
+			break;
+	}
+}
+
+/*
+ * report_type_used_in_column
+ *
+ * Complain that the ALTER can't proceed because a column uses the type being
+ * altered.
+ */
+static void
+report_type_used_in_column(const char *relname, const char *attname,
+						   Relation origRelation, const char *origTypeName)
+{
+	if (origTypeName)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot alter type \"%s\" because column \"%s.%s\" uses it",
+						origTypeName,
+						relname, attname)));
+	else if (origRelation->rd_rel->relkind == RELKIND_COMPOSITE_TYPE)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot alter type \"%s\" because column \"%s.%s\" uses it",
+						RelationGetRelationName(origRelation),
+						relname, attname)));
+	else if (origRelation->rd_rel->relkind == RELKIND_FOREIGN_TABLE)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot alter foreign table \"%s\" because column \"%s.%s\" uses its row type",
+						RelationGetRelationName(origRelation),
+						relname, attname)));
+	else
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot alter table \"%s\" because column \"%s.%s\" uses its row type",
+						RelationGetRelationName(origRelation),
+						relname, attname)));
+}
+
+/*
+ * report_type_used_in_expr
+ *
+ * Complain that the ALTER can't proceed because a stored expression holds a
+ * value of the type being altered.
+ */
+static void
+report_type_used_in_expr(const ObjectAddress *obj, Relation origRelation,
+						 const char *origTypeName)
+{
+	char	   *objdesc = getObjectDescription(obj);
+
+	if (origTypeName)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot alter type \"%s\" because %s uses it",
+						origTypeName, objdesc)));
+
+	if (origRelation->rd_rel->relkind == RELKIND_COMPOSITE_TYPE)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot alter type \"%s\" because %s uses it",
+						RelationGetRelationName(origRelation), objdesc)));
+
+	if (origRelation->rd_rel->relkind == RELKIND_FOREIGN_TABLE)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot alter foreign table \"%s\" because %s uses its row type",
+						RelationGetRelationName(origRelation), objdesc)));
+
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("cannot alter table \"%s\" because %s uses its row type",
+					RelationGetRelationName(origRelation), objdesc)));
+}
+
+/* Read a pg_node_tree column's value as a Node */
+static Node *
+get_node_tree_attr(enum SysCacheIdentifier cacheId, HeapTuple tup, AttrNumber attnum)
+{
+	Datum		val;
+	bool		isnull;
+
+	val = SysCacheGetAttr(cacheId, tup, attnum, &isnull);
+	if (isnull)
+		return NULL;
+
+	return stringToNode(TextDatumGetCString(val));
+}
+
+/*
+ * find_missing_composite_type_dependencies
+ *
+ * In the past, we failed to record pg_depend entries for a few cases that
+ * clearly form a dependency and should prevent you from ALTERing a rowtype.
+ * This function scans the catalogs for the missing dependencies.
+ * Unfortunately, these need to resort to sequential scans, which is slow.
+ */
+static void
+find_missing_composite_type_dependencies(HTAB *types, Relation origRelation,
+										 const char *origTypeName)
+{
+	Relation	catalog_rel;
+	SysScanDesc scan;
+	HeapTuple	tup;
+
+	/*
+	 * A partition bound is stored as a Const of the PARTITION BY expression's
+	 * result type.  However, we used to not record a pg_depend entry for
+	 * that.  Often an expression depends on its result type for other
+	 * reasons, for example a Const does record a dependency on its type, but
+	 * as a counter-example, a function call records a dependency only on the
+	 * function, not on its return type.
+	 *
+	 * To find such missing dependencies, scan pg_partitioned_table directly
+	 * for a key expression that produces typeOid.
+	 *
+	 * The expression might return the target type directly, or wrapped in a
+	 * container such as an array or a range.  We only check for the direct
+	 * case here, containers are handled by the recursion from
+	 * find_composite_type_dependencies()
+	 */
+	catalog_rel = table_open(PartitionedRelationId, AccessShareLock);
+	scan = systable_beginscan(catalog_rel, InvalidOid, false, NULL, 0, NULL);
+	while (HeapTupleIsValid(tup = systable_getnext(scan)))
+	{
+		List	   *exprs;
+		ListCell   *lc;
+
+		/* Is the *result* of the PARTITION BY expression a problem? */
+		exprs = (List *) get_node_tree_attr(PARTRELID, tup,
+											Anum_pg_partitioned_table_partexprs);
+		foreach(lc, exprs)
+		{
+			Node	   *expr = (Node *) lfirst(lc);
+			Oid			resultType = exprType(expr);
+
+			if (hash_search(types, &resultType, HASH_FIND, NULL))
+			{
+				Form_pg_partitioned_table form =
+					(Form_pg_partitioned_table) GETSTRUCT(tup);
+				ObjectAddress obj;
+
+				ObjectAddressSet(obj, RelationRelationId, form->partrelid);
+				report_type_used_in_expr(&obj, origRelation, origTypeName);
+			}
+		}
+	}
+	systable_endscan(scan);
+	table_close(catalog_rel, AccessShareLock);
+
+	/*
+	 * Similarly, an expression index whose expression returns the target type
+	 * stores datums of that type in the index, but we used to not record a
+	 * pg_depend entry for that.  Scan pg_index for those.
+	 *
+	 * The predicate of a partial index always returns a boolean, so we don't
+	 * need to worry about that here.
+	 */
+	catalog_rel = table_open(IndexRelationId, AccessShareLock);
+	scan = systable_beginscan(catalog_rel, InvalidOid, false, NULL, 0, NULL);
+	while (HeapTupleIsValid(tup = systable_getnext(scan)))
+	{
+		List	   *exprs;
+		ListCell   *lc;
+
+		exprs = (List *) get_node_tree_attr(INDEXRELID, tup, Anum_pg_index_indexprs);
+		foreach(lc, exprs)
+		{
+			Node	   *expr = (Node *) lfirst(lc);
+			Oid			resultType = exprType(expr);
+
+			if (hash_search(types, &resultType, HASH_FIND, NULL))
+			{
+				Form_pg_index index = (Form_pg_index) GETSTRUCT(tup);
+				ObjectAddress obj;
+
+				ObjectAddressSet(obj, RelationRelationId, index->indexrelid);
+				report_type_used_in_expr(&obj, origRelation, origTypeName);
+			}
+		}
+	}
+	systable_endscan(scan);
+	table_close(catalog_rel, AccessShareLock);
+}
 
 /*
  * find_typed_table_dependencies
@@ -7480,6 +8053,7 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 				attrdesc;
 	HeapTuple	reltup;
 	FormData_pg_attribute attribute;
+	Datum		attoption = (Datum) 0;
 	int			newattnum;
 	char		relkind;
 	HeapTuple	typeTuple;
@@ -7635,7 +8209,26 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 
 	ReleaseSysCache(typeTuple);
 
-	InsertPgAttributeTuple(attrdesc, &attribute, NULL);
+	/*
+	 * Set up information to set the new attribute's version, if needed (the
+	 * relation has a versioned rowtype).
+	 */
+	Assert(HasVersionedAttributes(rel) || allowSystemTableMods);
+	if (HasVersionedAttributes(rel))
+	{
+		XLogRecPtr	attversion = GetNextAttributeVersion(myrelid, newattnum);
+
+		/*
+		 * We rely on the version to be monotonic, so make sure that's true,
+		 * like SetAttributeVersionInTuple() does.
+		 */
+		if (attversion <= TupleDescGetVersion(rel->rd_att))
+			elog(ERROR, "version of attribute is not increasing");
+
+		attoption = attoptions_set_version((Datum) 0, true, attversion);
+	}
+
+	InsertPgAttributeTuple(attrdesc, &attribute, attoption, NULL);
 
 	table_close(attrdesc, RowExclusiveLock);
 
@@ -9163,6 +9756,43 @@ ATExecSetOptions(Relation rel, const char *colName, Node *options,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cannot alter system column \"%s\"",
 						colName)));
+
+	/*
+	 * Build the list of column options, ignoring spuriously passed attribute
+	 * versions.
+	 *
+	 * See src/backend/catalog/README.attver.md's "Version storage in the
+	 * catalog" section.
+	 */
+	{
+		List	   *filtered = NIL;
+		ListCell   *lc;
+		bool		found = false;
+
+		foreach(lc, castNode(List, options))
+		{
+			DefElem    *def = lfirst_node(DefElem, lc);
+
+			if (def->defnamespace == NULL &&
+				strcmp(def->defname, ATTRIBUTE_VERSION_ATTOPTION) == 0)
+				found = true;
+			else
+				filtered = lappend(filtered, def);
+		}
+
+		if (found)
+		{
+			/*
+			 * It'd be too verbose to warn every time an option is ignored,
+			 * therefore just use DEBUG1 for now.
+			 */
+			ereport(DEBUG1,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("ignoring reserved attribute option \"%s\"",
+							ATTRIBUTE_VERSION_ATTOPTION)));
+			options = (Node *) filtered;
+		}
+	}
 
 	/* Generate new proposed attoptions (text array) */
 	datum = SysCacheGetAttr(ATTNAME, tuple, Anum_pg_attribute_attoptions,
@@ -13295,6 +13925,7 @@ ATExecAlterColumnType(List **wqueue,
 	SysScanDesc scan;
 	HeapTuple	depTup;
 	ObjectAddress address;
+	XLogRecPtr	attversion = InvalidXLogRecPtr;
 
 	/*
 	 * Leave a flag on tables in the partition hierarchy that can benefit from the
@@ -13740,9 +14371,58 @@ ATExecAlterColumnType(List **wqueue,
 	attTup->attalign = tform->typalign;
 	attTup->attstorage = tform->typstorage;
 
+	/*
+	 * Update the version of this attribute. Together with the update of the
+	 * version of following attributes (see SetAttributeVersions() call
+	 * below), this prevents old datums containing this, or a following
+	 * attribute, from being decoded - that would be unsafe.  See
+	 * src/backend/catalog/README.attver.md for details.
+	 *
+	 * This has to be done as part of the same command as the
+	 * CatalogTupleUpdate() for the type change, the row is not going to be
+	 * visible for a separate update before a CommandCounterIncrement(), and
+	 * we don't want to do the CommandCounterIncrement() before having updated
+	 * the versions of the subsequent columns, as that would be an
+	 * inconsistent view of the catalog.  It also would trigger unnecessarily
+	 * many cache entry rebuilds.
+	 *
+	 * NB: We could potentially skip increasing the version in a few cases,
+	 * e.g. changes with the same (or a binary coercible) source & target
+	 * type. But at the moment we don't allow such changes if there are
+	 * existing composite datums in the catalog, so avoiding the version bump
+	 * to protect non-catalog datums doesn't really seem worthwhile (note that
+	 * we can't rely on ATColumnChangeRequiresRewrite() having run).
+	 *
+	 * XXX: This would look a lot better if we made surrounding code also use
+	 * heap_modify_tuple(), given that we have very similar code above for
+	 * atthasmissing.
+	 */
+	Assert(HasVersionedAttributes(rel) || allowSystemTableMods);
+	if (HasVersionedAttributes(rel))
+	{
+		HeapTuple	newTup;
+
+		attversion = GetNextAttributeVersion(RelationGetRelid(rel), attnum);
+
+		newTup = SetAttributeVersionInTuple(attrelation,
+											heapTup,
+											attversion);
+		heap_freetuple(heapTup);
+		heapTup = newTup;
+		attTup = (Form_pg_attribute) GETSTRUCT(heapTup);
+	}
+
 	ReleaseSysCache(typeTuple);
 
 	CatalogTupleUpdate(attrelation, &heapTup->t_self, heapTup);
+
+	/*
+	 * Update version of all following columns (if any). See comment above
+	 * SetAttributeVersionInTuple() call for details.
+	 */
+	if (HasVersionedAttributes(rel) &&
+		attnum + 1 <= RelationGetNumberOfAttributes(rel))
+		SetAttributeVersions(rel, attnum + 1, attversion);
 
 	table_close(attrelation, RowExclusiveLock);
 
@@ -13975,9 +14655,12 @@ ATPostAlterTypeCleanup(List **wqueue, AlteredTableInfo *tab, LOCKMODE lockmode)
 	/*
 	 * Re-parse the index and constraint definitions, and attach them to the
 	 * appropriate work queue entries.  We do this before dropping because in
-	 * the case of a FOREIGN KEY constraint, we might not yet have exclusive
-	 * lock on the table the constraint is attached to, and we need to get
-	 * that before reparsing/dropping.
+	 * the case of a constraint on another table, we might not yet have
+	 * exclusive lock on the table the constraint is attached to, and we need
+	 * to get that before reparsing/dropping.  (That's possible at least for
+	 * FOREIGN KEY, CHECK, and EXCLUSION constraints; in non-FK cases it
+	 * requires a dependency on the target table's composite type in the other
+	 * table's constraint expressions.)
 	 *
 	 * We can't rely on the output of deparsing to tell us which relation to
 	 * operate on, because concurrent activity might have made the name
@@ -14043,12 +14726,12 @@ ATPostAlterTypeCleanup(List **wqueue, AlteredTableInfo *tab, LOCKMODE lockmode)
 			continue;
 
 		/*
-		 * When rebuilding an FK constraint that references the table we're
-		 * modifying, we might not yet have any lock on the FK's table, so get
-		 * one now.  We'll need AccessExclusiveLock for the DROP CONSTRAINT
-		 * step, so there's no value in asking for anything weaker.
+		 * When rebuilding another table's constraint that references the
+		 * table we're modifying, we might not yet have any lock on the other
+		 * table, so get one now.  We'll need AccessExclusiveLock for the DROP
+		 * CONSTRAINT step, so there's no value in asking for anything weaker.
 		 */
-		if (relid != tab->relid && contype == CONSTRAINT_FOREIGN)
+		if (relid != tab->relid)
 			LockRelationOid(relid, AccessExclusiveLock);
 
 		ATPostAlterTypeParse(oldId, relid, confrelid,
@@ -14062,6 +14745,14 @@ ATPostAlterTypeCleanup(List **wqueue, AlteredTableInfo *tab, LOCKMODE lockmode)
 		Oid			relid;
 
 		relid = IndexGetRelation(oldId, false);
+
+		/*
+		 * As above, make sure we have lock on the index's table if it's not
+		 * the same table.
+		 */
+		if (relid != tab->relid)
+			LockRelationOid(relid, AccessExclusiveLock);
+
 		ATPostAlterTypeParse(oldId, relid, InvalidOid,
 							 (char *) lfirst(def_item),
 							 wqueue, lockmode, tab->rewrite);

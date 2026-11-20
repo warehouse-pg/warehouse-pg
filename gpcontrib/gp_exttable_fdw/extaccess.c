@@ -723,9 +723,7 @@ external_insert(ExternalInsertDesc extInsertDesc, TupleTableSlot *slot)
 		 */
 		instup = ExecCopySlotHeapTuple(slot);
 
-		HeapTupleHeaderSetDatumLength(instup->t_data, instup->t_len);
-		HeapTupleHeaderSetTypeId(instup->t_data, tupDesc->tdtypeid);
-		HeapTupleHeaderSetTypMod(instup->t_data, tupDesc->tdtypmod);
+		heap_tuple_set_datum(instup->t_data, tupDesc, instup->t_len);
 
 		fcinfo->args[0].value = HeapTupleGetDatum(instup);
 		fcinfo->args[0].isnull = false;

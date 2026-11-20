@@ -20,6 +20,11 @@
 #include <signal.h>
 
 #include "access/htup_details.h"
+#include "access/relation.h"
+#include "catalog/pg_attribute.h"
+#include "catalog/indexing.h"
+#include "access/table.h"
+#include "access/reloptions.h"
 #include "access/parallel.h"
 #include "access/transam.h"
 #include "access/tuptoaster.h"
@@ -44,6 +49,7 @@
 #include "storage/spin.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
+#include "utils/lsyscache.h"
 #include "utils/geo_decls.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
@@ -1469,4 +1475,112 @@ test_dsm_create_and_error(PG_FUNCTION_ARGS)
 			 errmsg("error raised with the segment attached")));
 
 	PG_RETURN_VOID();			/* not reached */
+}
+
+/*
+ * Return a copy of a composite datum with its version removed, i.e. as a
+ * cluster predating the composite tuple versioning would have stored it.
+ *
+ * Such datums cannot be produced through SQL, but they have to stay readable
+ * after a minor version upgrade or across pg_upgrade, so tests need a way to
+ * generate one.
+ */
+PG_FUNCTION_INFO_V1(make_tuple_unversioned);
+Datum
+make_tuple_unversioned(PG_FUNCTION_ARGS)
+{
+	HeapTupleHeader rec;
+
+	if (!type_is_rowtype(get_fn_expr_argtype(fcinfo->flinfo, 0)))
+		elog(ERROR, "argument must be of a composite type");
+
+	/* modified below, so a copy is needed */
+	rec = PG_GETARG_HEAPTUPLEHEADER_COPY(0);
+
+	if (!HeapTupleHeaderIsVersionedDatum(rec))
+		elog(ERROR, "composite datum is not versioned");
+
+	/*
+	 * The version occupies the fields an unversioned datum uses for its
+	 * typmod and item pointer, so restore what forming one would have left
+	 * there: datums of a named composite type carry a typmod of -1, and
+	 * heap_form_tuple() clears t_ctid.
+	 */
+	HeapTupleHeaderSetTypMod(rec, -1);
+	ItemPointerSetInvalid(&rec->t_ctid);
+	HeapTupleHeaderClearDatum(rec);
+
+	/*
+	 * Use PG_RETURN_POINTER() instead of PG_RETURN_HEAPTUPLEHEADER(), to
+	 * prevent HeapTupleHeaderGetDatum() from failing assertions.
+	 */
+	PG_RETURN_POINTER(rec);
+}
+
+/*
+ * Remove the attribute versions of a relation from the catalog of the node
+ * this runs on, i.e. make the relation look as if it had been created before
+ * attribute versioning existed.
+ *
+ * Catalog updates issued through SQL only reach the coordinator, so tests
+ * call this on the coordinator and, through gp_dist_random(), on every
+ * segment.
+ */
+PG_FUNCTION_INFO_V1(clear_attribute_versions);
+Datum
+clear_attribute_versions(PG_FUNCTION_ARGS)
+{
+	Oid			relid = PG_GETARG_OID(0);
+	Relation	rel;
+	Relation	attrel;
+	int			natts;
+
+	rel = relation_open(relid, AccessExclusiveLock);
+	natts = RelationGetNumberOfAttributes(rel);
+	attrel = table_open(AttributeRelationId, RowExclusiveLock);
+
+	for (AttrNumber attnum = 1; attnum <= natts; attnum++)
+	{
+		HeapTuple	tuple;
+		HeapTuple	newtuple;
+		Datum		attoptions;
+		bool		isnull;
+		Datum		values[Natts_pg_attribute] = {0};
+		bool		nulls[Natts_pg_attribute] = {0};
+		bool		replaces[Natts_pg_attribute] = {0};
+
+		tuple = SearchSysCacheCopy2(ATTNUM,
+									ObjectIdGetDatum(relid),
+									Int16GetDatum(attnum));
+		if (!HeapTupleIsValid(tuple))
+			elog(ERROR, "could not find attribute %d of relation %u",
+				 attnum, relid);
+
+		attoptions = SysCacheGetAttr(ATTNUM, tuple,
+									 Anum_pg_attribute_attoptions, &isnull);
+		if (isnull)
+		{
+			heap_freetuple(tuple);
+			continue;
+		}
+
+		attoptions = attoptions_set_version(attoptions, false,
+											InvalidXLogRecPtr);
+		if (attoptions != (Datum) 0)
+			values[Anum_pg_attribute_attoptions - 1] = attoptions;
+		else
+			nulls[Anum_pg_attribute_attoptions - 1] = true;
+		replaces[Anum_pg_attribute_attoptions - 1] = true;
+
+		newtuple = heap_modify_tuple(tuple, RelationGetDescr(attrel),
+									 values, nulls, replaces);
+		CatalogTupleUpdate(attrel, &newtuple->t_self, newtuple);
+		heap_freetuple(newtuple);
+		heap_freetuple(tuple);
+	}
+
+	table_close(attrel, RowExclusiveLock);
+	relation_close(rel, NoLock);
+
+	PG_RETURN_VOID();
 }
