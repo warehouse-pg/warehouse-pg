@@ -53,11 +53,11 @@ private:
 	static CExpressionArray *PdrgpexprUnnestChildren(CMemoryPool *mp,
 													 CExpression *pexpr);
 
+public:
 	// push not expression one level down the given expression
 	static CExpression *PexprPushNotOneLevel(CMemoryPool *mp,
 											 CExpression *pexpr);
 
-public:
 	// remove duplicate AND/OR children
 	static CExpression *PexprDedupChildren(CMemoryPool *mp, CExpression *pexpr);
 

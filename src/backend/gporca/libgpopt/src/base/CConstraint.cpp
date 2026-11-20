@@ -544,6 +544,64 @@ CConstraint::PcnstrFromScalarBoolOp(
 	ULONG array_expansion_threshold =
 		optimizer_config->GetHint()->UlArrayExpansionThreshold();
 
+	if (CPredicateUtils::FNot(pexpr))
+	{
+		CExpression *pexprChild = (*pexpr)[0];
+
+		// WHPG: NOT (NOT p) is p.  Without folding, NOT (p AND q) under it
+		// would be pushed down into NOT p OR NOT q, which gives nothing as
+		// soon as NOT q cannot be derived.
+		if (CPredicateUtils::FNot(pexprChild))
+		{
+			return PcnstrFromScalarExpr(mp, (*pexprChild)[0], ppdrgpcrs,
+										infer_nulls_as, access_method);
+		}
+
+		// WHPG: the AND case below skips a child that gives no constraint,
+		// so it may return a superset.  Negating that superset gives a
+		// subset, i.e. it rules out rows the predicate accepts.  Push the
+		// NOT through AND / OR first (De Morgan), so that it is only negated
+		// over leaves.
+		const BOOL fOr = CPredicateUtils::FOr(pexprChild);
+		if (fOr || CPredicateUtils::FAnd(pexprChild))
+		{
+			// Flatten nested AND / OR first: a row IN list such as
+			// (a, b) IN ((1, 1), (2, 2), ...) is stored as a chain of
+			// two-way ORs, which the threshold check would never see.  Under
+			// NOT, an OR becomes an AND of the same size, so apply the OR
+			// threshold here, before deriving it child by child.  An AND
+			// becomes an OR, which the check below would skip anyway.
+			CExpressionArray *pdrgpexprChild =
+				fOr ? CPredicateUtils::PdrgpexprDisjuncts(mp, pexprChild)
+					: CPredicateUtils::PdrgpexprConjuncts(mp, pexprChild);
+			const ULONG ulChildren = pdrgpexprChild->Size();
+			if (ulChildren > array_expansion_threshold)
+			{
+				pdrgpexprChild->Release();
+				return nullptr;
+			}
+
+			CExpressionArray *pdrgpexprNegated =
+				GPOS_NEW(mp) CExpressionArray(mp);
+			for (ULONG ul = 0; ul < ulChildren; ul++)
+			{
+				CExpression *pexprGrandChild = (*pdrgpexprChild)[ul];
+				pexprGrandChild->AddRef();
+				pdrgpexprNegated->Append(
+					CUtils::PexprNegate(mp, pexprGrandChild));
+			}
+			pdrgpexprChild->Release();
+
+			CExpression *pexprPushed = CUtils::PexprScalarBoolOp(
+				mp, fOr ? CScalarBoolOp::EboolopAnd : CScalarBoolOp::EboolopOr,
+				pdrgpexprNegated);
+			CConstraint *pcnstr = PcnstrFromScalarExpr(
+				mp, pexprPushed, ppdrgpcrs, infer_nulls_as, access_method);
+			pexprPushed->Release();
+			return pcnstr;
+		}
+	}
+
 	if (CPredicateUtils::FOr(pexpr) && arity > array_expansion_threshold)
 	{
 		return nullptr;
@@ -552,11 +610,9 @@ CConstraint::PcnstrFromScalarBoolOp(
 	*ppdrgpcrs = GPOS_NEW(mp) CColRefSetArray(mp);
 	CConstraintArray *pdrgpcnstr = GPOS_NEW(mp) CConstraintArray(mp);
 
-	// Children that cannot be derived are skipped below. That is fine for
-	// AND (a superset) but not under NOT, so remember whether an IN/NOT IN
-	// list was skipped (threshold) while deriving the children. This covers
-	// only skipped lists; the general case (an AND that dropped any child it
-	// could not derive) is a known issue, tracked separately.
+	// A NOT gets here only over a leaf (see above).  If an IN/NOT IN list
+	// in it was skipped (threshold), its constraint is incomplete, so
+	// remember the bailout count and do not negate it.
 	const ULONG ulBailouts = COptCtxt::PoctxtFromTLS()->UlArrayCnstrBailouts();
 
 	for (ULONG ul = 0; ul < arity; ul++)
