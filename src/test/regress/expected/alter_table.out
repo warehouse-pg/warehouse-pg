@@ -2133,9 +2133,8 @@ ERROR:  cannot alter table "at_tab1" because column "at_tab2.y" uses its row typ
 drop table at_tab2;
 -- Use of row type in an expression is defended differently
 create table at_tab2 (x int, y text, check((x,y)::at_tab1 = (1,'42')::at_tab1));
-alter table at_tab1 alter column b type varchar; -- allowed, but ...
-insert into at_tab2 values(1,'42'); -- ... this will fail
-ERROR:  ROW() column has type text instead of type character varying
+alter table at_tab1 alter column b type varchar; -- fails
+ERROR:  cannot alter table "at_tab1" because constraint at_tab2_check on table at_tab2 uses its row type
 drop table at_tab1, at_tab2;
 -- Check it for a partitioned table, too
 create table at_tab1 (a int, b text) partition by list(a);
@@ -3074,11 +3073,12 @@ select * from my_locks order by 1;
 alter table alterlock2 add foreign key (f1) references alterlock (f1);
 WARNING:  referential integrity (FOREIGN KEY) constraints are not supported in Greenplum Database, will not be enforced
 select * from my_locks order by 1;
-  relname   |     max_lockmode      
-------------+-----------------------
- alterlock  | ShareRowExclusiveLock
- alterlock2 | ShareRowExclusiveLock
-(2 rows)
+    relname     |     max_lockmode      
+----------------+-----------------------
+ alterlock      | ShareRowExclusiveLock
+ alterlock2     | ShareRowExclusiveLock
+ alterlock_pkey | AccessShareLock
+(3 rows)
 
 rollback;
 begin;
@@ -3086,11 +3086,12 @@ alter table alterlock2
 add constraint alterlock2nv foreign key (f1) references alterlock (f1) NOT VALID;
 WARNING:  referential integrity (FOREIGN KEY) constraints are not supported in Greenplum Database, will not be enforced
 select * from my_locks order by 1;
-  relname   |     max_lockmode      
-------------+-----------------------
- alterlock  | ShareRowExclusiveLock
- alterlock2 | ShareRowExclusiveLock
-(2 rows)
+    relname     |     max_lockmode      
+----------------+-----------------------
+ alterlock      | ShareRowExclusiveLock
+ alterlock2     | ShareRowExclusiveLock
+ alterlock_pkey | AccessShareLock
+(3 rows)
 
 commit;
 begin;
