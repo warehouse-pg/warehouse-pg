@@ -712,3 +712,127 @@ table two_int8s_tab;
  (42,42)
 (1 row)
 
+--
+-- Assignment between PL/pgSQL record variables whose descriptors were
+-- acquired before and after the ALTER
+--
+-- The source row comes straight from the executor
+CREATE TYPE rta_type AS (b bytea);
+CREATE TABLE rta_src (b bytea);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'b' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+INSERT INTO rta_src VALUES ('\x4649584d45');
+DO $$
+DECLARE
+  r1 rta_type;
+  r2 rta_type;
+BEGIN
+  SELECT * INTO r1 FROM rta_src;
+  ALTER TYPE rta_type ALTER ATTRIBUTE b TYPE text;
+  r2 := ROW('new')::rta_type;
+  r2 := r1;
+  RAISE NOTICE 'r2.b: %', r2.b;
+END;
+$$;
+ERROR:  assigned value is incompatible with the variable's type
+DETAIL:  A variable can retain the type definition established when it was first used.
+CONTEXT:  PL/pgSQL function inline_code_block line 9 at assignment
+DROP TABLE rta_src;
+DROP TYPE rta_type;
+-- Same, but stored rather than read
+CREATE TYPE rta_type AS (b bytea);
+CREATE TABLE rta_src (b bytea);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'b' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+INSERT INTO rta_src VALUES ('\x4649584d45');
+DO $$
+DECLARE
+  r1 rta_type;
+  r2 rta_type;
+BEGIN
+  SELECT * INTO r1 FROM rta_src;
+  ALTER TYPE rta_type ALTER ATTRIBUTE b TYPE text;
+  -- after the ALTER, as otherwise the ALTER would be prevented
+  CREATE TABLE rta_sink (c rta_type);
+  r2 := ROW('new')::rta_type;
+  BEGIN
+    r2 := r1;
+    INSERT INTO rta_sink VALUES (r2);
+  EXCEPTION WHEN others THEN
+    RAISE NOTICE 'insert or assign failed: %', sqlerrm;
+  END;
+END;
+$$;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause, and no column type is suitable for a distribution key. Creating a NULL policy entry.
+NOTICE:  insert or assign failed: assigned value is incompatible with the variable's type
+SELECT (c).b FROM rta_sink;
+ b 
+---
+(0 rows)
+
+DROP TABLE rta_sink;
+DROP TABLE rta_src;
+DROP TYPE rta_type;
+-- A domain source, assigned to a variable that has not been assigned yet
+CREATE TYPE rta_type AS (b bytea);
+CREATE DOMAIN rta_dom AS rta_type;
+CREATE TABLE rta_src (b bytea);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'b' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+INSERT INTO rta_src VALUES ('\x4649584d45');
+DO $$
+DECLARE
+  r1 rta_dom;
+  r2 rta_type;
+BEGIN
+  SELECT * INTO r1 FROM rta_src;
+  ALTER TYPE rta_type ALTER ATTRIBUTE b TYPE text;
+  r2 := r1;
+  RAISE NOTICE 'r2.b: %', r2.b;
+END;
+$$;
+ERROR:  assigned value is incompatible with the variable's type
+DETAIL:  A variable can retain the type definition established when it was first used.
+CONTEXT:  PL/pgSQL function inline_code_block line 8 at assignment
+DROP TABLE rta_src;
+DROP DOMAIN rta_dom;
+DROP TYPE rta_type;
+-- A source variable assigned before the ALTER
+CREATE TYPE rta_type AS (b bytea);
+DO $$
+DECLARE
+  r1 rta_type;
+  r2 rta_type;
+  t text;
+BEGIN
+  r1 := ROW('\x4649584d45')::rta_type;
+  ALTER TYPE rta_type ALTER ATTRIBUTE b TYPE text;
+  r2 := ROW('new')::rta_type;
+  r2 := r1;
+  RAISE NOTICE 'r2.b: %', r2.b;
+  SELECT (r2).b::text INTO t;
+  RAISE NOTICE 'via SQL: %', t;
+END;
+$$;
+ERROR:  assigned value is incompatible with the variable's type
+DETAIL:  A variable can retain the type definition established when it was first used.
+CONTEXT:  PL/pgSQL function inline_code_block line 10 at assignment
+DROP TYPE rta_type;
+-- A target variable assigned before the ALTER, the source after it
+CREATE TYPE rta_type AS (b text);
+DO $$
+DECLARE
+  r1 rta_type;
+  r2 rta_type;
+BEGIN
+  r2 := ROW('old')::rta_type;
+  ALTER TYPE rta_type ALTER ATTRIBUTE b TYPE bytea;
+  r1 := ROW('\x4649584d45')::rta_type;
+  r2 := r1;
+  RAISE NOTICE 'r2.b: %', r2.b;
+END;
+$$;
+ERROR:  assigned value is incompatible with the variable's type
+DETAIL:  A variable can retain the type definition established when it was first used.
+CONTEXT:  PL/pgSQL function inline_code_block line 9 at assignment
+DROP TYPE rta_type;

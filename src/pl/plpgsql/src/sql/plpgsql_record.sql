@@ -477,3 +477,109 @@ insert into two_int8s_tab values (compresult(42));
 -- reconnect so we lose any local knowledge of anonymous record types
 \c -
 table two_int8s_tab;
+
+--
+-- Assignment between PL/pgSQL record variables whose descriptors were
+-- acquired before and after the ALTER
+--
+
+-- The source row comes straight from the executor
+CREATE TYPE rta_type AS (b bytea);
+CREATE TABLE rta_src (b bytea);
+INSERT INTO rta_src VALUES ('\x4649584d45');
+DO $$
+DECLARE
+  r1 rta_type;
+  r2 rta_type;
+BEGIN
+  SELECT * INTO r1 FROM rta_src;
+  ALTER TYPE rta_type ALTER ATTRIBUTE b TYPE text;
+  r2 := ROW('new')::rta_type;
+  r2 := r1;
+  RAISE NOTICE 'r2.b: %', r2.b;
+END;
+$$;
+DROP TABLE rta_src;
+DROP TYPE rta_type;
+
+-- Same, but stored rather than read
+CREATE TYPE rta_type AS (b bytea);
+CREATE TABLE rta_src (b bytea);
+INSERT INTO rta_src VALUES ('\x4649584d45');
+DO $$
+DECLARE
+  r1 rta_type;
+  r2 rta_type;
+BEGIN
+  SELECT * INTO r1 FROM rta_src;
+  ALTER TYPE rta_type ALTER ATTRIBUTE b TYPE text;
+  -- after the ALTER, as otherwise the ALTER would be prevented
+  CREATE TABLE rta_sink (c rta_type);
+  r2 := ROW('new')::rta_type;
+  BEGIN
+    r2 := r1;
+    INSERT INTO rta_sink VALUES (r2);
+  EXCEPTION WHEN others THEN
+    RAISE NOTICE 'insert or assign failed: %', sqlerrm;
+  END;
+END;
+$$;
+SELECT (c).b FROM rta_sink;
+DROP TABLE rta_sink;
+DROP TABLE rta_src;
+DROP TYPE rta_type;
+
+-- A domain source, assigned to a variable that has not been assigned yet
+CREATE TYPE rta_type AS (b bytea);
+CREATE DOMAIN rta_dom AS rta_type;
+CREATE TABLE rta_src (b bytea);
+INSERT INTO rta_src VALUES ('\x4649584d45');
+DO $$
+DECLARE
+  r1 rta_dom;
+  r2 rta_type;
+BEGIN
+  SELECT * INTO r1 FROM rta_src;
+  ALTER TYPE rta_type ALTER ATTRIBUTE b TYPE text;
+  r2 := r1;
+  RAISE NOTICE 'r2.b: %', r2.b;
+END;
+$$;
+DROP TABLE rta_src;
+DROP DOMAIN rta_dom;
+DROP TYPE rta_type;
+
+-- A source variable assigned before the ALTER
+CREATE TYPE rta_type AS (b bytea);
+DO $$
+DECLARE
+  r1 rta_type;
+  r2 rta_type;
+  t text;
+BEGIN
+  r1 := ROW('\x4649584d45')::rta_type;
+  ALTER TYPE rta_type ALTER ATTRIBUTE b TYPE text;
+  r2 := ROW('new')::rta_type;
+  r2 := r1;
+  RAISE NOTICE 'r2.b: %', r2.b;
+  SELECT (r2).b::text INTO t;
+  RAISE NOTICE 'via SQL: %', t;
+END;
+$$;
+DROP TYPE rta_type;
+
+-- A target variable assigned before the ALTER, the source after it
+CREATE TYPE rta_type AS (b text);
+DO $$
+DECLARE
+  r1 rta_type;
+  r2 rta_type;
+BEGIN
+  r2 := ROW('old')::rta_type;
+  ALTER TYPE rta_type ALTER ATTRIBUTE b TYPE bytea;
+  r1 := ROW('\x4649584d45')::rta_type;
+  r2 := r1;
+  RAISE NOTICE 'r2.b: %', r2.b;
+END;
+$$;
+DROP TYPE rta_type;
