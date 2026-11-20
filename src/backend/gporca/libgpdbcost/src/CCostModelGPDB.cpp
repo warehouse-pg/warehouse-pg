@@ -2195,9 +2195,20 @@ CCostModelGPDB::CostBitmapTableScan(CMemoryPool *mp, CExpressionHandle &exprhdl,
 			CDouble bitmap_union_cost_per_distinct_value(0.000027);
 			CDouble init_cost_advantage_for_bitmap_scan(0.9);
 
-			if (IMDIndex::EmdindBtree == indexType)
+			if (IMDIndex::EmdindBitmap != indexType &&
+				IMDIndex::EmdindBrin != indexType)
 			{
-				// btree indexes are not sensitive to the NDV, since they don't have any bitmaps
+				// The per-NDV page cost stands for reading one stored bitmap per
+				// distinct value, which only a bitmap index does. Btree, hash, GIN
+				// and GiST indexes store no bitmaps; the bitmap is built from the
+				// entries the index scan returns.
+				//
+				// BRIN stores none either, but it keeps the charge: it is the only
+				// cost of a BRIN probe here that does not scale with the rows
+				// returned, and a probe reads at least one whole block range
+				// from the table (all of it when the column does not follow
+				// the physical order). Neither the range size nor the
+				// column's correlation is known to the cost model.
 				c3_dBitmapPageCost = 0.0;
 			}
 
