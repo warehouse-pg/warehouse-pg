@@ -110,13 +110,12 @@ CXformImplementTVF::Transform(CXformContext *pxfctxt, CXformResult *pxfres,
 	pdrgpcoldesc->AddRef();
 
 	CColRefArray *pdrgpcrOutput = popTVF->PdrgpcrOutput();
-	CColRefSet *pcrs = GPOS_NEW(mp) CColRefSet(mp);
-	pcrs->Include(pdrgpcrOutput);
+	pdrgpcrOutput->AddRef();
 
 	CExpressionArray *pdrgpexpr = pexpr->PdrgPexpr();
 
-	CPhysicalTVF *pphTVF = GPOS_NEW(mp)
-		CPhysicalTVF(mp, mdid_func, mdid_return_type, str, pdrgpcoldesc, pcrs);
+	CPhysicalTVF *pphTVF = GPOS_NEW(mp) CPhysicalTVF(
+		mp, mdid_func, mdid_return_type, str, pdrgpcoldesc, pdrgpcrOutput);
 
 	CExpression *pexprAlt = nullptr;
 	// create alternative expression
