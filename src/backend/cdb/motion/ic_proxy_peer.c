@@ -783,6 +783,45 @@ ic_proxy_peer_on_sent_hello(void *opaque, const ICProxyPkt *pkt, int status)
 }
 
 /*
+ * Whether the connected socket's local and remote addresses are the same,
+ * see ic_proxy_peer_on_connected().
+ */
+static bool
+ic_proxy_peer_is_self_connected(ICProxyPeer *peer)
+{
+	struct sockaddr_storage sockaddr;
+	struct sockaddr_storage peeraddr;
+	int			socklen = sizeof(sockaddr);
+	int			peerlen = sizeof(peeraddr);
+
+	if (uv_tcp_getsockname(&peer->tcp, (struct sockaddr *) &sockaddr, &socklen) < 0 ||
+		uv_tcp_getpeername(&peer->tcp, (struct sockaddr *) &peeraddr, &peerlen) < 0)
+		return false;
+
+	if (sockaddr.ss_family != peeraddr.ss_family)
+		return false;
+
+	if (sockaddr.ss_family == AF_INET)
+	{
+		const struct sockaddr_in *a = (const struct sockaddr_in *) &sockaddr;
+		const struct sockaddr_in *b = (const struct sockaddr_in *) &peeraddr;
+
+		return a->sin_port == b->sin_port &&
+			a->sin_addr.s_addr == b->sin_addr.s_addr;
+	}
+	else if (sockaddr.ss_family == AF_INET6)
+	{
+		const struct sockaddr_in6 *a = (const struct sockaddr_in6 *) &sockaddr;
+		const struct sockaddr_in6 *b = (const struct sockaddr_in6 *) &peeraddr;
+
+		return a->sin6_port == b->sin6_port &&
+			memcmp(&a->sin6_addr, &b->sin6_addr, sizeof(a->sin6_addr)) == 0;
+	}
+
+	return false;
+}
+
+/*
  * Connected to a peer.
  */
 static void
@@ -799,6 +838,27 @@ ic_proxy_peer_on_connected(uv_connect_t *conn, int status)
 		elogif(gp_log_interconnect >= GPVARS_VERBOSITY_VERBOSE, LOG,
 			   "ic-proxy: %s: failed to connect: %s",
 					 peer->name, uv_strerror(status));
+		ic_proxy_peer_close(peer);
+		return;
+	}
+
+	ic_proxy_peer_update_name(peer);
+
+	/*
+	 * A connect to a port on this host that nobody listens on can succeed
+	 * by connecting the socket to itself (TCP simultaneous open): the kernel
+	 * picks the destination port as the ephemeral source port, the SYN is
+	 * delivered to the very socket that sent it, and the handshake completes.
+	 * The proxy ports usually lie in ip_local_port_range, and the retries to
+	 * a mirror or a standby target exactly such unlistened ports, so sooner
+	 * or later it happens.  Our HELLO would then come back as the HELLO ACK.
+	 * Drop the connection, the timer retries next second.
+	 */
+	if (ic_proxy_peer_is_self_connected(peer))
+	{
+		elogif(gp_log_interconnect >= GPVARS_VERBOSITY_VERBOSE, LOG,
+			   "ic-proxy: %s: the connection goes to itself, dropping it",
+					 peer->name);
 		ic_proxy_peer_close(peer);
 		return;
 	}
@@ -830,7 +890,6 @@ ic_proxy_peer_on_connected(uv_connect_t *conn, int status)
 
 	peer->state |= IC_PROXY_PEER_STATE_SENDING_HELLO;
 
-	ic_proxy_peer_update_name(peer);
 	ic_proxy_peer_send_message(peer, IC_PROXY_MESSAGE_PEER_HELLO, &key,
 							   ic_proxy_peer_on_sent_hello);
 }

@@ -6,6 +6,9 @@
 import os
 import sys
 import signal
+import socket
+import subprocess
+from contextlib import closing
 
 # import GPDB modules
 try:
@@ -128,6 +131,10 @@ def parseargs():
                       'need to shutdown the GPDB array to be able to complete the request')
     optgrp.add_option('', '--hba-hostnames', action='store_true', dest='hba_hostnames',
                       help='use hostnames instead of CIDR in pg_hba.conf')
+    optgrp.add_option('', '--standby-proxy-port', type='int', dest='standby_proxy_port',
+                      help='ic-proxy port of the standby coordinator when the cluster uses '
+                      'the ic-proxy interconnect; defaults to the coordinator\'s proxy port, '
+                      'which requires the standby to be on another host')
 
     # XXX - This option is added to keep backward compatibility with DCA tools.
     # But this option plays no role in the whole process, its a No-Op
@@ -165,6 +172,14 @@ def parseargs():
     # -s and -r are exclusive
     if options.standby_host and options.remove:
         logger.error('Options -s and -r cannot be specified together.')
+        parser.exit(2, None)
+
+    if options.standby_proxy_port is not None and not options.standby_host:
+        logger.error('Option --standby-proxy-port requires -s.')
+        parser.exit(2, None)
+    if options.standby_proxy_port is not None and \
+            not 1 <= options.standby_proxy_port <= 65535:
+        logger.error('Option --standby-proxy-port must be a port number (1-65535).')
         parser.exit(2, None)
 
     # we either need to delete or create or start
@@ -288,16 +303,20 @@ def delete_standby(options):
                      'but no standby located.')
         raise GpInitStandbyException('no standby configured')
     
+    check_icproxy_addresses(options)
+
     print_summary(options, array, None)
 
     # Disable Ctrl-C
     signal.signal(signal.SIGINT,signal.SIG_IGN)
-    
+
     try:
         remove_standby_from_catalog(options, array)
     except Exception as ex:
         logger.error('Failed to remove standby coordinator from catalog.')
         raise GpInitStandbyException(ex)
+
+    update_icproxy_addresses(array, array.standbyCoordinator, add=False)
     
     stop_standby(array)
  
@@ -307,6 +326,216 @@ def delete_standby(options):
     # Reenable Ctrl-C
     signal.signal(signal.SIGINT,signal.default_int_handler)
   
+#-------------------------------------------------------------------------
+def same_host(seg_a, seg_b):
+    """
+    Whether two catalog entries are on one machine.  The names may differ in
+    spelling (localhost vs localhost.localdomain, hostname vs address), so
+    compare the resolved addresses too, falling back to the strings when a
+    name does not resolve.
+    """
+    names_a = set([seg_a.getSegmentHostName(), seg_a.getSegmentAddress()])
+    names_b = set([seg_b.getSegmentHostName(), seg_b.getSegmentAddress()])
+    if names_a & names_b:
+        return True
+
+    def resolve(names):
+        addrs = set()
+        for name in names:
+            for info in socket.getaddrinfo(name, None):
+                addrs.add(info[4][0])
+        return addrs
+    try:
+        return bool(resolve(names_a) & resolve(names_b))
+    except socket.error:
+        return False
+
+#-------------------------------------------------------------------------
+def read_icproxy_addresses():
+    """
+    The gp_interconnect_proxy_addresses value to edit, or an empty string
+    when the mesh is not configured or the server was built without
+    ic-proxy.
+
+    It is the value in the configuration files, not the running one:
+    gpconfig does not reload, so the running value may be behind what
+    gpexpand or the operator wrote last.  Raises when the files hold a value
+    that gpconfig cannot edit, see dbconn.queryFileSetting().
+    """
+    with closing(dbconn.connect(getDbUrlForInitStandby(), utility=True)) as conn:
+        mesh = dbconn.queryFileSetting(conn, 'gp_interconnect_proxy_addresses')
+        if mesh is None:
+            try:
+                mesh = dbconn.queryRow(conn, "SHOW gp_interconnect_proxy_addresses")[0]
+            except Exception as ex:
+                if 'unrecognized configuration parameter' in str(ex):
+                    return ''
+                raise
+    return mesh.strip()
+
+#-------------------------------------------------------------------------
+def check_icproxy_addresses(options):
+    """
+    Before anything is changed: stop when the ic-proxy mesh cannot be
+    updated afterwards.  The standby would be added or removed all the same,
+    but with a mesh that does not match it the ic-proxy interconnect hangs
+    after an activation.
+    """
+    try:
+        mesh = read_icproxy_addresses()
+    except Exception as ex:
+        logger.error('gp_interconnect_proxy_addresses cannot be updated for the standby '
+                     'coordinator: %s' % str(ex))
+        raise GpInitStandbyException('gp_interconnect_proxy_addresses cannot be updated')
+    if not mesh and options.standby_proxy_port is not None:
+        logger.warning('gp_interconnect_proxy_addresses is not set, the cluster has no '
+                       'ic-proxy mesh: --standby-proxy-port is ignored')
+
+#-------------------------------------------------------------------------
+def reload_icproxy_addresses():
+    """
+    Have the running postmasters pick up gp_interconnect_proxy_addresses,
+    see update_icproxy_addresses().  With the standby's entry added the
+    segments start dialing its proxy port, which answers once the standby is
+    promoted; with the entry removed they stop.  A reload that changes
+    nothing is harmless, so this is also done when the entry was found in
+    place: the value may have been written without a reload.
+    """
+    try:
+        gp.GpStop.local('reload gp_interconnect_proxy_addresses', reload=True)
+    except Exception as ex:
+        logger.warning('Could not reload the configuration: %s' % str(ex))
+        logger.warning('Run "gpstop -u" for the segments to pick up the new '
+                       'gp_interconnect_proxy_addresses value; until then a query that uses '
+                       'the ic-proxy interconnect hangs after the standby coordinator is '
+                       'activated.')
+
+#-------------------------------------------------------------------------
+def update_icproxy_addresses(array, standby, add, proxy_port=None):
+    """
+    Keep gp_interconnect_proxy_addresses in step with the standby coordinator.
+
+    The ic-proxy mesh must list every segment, the standby included: a proxy
+    dials the proxies with a lower content id, so after a promotion it is
+    the segments that connect to the new coordinator, at the address their
+    mesh records for its dbid.  gpactivatestandby only promotes the standby,
+    it neither restarts nor reloads the segments, so they must know the
+    entry before the failover: the configuration is reloaded here, right
+    after it is written.  The entry names the standby by its address, as
+    every mesh entry does.  The standby listens on proxy_port
+    (--standby-proxy-port) or, when that is not given, reuses the
+    coordinator's proxy port, which only works on another host.
+
+    The value edited is the one in the configuration files, see
+    read_icproxy_addresses().
+
+    A no-op when the mesh is not configured or the server was built without
+    ic-proxy.  Never fails the standby operation: on any problem the operator
+    is told to set the value, or to reload it, by hand.
+    """
+    try:
+        mesh = read_icproxy_addresses()
+        if not mesh:
+            return
+
+        entries = [list(e) for e in gparray.parse_icproxy_addresses(mesh)]
+        standby_dbid = str(standby.getSegmentDbId())
+        coordinator = array.coordinator
+
+        if add:
+            # the mesh names a segment by its address, like the interconnect
+            standby_host = standby.getSegmentAddress()
+            coord_entries = [e for e in entries if e[0] == str(coordinator.getSegmentDbId())]
+            on_coordinator_host = same_host(standby, coordinator)
+
+            # A dbid is handed out again once it is free, so an entry may be
+            # left from a standby removed by hand or from a segment that an
+            # expansion did not add after all: keep it when it still fits,
+            # replace it otherwise.  The content matters as much as the
+            # address: the segments only dial an entry with a lower content
+            # id than their own.
+            existing = [e for e in entries if e[0] == standby_dbid]
+            if existing:
+                if existing[0][1] == '-1' and existing[0][2] == standby_host and \
+                        (proxy_port is None or int(existing[0][3]) == proxy_port):
+                    logger.info('gp_interconnect_proxy_addresses already has an entry for the '
+                                'standby coordinator (dbid %s)' % standby_dbid)
+                    reload_icproxy_addresses()
+                    return
+                logger.info('Replacing the stale gp_interconnect_proxy_addresses entry %s '
+                            'of dbid %s' % (':'.join(existing[0]), standby_dbid))
+                entries = [e for e in entries if e[0] != standby_dbid]
+
+            if proxy_port is None:
+                if not coord_entries:
+                    logger.warning('gp_interconnect_proxy_addresses has no entry for the '
+                                   'coordinator (dbid %s); add the standby (dbid %s) to it '
+                                   'manually' % (coordinator.getSegmentDbId(), standby_dbid))
+                    return
+                if on_coordinator_host:
+                    logger.warning('The standby coordinator shares host %s with the '
+                                   'coordinator and cannot reuse its ic-proxy port; rerun '
+                                   'with --standby-proxy-port, or add an entry for dbid %s '
+                                   'with a free port to gp_interconnect_proxy_addresses '
+                                   'manually' % (coordinator.getSegmentHostName(), standby_dbid))
+                    return
+                proxy_port = int(coord_entries[0][3])
+            else:
+                # Ports taken on the standby's machine: the postmaster and
+                # the proxy of every instance that runs there, segments
+                # included.  A proxy port that is a segment's postmaster port
+                # would be accepted by the mesh, and the other proxies would
+                # then send their handshake to that postmaster.
+                taken = {}
+                neighbours = {}     # (hostname, address) -> on the standby's machine
+                for seg in array.getDbList():
+                    names = (seg.getSegmentHostName(), seg.getSegmentAddress())
+                    if names not in neighbours:
+                        neighbours[names] = same_host(standby, seg)
+                    if not neighbours[names]:
+                        continue
+                    dbid = str(seg.getSegmentDbId())
+                    taken[seg.getSegmentPort()] = 'the postmaster of dbid %s' % dbid
+                    for e in entries:
+                        if e[0] == dbid:
+                            taken[int(e[3])] = 'the ic-proxy of dbid %s' % dbid
+                for e in entries:
+                    if e[2] == standby_host:
+                        taken.setdefault(int(e[3]), 'the ic-proxy of dbid %s' % e[0])
+                if proxy_port in taken:
+                    logger.warning('ic-proxy port %d on %s is already used by %s; rerun with '
+                                   'another --standby-proxy-port, or add an entry for dbid %s '
+                                   'to gp_interconnect_proxy_addresses manually'
+                                   % (proxy_port, standby_host, taken[proxy_port], standby_dbid))
+                    return
+            entries.append([standby_dbid, '-1', standby_host, str(proxy_port)])
+        else:
+            remaining = [e for e in entries if e[0] != standby_dbid]
+            if len(remaining) == len(entries):
+                return
+            entries = remaining
+
+        entries.sort(key=lambda e: int(e[0]))
+        value = ','.join(':'.join(e) for e in entries)
+        logger.info('Updating gp_interconnect_proxy_addresses to: %s' % value)
+        # gpconfig writes postgresql.conf on every host, without reloading.
+        subprocess.check_call(['gpconfig', '-c', 'gp_interconnect_proxy_addresses', '-v', value])
+        # gpconfig does not validate the value, the postmasters do when they
+        # read the file, and one that they reject keeps them from starting:
+        # ask the server now and put the previous value back if it does not
+        # take the new one.
+        try:
+            read_icproxy_addresses()
+        except Exception:
+            subprocess.check_call(['gpconfig', '-c', 'gp_interconnect_proxy_addresses', '-v', mesh])
+            raise
+        reload_icproxy_addresses()
+    except Exception as ex:
+        logger.warning('Could not update gp_interconnect_proxy_addresses for the standby '
+                       'coordinator: %s' % str(ex))
+        logger.warning('Update it manually with gpconfig if the cluster uses the ic-proxy '
+                       'interconnect.')
+
 #-------------------------------------------------------------------------
 def remove_standby_datadir(array):
     """Removes the data directory on the standby coordinator."""
@@ -628,6 +857,8 @@ def validate_standby_init(options, array, standby_datadir):
                 options.standby_port == array.coordinator.port)):
         raise GpInitStandbyException('cannot create standby on the same host and port')
 
+    check_icproxy_addresses(options)
+
 
 #-------------------------------------------------------------------------
 def get_add_standby_sql(hostname, address, datadir, port=None):
@@ -810,6 +1041,9 @@ try:
         check_and_start_standby()
     else:
         create_standby(options)
+        array = gparray.GpArray.initFromCatalog(getDbUrlForInitStandby(), utility=True)
+        update_icproxy_addresses(array, array.standbyCoordinator, add=True,
+                                 proxy_port=options.standby_proxy_port)
         logger.info('Successfully created standby coordinator on %s' % options.standby_host)
 
 except KeyboardInterrupt:
