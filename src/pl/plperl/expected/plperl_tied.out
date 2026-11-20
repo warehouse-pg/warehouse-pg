@@ -224,3 +224,80 @@ CONTEXT:  PL/Perl function "tied_scalar_int_array"
 INSERT INTO tied_trigger_test (i, v) VALUES (2, 'orig');
 ERROR:  tied scalar fetch failure at line 19.
 CONTEXT:  PL/Perl function "tied_modify"
+-- SPI functions called when PL/Perl is not inside a SPI procedure: here,
+-- from a tied element that is fetched while the function result is
+-- converted, after the handler has disconnected from SPI.  The calls
+-- must fail cleanly and leave SPI usable, also for an outer procedure.
+CREATE FUNCTION tied_late_spi(text) RETURNS text[] AS $$
+	our $late_what = $_[0];
+	package PLPerlLateSPI;
+	sub TIESCALAR { bless \(my $s), $_[0] }
+	sub FETCH
+	{
+		return main::spi_exec_query('select 1 as a')->{status}
+			if $main::late_what eq 'exec';
+		main::spi_prepare('select 1 as a')
+			if $main::late_what eq 'prepare';
+		main::spi_query('select 1 as a')
+			if $main::late_what eq 'query';
+		return defined main::spi_fetchrow('nosuchcursor') ? 'row' : 'no row';
+	}
+	sub STORE { }
+	package main;
+	my $r = [ 'x' ];
+	tie $r->[0], 'PLPerlLateSPI';
+	return $r;
+$$ LANGUAGE plperl;
+SELECT tied_late_spi('exec');
+      tied_late_spi      
+-------------------------
+ {SPI_ERROR_UNCONNECTED}
+(1 row)
+
+SELECT tied_late_spi('prepare');
+ERROR:  SPI_prepare() failed:SPI_ERROR_UNCONNECTED at line 9.
+CONTEXT:  PL/Perl function "tied_late_spi"
+SELECT tied_late_spi('query');
+ERROR:  SPI_prepare() failed:SPI_ERROR_UNCONNECTED at line 11.
+CONTEXT:  PL/Perl function "tied_late_spi"
+SELECT tied_late_spi('fetchrow');
+ tied_late_spi 
+---------------
+ {"no row"}
+(1 row)
+
+CREATE FUNCTION tied_late_spi_outer(text) RETURNS text AS $$
+DECLARE
+	a text[];
+	n int;
+BEGIN
+	BEGIN
+		a := tied_late_spi($1);
+	EXCEPTION WHEN OTHERS THEN
+		a := ARRAY['caught'];
+	END;
+	SELECT count(*) INTO n FROM pg_class WHERE relname = 'pg_class';
+	RETURN a[1] || ', outer SPI sees ' || n || ' row';
+END
+$$ LANGUAGE plpgsql;
+SELECT tied_late_spi_outer('exec');
+             tied_late_spi_outer             
+---------------------------------------------
+ SPI_ERROR_UNCONNECTED, outer SPI sees 1 row
+(1 row)
+
+SELECT tied_late_spi_outer('prepare');
+     tied_late_spi_outer      
+------------------------------
+ caught, outer SPI sees 1 row
+(1 row)
+
+CREATE FUNCTION tied_spi_still_works() RETURNS int AS $$
+	return spi_exec_query('select 7 as a')->{rows}[0]{a};
+$$ LANGUAGE plperl;
+SELECT tied_spi_still_works();
+ tied_spi_still_works 
+----------------------
+                    7
+(1 row)
+

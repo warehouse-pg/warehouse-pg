@@ -169,3 +169,57 @@ SELECT tied_int_array();
 SELECT * FROM tied_scalar_setof();
 SELECT tied_scalar_int_array();
 INSERT INTO tied_trigger_test (i, v) VALUES (2, 'orig');
+
+-- SPI functions called when PL/Perl is not inside a SPI procedure: here,
+-- from a tied element that is fetched while the function result is
+-- converted, after the handler has disconnected from SPI.  The calls
+-- must fail cleanly and leave SPI usable, also for an outer procedure.
+CREATE FUNCTION tied_late_spi(text) RETURNS text[] AS $$
+	our $late_what = $_[0];
+	package PLPerlLateSPI;
+	sub TIESCALAR { bless \(my $s), $_[0] }
+	sub FETCH
+	{
+		return main::spi_exec_query('select 1 as a')->{status}
+			if $main::late_what eq 'exec';
+		main::spi_prepare('select 1 as a')
+			if $main::late_what eq 'prepare';
+		main::spi_query('select 1 as a')
+			if $main::late_what eq 'query';
+		return defined main::spi_fetchrow('nosuchcursor') ? 'row' : 'no row';
+	}
+	sub STORE { }
+	package main;
+	my $r = [ 'x' ];
+	tie $r->[0], 'PLPerlLateSPI';
+	return $r;
+$$ LANGUAGE plperl;
+
+SELECT tied_late_spi('exec');
+SELECT tied_late_spi('prepare');
+SELECT tied_late_spi('query');
+SELECT tied_late_spi('fetchrow');
+
+CREATE FUNCTION tied_late_spi_outer(text) RETURNS text AS $$
+DECLARE
+	a text[];
+	n int;
+BEGIN
+	BEGIN
+		a := tied_late_spi($1);
+	EXCEPTION WHEN OTHERS THEN
+		a := ARRAY['caught'];
+	END;
+	SELECT count(*) INTO n FROM pg_class WHERE relname = 'pg_class';
+	RETURN a[1] || ', outer SPI sees ' || n || ' row';
+END
+$$ LANGUAGE plpgsql;
+
+SELECT tied_late_spi_outer('exec');
+SELECT tied_late_spi_outer('prepare');
+
+CREATE FUNCTION tied_spi_still_works() RETURNS int AS $$
+	return spi_exec_query('select 7 as a')->{rows}[0]{a};
+$$ LANGUAGE plperl;
+
+SELECT tied_spi_still_works();
