@@ -300,20 +300,26 @@ RemoveSchemaById(Oid schemaOid)
 Oid
 RenameSchema(const char *oldname, const char *newname)
 {
+	Relation	addressRelation;
+	ObjectAddress address;
 	Oid			nspOid;
 	HeapTuple	tup;
 	Relation	rel;
 	AclResult	aclresult;
 
+	/* Locking before priv checks is bad, but DROP SCHEMA does the same. */
+	address = get_object_address(OBJECT_SCHEMA,
+								 list_make1(makeString(pstrdup(oldname))), NIL,
+								 &addressRelation,
+								 AccessExclusiveLock, false);
+	Assert(addressRelation == NULL);
+	nspOid = address.objectId;
+
 	rel = heap_open(NamespaceRelationId, RowExclusiveLock);
 
-	tup = SearchSysCacheCopy1(NAMESPACENAME, CStringGetDatum(oldname));
+	tup = SearchSysCacheCopy1(NAMESPACEOID, ObjectIdGetDatum(nspOid));
 	if (!HeapTupleIsValid(tup))
-		ereport(ERROR,
-				(errcode(ERRCODE_UNDEFINED_SCHEMA),
-				 errmsg("schema \"%s\" does not exist", oldname)));
-
-	nspOid = HeapTupleGetOid(tup);
+		elog(ERROR, "cache lookup failed for schema %u", nspOid);
 
 	/* make sure the new name doesn't exist */
 	if (OidIsValid(get_namespace_oid(newname, true)))
