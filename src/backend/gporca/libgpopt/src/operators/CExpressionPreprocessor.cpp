@@ -2705,15 +2705,25 @@ CExpressionPreprocessor::ConvertInToSimpleExists(CMemoryPool *mp,
 		return nullptr;
 	}
 
-	// since Orca doesn't support IN subqueries of multiple columns such as
-	// (a,a) in (select foo.a, foo.a from ...) ,
-	// only extract the first expression under the first project element in the
-	// project list and make it as the right operand to the scalar operation.
+	// WHPG: the right operand is the expression that computes the subquery's
+	// column, or that column itself when the subquery outputs an outer
+	// reference directly; the rest of the project list is dropped, since
+	// EXISTS only asks whether the relational child has a row
 	CExpression *pexprRight = nullptr;
 	CExpression *pexprSubqOfExists = nullptr;
 	if (COperator::EopLogicalProject == pexprRelational->Pop()->Eopid())
 	{
-		pexprRight = CUtils::PNthProjectElementExpr(pexprRelational, 0);
+		// WHPG: use the project element that defines the subquery's column,
+		// which need not be the first one (PexprExistWithPredFromINSubq has
+		// checked that the project list defines it; should it not, leave
+		// the subquery alone rather than dereference nullptr)
+		pexprRight = CUtils::PexprProjElemDefining(
+			pexprRelational, CScalarSubqueryAny::PopConvert(pop)->Pcr());
+		GPOS_ASSERT(nullptr != pexprRight);
+		if (nullptr == pexprRight)
+		{
+			return nullptr;
+		}
 		pexprRight->AddRef();
 		pexprSubqOfExists = (*pexprRelational)[0];
 	}
@@ -2785,10 +2795,32 @@ CExpressionPreprocessor::PexprExistWithPredFromINSubq(CMemoryPool *mp,
 		// it does not include any column from the relational child.
 		if (COperator::EopLogicalProject == pexprLogicalProject->Pop()->Eopid())
 		{
-			// bail out if subquery has an inner reference or
-			// does not have any outer reference
-			if (!CUtils::HasOuterRefs(pexprLogicalProject) ||
-				CUtils::FInnerRefInProjectList(pexprLogicalProject))
+			// WHPG: the subquery's column must be computed by this project
+			// list; it can also come from the project's relational child,
+			// e.g. a derived table that adds a constant column:
+			//   a IN (SELECT id FROM (SELECT id, 0 w FROM t ...) s)
+			// where the project list only holds w, and rewriting with w's
+			// expression would compare a with 0 instead of with id
+			const CColRef *pcrSubquery =
+				CScalarSubqueryAny::PopConvert(pop)->Pcr();
+			CExpression *pexprDefining =
+				CUtils::PexprProjElemDefining(pexprLogicalProject, pcrSubquery);
+
+			// bail out if the subquery's column is not computed here, if its
+			// expression has an inner reference, or if the subquery does not
+			// have any outer reference
+			if (nullptr == pexprDefining ||
+				!CUtils::HasOuterRefs(pexprLogicalProject) ||
+				CUtils::FExprHasAnyCrFromCrs(
+					pexprDefining,
+					(*pexprLogicalProject)[0]->DeriveOutputColumns()))
+			{
+				return pexprNew;
+			}
+			// WHPG: also bail out if that expression is volatile: the
+			// subquery evaluates it once per inner row, the rewrite would
+			// evaluate it once per outer row
+			if (CPredicateUtils::FContainsVolatileFunction(pexprDefining))
 			{
 				return pexprNew;
 			}

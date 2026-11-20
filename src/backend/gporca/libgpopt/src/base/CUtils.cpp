@@ -2259,6 +2259,51 @@ CUtils::PexprCollapseSelect(CMemoryPool *mp, CExpression *pexpr,
 		CExpression(mp, GPOS_NEW(mp) CLogicalSelect(mp), pexpr, pexprPredicate);
 }
 
+// WHPG: return the Select at the bottom of a chain of zero or more Projects
+// rooted at pexpr, or nullptr if the chain does not end in a Select
+CExpression *
+CUtils::PexprSelectUnderProjects(CExpression *pexpr)
+{
+	GPOS_ASSERT(nullptr != pexpr);
+
+	while (COperator::EopLogicalProject == pexpr->Pop()->Eopid() &&
+		   2 == pexpr->Arity())
+	{
+		pexpr = (*pexpr)[0];
+	}
+
+	if (COperator::EopLogicalSelect == pexpr->Pop()->Eopid() &&
+		2 == pexpr->Arity())
+	{
+		return pexpr;
+	}
+
+	return nullptr;
+}
+
+// WHPG: copy the chain of Projects rooted at pexpr with the Select at its
+// bottom (see PexprSelectUnderProjects) replaced by that Select's child
+CExpression *
+CUtils::PexprRemoveSelectUnderProjects(CMemoryPool *mp, CExpression *pexpr)
+{
+	GPOS_ASSERT(nullptr != pexpr);
+	GPOS_ASSERT(2 == pexpr->Arity());
+
+	COperator *pop = pexpr->Pop();
+	if (COperator::EopLogicalSelect == pop->Eopid())
+	{
+		(*pexpr)[0]->AddRef();
+		return (*pexpr)[0];
+	}
+
+	GPOS_ASSERT(COperator::EopLogicalProject == pop->Eopid());
+	CExpression *pexprChild = PexprRemoveSelectUnderProjects(mp, (*pexpr)[0]);
+	pop->AddRef();
+	(*pexpr)[1]->AddRef();
+
+	return GPOS_NEW(mp) CExpression(mp, pop, pexprChild, (*pexpr)[1]);
+}
+
 // generate a project expression
 CExpression *
 CUtils::PexprLogicalProject(CMemoryPool *mp, CExpression *pexpr,
@@ -4588,23 +4633,27 @@ CUtils::PNthProjectElementExpr(CExpression *pexpr, ULONG ul)
 	return (*(*(*pexpr)[1])[ul])[0];
 }
 
-// check if the Project list has an inner reference assuming project list has one projecet element
-BOOL
-CUtils::FInnerRefInProjectList(CExpression *pexpr)
+// WHPG: return the expression under the project element of a CLogicalProject
+// that defines the given column, or nullptr if the project list does not
+// define it (the column then comes from the project's relational child)
+CExpression *
+CUtils::PexprProjElemDefining(CExpression *pexpr, const CColRef *colref)
 {
 	GPOS_ASSERT(nullptr != pexpr);
 	GPOS_ASSERT(COperator::EopLogicalProject == pexpr->Pop()->Eopid());
+	GPOS_ASSERT(nullptr != colref);
 
-	// extract output columns of the relational child
-	CColRefSet *pcrsOuterOutput = (*pexpr)[0]->DeriveOutputColumns();
+	CExpression *pexprPrL = (*pexpr)[1];
+	const ULONG arity = pexprPrL->Arity();
+	for (ULONG ul = 0; ul < arity; ul++)
+	{
+		if (colref == PNthProjectElement(pexpr, ul)->Pcr())
+		{
+			return PNthProjectElementExpr(pexpr, ul);
+		}
+	}
 
-	// Project List with one project element
-	CExpression *pexprInner = (*pexpr)[1];
-	GPOS_ASSERT(1 == pexprInner->Arity());
-	BOOL fExprHasAnyCrFromCrs =
-		CUtils::FExprHasAnyCrFromCrs(pexprInner, pcrsOuterOutput);
-
-	return fExprHasAnyCrFromCrs;
+	return nullptr;
 }
 
 // Check if expression tree has a col being referenced in the CColRefSet passed as input

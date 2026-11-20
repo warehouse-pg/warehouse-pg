@@ -942,6 +942,123 @@ drop table pwj_outer;
 drop table pwj_a;
 drop table pwj_b;
 
+--------------------------------------------------------------------------------
+-- WHPG: a correlated IN / op ANY subquery over a derived table
+-- with a constant column and a LIMIT. GPORCA pulls the constant column's
+-- Project above the Select that holds the quantified comparison; the
+-- correlated apply must still find the comparison under that Project and
+-- keep it as its predicate, not plan the subquery as a scalar SubPlan
+-- (which errors as soon as the subquery returns more than one row).
+-- Expect 16 and 14 rows.
+--------------------------------------------------------------------------------
+create table ranked_items (id int, p int) distributed by (id);
+create table probe_rows (k int, v int) distributed by (k);
+insert into ranked_items select g, g % 12 from generate_series(1, 120) g;
+insert into probe_rows select g, g % 8 from generate_series(1, 16) g;
+analyze ranked_items;
+analyze probe_rows;
+
+explain (costs off)
+select count(*) from probe_rows o
+ where o.v in (select id % 8
+                 from (select id, 0 w from ranked_items
+                        where p <= o.v order by id limit 10) s);
+select count(*) from probe_rows o
+ where o.v in (select id % 8
+                 from (select id, 0 w from ranked_items
+                        where p <= o.v order by id limit 10) s);
+
+explain (costs off)
+select count(*) from probe_rows o
+ where o.v < any (select id % 8
+                    from (select id, 0 w from ranked_items
+                           where p <= o.v order by id limit 10) s);
+select count(*) from probe_rows o
+ where o.v < any (select id % 8
+                    from (select id, 0 w from ranked_items
+                           where p <= o.v order by id limit 10) s);
+
+-- WHPG: without the LIMIT, GPORCA's preprocessor rewrites
+-- "a IN (SELECT <expr> FROM ...)" whose <expr> uses no column of the
+-- subquery into "a = <expr> AND EXISTS (...)". <expr> must be the project
+-- element that defines the subquery's column: here the derived table's
+-- project list only defines w (0 or o.k), while id comes from below it, so
+-- o.v must be compared with id, not with w. Expect 14, 14 and 16.
+explain (costs off)
+select count(*) from probe_rows o
+ where o.v in (select id
+                 from (select id, 0 w from ranked_items
+                        where p <= o.v) s);
+select count(*) from probe_rows o
+ where o.v in (select id
+                 from (select id, 0 w from ranked_items
+                        where p <= o.v) s);
+
+explain (costs off)
+select count(*) from probe_rows o
+ where o.v in (select id
+                 from (select id, o.k w from ranked_items
+                        where p <= o.v) s);
+select count(*) from probe_rows o
+ where o.v in (select id
+                 from (select id, o.k w from ranked_items
+                        where p <= o.v) s);
+
+explain (costs off)
+select count(*) from probe_rows o
+ where o.v < any (select id
+                    from (select id, 0 w from ranked_items
+                           where p <= o.v) s);
+select count(*) from probe_rows o
+ where o.v < any (select id
+                    from (select id, 0 w from ranked_items
+                           where p <= o.v) s);
+
+-- WHPG: two constant columns, neither of which defines the
+-- subquery's column id: the rewrite must not use either of them. Expect 14.
+explain (costs off)
+select count(*) from probe_rows o
+ where o.v in (select id
+                 from (select id, 0 w1, 1 w2 from ranked_items
+                        where p <= o.v) s);
+select count(*) from probe_rows o
+ where o.v in (select id
+                 from (select id, 0 w1, 1 w2 from ranked_items
+                        where p <= o.v) s);
+
+-- WHPG: the subquery's column x is an outer reference defined
+-- by the second element of the project list: the rewrite compares o.v with
+-- o.k (x), not with 0 (w), giving a "v = k" filter on probe_rows. Expect 7.
+explain (costs off)
+select count(*) from probe_rows o
+ where o.v in (select x
+                 from (select 0 w, o.k x from ranked_items
+                        where p <= o.v) s);
+select count(*) from probe_rows o
+ where o.v in (select x
+                 from (select 0 w, o.k x from ranked_items
+                        where p <= o.v) s);
+
+-- WHPG: the same rewrite must leave a volatile <expr> alone:
+-- the subquery evaluates it once per inner row, "a = <expr> AND EXISTS"
+-- would evaluate it once per outer row. volatile_ident() is plpgsql so that
+-- it is not inlined; it returns its argument, so the count is deterministic
+-- (8), and the plan must show an ANY SubPlan, not a filter on probe_rows.
+create function volatile_ident(int) returns int volatile language plpgsql
+  as 'begin return $1; end';
+
+explain (costs off)
+select count(*) from probe_rows o
+ where o.v in (select volatile_ident(o.v % 4)
+                 from ranked_items where p <= o.v);
+select count(*) from probe_rows o
+ where o.v in (select volatile_ident(o.v % 4)
+                 from ranked_items where p <= o.v);
+
+drop function volatile_ident(int);
+drop table ranked_items;
+drop table probe_rows;
+
 -- ----------------------------------------------------------------------
 -- Test: teardown.sql
 -- ----------------------------------------------------------------------
