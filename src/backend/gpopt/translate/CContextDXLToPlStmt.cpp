@@ -21,8 +21,12 @@ extern "C" {
 
 #include "nodes/parsenodes.h"
 #include "nodes/plannodes.h"
+#include "optimizer/orca.h"
 #include "utils/rel.h"
 }
+
+#include <algorithm>
+#include <functional>
 
 #include "gpos/base.h"
 
@@ -31,6 +35,71 @@ extern "C" {
 #include "naucrates/exception.h"
 
 using namespace gpdxl;
+
+void
+SExtensionRegions::IndexNodes()
+{
+	by_node.resize(ops.size());
+	for (ULONG ul = 0; ul < ops.size(); ul++)
+	{
+		by_node[ul] = ul;
+	}
+	std::sort(by_node.begin(), by_node.end(), [this](ULONG a, ULONG b) {
+		return std::less<const CDXLNode *>()(ops[a], ops[b]);
+	});
+}
+
+ULONG
+SExtensionRegions::OpNumber(const CDXLNode *dxlnode) const
+{
+	auto it = std::lower_bound(by_node.begin(), by_node.end(), dxlnode,
+							   [this](ULONG op, const CDXLNode *node) {
+								   return std::less<const CDXLNode *>()(
+									   ops[op], node);
+							   });
+	if (it == by_node.end() || ops[*it] != dxlnode)
+	{
+		return gpos::ulong_max;
+	}
+	return *it;
+}
+
+const OrcaPlanRegion *
+SExtensionRegions::Region(const CDXLNode *dxlnode) const
+{
+	if (nullptr == regions)
+	{
+		return nullptr;
+	}
+	ULONG op = OpNumber(dxlnode);
+	if (gpos::ulong_max == op || root_region[op] < 0)
+	{
+		return nullptr;
+	}
+	return &regions->regions[root_region[op]];
+}
+
+BOOL
+SExtensionRegions::IsLeaf(const CDXLNode *dxlnode) const
+{
+	if (nullptr == regions)
+	{
+		return false;
+	}
+	ULONG op = OpNumber(dxlnode);
+	return gpos::ulong_max != op && 0 < leaf_of[op];
+}
+
+BOOL
+SExtensionRegions::IpcRows(const CDXLNode *dxlnode) const
+{
+	if (nullptr == regions)
+	{
+		return false;
+	}
+	ULONG op = OpNumber(dxlnode);
+	return gpos::ulong_max != op && ipc_rows[op];
+}
 
 //---------------------------------------------------------------------------
 //	@function:

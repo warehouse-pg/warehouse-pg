@@ -522,6 +522,13 @@ shareinput_walker(SHAREINPUT_MUTATOR f, Node *node, PlannerInfo *root)
 				shareinput_walker(f, (Node *) plan->lefttree, root);
 			}
 		}
+		else if (IsA(node, CustomScan))
+		{
+			ListCell   *cell;
+
+			foreach(cell, ((CustomScan *) node)->custom_plans)
+				shareinput_walker(f, (Node *) lfirst(cell), root);
+		}
 		else if (IsA(node, Sequence))
 		{
 			ListCell   *cell = NULL;

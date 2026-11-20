@@ -1,0 +1,1350 @@
+--
+-- Test ORCA's orca_plan_regions_hook.
+--
+-- The segments look up the CustomScan methods of the plans they are sent,
+-- so they must load the module too.
+DO $$
+BEGIN
+	EXECUTE format('ALTER DATABASE %I SET session_preload_libraries = %L',
+				   current_database(), 'test_orca_regions');
+END
+$$;
+\c
+SET optimizer = on;
+SET optimizer_trace_fallback = on;
+CREATE TABLE t (a int, b int) DISTRIBUTED BY (a);
+INSERT INTO t SELECT i, i % 3 FROM generate_series(1, 10) i;
+INSERT INTO t VALUES (NULL, 1), (11, NULL);
+CREATE TABLE u (c int, d int) DISTRIBUTED BY (c);
+INSERT INTO u SELECT i, i FROM generate_series(1, 10) i;
+-- distributed by its join column with t
+CREATE TABLE u2 (c int, d int) DISTRIBUTED BY (d);
+INSERT INTO u2 SELECT i, i % 4 FROM generate_series(1, 20) i;
+ANALYZE t;
+ANALYZE u;
+ANALYZE u2;
+-- no regions: the plan as ORCA chose it
+SET test_orca_regions.mode = off;
+EXPLAIN (COSTS OFF) SELECT * FROM t WHERE b = 1;
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Seq Scan on t
+         Filter: (b = 1)
+ Optimizer: GPORCA
+(4 rows)
+
+-- a region at each table scan
+SET test_orca_regions.mode = scan;
+EXPLAIN (COSTS OFF) SELECT * FROM t WHERE b = 1;
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Custom Scan (TestOrcaRegion)
+         Region: pass
+         ->  Seq Scan on t
+               Filter: (b = 1)
+ Optimizer: GPORCA
+(6 rows)
+
+SELECT * FROM t WHERE b = 1 ORDER BY a;
+ a  | b 
+----+---
+  1 | 1
+  4 | 1
+  7 | 1
+ 10 | 1
+    | 1
+(5 rows)
+
+EXPLAIN (COSTS OFF) SELECT t.a, u.c FROM t JOIN u ON t.b = u.d;
+                            QUERY PLAN                            
+------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Hash Join
+         Hash Cond: ((NULL::integer) = (NULL::integer))
+         ->  Redistribute Motion 3:3  (slice2; segments: 3)
+               Hash Key: (NULL::integer)
+               ->  Custom Scan (TestOrcaRegion)
+                     Region: pass
+                     ->  Seq Scan on t
+         ->  Hash
+               ->  Redistribute Motion 3:3  (slice3; segments: 3)
+                     Hash Key: (NULL::integer)
+                     ->  Custom Scan (TestOrcaRegion)
+                           Region: pass
+                           ->  Seq Scan on u
+ Optimizer: GPORCA
+(15 rows)
+
+SELECT t.a, u.c FROM t JOIN u ON t.b = u.d ORDER BY 1, 2;
+ a  | c 
+----+---
+  1 | 1
+  2 | 2
+  4 | 1
+  5 | 2
+  7 | 1
+  8 | 2
+ 10 | 1
+    | 1
+(8 rows)
+
+-- ipc regions: rows cross gather and redistribute motions as
+-- (segment, payload) rows
+SET test_orca_regions.mode = ipc;
+EXPLAIN (COSTS OFF) SELECT * FROM t WHERE b = 1;
+                   QUERY PLAN                   
+------------------------------------------------
+ Custom Scan (TestOrcaRegion)
+   Region: decode
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Custom Scan (TestOrcaRegion)
+               Region: encode
+               ->  Seq Scan on t
+                     Filter: (b = 1)
+ Optimizer: GPORCA
+(8 rows)
+
+SELECT * FROM t WHERE b = 1 ORDER BY a;
+ a  | b 
+----+---
+  1 | 1
+  4 | 1
+  7 | 1
+ 10 | 1
+    | 1
+(5 rows)
+
+SELECT * FROM t ORDER BY a;
+ a  | b 
+----+---
+  1 | 1
+  2 | 2
+  3 | 0
+  4 | 1
+  5 | 2
+  6 | 0
+  7 | 1
+  8 | 2
+  9 | 0
+ 10 | 1
+ 11 |  
+    | 1
+(12 rows)
+
+EXPLAIN (COSTS OFF) SELECT t.a, u.c FROM t JOIN u ON t.b = u.d;
+                                   QUERY PLAN                                    
+---------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Hash Join
+         Hash Cond: ((NULL::integer) = (NULL::integer))
+         ->  Custom Scan (TestOrcaRegion)
+               Region: decode
+               ->  Explicit Redistribute Motion 3:3  (slice2; segments: 3)
+                     ->  Custom Scan (TestOrcaRegion)
+                           Region: encode
+                           ->  Seq Scan on t
+         ->  Hash
+               ->  Custom Scan (TestOrcaRegion)
+                     Region: decode
+                     ->  Explicit Redistribute Motion 3:3  (slice3; segments: 3)
+                           ->  Custom Scan (TestOrcaRegion)
+                                 Region: encode
+                                 ->  Seq Scan on u
+ Optimizer: GPORCA
+(17 rows)
+
+SELECT t.a, u.c FROM t JOIN u ON t.b = u.d ORDER BY 1, 2;
+ a  | c 
+----+---
+  1 | 1
+  2 | 2
+  4 | 1
+  5 | 2
+  7 | 1
+  8 | 2
+ 10 | 1
+    | 1
+(8 rows)
+
+-- only t moves, to u2's segments: the region puts each row where u2's
+-- matching rows are, by the motion's hash
+EXPLAIN (COSTS OFF) SELECT t.a, u2.c FROM t JOIN u2 ON t.b = u2.d;
+                                   QUERY PLAN                                    
+---------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Hash Join
+         Hash Cond: (u2.d = (NULL::integer))
+         ->  Seq Scan on u2
+         ->  Hash
+               ->  Custom Scan (TestOrcaRegion)
+                     Region: decode
+                     ->  Explicit Redistribute Motion 3:3  (slice2; segments: 3)
+                           ->  Custom Scan (TestOrcaRegion)
+                                 Region: encode
+                                 ->  Seq Scan on t
+ Optimizer: GPORCA
+(12 rows)
+
+SELECT t.a, u2.c FROM t JOIN u2 ON t.b = u2.d ORDER BY 1, 2;
+ a  | c  
+----+----
+  1 |  1
+  1 |  5
+  1 |  9
+  1 | 13
+  1 | 17
+  2 |  2
+  2 |  6
+  2 | 10
+  2 | 14
+  2 | 18
+  3 |  4
+  3 |  8
+  3 | 12
+  3 | 16
+  3 | 20
+  4 |  1
+  4 |  5
+  4 |  9
+  4 | 13
+  4 | 17
+  5 |  2
+  5 |  6
+  5 | 10
+  5 | 14
+  5 | 18
+  6 |  4
+  6 |  8
+  6 | 12
+  6 | 16
+  6 | 20
+  7 |  1
+  7 |  5
+  7 |  9
+  7 | 13
+  7 | 17
+  8 |  2
+  8 |  6
+  8 | 10
+  8 | 14
+  8 | 18
+  9 |  4
+  9 |  8
+  9 | 12
+  9 | 16
+  9 | 20
+ 10 |  1
+ 10 |  5
+ 10 |  9
+ 10 | 13
+ 10 | 17
+    |  1
+    |  5
+    |  9
+    | 13
+    | 17
+(55 rows)
+
+-- with one row per payload, and all of a segment's rows in one
+SET test_orca_regions.batch_rows = 1;
+SELECT count(*), sum(t.a), sum(u2.c) FROM t JOIN u2 ON t.b = u2.d;
+ count | sum | sum 
+-------+-----+-----
+    55 | 275 | 555
+(1 row)
+
+SELECT * FROM t ORDER BY a;
+ a  | b 
+----+---
+  1 | 1
+  2 | 2
+  3 | 0
+  4 | 1
+  5 | 2
+  6 | 0
+  7 | 1
+  8 | 2
+  9 | 0
+ 10 | 1
+ 11 |  
+    | 1
+(12 rows)
+
+SET test_orca_regions.batch_rows = 1000;
+SELECT count(*), sum(t.a), sum(u2.c) FROM t JOIN u2 ON t.b = u2.d;
+ count | sum | sum 
+-------+-----+-----
+    55 | 275 | 555
+(1 row)
+
+SELECT * FROM t ORDER BY a;
+ a  | b 
+----+---
+  1 | 1
+  2 | 2
+  3 | 0
+  4 | 1
+  5 | 2
+  6 | 0
+  7 | 1
+  8 | 2
+  9 | 0
+ 10 | 1
+ 11 |  
+    | 1
+(12 rows)
+
+RESET test_orca_regions.batch_rows;
+-- a CTE's producer and consumers: the rows cross the shared scans
+-- encoded, and the consumers' regions decode them
+SET test_orca_regions.mode = ipc_cte;
+EXPLAIN (COSTS OFF) WITH c AS (SELECT * FROM t) SELECT * FROM c c1 JOIN c c2 USING (a) WHERE c1.a < 5;
+                              QUERY PLAN                              
+----------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Sequence
+         ->  Shared Scan (share slice:id 1:0)
+               ->  Custom Scan (TestOrcaRegion)
+                     Region: encode
+                     ->  Seq Scan on t
+                           Filter: (a < 5)
+         ->  Hash Join
+               Hash Cond: ((NULL::integer) = (NULL::integer))
+               ->  Result
+                     Filter: ((NULL::integer) < 5)
+                     ->  Custom Scan (TestOrcaRegion)
+                           Region: decode
+                           ->  Shared Scan (share slice:id 1:0)
+               ->  Hash
+                     ->  Result
+                           Filter: ((NULL::integer) < 5)
+                           ->  Custom Scan (TestOrcaRegion)
+                                 Region: decode
+                                 ->  Shared Scan (share slice:id 1:0)
+ Optimizer: GPORCA
+(21 rows)
+
+WITH c AS (SELECT * FROM t) SELECT * FROM c c1 JOIN c c2 USING (a) WHERE c1.a < 5 ORDER BY 1;
+ a | b | b 
+---+---+---
+ 1 | 1 | 1
+ 2 | 2 | 2
+ 3 | 0 | 0
+ 4 | 1 | 1
+(4 rows)
+
+-- the last child of a sequence: the sequence passes the rows on, to the
+-- motion above it, or as the leaf of a region (on the coordinator)
+SET test_orca_regions.mode = ipc_sequence;
+EXPLAIN (COSTS OFF) WITH c AS (SELECT * FROM t WHERE a < 5) SELECT * FROM c c1 JOIN c c2 USING (a);
+                                 QUERY PLAN                                 
+----------------------------------------------------------------------------
+ Custom Scan (TestOrcaRegion)
+   Region: decode
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Sequence
+               ->  Shared Scan (share slice:id 1:0)
+                     ->  Seq Scan on t
+                           Filter: (a < 5)
+               ->  Custom Scan (TestOrcaRegion)
+                     Region: encode
+                     ->  Hash Join
+                           Hash Cond: (share0_ref3.a = share0_ref2.a)
+                           ->  Result
+                                 Filter: (share0_ref3.a < 5)
+                                 ->  Shared Scan (share slice:id 1:0)
+                           ->  Hash
+                                 ->  Result
+                                       Filter: (share0_ref2.a < 5)
+                                       ->  Shared Scan (share slice:id 1:0)
+ Optimizer: GPORCA
+(19 rows)
+
+WITH c AS (SELECT * FROM t WHERE a < 5) SELECT * FROM c c1 JOIN c c2 USING (a) ORDER BY 1;
+ a | b | b 
+---+---+---
+ 1 | 1 | 1
+ 2 | 2 | 2
+ 3 | 0 | 0
+ 4 | 1 | 1
+(4 rows)
+
+EXPLAIN (COSTS OFF) WITH c AS (SELECT i AS a FROM generate_series(1, 5) i) SELECT * FROM c c1 JOIN c c2 USING (a);
+                                         QUERY PLAN                                         
+--------------------------------------------------------------------------------------------
+ Custom Scan (TestOrcaRegion)
+   Region: decode
+   ->  Sequence
+         ->  Shared Scan (share slice:id 0:0)
+               ->  Function Scan on generate_series
+         ->  Custom Scan (TestOrcaRegion)
+               Region: encode
+               ->  Hash Join
+                     Hash Cond: (share0_ref3.generate_series = share0_ref2.generate_series)
+                     ->  Shared Scan (share slice:id 0:0)
+                     ->  Hash
+                           ->  Shared Scan (share slice:id 0:0)
+ Optimizer: GPORCA
+(13 rows)
+
+WITH c AS (SELECT i AS a FROM generate_series(1, 5) i) SELECT * FROM c c1 JOIN c c2 USING (a) ORDER BY 1;
+ a 
+---
+ 1
+ 2
+ 3
+ 4
+ 5
+(5 rows)
+
+SET test_orca_regions.mode = ipc;
+-- the executor checks the segments a region sends rows to: those of the
+-- motion
+DO $$
+DECLARE
+	seg int;
+	n bigint;
+BEGIN
+	FOREACH seg IN ARRAY ARRAY[-1, 0, 2, 3] LOOP
+		EXECUTE format('SET test_orca_regions.segment = %s', seg);
+		BEGIN
+			-- planned anew, for the segment
+			EXECUTE 'SELECT count(*) FROM t JOIN u2 ON t.b = u2.d' INTO n;
+			RAISE NOTICE 'segment %: no error', seg;
+		EXCEPTION WHEN internal_error THEN
+			-- without the segment that raised it
+			RAISE NOTICE 'segment %: %', seg, split_part(SQLERRM, ' (', 1);
+		END;
+	END LOOP;
+END
+$$;
+NOTICE:  segment -1: explicit motion's target segment -1 is out of range
+NOTICE:  segment 0: no error
+NOTICE:  segment 2: no error
+NOTICE:  segment 3: explicit motion's target segment 3 is out of range
+RESET test_orca_regions.segment;
+-- a limit over a region over a motion squelches the motion when it has
+-- its row, instead of waiting for the senders, which block on a full
+-- interconnect: the CustomScan's children are squelched too
+CREATE TABLE big (a int, b int) DISTRIBUTED BY (a);
+INSERT INTO big SELECT i, i FROM generate_series(1, 100000) i;
+ANALYZE big;
+SELECT disable_xform('CXformSplitLimit');
+        disable_xform         
+------------------------------
+ CXformSplitLimit is disabled
+(1 row)
+
+EXPLAIN (COSTS OFF) SELECT * FROM big LIMIT 1;
+                      QUERY PLAN                      
+------------------------------------------------------
+ Limit
+   ->  Custom Scan (TestOrcaRegion)
+         Region: decode
+         ->  Gather Motion 3:1  (slice1; segments: 3)
+               ->  Custom Scan (TestOrcaRegion)
+                     Region: encode
+                     ->  Seq Scan on big
+ Optimizer: GPORCA
+(8 rows)
+
+SET statement_timeout = '60s';
+DO $$
+DECLARE
+	r record;
+BEGIN
+	-- its output varies
+	FOR r IN EXPLAIN (ANALYZE, COSTS OFF) SELECT * FROM big LIMIT 1 LOOP
+	END LOOP;
+END
+$$;
+RESET statement_timeout;
+SELECT enable_xform('CXformSplitLimit');
+        enable_xform         
+-----------------------------
+ CXformSplitLimit is enabled
+(1 row)
+
+-- large payloads: all of a sender's rows for a segment in one, of hundreds
+-- of kB, across a redistribute and a gather motion
+SET test_orca_regions.batch_rows = 1000000;
+EXPLAIN (COSTS OFF) SELECT count(*), sum(b1.a), sum(b2.b) FROM big b1 JOIN big b2 ON b1.b = b2.a;
+                                      QUERY PLAN                                       
+---------------------------------------------------------------------------------------
+ Finalize Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Partial Aggregate
+               ->  Hash Join
+                     Hash Cond: ((NULL::integer) = b2.a)
+                     ->  Custom Scan (TestOrcaRegion)
+                           Region: decode
+                           ->  Explicit Redistribute Motion 3:3  (slice2; segments: 3)
+                                 ->  Custom Scan (TestOrcaRegion)
+                                       Region: encode
+                                       ->  Seq Scan on big b1
+                     ->  Hash
+                           ->  Seq Scan on big b2
+ Optimizer: GPORCA
+(14 rows)
+
+SELECT count(*), sum(b1.a), sum(b2.b) FROM big b1 JOIN big b2 ON b1.b = b2.a;
+ count  |    sum     |    sum     
+--------+------------+------------
+ 100000 | 5000050000 | 5000050000
+(1 row)
+
+EXPLAIN (COSTS OFF) SELECT count(*), sum(n), sum(a) FROM (SELECT a, row_number() OVER () n FROM big) s;
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Aggregate
+   ->  WindowAgg
+         ->  Custom Scan (TestOrcaRegion)
+               Region: decode
+               ->  Gather Motion 3:1  (slice1; segments: 3)
+                     ->  Custom Scan (TestOrcaRegion)
+                           Region: encode
+                           ->  Seq Scan on big
+ Optimizer: GPORCA
+(9 rows)
+
+SELECT count(*), sum(n), sum(a) FROM (SELECT a, row_number() OVER () n FROM big) s;
+ count  |    sum     |    sum     
+--------+------------+------------
+ 100000 | 5000050000 | 5000050000
+(1 row)
+
+RESET test_orca_regions.batch_rows;
+DROP TABLE big;
+-- a region with two leaves: it reads the inner one before the outer, as
+-- a join does when both have motions in them
+SET test_orca_regions.mode = join;
+EXPLAIN (COSTS OFF) SELECT t.a, u.c FROM t JOIN u ON t.b = u.d;
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Custom Scan (TestOrcaRegion)
+         Region: join
+         ->  Redistribute Motion 3:3  (slice2; segments: 3)
+               Hash Key: t.b
+               ->  Seq Scan on t
+         ->  Redistribute Motion 3:3  (slice3; segments: 3)
+               Hash Key: u.d
+               ->  Seq Scan on u
+ Optimizer: GPORCA
+(10 rows)
+
+SELECT t.a, u.c FROM t JOIN u ON t.b = u.d ORDER BY 1, 2;
+ a  | c 
+----+---
+  1 | 1
+  2 | 2
+  4 | 1
+  5 | 2
+  7 | 1
+  8 | 2
+ 10 | 1
+    | 1
+(8 rows)
+
+-- a region replacing the materialize of a nested loop's inner side is
+-- rescanned for each outer row: it keeps its leaf's rows, as the motion in
+-- the leaf can't be rescanned
+SET test_orca_regions.mode = spool;
+EXPLAIN (COSTS OFF) SELECT count(*), sum(t.a), sum(u.c) FROM t, u WHERE t.a < u.c;
+                                QUERY PLAN                                 
+---------------------------------------------------------------------------
+ Finalize Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Partial Aggregate
+               ->  Nested Loop
+                     Join Filter: (t.a < (NULL::integer))
+                     ->  Seq Scan on t
+                     ->  Custom Scan (TestOrcaRegion)
+                           Region: spool
+                           ->  Broadcast Motion 3:3  (slice2; segments: 3)
+                                 ->  Seq Scan on u
+ Optimizer: GPORCA
+(11 rows)
+
+SELECT count(*), sum(t.a), sum(u.c) FROM t, u WHERE t.a < u.c;
+ count | sum | sum 
+-------+-----+-----
+    45 | 165 | 330
+(1 row)
+
+SET test_orca_regions.mode = off;
+SELECT count(*), sum(t.a), sum(u.c) FROM t, u WHERE t.a < u.c;
+ count | sum | sum 
+-------+-----+-----
+    45 | 165 | 330
+(1 row)
+
+-- the PG planner doesn't call the hook
+SET optimizer = off;
+EXPLAIN (COSTS OFF) SELECT * FROM t WHERE b = 1;
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Seq Scan on t
+         Filter: (b = 1)
+ Optimizer: Postgres-based planner
+(4 rows)
+
+SET optimizer = on;
+-- malformed regions: the query falls back to the PG planner
+SET test_orca_regions.mode = bad_version;
+EXPLAIN (COSTS OFF) SELECT * FROM t;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: extension regions of another ABI version
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Seq Scan on t
+ Optimizer: Postgres-based planner
+(3 rows)
+
+SET test_orca_regions.mode = no_methods;
+EXPLAIN (COSTS OFF) SELECT * FROM t;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: extension regions without CustomScan methods
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Seq Scan on t
+ Optimizer: Postgres-based planner
+(3 rows)
+
+SET test_orca_regions.mode = bad_root;
+EXPLAIN (COSTS OFF) SELECT * FROM t;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: invalid extension region
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Seq Scan on t
+ Optimizer: Postgres-based planner
+(3 rows)
+
+SET test_orca_regions.mode = leaf_outside;
+EXPLAIN (COSTS OFF) SELECT * FROM t;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: invalid extension region
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Seq Scan on t
+ Optimizer: Postgres-based planner
+(3 rows)
+
+SET test_orca_regions.mode = nested_leaves;
+EXPLAIN (COSTS OFF) SELECT * FROM t;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: invalid extension region
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Seq Scan on t
+ Optimizer: Postgres-based planner
+(3 rows)
+
+SET test_orca_regions.mode = duplicate_root;
+EXPLAIN (COSTS OFF) SELECT * FROM t;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: invalid extension region
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Seq Scan on t
+ Optimizer: Postgres-based planner
+(3 rows)
+
+-- a motion can't merge rows by an opaque payload
+SET test_orca_regions.mode = sorted_motion;
+EXPLAIN (COSTS OFF) SELECT * FROM t ORDER BY a;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: invalid extension region
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   Merge Key: a
+   ->  Sort
+         Sort Key: a
+         ->  Seq Scan on t
+ Optimizer: Postgres-based planner
+(6 rows)
+
+SELECT * FROM t ORDER BY a LIMIT 3;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: invalid extension region
+ a | b 
+---+---
+ 1 | 1
+ 2 | 2
+ 3 | 0
+(3 rows)
+
+-- a region's operators between its root and its leaves aren't translated,
+-- so none may be a motion or a scan
+SET test_orca_regions.mode = span_motion;
+EXPLAIN (COSTS OFF) SELECT * FROM t;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: invalid extension region
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Seq Scan on t
+ Optimizer: Postgres-based planner
+(3 rows)
+
+SET test_orca_regions.mode = span_scan;
+EXPLAIN (COSTS OFF) SELECT * FROM t LIMIT 1;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: invalid extension region
+                   QUERY PLAN                   
+------------------------------------------------
+ Limit
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Limit
+               ->  Seq Scan on t
+ Optimizer: Postgres-based planner
+(5 rows)
+
+-- nor the root of another region, which would never be translated
+SET test_orca_regions.mode = nested_root;
+EXPLAIN (COSTS OFF) SELECT * FROM (SELECT * FROM t ORDER BY a LIMIT 5) s ORDER BY b;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: invalid extension region
+                      QUERY PLAN                      
+------------------------------------------------------
+ Sort
+   Sort Key: t.b
+   ->  Limit
+         ->  Gather Motion 3:1  (slice1; segments: 3)
+               Merge Key: t.a
+               ->  Limit
+                     ->  Sort
+                           Sort Key: t.a
+                           ->  Seq Scan on t
+ Optimizer: Postgres-based planner
+(10 rows)
+
+-- nor have a subplan (under a scalar), which the leaf can't be either: its
+-- SubPlan expression would never be translated
+SET optimizer_enforce_subplans = on;
+SET test_orca_regions.mode = subplan_leaf;
+EXPLAIN (COSTS OFF) SELECT * FROM (SELECT * FROM t ORDER BY a LIMIT 5) s WHERE b < (SELECT max(d) FROM u WHERE u.c = s.a);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: invalid extension region
+                            QUERY PLAN                            
+------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Hash Join
+         Hash Cond: (t.a = u.c)
+         Join Filter: (t.b < (max(u.d)))
+         ->  Redistribute Motion 1:3  (slice2; segments: 1)
+               Hash Key: t.a
+               ->  Limit
+                     ->  Gather Motion 3:1  (slice3; segments: 3)
+                           Merge Key: t.a
+                           ->  Limit
+                                 ->  Sort
+                                       Sort Key: t.a
+                                       ->  Seq Scan on t
+         ->  Hash
+               ->  HashAggregate
+                     Group Key: u.c
+                     ->  Seq Scan on u
+ Optimizer: Postgres-based planner
+(18 rows)
+
+EXPLAIN (COSTS OFF) SELECT * FROM (SELECT * FROM t ORDER BY a LIMIT 5) s WHERE a IN (SELECT c FROM u);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: invalid extension region
+                            QUERY PLAN                            
+------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Hash Semi Join
+         Hash Cond: (t.a = u.c)
+         ->  Redistribute Motion 1:3  (slice2; segments: 1)
+               Hash Key: t.a
+               ->  Limit
+                     ->  Gather Motion 3:1  (slice3; segments: 3)
+                           Merge Key: t.a
+                           ->  Limit
+                                 ->  Sort
+                                       Sort Key: t.a
+                                       ->  Seq Scan on t
+         ->  Hash
+               ->  Seq Scan on u
+ Optimizer: Postgres-based planner
+(15 rows)
+
+RESET optimizer_enforce_subplans;
+-- an ipc region's (segment, payload) rows may only reach other regions:
+-- not the operator above the motion, the client, or a CTE's consumers
+SET test_orca_regions.mode = ipc_unread;
+EXPLAIN (COSTS OFF) SELECT * FROM t;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: invalid extension region
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Seq Scan on t
+ Optimizer: Postgres-based planner
+(3 rows)
+
+SET test_orca_regions.mode = ipc_root;
+EXPLAIN (COSTS OFF) SELECT * FROM t;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: invalid extension region
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Seq Scan on t
+ Optimizer: Postgres-based planner
+(3 rows)
+
+SET test_orca_regions.mode = ipc_cte_unread;
+EXPLAIN (COSTS OFF) WITH c AS (SELECT * FROM t) SELECT * FROM c c1 JOIN c c2 USING (a) WHERE c1.a < 5;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: invalid extension region
+                QUERY PLAN                 
+-------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Hash Join
+         Hash Cond: (t.a = c2.a)
+         ->  Seq Scan on t
+               Filter: (a < 5)
+         ->  Hash
+               ->  Subquery Scan on c2
+                     ->  Seq Scan on t t_1
+                           Filter: (a < 5)
+ Optimizer: Postgres-based planner
+(10 rows)
+
+-- nor the operator above a sequence, or the client
+SET test_orca_regions.mode = ipc_sequence_unread;
+EXPLAIN (COSTS OFF) WITH c AS (SELECT * FROM t WHERE a < 5) SELECT * FROM c c1 JOIN c c2 USING (a);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: invalid extension region
+                QUERY PLAN                 
+-------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Hash Join
+         Hash Cond: (t.a = c2.a)
+         ->  Seq Scan on t
+               Filter: (a < 5)
+         ->  Hash
+               ->  Subquery Scan on c2
+                     ->  Seq Scan on t t_1
+                           Filter: (a < 5)
+ Optimizer: Postgres-based planner
+(10 rows)
+
+EXPLAIN (COSTS OFF) WITH c AS (SELECT i AS a FROM generate_series(1, 5) i) SELECT * FROM c c1 JOIN c c2 USING (a);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: invalid extension region
+                    QUERY PLAN                    
+--------------------------------------------------
+ Hash Join
+   Hash Cond: (i.i = i_1.i)
+   ->  Function Scan on generate_series i
+   ->  Hash
+         ->  Function Scan on generate_series i_1
+ Optimizer: Postgres-based planner
+(6 rows)
+
+-- no regions under row-level security: their DXL lacks the security quals
+CREATE ROLE regress_orca_regions;
+GRANT SELECT ON t, u TO regress_orca_regions;
+ALTER TABLE t ENABLE ROW LEVEL SECURITY;
+CREATE POLICY t_small ON t USING (a < 5);
+SET test_orca_regions.mode = scan;
+SET ROLE regress_orca_regions;
+EXPLAIN (COSTS OFF) SELECT * FROM t;
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Seq Scan on t
+         Filter: (a < 5)
+ Optimizer: GPORCA
+(4 rows)
+
+SELECT * FROM t ORDER BY a;
+ a | b 
+---+---
+ 1 | 1
+ 2 | 2
+ 3 | 0
+ 4 | 1
+(4 rows)
+
+-- also when the table is only in a subquery
+EXPLAIN (COSTS OFF) SELECT * FROM u WHERE c IN (SELECT a FROM t);
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Hash Semi Join
+         Hash Cond: (u.c = t.a)
+         ->  Seq Scan on u
+         ->  Hash
+               ->  Seq Scan on t
+                     Filter: (a < 5)
+ Optimizer: GPORCA
+(8 rows)
+
+SELECT * FROM u WHERE c IN (SELECT a FROM t) ORDER BY c;
+ c | d 
+---+---
+ 1 | 1
+ 2 | 2
+ 3 | 3
+ 4 | 4
+(4 rows)
+
+RESET ROLE;
+DROP POLICY t_small ON t;
+ALTER TABLE t DISABLE ROW LEVEL SECURITY;
+REVOKE SELECT ON t, u FROM regress_orca_regions;
+DROP ROLE regress_orca_regions;
+--
+-- Tables an extension reads itself: those of a table AM ORCA doesn't plan
+--
+CREATE ACCESS METHOD test_orca_ext TYPE TABLE HANDLER heap_tableam_handler;
+CREATE TABLE e (a int, b int) USING test_orca_ext DISTRIBUTED BY (a);
+INSERT INTO e SELECT i, i % 3 FROM generate_series(1, 30) i;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Unsupported table AM
+ANALYZE e;
+-- statistics for e to have: b = 1 in 90% of the rows
+CREATE TABLE s (a int, b int) DISTRIBUTED BY (a);
+INSERT INTO s SELECT i, CASE WHEN i <= 90 THEN 1 ELSE i END
+FROM generate_series(1, 100) i;
+ANALYZE s;
+RESET test_orca_regions.mode;
+EXPLAIN (COSTS OFF) SELECT * FROM e;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Unsupported table AM
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Seq Scan on e
+ Optimizer: Postgres-based planner
+(3 rows)
+
+-- the extension's: ORCA plans reads of it, which only its regions may scan
+SET test_orca_regions.ext_relation = random;
+EXPLAIN (COSTS OFF) SELECT * FROM e WHERE b = 1;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: scan of a table an extension reads itself outside its regions
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Seq Scan on e
+         Filter: (b = 1)
+ Optimizer: Postgres-based planner
+(4 rows)
+
+SET test_orca_regions.mode = scan;
+EXPLAIN (COSTS OFF) SELECT * FROM e WHERE b = 1;
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Custom Scan (TestOrcaRegion)
+         Region: pass
+         ->  Seq Scan on e
+               Filter: (b = 1)
+ Optimizer: GPORCA
+(6 rows)
+
+SELECT * FROM e WHERE b = 1 ORDER BY a;
+ a  | b 
+----+---
+  1 | 1
+  4 | 1
+  7 | 1
+ 10 | 1
+ 13 | 1
+ 16 | 1
+ 19 | 1
+ 22 | 1
+ 25 | 1
+ 28 | 1
+(10 rows)
+
+-- randomly distributed: a join on its distribution key moves it
+EXPLAIN (COSTS OFF) SELECT count(*) FROM e JOIN t ON e.a = t.a;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Finalize Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Partial Aggregate
+               ->  Hash Join
+                     Hash Cond: ((NULL::integer) = (NULL::integer))
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                           Hash Key: (NULL::integer)
+                           ->  Custom Scan (TestOrcaRegion)
+                                 Region: pass
+                                 ->  Seq Scan on e
+                     ->  Hash
+                           ->  Custom Scan (TestOrcaRegion)
+                                 Region: pass
+                                 ->  Seq Scan on t
+ Optimizer: GPORCA
+(15 rows)
+
+SELECT count(*) FROM e JOIN t ON e.a = t.a;
+ count 
+-------
+    11
+(1 row)
+
+-- nor index scans, or a dynamic scan of its partitions unless its root is
+-- read the same way: ORCA plans neither
+CREATE INDEX e_a ON e (a);
+CREATE TABLE pe (a int, b int) DISTRIBUTED BY (a) PARTITION BY RANGE (a);
+CREATE TABLE pe1 PARTITION OF pe FOR VALUES FROM (0) TO (15) USING test_orca_ext;
+NOTICE:  table has parent, setting distribution columns to match parent table
+CREATE TABLE pe2 PARTITION OF pe FOR VALUES FROM (15) TO (40) USING test_orca_ext;
+NOTICE:  table has parent, setting distribution columns to match parent table
+SET optimizer_trace_fallback = off;
+INSERT INTO pe SELECT i, i % 3 FROM generate_series(1, 30) i;
+SET optimizer_trace_fallback = on;
+ANALYZE pe;
+SET enable_seqscan = off;
+EXPLAIN (COSTS OFF) SELECT * FROM e WHERE a = 5;
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Custom Scan (TestOrcaRegion)
+         Region: pass
+         ->  Seq Scan on e
+               Filter: (a = 5)
+ Optimizer: GPORCA
+(6 rows)
+
+SELECT * FROM e WHERE a = 5;
+ a | b 
+---+---
+ 5 | 2
+(1 row)
+
+EXPLAIN (COSTS OFF) SELECT count(*) FROM pe WHERE b = 1;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Partition an extension reads differently from its root
+                   QUERY PLAN                   
+------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Append
+               ->  Seq Scan on pe1
+                     Filter: (b = 1)
+               ->  Seq Scan on pe2
+                     Filter: (b = 1)
+ Optimizer: Postgres-based planner
+(8 rows)
+
+SELECT count(*) FROM pe WHERE b = 1;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Partition an extension reads differently from its root
+ count 
+-------
+    10
+(1 row)
+
+RESET test_orca_regions.mode;
+EXPLAIN (COSTS OFF) SELECT * FROM e WHERE a = 5;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: scan of a table an extension reads itself outside its regions
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 1:1  (slice1; segments: 1)
+   ->  Index Scan using e_a on e
+         Index Cond: (a = 5)
+ Optimizer: Postgres-based planner
+(4 rows)
+
+SET test_orca_regions.mode = scan;
+RESET enable_seqscan;
+DROP TABLE pe;
+DROP INDEX e_a;
+-- its size and column statistics from the extension, which the hooks look
+-- up with ORCA off (the module raises an error otherwise). ORCA caches
+-- none of its metadata, so each query sees the hooks' answers of the time:
+-- 10 rows, then 1000 rows, of which b = 1 in 900
+EXPLAIN SELECT * FROM e WHERE b = 1;
+                                  QUERY PLAN                                   
+-------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)  (cost=0.00..431.00 rows=10 width=8)
+   ->  Custom Scan (TestOrcaRegion)  (cost=0.00..431.00 rows=4 width=8)
+         Region: pass
+         ->  Seq Scan on e  (cost=0.00..431.00 rows=4 width=8)
+               Filter: (b = 1)
+ Optimizer: GPORCA
+(6 rows)
+
+SET test_orca_regions.ext_rows = 1000;
+EXPLAIN SELECT * FROM e WHERE b = 1;
+                                   QUERY PLAN                                   
+--------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)  (cost=0.00..431.03 rows=334 width=8)
+   ->  Custom Scan (TestOrcaRegion)  (cost=0.00..431.02 rows=112 width=8)
+         Region: pass
+         ->  Seq Scan on e  (cost=0.00..431.02 rows=112 width=8)
+               Filter: (b = 1)
+ Optimizer: GPORCA
+(6 rows)
+
+SET test_orca_regions.ext_stats_from = 's';
+EXPLAIN SELECT * FROM e WHERE b = 1;
+                                   QUERY PLAN                                   
+--------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)  (cost=0.00..431.05 rows=900 width=8)
+   ->  Custom Scan (TestOrcaRegion)  (cost=0.00..431.02 rows=300 width=8)
+         Region: pass
+         ->  Seq Scan on e  (cost=0.00..431.02 rows=300 width=8)
+               Filter: (b = 1)
+ Optimizer: GPORCA
+(6 rows)
+
+RESET test_orca_regions.ext_rows;
+RESET test_orca_regions.ext_stats_from;
+EXPLAIN SELECT * FROM e WHERE b = 1;
+                                  QUERY PLAN                                   
+-------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)  (cost=0.00..431.00 rows=10 width=8)
+   ->  Custom Scan (TestOrcaRegion)  (cost=0.00..431.00 rows=4 width=8)
+         Region: pass
+         ->  Seq Scan on e  (cost=0.00..431.00 rows=4 width=8)
+               Filter: (b = 1)
+ Optimizer: GPORCA
+(6 rows)
+
+-- nor what the extension says of it: once not the extension's, ORCA
+-- doesn't plan its table AM
+SET test_orca_regions.ext_relation = none;
+EXPLAIN (COSTS OFF) SELECT * FROM e WHERE b = 1;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Unsupported table AM
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Seq Scan on e
+         Filter: (b = 1)
+ Optimizer: Postgres-based planner
+(4 rows)
+
+SET test_orca_regions.ext_relation = random;
+-- regions reading it themselves, the executor evaluating the scans'
+-- filters and projections
+SET test_orca_regions.mode = ext_scan;
+EXPLAIN (COSTS OFF, VERBOSE) SELECT a + 1 FROM e WHERE b = 1;
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   Output: ((a + 1))
+   ->  Custom Scan (TestOrcaRegion)
+         Output: (a + 1)
+         Filter: (e.b = 1)
+         Region: read
+ Optimizer: GPORCA
+(7 rows)
+
+SELECT a + 1 FROM e WHERE b = 1 ORDER BY 1;
+ ?column? 
+----------
+        2
+        5
+        8
+       11
+       14
+       17
+       20
+       23
+       26
+       29
+(10 rows)
+
+-- with a parameter, of a generic plan: the segments get its values. (An
+-- outer query's parameter stays above the motion a subplan reads e through)
+SET plan_cache_mode = force_generic_plan;
+PREPARE e_by_b(int) AS SELECT count(*), sum(a) FROM e WHERE b = $1;
+EXPLAIN (COSTS OFF, VERBOSE) EXECUTE e_by_b(1);
+                      QUERY PLAN                       
+-------------------------------------------------------
+ Finalize Aggregate
+   Output: count(), sum(a)
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         Output: (PARTIAL count()), (PARTIAL sum(a))
+         ->  Partial Aggregate
+               Output: PARTIAL count(), PARTIAL sum(a)
+               ->  Custom Scan (TestOrcaRegion)
+                     Output: a
+                     Filter: (e.b = $1)
+                     Region: read
+ Optimizer: GPORCA
+ Settings: plan_cache_mode = 'force_generic_plan'
+(12 rows)
+
+EXECUTE e_by_b(1);
+ count | sum 
+-------+-----
+    10 | 145
+(1 row)
+
+EXECUTE e_by_b(2);
+ count | sum 
+-------+-----
+    10 | 155
+(1 row)
+
+DEALLOCATE e_by_b;
+RESET plan_cache_mode;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM e JOIN t ON e.a = t.a;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Finalize Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Partial Aggregate
+               ->  Hash Join
+                     Hash Cond: (a = t.a)
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                           Hash Key: a
+                           ->  Custom Scan (TestOrcaRegion)
+                                 Region: read
+                     ->  Hash
+                           ->  Seq Scan on t
+ Optimizer: GPORCA
+(12 rows)
+
+SELECT count(*) FROM e JOIN t ON e.a = t.a;
+ count 
+-------
+    11
+(1 row)
+
+-- a subplan in a filter is translated once: no unused slice
+SELECT disable_xform('CXformLeftSemiJoin2HashJoin');
+              disable_xform              
+-----------------------------------------
+ CXformLeftSemiJoin2HashJoin is disabled
+(1 row)
+
+SELECT disable_xform('CXformLeftSemiJoin2NLJoin');
+             disable_xform             
+---------------------------------------
+ CXformLeftSemiJoin2NLJoin is disabled
+(1 row)
+
+SELECT disable_xform('CXformLeftSemiJoin2InnerJoin');
+              disable_xform               
+------------------------------------------
+ CXformLeftSemiJoin2InnerJoin is disabled
+(1 row)
+
+EXPLAIN (COSTS OFF, VERBOSE) SELECT count(*) FROM e WHERE b IN (SELECT d FROM u);
+                                 QUERY PLAN                                  
+-----------------------------------------------------------------------------
+ Finalize Aggregate
+   Output: count()
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         Output: (PARTIAL count())
+         ->  Partial Aggregate
+               Output: PARTIAL count()
+               ->  Custom Scan (TestOrcaRegion)
+                     Output: b
+                     Filter: (hashed SubPlan 1)
+                     Region: read
+                     SubPlan 1
+                       ->  Materialize
+                             Output: u.d
+                             ->  Broadcast Motion 3:3  (slice2; segments: 3)
+                                   Output: u.d
+                                   ->  Seq Scan on public.u
+                                         Output: u.d
+ Optimizer: GPORCA
+(18 rows)
+
+SELECT count(*) FROM e WHERE b IN (SELECT d FROM u);
+ count 
+-------
+    20
+(1 row)
+
+-- and its scan inside a subplan, translated on its own, gets its region
+-- (a subplan for a larger e)
+SET test_orca_regions.ext_rows = 1000;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM t WHERE a = 7 OR a IN (SELECT a FROM e WHERE b = 1);
+                                    QUERY PLAN                                     
+-----------------------------------------------------------------------------------
+ Finalize Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Partial Aggregate
+               ->  Result
+                     Filter: ((t.a = 7) OR (hashed SubPlan 1))
+                     ->  Seq Scan on t
+                     SubPlan 1
+                       ->  Result
+                             ->  Materialize
+                                   ->  Broadcast Motion 3:3  (slice2; segments: 3)
+                                         ->  Custom Scan (TestOrcaRegion)
+                                               Filter: (b = 1)
+                                               Region: read
+ Optimizer: GPORCA
+(14 rows)
+
+SELECT count(*) FROM t WHERE a = 7 OR a IN (SELECT a FROM e WHERE b = 1);
+ count 
+-------
+     4
+(1 row)
+
+RESET test_orca_regions.ext_rows;
+SELECT enable_xform('CXformLeftSemiJoin2HashJoin');
+              enable_xform              
+----------------------------------------
+ CXformLeftSemiJoin2HashJoin is enabled
+(1 row)
+
+SELECT enable_xform('CXformLeftSemiJoin2NLJoin');
+             enable_xform             
+--------------------------------------
+ CXformLeftSemiJoin2NLJoin is enabled
+(1 row)
+
+SELECT enable_xform('CXformLeftSemiJoin2InnerJoin');
+              enable_xform               
+-----------------------------------------
+ CXformLeftSemiJoin2InnerJoin is enabled
+(1 row)
+
+-- the PG planner plans writes to it
+INSERT INTO e VALUES (100, 1);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: DML on a table an extension reads itself
+SELECT count(*) FROM e;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: scan of a table an extension reads itself outside its regions
+ count 
+-------
+    31
+(1 row)
+
+-- and reads, if the extension says so
+SET test_orca_regions.ext_relation = planner;
+EXPLAIN (COSTS OFF) SELECT * FROM e;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Table an extension plans with PG's planner
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Seq Scan on e
+ Optimizer: Postgres-based planner
+(3 rows)
+
+RESET test_orca_regions.mode;
+RESET test_orca_regions.ext_relation;
+DROP TABLE t, u, u2, e, s;
+DROP ACCESS METHOD test_orca_ext;

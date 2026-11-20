@@ -58,6 +58,14 @@ public:
 	// return the mdid for the specified system id and type
 	virtual IMDId *MDId(CMemoryPool *mp, CSystemId sysid,
 						IMDType::ETypeInfo type_info) const = 0;
+
+	// whether the object may be kept in the MD cache across queries, or
+	// must be looked up anew in each
+	virtual BOOL
+	Cacheable(IMDId *) const
+	{
+		return true;
+	}
 };
 
 // arrays of MD providers

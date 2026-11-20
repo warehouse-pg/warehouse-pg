@@ -48,6 +48,9 @@ class IMDIndex;
 }  // namespace gpmd
 
 struct PlannedStmt;
+struct OrcaPlanRegion;
+struct OrcaPlanRegions;
+struct CustomScan;
 struct Scan;
 struct HashJoin;
 struct NestLoop;
@@ -133,6 +136,9 @@ private:
 
 	// command type
 	CmdType m_cmd_type;
+
+	// a region root being translated as its own leaf
+	const CDXLNode *m_ext_root_leaf{nullptr};
 
 	// is target table distributed, false when in non DML statements
 	BOOL m_is_tgt_tbl_distributed;
@@ -346,6 +352,39 @@ private:
 		CDXLTranslationContextArray *
 			ctxt_translation_prev_siblings	// translation contexts of previous siblings
 	);
+
+	// targetlist of an ipc region's (segment, payload) rows referencing varno
+	static List *IpcTargetList(Index varno);
+
+	// sets a region's targetlist, and its scan tuple's
+	static void SetRegionTargetList(CustomScan *cscan, List *target_list);
+
+	// the plan's extension regions (orca_plan_regions_hook)
+	const SExtensionRegions &ExtRegions() const;
+
+	// a motion routing the (segment, payload) rows of the region below it
+	static void TranslateDXLIpcMotion(const CDXLNode *motion_dxlnode,
+									  Motion *motion);
+
+	// asks orca_plan_regions_hook for the plan's extension regions
+	void FindExtensionRegions(const CDXLNode *plan_dxlnode);
+
+	// raises an error for a scan of a table an extension reads itself
+	// (ORCA_RELATION_RANDOM) that isn't a leaf of its regions
+	void CheckExtensionRelationScan(const CDXLNode *scan_dxlnode,
+									const CDXLTableDescr *table_descr) const;
+
+	Plan *TranslateDXLExtensionRegion(
+		const CDXLNode *root_dxlnode, const OrcaPlanRegion *region,
+		CDXLTranslateContext *output_context,
+		CDXLTranslationContextArray *ctxt_translation_prev_siblings);
+
+	CHAR *SerializeDXL(const CDXLNode *dxlnode);
+
+	void TranslateExtensionRegionFilter(const CDXLNode *scan_dxlnode,
+										const OrcaPlanRegion *region,
+										List *leaves, CustomScan *cscan,
+										CDXLTranslateContext *output_context);
 
 	Plan *TranslateDXLMaterialize(
 		const CDXLNode *materialize_dxlnode,
