@@ -49,13 +49,17 @@ private:
 	// required columns by local members
 	CColRefSet *m_pcrsRequiredLocal;
 
+	// whether inserted rows need hash-based segment routing
+	BOOL m_computeTargetSegment;
+
 public:
 	CPhysicalSplit(const CPhysicalSplit &) = delete;
 
 	// ctor
 	CPhysicalSplit(CMemoryPool *mp, CColRefArray *pdrgpcrDelete,
 				   CColRefArray *pdrgpcrInsert, CColRef *pcrCtid,
-				   CColRef *pcrSegmentId, CColRef *pcrAction);
+				   CColRef *pcrSegmentId, CColRef *pcrAction,
+				   BOOL computeTargetSegment);
 
 	// dtor
 	~CPhysicalSplit() override;
@@ -107,6 +111,13 @@ public:
 	PdrgpcrInsert() const
 	{
 		return m_pdrgpcrInsert;
+	}
+
+	// whether inserted rows need hash-based segment routing
+	BOOL
+	ComputeTargetSegment() const
+	{
+		return m_computeTargetSegment;
 	}
 
 	// match function

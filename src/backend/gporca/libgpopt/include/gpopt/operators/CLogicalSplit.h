@@ -47,6 +47,9 @@ private:
 	// action column
 	CColRef *m_pcrAction;
 
+	// whether inserted rows need hash-based segment routing
+	BOOL m_computeTargetSegment;
+
 public:
 	CLogicalSplit(const CLogicalSplit &) = delete;
 
@@ -56,7 +59,7 @@ public:
 	// ctor
 	CLogicalSplit(CMemoryPool *mp, CColRefArray *pdrgpcrDelete,
 				  CColRefArray *pdrgpcrInsert, CColRef *pcrCtid,
-				  CColRef *pcrSegmentId, CColRef *pcrAction);
+				  CColRef *pcrSegmentId, CColRef *pcrAction, BOOL computeTargetSegment);
 
 	// dtor
 	~CLogicalSplit() override;
@@ -108,6 +111,13 @@ public:
 	PcrAction() const
 	{
 		return m_pcrAction;
+	}
+
+	// whether inserted rows need hash-based segment routing
+	BOOL
+	ComputeTargetSegment() const
+	{
+		return m_computeTargetSegment;
 	}
 
 	// operator specific hash function

@@ -65,4 +65,6 @@ extern void set_allow_append_initplan_for_function_scan(void);
 extern void unset_allow_append_initplan_for_function_scan(void);
 extern bool get_allow_append_initplan_for_function_scan(void);
 
+extern bool is_dist_key_updated(RangeTblEntry *rte);
+
 #endif   /* CDBPATH_H */
