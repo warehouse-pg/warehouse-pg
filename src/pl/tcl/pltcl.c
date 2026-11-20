@@ -816,9 +816,20 @@ pltcl_func_handler(PG_FUNCTION_ARGS, bool pltrusted)
 								   -1);
 	else
 	{
+		/*
+		 * Copy the interpreter's result out of Tcl-owned memory before
+		 * passing it to InputFunctionCall(), as a hardening against
+		 * reentrant use of this same Tcl interpreter (e.g. by a domain
+		 * CHECK constraint calling another PL/Tcl function) while we are
+		 * still using the string Tcl_GetStringResult() returned.  Not
+		 * believed to be reachable on this branch (see commit message),
+		 * but costs nothing to guard against regardless.
+		 */
+		char	   *resstr = pstrdup((char *) Tcl_GetStringResult(interp));
+
 		UTF_BEGIN;
 		retval = InputFunctionCall(&prodesc->result_in_func,
-							   UTF_U2E((char *) Tcl_GetStringResult(interp)),
+								   UTF_U2E(resstr),
 								   prodesc->result_typioparam,
 								   -1);
 		UTF_END;
