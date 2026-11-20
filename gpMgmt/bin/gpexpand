@@ -622,13 +622,17 @@ class SegmentTemplate:
 
     @staticmethod
     def consolidate_hosts(pool, hosts):
-        tmpHosts = {}
-        consolidatedHosts = []
+        """
+        Return one name per physical host from the given segment host names.
 
-        for host in hosts:
-            tmpHosts[host] = 0
-
-        for host in list(tmpHosts.keys()):
+        Each host is asked for its own hostname so that different names for
+        the same machine are only counted once. The names returned are the
+        ones from the cluster configuration, which are known to be reachable
+        over ssh, and not the output of hostname(1): that may be a FQDN (or
+        any other name) that does not resolve or does not accept ssh
+        connections from the coordinator.
+        """
+        for host in dict.fromkeys(hosts):
             hostnameCmd = Hostname('gpexpand associating hostnames with segments', ctxt=REMOTE, remoteHost=host)
             pool.addCommand(hostnameCmd)
 
@@ -636,14 +640,20 @@ class SegmentTemplate:
 
         finished_cmds = pool.getCompletedItems()
 
+        consolidatedHosts = {}
         for cmd in finished_cmds:
             if not cmd.was_successful():
                 raise SegmentTemplateError(cmd.get_results())
-            if cmd.get_hostname() not in consolidatedHosts:
-                logger.debug('Adding %s to host list' % cmd.get_hostname())
-                consolidatedHosts.append(cmd.get_hostname())
+            reportedName = cmd.get_hostname()
+            # An empty hostname cannot tell two hosts apart; keep the host.
+            # Its key is kept apart from the reported names, so that it cannot
+            # match the hostname another host reports.
+            key = (reportedName, '') if reportedName else ('', cmd.remoteHost)
+            if key not in consolidatedHosts:
+                logger.debug('Adding %s (reports hostname %s) to host list' % (cmd.remoteHost, reportedName))
+                consolidatedHosts[key] = cmd.remoteHost
 
-        return consolidatedHosts
+        return list(consolidatedHosts.values())
 
     def build_segment_template(self, newTableSpaceInfo=None):
         """Builds segment template tar file"""
