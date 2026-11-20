@@ -55,6 +55,60 @@ SELECT point(0,0) <<@@ polygon(circle(point(0,0),1));
 \dx+ test_ext_cor
 
 --
+-- Block creation of extension in temporary schema.  This function wrapper is
+-- useful for portability; it reports the SQLSTATE so that the temporary
+-- schema name does not show up in the output.
+--
+CREATE TEMP TABLE test_ext_temp_tab (a int) DISTRIBUTED RANDOMLY;
+CREATE FUNCTION create_extension_with_temp_schema()
+  RETURNS text AS $$
+  DECLARE
+    tmpschema text;
+  BEGIN
+    SELECT INTO tmpschema nspname FROM pg_namespace
+      WHERE oid = pg_my_temp_schema();
+    EXECUTE 'CREATE EXTENSION test_ext_cine SCHEMA ' || quote_ident(tmpschema);
+    RETURN 'created';
+  EXCEPTION WHEN OTHERS THEN
+    RETURN 'error ' || SQLSTATE;
+  END; $$ LANGUAGE plpgsql;
+SELECT create_extension_with_temp_schema();
+DROP TABLE test_ext_temp_tab;
+DROP FUNCTION create_extension_with_temp_schema();
+
+--
+-- $user as schema designation
+--
+
+CREATE ROLE regress_extowner SUPERUSER;
+SET ROLE regress_extowner;
+
+BEGIN;
+CREATE SCHEMA "$user";
+CREATE EXTENSION test_ext_cine SCHEMA "$user";  -- blocked
+ROLLBACK;
+
+BEGIN;
+CREATE SCHEMA regress_extowner;
+-- search_path="$user" works in the natural way.
+SET search_path = "$user";
+CREATE EXTENSION test_ext_cine;
+SELECT n.nspname FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace
+	WHERE e.extname = 'test_ext_cine';
+-- For now, it's possible to get extnamespace='$user'::regnamespace via ALTER
+-- SCHEMA RENAME.  This does make ALTER EXTENSION UPDATE fail, for the
+-- affected extension and (not tested here) any extension depending on it.
+ALTER SCHEMA regress_extowner RENAME TO "$user";
+SELECT n.nspname FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace
+	WHERE e.extname = 'test_ext_cine';
+ALTER EXTENSION test_ext_cine UPDATE TO '1.1';
+ROLLBACK;
+
+RESET ROLE;
+DROP OWNED BY regress_extowner;
+DROP ROLE regress_extowner;
+
+--
 -- CREATE IF NOT EXISTS is an entirely unsound thing for an extension
 -- to be doing, but let's at least plug the major security hole in it.
 --
