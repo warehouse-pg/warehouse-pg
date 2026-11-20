@@ -10,13 +10,13 @@ There can be multiple databases in a Greenplum Database system. This is differen
 
 ## <a id="topic3"></a>About Template and Default Databases 
 
-Greenplum Database provides some template databases and a default database, *template1*, *template0*, and *postgres*.
+Greenplum Database provides some template databases and default databases, *template1*, *template0*, *postgres*, *whadmin*, and *gpadmin*.
 
 By default, each new database you create is based on a *template* database. Greenplum Database uses *template1* to create databases unless you specify another template. Creating objects in *template1* is not recommended. The objects will be in every database you create using the default template database.
 
 Greenplum Database uses another database template, *template0*, internally. Do not drop or modify *template0*. You can use *template0* to create a completely clean database containing only the standard objects predefined by Greenplum Database at initialization.
 
-You can use the *postgres* database to connect to Greenplum Database for the first time. Greenplum Database uses *postgres* as the default database for administrative connections. For example, *postgres* is used by startup processes, the Global Deadlock Detector process, and the FTS \(Fault Tolerance Server\) process for catalog access.
+You can use the *postgres*, *whadmin*, or *gpadmin* database to connect to Greenplum Database for the first time. Each is created as a copy of *template1*, and none of them are template databases. Greenplum Database uses *postgres* specifically \(not *whadmin* or *gpadmin*\) as the default database for internal administrative connections. For example, *postgres* is used by startup processes, the Global Deadlock Detector process, and the FTS \(Fault Tolerance Server\) process for catalog access.
 
 ## <a id="topic4"></a>Creating a Database 
 
@@ -76,7 +76,7 @@ To alter a database, you must be the owner of the database or a superuser.
 
 ## <a id="topic9"></a>Dropping a Database 
 
-The `DROP DATABASE` command drops \(or deletes\) a database. It removes the system catalog entries for the database and deletes the database directory on disk that contains the data. You must be the database owner or a superuser to drop a database, and you cannot drop a database while you or anyone else is connected to it. Connect to `postgres` \(or another database\) before dropping a database. For example:
+The `DROP DATABASE` command drops \(or deletes\) a database. It removes the system catalog entries for the database and deletes the database directory on disk that contains the data. You must be the database owner or a superuser to drop a database, and you cannot drop a database while you or anyone else is connected to it. Connect to `postgres` \(or another database such as `whadmin` or `gpadmin`\) before dropping a database. For example:
 
 ```
 => \c postgres
