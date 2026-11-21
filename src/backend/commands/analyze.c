@@ -2698,6 +2698,13 @@ acquire_sample_rows_dispatcher(Relation onerel, bool inh, int elevel,
 	/* Call ExecutorStart to prepare the plan for execution */
 	ExecutorStart(queryDesc, 0);
 
+	/*
+	 * WHPG: this portal bypasses PortalStart(), so mark it ready here, as
+	 * PortalStart() would.  PortalDrop() refuses to drop a portal that is
+	 * still in PORTAL_NEW or PORTAL_DEFINED state.
+	 */
+	portal->status = PORTAL_READY;
+
 	/* Run the plan  */
 	ExecutorRun(queryDesc, ForwardScanDirection, 0L, true);
 
