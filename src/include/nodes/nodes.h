@@ -640,6 +640,13 @@ typedef enum NodeTag
 	T_GpPolicy,					/* in catalog/gp_distribution_policy.h */
 	T_RetrieveStmt,
 
+	/*
+	 * WHPG: tags added since the first 7.x release come last, so that the
+	 * tags before them keep their values for an extension built against an
+	 * earlier minor release.
+	 */
+	T_RuntimeFilterExpr,		/* in nodes/primnodes.h */
+
 } NodeTag;
 
 /*

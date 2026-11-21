@@ -1992,6 +1992,7 @@ error hint:
    ->  Hash Join
          Hash Cond: (t1.a = t2.a)
          ->  Seq Scan on t1
+               Runtime Filter: a
          ->  Hash
                ->  HashAggregate
                      Group Key: t2.a
@@ -2071,6 +2072,7 @@ DETAIL:  Unrecognized hint keyword "InvalidJoinTypeHint".
    ->  Hash Join
          Hash Cond: (t1.a = t2.a)
          ->  Seq Scan on t1
+               Runtime Filter: a
          ->  Hash
                ->  HashAggregate
                      Group Key: t2.a

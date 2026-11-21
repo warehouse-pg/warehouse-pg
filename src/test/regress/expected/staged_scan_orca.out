@@ -110,12 +110,13 @@ EXPLAIN (COSTS OFF) SELECT m.c, h.c FROM go_main m JOIN go_heap h ON m.a = h.a W
    ->  Hash Join
          Hash Cond: (h.a = m.a)
          ->  Seq Scan on go_heap h
+               Runtime Filter: a
          ->  Hash
                ->  Staged Seq Scan on go_main m
                      Filter: (clus = 7)
                      Stages: clus
  Optimizer: GPORCA
-(9 rows)
+(10 rows)
 
 --
 -- ================= 2. Decisions, same as the Postgres planner's =================

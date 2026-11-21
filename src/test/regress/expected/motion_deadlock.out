@@ -752,6 +752,7 @@ explain (costs off, verbose) update mv_15719 set a = 6;
                      Hash Cond: (t1_15719.a = t2_15719.a)
                      ->  Seq Scan on public.t1_15719
                            Output: t1_15719.ctid, t1_15719.gp_segment_id, t1_15719.a
+                           Runtime Filter: t1_15719.a
                      ->  Hash
                            Output: t2_15719.ctid, t2_15719.a
                            ->  HashAggregate

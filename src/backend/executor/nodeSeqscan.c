@@ -30,13 +30,53 @@
 #include "access/relscan.h"
 #include "access/tableam.h"
 #include "cdb/cdbaocsam.h"
+#include "cdb/cdbaocsam_stagedscan.h"
 #include "executor/execdebug.h"
 #include "executor/nodeSeqscan.h"
 #include "utils/rel.h"
+#include "utils/runtimefilter.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/clauses.h"
 
 static TupleTableSlot *SeqNext(SeqScanState *node);
 static void SeqScanSyncStagedInstrumentation(SeqScanState *node, TableScanDesc scandesc);
+static void SeqScanInitRuntimeFilters(SeqScanState *node, List *qual);
+static void SeqScanWatchRuntimeFilters(SeqScanState *node);
+
+/*
+ * WHPG: mirror what the scan's runtime filter clauses have removed into the
+ * node's instrumentation (EXPLAIN ANALYZE's "Rows Removed by Runtime
+ * Filter"), as an increment, since a partition's scan under a Dynamic Seq
+ * Scan counts into the dynamic node's. ExecScan has counted each of these
+ * rows as removed by the node's qual, which the clauses are part of; they
+ * are taken out of that count again, so that "Rows Removed by Filter" stays
+ * the scan's own predicate's and is absent when there is none. Called as
+ * rows are fetched, so that the count is in place whenever the QE ships its
+ * stats, which happens before the scan ends: a row is probed after it is
+ * fetched, so every rejection before a returned row is in. Without a
+ * filter, or without instrumentation, it is one test per row.
+ */
+static inline void
+SeqScanSyncRuntimeFilterRemoved(SeqScanState *node)
+{
+	Instrumentation *instr;
+	double		removed;
+
+	if (likely(node->rf_probes == NIL))
+		return;
+	instr = node->staged_instr ? node->staged_instr : node->ss.ps.instrument;
+	if (instr == NULL)
+		return;
+	removed = runtimefilter_probes_removed(node->rf_probes);
+	if (removed > node->rf_removed_reported)
+	{
+		instr->rfRowsRemoved += removed - node->rf_removed_reported;
+		if (node->ss.ps.instrument != NULL)
+			node->ss.ps.instrument->nfiltered1 -=
+				removed - node->rf_removed_reported;
+		node->rf_removed_reported = removed;
+	}
+}
 
 /* ----------------------------------------------------------------
  *						Scan Support
@@ -89,6 +129,14 @@ SeqNext(SeqScanState *node)
 		node->ss.ss_currentScanDesc = scandesc;
 
 		/*
+		 * WHPG: a Staged Scan evaluates the plan's qual inside the access
+		 * method, in ExprContexts of its own; give it the exec Params a
+		 * runtime filter clause reads (runtimefilter.c).
+		 */
+		if (RelationIsAoCols(scandesc->rs_rd))
+			((AOCSScanDesc) scandesc)->stagedParamExecVals = estate->es_param_exec_vals;
+
+		/*
 		 * GPDB: the counts a staged scan keeps on its instrumentation start
 		 * from zero on a fresh descriptor, so the high-water marks that
 		 * SeqScanSyncStagedInstrumentation() compares them with must too.
@@ -104,6 +152,7 @@ SeqNext(SeqScanState *node)
 		node->staged_blocks_decompressed_reported = 0;
 		node->staged_blocks_skipped_reported = 0;
 		node->staged_blocks_seeked_reported = 0;
+		node->staged_rf_removed_reported = 0;
 
 		/* GPDB: a staged scan's costlier counts are for EXPLAIN ANALYZE only */
 		if (((SeqScan *) node->ss.ps.plan)->staged.enabled &&
@@ -114,14 +163,25 @@ SeqNext(SeqScanState *node)
 	}
 
 	/*
+	 * WHPG: a runtime filter clause whose filter is not being probed would
+	 * cost every row the qual's evaluation for nothing. Looked at every
+	 * RF_ADAPT_WINDOW rows (SeqScanWatchRuntimeFilters()).
+	 */
+	if (node->rf_paramids != NIL &&
+		((++node->rf_rows) & (RF_ADAPT_WINDOW - 1)) == 0)
+		SeqScanWatchRuntimeFilters(node);
+
+	/*
 	 * get the next tuple from the table
 	 */
 	if (table_scan_getnextslot(scandesc, direction, slot))
 	{
 		SeqScanSyncStagedInstrumentation(node, scandesc);
+		SeqScanSyncRuntimeFilterRemoved(node);
 		return slot;
 	}
 	SeqScanSyncStagedInstrumentation(node, scandesc);
+	SeqScanSyncRuntimeFilterRemoved(node);
 	return NULL;
 }
 
@@ -132,6 +192,8 @@ SeqNext(SeqScanState *node)
  * LIMIT. The rows the predicate rejected in Phase A or a stage never reached
  * ExecScan's filter, so they are added to nfiltered1 here: "Rows Removed by
  * Filter" then reports what the predicate removed, whichever phase did it.
+ * The rows a runtime filter clause rejected are among the scan's rejections
+ * and have a line of their own, so they are left out of that count.
  */
 static void
 SeqScanSyncStagedInstrumentation(SeqScanState *node, TableScanDesc scandesc)
@@ -152,6 +214,7 @@ SeqScanSyncStagedInstrumentation(SeqScanState *node, TableScanDesc scandesc)
 	scaninstr = ((AOCSScanDesc) scandesc)->stagedInstrument;
 	if (scaninstr == NULL)
 		return;
+	stagedscan_sync_rf_removed((AOCSScanDesc) scandesc);
 
 	/*
 	 * Add the increments rather than copying the totals: a Dynamic Seq Scan
@@ -194,11 +257,18 @@ SeqScanSyncStagedInstrumentation(SeqScanState *node, TableScanDesc scandesc)
 		instr->stagedBlocksSeeked += blocks - node->staged_blocks_seeked_reported;
 		node->staged_blocks_seeked_reported = blocks;
 	}
-	removed = (double) scaninstr->staged_rows_removed;
+	removed = (double) scaninstr->staged_rows_removed -
+		(double) scaninstr->staged_rf_rows_removed;
 	if (removed > node->staged_removed_reported)
 	{
 		instr->nfiltered1 += removed - node->staged_removed_reported;
 		node->staged_removed_reported = removed;
+	}
+	removed = (double) scaninstr->staged_rf_rows_removed;
+	if (removed > node->staged_rf_removed_reported)
+	{
+		instr->rfRowsRemoved += removed - node->staged_rf_removed_reported;
+		node->staged_rf_removed_reported = removed;
 	}
 }
 
@@ -317,8 +387,122 @@ ExecInitSeqScanForPartition(SeqScan *node, EState *estate,
 	else
 		scanstate->ss.ps.qual =
 			ExecInitQual(node->scan.plan.qual, (PlanState *) scanstate);
+	/* WHPG: the runtime filter clauses in it, left out while none is probed */
+	SeqScanInitRuntimeFilters(scanstate, node->scan.plan.qual);
 
 	return scanstate;
+}
+
+/*
+ * WHPG: note the runtime filter clauses of the scan's qual (planrtfilter.c),
+ * so that SeqNext can give them up once their filters are dead: the Params
+ * they read, and the qual compiled without them. For a scan whose qual has
+ * none, nothing is kept and SeqNext's check costs one test per row.
+ */
+static void
+SeqScanInitRuntimeFilters(SeqScanState *node, List *qual)
+{
+	List	   *filters;
+	List	   *rest;
+	ListCell   *lc;
+
+	node->rf_paramids = NIL;
+	node->rf_resting = false;
+	node->rf_allparamids = NIL;
+	node->rf_fullqual = NULL;
+	node->rf_lessqual = NULL;
+	node->rf_rows = 0;
+	node->rf_probes = NIL;
+	node->rf_removed_reported = 0;
+
+	if (node->ss.ps.qual == NULL)
+		return;
+	runtimefilter_split_qual(qual, &filters, &rest);
+	if (filters == NIL)
+		return;
+	node->rf_probes = runtimefilter_qual_probes(node->ss.ps.qual);
+
+	/*
+	 * A SubPlan can be compiled only once: each compilation makes a
+	 * SubPlanState of its own on this node (ExecInitSubPlan()), and a second
+	 * one over the same subplan would build its hash table again, which
+	 * starts with a rescan the subplan may be unable to take (a Motion). A
+	 * qual with one is therefore kept whole. Its clauses stay: a dead or
+	 * resting filter costs such a scan the clause's liveness test for each
+	 * row, next to a subplan probe, and the clause counts the rows off a
+	 * rest itself (runtimefilter_probe_live()).
+	 */
+	if (contain_subplans((Node *) rest))
+		return;
+
+	foreach(lc, filters)
+		node->rf_allparamids = lappend_int(node->rf_allparamids,
+										   ((RuntimeFilterExpr *) lfirst(lc))->paramid);
+	node->rf_paramids = node->rf_allparamids;
+	node->rf_fullqual = node->ss.ps.qual;
+	node->rf_lessqual = ExecInitQual(rest, &node->ss.ps);
+}
+
+/*
+ * Choose the scan's qual by the state of its runtime filters, every
+ * RF_ADAPT_WINDOW rows. While none of them is being probed -- each is the
+ * dead one, at rest, or not a filter at all, which the probe gives up on --
+ * the qual without the clauses runs: none at all if nothing else was there,
+ * and ExecScan takes its no-qual shortcut from the next row on. If all are
+ * dead that is for good. Otherwise the rows that go by are counted off the
+ * resting filters' rests here, a window at a time, since no probe sees
+ * them; the full qual is back when the first of them wakes. A Param still
+ * NULL is a filter yet to come (the join publishes a dead one in place of
+ * none, runtimefilter_dead()), so the clause stays.
+ */
+static void
+SeqScanWatchRuntimeFilters(SeqScanState *node)
+{
+	ParamExecData *vals = node->ss.ps.ps_ExprContext->ecxt_param_exec_vals;
+	bool		probing = false;
+	bool		resting = false;
+	ListCell   *lc;
+
+	if (vals == NULL)
+		return;
+	foreach(lc, node->rf_paramids)
+	{
+		ParamExecData *prm = &vals[lfirst_int(lc)];
+		RuntimeFilter *f;
+
+		if (prm->isnull)
+		{
+			probing = true;
+			continue;
+		}
+		f = (RuntimeFilter *) runtimefilter_check((struct varlena *) DatumGetPointer(prm->value));
+		if (f == NULL || f->dead)
+			continue;
+		if (node->rf_resting)
+			runtimefilter_rest(f, RF_ADAPT_WINDOW);
+		if (f->rest_rows > 0)
+			resting = true;
+		else
+			probing = true;
+	}
+
+	if (probing)
+	{
+		if (node->rf_resting)
+		{
+			node->ss.ps.qual = node->rf_fullqual;
+			node->rf_resting = false;
+		}
+	}
+	else if (!node->rf_resting)
+	{
+		SeqScanSyncRuntimeFilterRemoved(node);
+		node->ss.ps.qual = node->rf_lessqual;
+		if (resting)
+			node->rf_resting = true;
+		else
+			node->rf_paramids = NIL;
+	}
 }
 
 /* ----------------------------------------------------------------
@@ -377,6 +561,16 @@ ExecReScanSeqScan(SeqScanState *node)
 	if (scan != NULL)
 		table_rescan(scan,		/* scan desc */
 					 NULL);		/* new scan keys */
+
+	/* WHPG: a rescan may bring a new runtime filter: watch the clauses again */
+	if (node->rf_allparamids != NIL &&
+		(node->rf_paramids == NIL || node->rf_resting))
+	{
+		node->ss.ps.qual = node->rf_fullqual;
+		node->rf_paramids = node->rf_allparamids;
+		node->rf_resting = false;
+	}
+	node->rf_rows = 0;
 
 	ExecScanReScan((ScanState *) node);
 }

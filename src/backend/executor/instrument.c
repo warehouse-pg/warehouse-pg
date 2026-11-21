@@ -207,6 +207,7 @@ InstrAggNode(Instrumentation *dst, Instrumentation *add)
 	dst->stagedBlocksDecompressed += add->stagedBlocksDecompressed;
 	dst->stagedBlocksSkipped += add->stagedBlocksSkipped;
 	dst->stagedBlocksSeeked += add->stagedBlocksSeeked;
+	dst->rfRowsRemoved += add->rfRowsRemoved;
 
 	/* Add delta of buffer usage since entry to node's totals */
 	if (dst->need_bufusage)
