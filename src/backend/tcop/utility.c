@@ -2869,6 +2869,18 @@ CreateCommandTag(Node *parsetree)
 								case ROW_MARK_KEYSHARE:
 									tag = "SELECT FOR KEY SHARE";
 									break;
+
+									/*
+									 * WHPG: the planner turns FOR UPDATE and
+									 * FOR SHARE on distributed or replicated
+									 * tables into these table-level marks.
+									 */
+								case ROW_MARK_TABLE_EXCLUSIVE:
+									tag = "SELECT FOR UPDATE";
+									break;
+								case ROW_MARK_TABLE_SHARE:
+									tag = "SELECT FOR SHARE";
+									break;
 								case ROW_MARK_REFERENCE:
 								case ROW_MARK_COPY:
 									tag = "SELECT";
