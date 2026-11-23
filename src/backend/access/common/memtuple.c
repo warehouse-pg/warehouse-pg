@@ -18,6 +18,7 @@
 #include "access/transam.h"
 #include "access/tuptoaster.h"
 #include "catalog/pg_type.h"
+#include "common/int.h"
 #include "utils/expandeddatum.h"
 #include "utils/memutils.h"
 
@@ -416,16 +417,22 @@ MemTupleBinding *create_memtuple_binding(TupleDesc tupdesc, int expected_natts)
 	return pbind;
 }
 
-static uint32
+/*
+ * WHPG: the length is accumulated in a Size with overflow-checked additions.
+ * Unless allow_huge is true, it must also stay within MaxAllocSize, which
+ * keeps it below what MEMTUP_LEN_MASK can encode in the memtuple header.
+ */
+static Size
 compute_memtuple_size_using_bind(Datum *values,
 								 bool *isnull,
 								 int nullbit_extra,
 								 int first_null_idx,
 								 uint32 *nullsaves,
 								 MemTupleBindingCols *colbind,
-								 TupleDesc tupdesc)
+								 TupleDesc tupdesc,
+								 bool allow_huge)
 {
-	uint32 data_length = colbind->var_start; 
+	Size		data_length = colbind->var_start;
 	int i;
 
 	*nullsaves = 0;
@@ -459,6 +466,7 @@ compute_memtuple_size_using_bind(Datum *values,
 	{
 		MemTupleAttrBinding *bind = &colbind->bindings[i];
 		Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
+		bool		ovfl;
 
 		if (isnull[i] || attr->attisdropped)
 			continue;
@@ -474,7 +482,9 @@ compute_memtuple_size_using_bind(Datum *values,
 			(VARATT_IS_SHORT(DatumGetPointer(values[i])) ||
 			VARATT_CAN_MAKE_SHORT(DatumGetPointer(values[i]))))
 		{
-			data_length += VARSIZE_ANY_EXHDR(DatumGetPointer(values[i])) + VARHDRSZ_SHORT;
+			ovfl = pg_add_size_overflow(data_length,
+										VARSIZE_ANY_EXHDR(DatumGetPointer(values[i])) + VARHDRSZ_SHORT,
+										&data_length);
 		}
 		else if (bind->flag == MTB_ByRef &&
 				 VARATT_IS_EXTERNAL_EXPANDED(DatumGetPointer(values[i])))
@@ -484,14 +494,27 @@ compute_memtuple_size_using_bind(Datum *values,
 			 * tuple doesn't depend on it
 			 */	
 			data_length = att_align_nominal(data_length, attr->attalign);
-			data_length += EOH_get_flat_size(DatumGetEOHP(values[i]));
+			ovfl = pg_add_size_overflow(data_length,
+										EOH_get_flat_size(DatumGetEOHP(values[i])),
+										&data_length);
 		}
 		else
 		{
 			data_length = att_align_nominal(data_length, attr->attalign); 
-			data_length = att_addlength_datum(data_length, attr->attlen, values[i]);
+			data_length = att_addlength_datum_overflow(data_length, attr->attlen,
+													   values[i], &ovfl);
 		}
+
+		if (ovfl || (!allow_huge && !AllocSizeIsValid(data_length)))
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("tuple is too big")));
 	}
+
+	if (!allow_huge && !AllocSizeIsValid(MEMTUP_ALIGN(data_length)))
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("tuple is too big")));
 
 	return MEMTUP_ALIGN(data_length);
 }
@@ -504,13 +527,29 @@ compute_memtuple_size_using_bind(Datum *values,
  * the caller, except that if you call memtuple_form_to(), you need to pass
  * it along as an argument. Similarly *has_nulls is an output parameter that
  * is set to indicate whether any of the attributes were nulls.
+ *
+ * Raises an error if the size exceeds MaxAllocSize.
  */
 uint32
 compute_memtuple_size(MemTupleBinding *pbind, Datum *values, bool *isnull,
 					  uint32 *nullsaves, bool *has_nulls)
 {
+	return (uint32) compute_memtuple_size_ext(pbind, values, isnull, nullsaves,
+											  has_nulls, false);
+}
+
+/*
+ * As compute_memtuple_size(), but if allow_huge is true, the size may exceed
+ * MaxAllocSize.  The toaster uses that to measure a tuple whose attributes
+ * have not been compressed or moved out of line yet; such a size cannot be
+ * used to form a memtuple.
+ */
+Size
+compute_memtuple_size_ext(MemTupleBinding *pbind, Datum *values, bool *isnull,
+						  uint32 *nullsaves, bool *has_nulls, bool allow_huge)
+{
 	int			first_null_idx;
-	uint32		ret_len;
+	Size		ret_len;
 	int			i;
 
 	/*
@@ -533,7 +572,8 @@ compute_memtuple_size(MemTupleBinding *pbind, Datum *values, bool *isnull,
 	ret_len = compute_memtuple_size_using_bind(values, isnull,
 											   pbind->null_bitmap_extra_size,
 											   first_null_idx, nullsaves,
-											   &pbind->bind, pbind->tupdesc);
+											   &pbind->bind, pbind->tupdesc,
+											   allow_huge);
 
 	if(ret_len <= MEMTUPLE_LEN_FITSHORT) 
 		return ret_len;
@@ -541,7 +581,8 @@ compute_memtuple_size(MemTupleBinding *pbind, Datum *values, bool *isnull,
 	ret_len = compute_memtuple_size_using_bind(values, isnull,
 											   pbind->null_bitmap_extra_size,
 											   first_null_idx, nullsaves,
-											   &pbind->large_bind, pbind->tupdesc);
+											   &pbind->large_bind, pbind->tupdesc,
+											   allow_huge);
 	Assert(ret_len > MEMTUPLE_LEN_FITSHORT);
 
 	return ret_len;

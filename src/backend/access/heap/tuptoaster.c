@@ -670,18 +670,19 @@ toast_delete(Relation rel, HeapTuple oldtup, bool is_speculative)
 static Size
 compute_dest_tuplen(TupleDesc tupdesc, MemTupleBinding *pbind, bool hasnull, Datum *d, bool *isnull)
 {
-	if(pbind) 
-	{
-		uint32 nullsave_dummy;
-		return (int) compute_memtuple_size(pbind, d, isnull, &nullsave_dummy, &hasnull);
-	}
-
 	/*
 	 * WHPG: the tuple being toasted may legitimately exceed MaxAllocSize
 	 * before its attributes are compressed or moved out of line, so the
 	 * toasting loops must not apply the palloc limit here.  Return Size, not
 	 * int, so that an oversized length isn't truncated into a small one.
 	 */
+	if(pbind) 
+	{
+		uint32 nullsave_dummy;
+		return compute_memtuple_size_ext(pbind, d, isnull, &nullsave_dummy,
+										 &hasnull, true);
+	}
+
 	return heap_compute_data_size_ext(tupdesc, d, isnull, true);
 }
 
