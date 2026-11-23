@@ -93,6 +93,22 @@ typedef struct remoteConn
 	PGconn	   *conn;			/* Hold the remote connection */
 	int			openCursorCount;	/* The number of open cursors */
 	bool		newXactForCursor;		/* Opened a transaction for a cursor */
+
+	/*
+	 * True while a dblink call is materializing a result read from this
+	 * connection. Converting a row runs the column types' input functions,
+	 * and a domain type runs its CHECK constraints there, so user-defined
+	 * code can execute during conversion. That code must not be able to close
+	 * the connection or start another operation on it. No other dblink
+	 * operation runs user-defined code while it holds a connection, so this
+	 * is the only window that needs protecting.
+	 *
+	 * Row conversion happens only under materializeResult() and
+	 * materializeQueryResult(), which set this themselves; everything else
+	 * just checks that the connection is not in use. A transient connection
+	 * has no remoteConn entry and needs none, since no SQL can name it.
+	 */
+	bool		materializingResult;
 } remoteConn;
 
 typedef struct storeInfo
@@ -113,15 +129,17 @@ typedef struct storeInfo
 static Datum dblink_record_internal(FunctionCallInfo fcinfo, bool is_async);
 static void prepTuplestoreResult(FunctionCallInfo fcinfo);
 static void materializeResult(FunctionCallInfo fcinfo, PGconn *conn,
-				  PGresult *res);
+				  remoteConn *rconn, PGresult *res);
 static void materializeQueryResult(FunctionCallInfo fcinfo,
 					   PGconn *conn,
+					   remoteConn *rconn,
 					   const char *conname,
 					   const char *sql,
 					   bool fail);
 static PGresult *storeQueryResult(volatile storeInfo *sinfo, PGconn *conn, const char *sql);
 static void storeRow(volatile storeInfo *sinfo, PGresult *res, bool first);
 static remoteConn *getConnectionByName(const char *name);
+static void dblink_check_conn_not_in_use(remoteConn *rconn, const char *conname);
 static HTAB *createConnHash(void);
 static void createNewConnection(const char *name, remoteConn *rconn);
 static void deleteConnection(const char *name);
@@ -213,6 +231,7 @@ typedef struct remoteConnHashEnt
 			rconn = getConnectionByName(conname_or_str); \
 			if (rconn) \
 			{ \
+				dblink_check_conn_not_in_use(rconn, conname_or_str); \
 				conn = rconn->conn; \
 				conname = conname_or_str; \
 			} \
@@ -246,7 +265,10 @@ typedef struct remoteConnHashEnt
 			conname = text_to_cstring(PG_GETARG_TEXT_PP(0)); \
 			rconn = getConnectionByName(conname); \
 			if (rconn) \
+			{ \
+				dblink_check_conn_not_in_use(rconn, conname); \
 				conn = rconn->conn; \
+			} \
 			else \
 				DBLINK_CONN_NOT_AVAIL; \
 	} while (0)
@@ -259,8 +281,30 @@ typedef struct remoteConnHashEnt
 				pconn->conn = NULL; \
 				pconn->openCursorCount = 0; \
 				pconn->newXactForCursor = FALSE; \
+				pconn->materializingResult = false; \
 			} \
 	} while (0)
+
+/*
+ * Raise an error if some dblink call is already reading results from this
+ * connection. Call this wherever we resolve a connection to operate on.
+ * remoteConn.materializingResult defines what counts as being in use.
+ */
+static void
+dblink_check_conn_not_in_use(remoteConn *rconn, const char *conname)
+{
+	if (rconn == NULL || !rconn->materializingResult)
+		return;
+
+	if (conname)
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_IN_USE),
+				 errmsg("connection \"%s\" is already in use", conname)));
+	else
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_IN_USE),
+				 errmsg("connection is already in use")));
+}
 
 /*
  * Create a persistent connection to another database
@@ -287,8 +331,11 @@ dblink_connect(PG_FUNCTION_ARGS)
 		conname_or_str = text_to_cstring(PG_GETARG_TEXT_PP(0));
 
 	if (connname)
+	{
 		rconn = (remoteConn *) MemoryContextAlloc(TopMemoryContext,
 												  sizeof(remoteConn));
+		rconn->materializingResult = false;
+	}
 
 	/* first check for valid foreign data server */
 	connstr = get_connect_string(conname_or_str);
@@ -297,6 +344,17 @@ dblink_connect(PG_FUNCTION_ARGS)
 
 	/* check password in connection string if not superuser */
 	connstr = dblink_connstr_check(connstr);
+
+	/*
+	 * Opening an unnamed connection closes the one we already have further
+	 * down, so it had better not be in use.  Check before connecting, so that
+	 * we don't throw away a connection we just made.  A named connection needs
+	 * no check, since createNewConnection() below rejects a name that already
+	 * has a live PGconn.
+	 */
+	if (!connname && pconn->conn)
+		dblink_check_conn_not_in_use(pconn, NULL);
+
 	conn = PQconnectdb(connstr);
 
 	if (PQstatus(conn) == CONNECTION_BAD)
@@ -359,6 +417,8 @@ dblink_disconnect(PG_FUNCTION_ARGS)
 
 	if (!conn)
 		DBLINK_CONN_NOT_AVAIL;
+
+	dblink_check_conn_not_in_use(rconn != NULL ? rconn : pconn, conname);
 
 	PQfinish(conn);
 	if (rconn)
@@ -431,6 +491,7 @@ dblink_open(PG_FUNCTION_ARGS)
 		DBLINK_CONN_NOT_AVAIL;
 	else
 		conn = rconn->conn;
+	dblink_check_conn_not_in_use(rconn, conname);
 
 	/* If we are not in a transaction, start one */
 	if (PQtransactionStatus(conn) == PQTRANS_IDLE)
@@ -519,6 +580,7 @@ dblink_close(PG_FUNCTION_ARGS)
 		DBLINK_CONN_NOT_AVAIL;
 	else
 		conn = rconn->conn;
+	dblink_check_conn_not_in_use(rconn, conname);
 
 	appendStringInfo(&buf, "CLOSE %s", curname);
 
@@ -592,6 +654,7 @@ dblink_fetch(PG_FUNCTION_ARGS)
 			curname = text_to_cstring(PG_GETARG_TEXT_PP(0));
 			howmany = PG_GETARG_INT32(1);
 			fail = PG_GETARG_BOOL(2);
+			rconn = pconn;
 			conn = pconn->conn;
 		}
 		else
@@ -610,11 +673,13 @@ dblink_fetch(PG_FUNCTION_ARGS)
 		/* text,int */
 		curname = text_to_cstring(PG_GETARG_TEXT_PP(0));
 		howmany = PG_GETARG_INT32(1);
+		rconn = pconn;
 		conn = pconn->conn;
 	}
 
 	if (!conn)
 		DBLINK_CONN_NOT_AVAIL;
+	dblink_check_conn_not_in_use(rconn, conname);
 
 	initStringInfo(&buf);
 	appendStringInfo(&buf, "FETCH %d FROM %s", howmany, curname);
@@ -642,7 +707,7 @@ dblink_fetch(PG_FUNCTION_ARGS)
 				 errmsg("cursor \"%s\" does not exist", curname)));
 	}
 
-	materializeResult(fcinfo, conn, res);
+	materializeResult(fcinfo, conn, rconn, res);
 	return (Datum) 0;
 }
 
@@ -723,6 +788,7 @@ dblink_record_internal(FunctionCallInfo fcinfo, bool is_async)
 				/* text,text or text,bool */
 				if (get_fn_expr_argtype(fcinfo->flinfo, 1) == BOOLOID)
 				{
+					rconn = pconn;
 					conn = pconn->conn;
 					sql = text_to_cstring(PG_GETARG_TEXT_PP(0));
 					fail = PG_GETARG_BOOL(1);
@@ -736,6 +802,7 @@ dblink_record_internal(FunctionCallInfo fcinfo, bool is_async)
 			else if (PG_NARGS() == 1)
 			{
 				/* text */
+				rconn = pconn;
 				conn = pconn->conn;
 				sql = text_to_cstring(PG_GETARG_TEXT_PP(0));
 			}
@@ -764,11 +831,12 @@ dblink_record_internal(FunctionCallInfo fcinfo, bool is_async)
 
 		if (!conn)
 			DBLINK_CONN_NOT_AVAIL;
+		dblink_check_conn_not_in_use(rconn, conname);
 
 		if (!is_async)
 		{
 			/* synchronous query, use efficient tuple collection method */
-			materializeQueryResult(fcinfo, conn, conname, sql, fail);
+			materializeQueryResult(fcinfo, conn, rconn, conname, sql, fail);
 		}
 		else
 		{
@@ -787,7 +855,7 @@ dblink_record_internal(FunctionCallInfo fcinfo, bool is_async)
 				}
 				else
 				{
-					materializeResult(fcinfo, conn, res);
+					materializeResult(fcinfo, conn, rconn, res);
 				}
 			}
 		}
@@ -841,14 +909,25 @@ prepTuplestoreResult(FunctionCallInfo fcinfo)
  * Copy the contents of the PGresult into a tuplestore to be returned
  * as the result of the current function.
  * The PGresult will be released in this function.
+ *
+ * rconn is the corresponding connection cache entry to conn, or NULL
+ * if conn is a transient connection opened from a connection string.
  */
 static void
-materializeResult(FunctionCallInfo fcinfo, PGconn *conn, PGresult *res)
+materializeResult(FunctionCallInfo fcinfo, PGconn *conn, remoteConn *rconn,
+				  PGresult *res)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 
 	/* prepTuplestoreResult must have been called previously */
 	Assert(rsinfo->returnMode == SFRM_Materialize);
+
+	/* Refuse other dblink calls on this connection while converting rows */
+	if (rconn)
+	{
+		Assert(!rconn->materializingResult);
+		rconn->materializingResult = true;
+	}
 
 	PG_TRY();
 	{
@@ -970,9 +1049,17 @@ materializeResult(FunctionCallInfo fcinfo, PGconn *conn, PGresult *res)
 		}
 
 		PQclear(res);
+
+		/* Done converting rows, so other dblink calls may use it again */
+		if (rconn)
+			rconn->materializingResult = false;
 	}
 	PG_CATCH();
 	{
+		/* Same on error; PG_FINALLY is not available in this tree */
+		if (rconn)
+			rconn->materializingResult = false;
+
 		/* be sure to release the libpq result */
 		PQclear(res);
 		PG_RE_THROW();
@@ -991,6 +1078,7 @@ materializeResult(FunctionCallInfo fcinfo, PGconn *conn, PGresult *res)
 static void
 materializeQueryResult(FunctionCallInfo fcinfo,
 					   PGconn *conn,
+					   remoteConn *rconn,
 					   const char *conname,
 					   const char *sql,
 					   bool fail)
@@ -1005,6 +1093,13 @@ materializeQueryResult(FunctionCallInfo fcinfo,
 	/* initialize storeInfo to empty */
 	memset((void *) &sinfo, 0, sizeof(sinfo));
 	sinfo.fcinfo = fcinfo;
+
+	/* Refuse other dblink calls on this connection while converting rows */
+	if (rconn)
+	{
+		Assert(!rconn->materializingResult);
+		rconn->materializingResult = true;
+	}
 
 	PG_TRY();
 	{
@@ -1090,9 +1185,21 @@ materializeQueryResult(FunctionCallInfo fcinfo,
 		sinfo.last_res = NULL;
 		PQclear(sinfo.cur_res);
 		sinfo.cur_res = NULL;
+
+		/* Done converting rows, so other dblink calls may use it again */
+		if (rconn)
+			rconn->materializingResult = false;
 	}
 	PG_CATCH();
 	{
+		/*
+		 * Draining the pending data can be interrupted, so clear the mark
+		 * first to avoid leaving the connection marked in use for the rest of
+		 * the session. This is safe since draining runs no user-defined code.
+		 */
+		if (rconn)
+			rconn->materializingResult = false;
+
 		/* be sure to release any libpq result we collected */
 		PQclear(res);
 		PQclear(sinfo.last_res);
@@ -1437,6 +1544,7 @@ dblink_exec(PG_FUNCTION_ARGS)
 			/* might be text,text or text,bool */
 			if (get_fn_expr_argtype(fcinfo->flinfo, 1) == BOOLOID)
 			{
+				rconn = pconn;
 				conn = pconn->conn;
 				sql = text_to_cstring(PG_GETARG_TEXT_PP(0));
 				fail = PG_GETARG_BOOL(1);
@@ -1450,6 +1558,7 @@ dblink_exec(PG_FUNCTION_ARGS)
 		else if (PG_NARGS() == 1)
 		{
 			/* must be single text argument */
+			rconn = pconn;
 			conn = pconn->conn;
 			sql = text_to_cstring(PG_GETARG_TEXT_PP(0));
 		}
@@ -1459,6 +1568,8 @@ dblink_exec(PG_FUNCTION_ARGS)
 
 		if (!conn)
 			DBLINK_CONN_NOT_AVAIL;
+
+		dblink_check_conn_not_in_use(rconn, conname);
 
 		res = PQexec(conn, sql);
 		if (!res ||
@@ -1925,7 +2036,10 @@ dblink_get_notify(PG_FUNCTION_ARGS)
 	if (PG_NARGS() == 1)
 		DBLINK_GET_NAMED_CONN;
 	else
+	{
+		dblink_check_conn_not_in_use(pconn, NULL);
 		conn = pconn->conn;
+	}
 
 	/* create the tuplestore in per-query memory */
 	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
