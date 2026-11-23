@@ -1408,6 +1408,7 @@ SELECT * FROM pt_lt_tab WHERE col2 = 15 ORDER BY col2,col3 LIMIT 5;
                 <dxl:Partition Mdid="6.95661411.1.1"/>
                 <dxl:Partition Mdid="6.95661412.1.1"/>
                 <dxl:Partition Mdid="6.95661413.1.1"/>
+                <dxl:Partition Mdid="6.95661414.1.1"/>
               </dxl:Partitions>
               <dxl:IndexDescriptor Mdid="0.8685870.1.0" IndexName="idx1"/>
               <dxl:TableDescriptor Mdid="6.8685596.1.1" TableName="pt_lt_tab">

@@ -3942,6 +3942,69 @@ select count(*) from arrcmp_chk_not where b = 0;
 drop table arrcmp_part, arrcmp_chk, arrcmp_chk_null, arrcmp_chk_not;
 reset optimizer_array_constraints;
 
+-- WHPG: NOT over an AND whose child gives no constraint (a % 2, = ALL, a
+-- nested OR, another column) must not be read as the complement of the
+-- other children: the row (5, 5, 5, 5, 1, 3) passes every CHECK, and
+-- f = -1 is still a contradiction
+create table notand_chk (
+  a int check (not (a > 0 and a % 2 = 0)),
+  b int check (not (b > 0 and b = all (array[1, 2]))),
+  c int check (not (c > 0 and (c % 2 = 0 or c > 50))),
+  d int, e int, check (not (d > 0 and e % 2 = 0)),
+  f int check (not (f <= 0 or f % 2 = 0))) distributed by (a);
+insert into notand_chk values (5, 5, 5, 5, 1, 3);
+explain (costs off) select count(*) from notand_chk where a = 5;
+select count(*) from notand_chk where a = 5;
+explain (costs off) select count(*) from notand_chk where b = 5;
+select count(*) from notand_chk where b = 5;
+explain (costs off) select count(*) from notand_chk where c = 5;
+select count(*) from notand_chk where c = 5;
+explain (costs off) select count(*) from notand_chk where d = 5;
+select count(*) from notand_chk where d = 5;
+explain (costs off) select count(*) from notand_chk where f = -1;
+select count(*) from notand_chk where f = -1;
+drop table notand_chk;
+
+-- WHPG: the same for array comparisons that give no interval: < ANY
+-- never does, and none does with optimizer_array_constraints off.  The
+-- row (5, 0, 5, 5) passes every CHECK
+create table notand_arr_chk (
+  a int check (not (a > 0 and a < any (array[1, 2]))),
+  b int check (not (not (b < any (array[1, 2])) and b < 3)),
+  c int check (not (c > 0 and c = all (array[1, 2]))),
+  d int check (not (d > 0 and d = any (array[1])))) distributed by (a);
+insert into notand_arr_chk values (5, 0, 5, 5);
+explain (costs off) select count(*) from notand_arr_chk where a = 5;
+select count(*) from notand_arr_chk where a = 5;
+explain (costs off) select count(*) from notand_arr_chk where b = 0;
+select count(*) from notand_arr_chk where b = 0;
+set optimizer_array_constraints = off;
+explain (costs off) select count(*) from notand_arr_chk where c = 5;
+select count(*) from notand_arr_chk where c = 5;
+explain (costs off) select count(*) from notand_arr_chk where d = 5;
+select count(*) from notand_arr_chk where d = 5;
+reset optimizer_array_constraints;
+drop table notand_arr_chk;
+
+-- WHPG: NOT (NOT p) is p, so a = 5 is a contradiction.  NOT over a
+-- nested OR (b = 1 or (c = 2 or b = 3)) is flattened into its 3 disjuncts
+-- before checking optimizer_array_expansion_threshold: b = 1 is pruned
+-- by default, and kept once the threshold is 2
+create table notnot_chk (
+  a int check (not (not (a > 10 and a % 2 = 0))),
+  b int, c int, check (not (b = 1 or (c = 2 or b = 3))))
+  distributed by (a);
+insert into notnot_chk values (12, 2, 3);
+explain (costs off) select count(*) from notnot_chk where a = 5;
+select count(*) from notnot_chk where a = 12;
+explain (costs off) select count(*) from notnot_chk where b = 1;
+select count(*) from notnot_chk where b = 2;
+set optimizer_array_expansion_threshold = 2;
+explain (costs off) select count(*) from notnot_chk where b = 1;
+select count(*) from notnot_chk where b = 2;
+reset optimizer_array_expansion_threshold;
+drop table notnot_chk;
+
 -- start_ignore
 DROP SCHEMA orca CASCADE;
 -- end_ignore
