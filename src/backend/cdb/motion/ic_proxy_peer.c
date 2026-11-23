@@ -46,6 +46,7 @@
 #include "ic_proxy_server.h"
 #include "ic_proxy_pkt_cache.h"
 #include "ic_proxy_addr.h"
+#include "ic_proxy_tls.h"
 
 #include <uv.h>
 
@@ -66,6 +67,125 @@ static void ic_proxy_peer_send_message(ICProxyPeer *peer,
 									   ICProxyMessageType mtype,
 									   const ICProxyKey *key,
 									   ic_proxy_sent_cb callback);
+static void ic_proxy_peer_client_send_hello(ICProxyPeer *peer);
+static void ic_proxy_peer_tls_on_cipher_data(uv_stream_t *stream,
+											 ssize_t nread,
+											 const uv_buf_t *buf);
+static void ic_proxy_peer_tls_step_handshake(ICProxyPeer *peer);
+static void ic_proxy_peer_tls_drain_rx(ICProxyPeer *peer);
+static void ic_proxy_peer_tls_flush(ICProxyPeer *peer);
+static void ic_proxy_peer_tls_write(ICProxyPeer *peer, ICProxyPkt *pkt,
+									ic_proxy_sent_cb callback, void *opaque);
+static void ic_proxy_peer_tls_start(ICProxyPeer *peer, bool is_server);
+static void ic_proxy_peer_tls_check_handshake_timeout(ICProxyPeer *peer);
+
+/*
+ * How long the remote may take to complete the TLS handshake after we
+ * connected to it.  The handshake is two round trips on a local network;
+ * a remote that does not get there is not going to: typically a proxy
+ * that runs without TLS, takes our ClientHello for a HELLO packet and
+ * waits for the rest of it.
+ */
+#define IC_PROXY_PEER_TLS_HANDSHAKE_TIMEOUT_MS	10000
+
+/*
+ * --- TLS overview ---
+ *
+ * With gp_interconnect_proxy_tls_enable=on every peer connection carries
+ * TLS 1.3, negotiated right after connect / accept and before the HELLO,
+ * so all of the peer protocol is encrypted.  The TLS layer is a filter
+ * between the socket and the peer state machine, see the comment at
+ * ICProxyPeer.tls: libuv keeps owning the socket, OpenSSL only sees two
+ * memory BIOs.
+ *
+ *   - Inbound: uv_read on peer->tcp delivers ciphertext to
+ *     ic_proxy_peer_tls_on_cipher_data, which feeds it to OpenSSL, drives
+ *     the handshake while it lasts, and then hands SSL_read's plaintext to
+ *     peer->tls_real_read_cb — the on_hello_data / on_hello_ack_data /
+ *     on_data reader the state machine asked for through
+ *     ic_proxy_peer_uv_read_start, with the uv_read_cb signature those
+ *     readers already have.
+ *   - Outbound: ic_proxy_peer_write hands the packet to
+ *     ic_proxy_peer_tls_write instead of ic_proxy_router_write; it
+ *     encrypts it and uv_writes the ciphertext, and the sent callback
+ *     fires with the packet when that write completes, exactly like a
+ *     plain write.  Handshake records and close_notify go out through the
+ *     same uv_write queue (ic_proxy_peer_tls_flush), so ordering is
+ *     libuv's.
+ *   - Teardown is the plain path: close_notify is queued before
+ *     uv_shutdown, which sends the FIN after the queued writes; a TLS
+ *     failure is handled like a read error (ic_proxy_peer_shutdown).
+ *   - A handshake we started and the remote does not complete is given
+ *     up after IC_PROXY_PEER_TLS_HANDSHAKE_TIMEOUT_MS, checked from the
+ *     server's one-second timer through ic_proxy_peer_connect; the timer
+ *     then connects again.
+ *
+ * Reentrancy: the plaintext readers run from inside the drain loop,
+ * ic_proxy_peer_tls_drain_rx.  A reader that re-arms reading there (HELLO
+ * ACK handing over to DATA) must not drain OpenSSL's buffered plaintext
+ * inline — that would nest ic_proxy_ibuf_push on the same ibuf — so the
+ * read-start wrapper only drains when peer->tls_in_read is false;
+ * otherwise the loop picks the new reader up on its next iteration.  The
+ * flag is set by the loop itself, whoever started it, and by the
+ * ciphertext read callback around the handshake step that arms the HELLO
+ * reader.
+ */
+
+/*
+ * uv_read_start / uv_read_stop for a peer.  On a plain peer they are the
+ * libuv calls.  On a TLS peer the socket is read by the ciphertext
+ * callback and cb is the plaintext reader it feeds.
+ */
+static inline int
+ic_proxy_peer_uv_read_start(ICProxyPeer *peer, uv_read_cb cb)
+{
+	if (peer->tls == NULL)
+		return uv_read_start((uv_stream_t *) &peer->tcp,
+							 ic_proxy_pkt_cache_alloc_buffer, cb);
+
+	peer->tls_real_read_cb = cb;
+
+	/* UV_EALREADY when the socket is already being read, harmless */
+	uv_read_start((uv_stream_t *) &peer->tcp,
+				  ic_proxy_pkt_cache_alloc_buffer,
+				  ic_proxy_peer_tls_on_cipher_data);
+
+	/*
+	 * Input OpenSSL already holds raises no read event; deliver it now,
+	 * unless a drain loop is on the stack: it continues with the new
+	 * reader after the current one returns.
+	 */
+	if (!peer->tls_in_read && ic_proxy_tls_conn_has_pending(peer->tls))
+	{
+		ic_proxy_peer_tls_drain_rx(peer);
+		ic_proxy_peer_tls_flush(peer);
+	}
+
+	return 0;
+}
+
+/*
+ * Write a packet to the peer, encrypted when the peer carries TLS.  Takes
+ * ownership of pkt, like ic_proxy_router_write.
+ */
+static inline void
+ic_proxy_peer_write(ICProxyPeer *peer, ICProxyPkt *pkt,
+					ic_proxy_sent_cb callback, void *opaque)
+{
+	if (peer->tls != NULL)
+		ic_proxy_peer_tls_write(peer, pkt, callback, opaque);
+	else
+		ic_proxy_router_write((uv_stream_t *) &peer->tcp, pkt, 0,
+							  callback, opaque);
+}
+
+static inline void
+ic_proxy_peer_uv_read_stop(ICProxyPeer *peer)
+{
+	if (peer->tls != NULL)
+		peer->tls_real_read_cb = NULL;
+	uv_read_stop((uv_stream_t *) &peer->tcp);
+}
 
 
 /*
@@ -363,6 +483,10 @@ ic_proxy_peer_new(uv_loop_t *loop, int16 content, uint16 dbid)
 	peer->dbid = dbid;
 	peer->state = 0;
 	peer->reqs = NIL;
+	peer->tls = NULL;
+	peer->tls_real_read_cb = NULL;
+	peer->tls_in_read = false;
+	peer->tls_start = 0;
 
 	ic_proxy_ibuf_init_p2p(&peer->ibuf);
 
@@ -415,6 +539,9 @@ ic_proxy_peer_free(ICProxyPeer *peer)
 
 	ic_proxy_ibuf_uninit(&peer->ibuf);
 
+	ic_proxy_tls_conn_free(peer->tls);
+	peer->tls = NULL;
+
 	/*
 	 * A placeholder that was never connected still has its tcp handle in
 	 * the loop's handle queue, since uv_tcp_init().  Close the handle
@@ -454,6 +581,12 @@ ic_proxy_peer_on_close(uv_handle_t *handle)
 	/* reset the state */
 	peer->state = 0;
 	peer->tcp_open = false;
+
+	/* the TLS session dies with the connection */
+	ic_proxy_tls_conn_free(peer->tls);
+	peer->tls = NULL;
+	peer->tls_real_read_cb = NULL;
+	peer->tls_in_read = false;
 
 	/* it's unlikely that the ibuf is non-empty, but clear it for sure */
 	ic_proxy_ibuf_clear(&peer->ibuf);
@@ -521,6 +654,16 @@ ic_proxy_peer_shutdown(ICProxyPeer *peer)
 	/* disconnect all the clients */
 	ic_proxy_client_table_shutdown_by_dbid(peer->dbid);
 
+	/*
+	 * TLS: queue close_notify; uv_shutdown sends the FIN only after the
+	 * queued writes, so the remote reads a clean TLS shutdown.
+	 */
+	if (peer->tls != NULL)
+	{
+		ic_proxy_tls_conn_shutdown(peer->tls);
+		ic_proxy_peer_tls_flush(peer);
+	}
+
 	req = ic_proxy_new(uv_shutdown_t);
 
 	uv_shutdown(req, (uv_stream_t *) &peer->tcp, ic_proxy_peer_on_shutdown);
@@ -556,8 +699,7 @@ ic_proxy_peer_on_sent_hello_ack(void *opaque, const ICProxyPkt *pkt, int status)
 	ic_proxy_peer_handle_out_cache(peer);
 
 	/* now it's time to receive the normal data */
-	uv_read_start((uv_stream_t *) &peer->tcp,
-				  ic_proxy_pkt_cache_alloc_buffer, ic_proxy_peer_on_data);
+	ic_proxy_peer_uv_read_start(peer, ic_proxy_peer_on_data);
 }
 
 /*
@@ -571,7 +713,7 @@ ic_proxy_peer_on_hello_pkt(void *opaque, const void *data, uint16 size)
 	ICProxyKey	key;
 
 	/* we only expect one hello message */
-	uv_read_stop((uv_stream_t *) &peer->tcp);
+	ic_proxy_peer_uv_read_stop(peer);
 
 	/* sanity check: drop the packet with incorrect magic number */
 	if (!ic_proxy_pkt_is_valid(pkt))
@@ -664,13 +806,28 @@ ic_proxy_peer_read_hello(ICProxyPeer *peer)
 	if (peer->state & IC_PROXY_PEER_STATE_RECEIVING_HELLO)
 		return;
 
+	/*
+	 * Server side of a TLS peer: the handshake comes first.  Start reading
+	 * ciphertext; the handshake driver calls back here once it is done,
+	 * with peer->tls set, and the normal path below takes over.
+	 */
+	if (ic_proxy_tls_is_enabled() && peer->tls == NULL)
+	{
+		/* the accepted socket has addresses now, name the handshake logs */
+		ic_proxy_peer_update_name(peer);
+		ic_proxy_peer_tls_start(peer, true /* is_server */);
+		uv_read_start((uv_stream_t *) &peer->tcp,
+					  ic_proxy_pkt_cache_alloc_buffer,
+					  ic_proxy_peer_tls_on_cipher_data);
+		return;
+	}
+
 	elogif(gp_log_interconnect >= GPVARS_VERBOSITY_DEBUG, DEBUG3,
 		   "ic-proxy: %s: waiting for HELLO", peer->name);
 
 	peer->state |= IC_PROXY_PEER_STATE_RECEIVING_HELLO;
 
-	uv_read_start((uv_stream_t *) &peer->tcp,
-				  ic_proxy_pkt_cache_alloc_buffer, ic_proxy_peer_on_hello_data);
+	ic_proxy_peer_uv_read_start(peer, ic_proxy_peer_on_hello_data);
 }
 
 /*
@@ -704,7 +861,7 @@ ic_proxy_peer_on_hello_ack_pkt(void *opaque, const void *data, uint16 size)
 	}
 
 	/* we only expect one hello ack message */
-	uv_read_stop((uv_stream_t *) &peer->tcp);
+	ic_proxy_peer_uv_read_stop(peer);
 
 	/* sanity check: drop the packet with incorrect magic number */
 	if (!ic_proxy_pkt_is_valid(pkt))
@@ -741,8 +898,7 @@ ic_proxy_peer_on_hello_ack_pkt(void *opaque, const void *data, uint16 size)
 		   "ic-proxy: %s: start receiving DATA", peer->name);
 
 	/* now it's time to receive the normal data */
-	uv_read_start((uv_stream_t *) &peer->tcp,
-				  ic_proxy_pkt_cache_alloc_buffer, ic_proxy_peer_on_data);
+	ic_proxy_peer_uv_read_start(peer, ic_proxy_peer_on_data);
 }
 
 /*
@@ -806,9 +962,7 @@ ic_proxy_peer_on_sent_hello(void *opaque, const ICProxyPkt *pkt, int status)
 	peer->state |= IC_PROXY_PEER_STATE_RECEIVING_HELLO_ACK;
 
 	/* wait for hello ack */
-	uv_read_start((uv_stream_t *) &peer->tcp,
-				  ic_proxy_pkt_cache_alloc_buffer,
-				  ic_proxy_peer_on_hello_ack_data);
+	ic_proxy_peer_uv_read_start(peer, ic_proxy_peer_on_hello_ack_data);
 }
 
 /*
@@ -818,7 +972,6 @@ static void
 ic_proxy_peer_on_connected(uv_connect_t *conn, int status)
 {
 	ICProxyPeer *peer = CONTAINER_OF((void *) conn->handle, ICProxyPeer, tcp);
-	ICProxyKey	key;
 
 	ic_proxy_free(conn);
 
@@ -838,6 +991,35 @@ ic_proxy_peer_on_connected(uv_connect_t *conn, int status)
 	peer->state |= IC_PROXY_PEER_STATE_CONNECTED;
 
 	/* TODO: increase ic_proxy_peer_contents[peer->content] */
+
+	ic_proxy_peer_update_name(peer);
+
+	/*
+	 * Client side of a TLS peer: handshake first, the HELLO is sent by
+	 * the handshake driver once the channel is up.
+	 */
+	if (ic_proxy_tls_is_enabled())
+	{
+		ic_proxy_peer_tls_start(peer, false /* is_server */);
+		ic_proxy_peer_tls_step_handshake(peer);		/* sends ClientHello */
+		if (!(peer->state & IC_PROXY_PEER_STATE_SHUTTING))
+			uv_read_start((uv_stream_t *) &peer->tcp,
+						  ic_proxy_pkt_cache_alloc_buffer,
+						  ic_proxy_peer_tls_on_cipher_data);
+		return;
+	}
+
+	ic_proxy_peer_client_send_hello(peer);
+}
+
+/*
+ * Build the HELLO message and send it: directly after connect on a plain
+ * peer, after the handshake on a TLS peer.
+ */
+static void
+ic_proxy_peer_client_send_hello(ICProxyPeer *peer)
+{
+	ICProxyKey	key;
 
 	/* hello packet must be the first one from a client */
 
@@ -859,7 +1041,6 @@ ic_proxy_peer_on_connected(uv_connect_t *conn, int status)
 
 	peer->state |= IC_PROXY_PEER_STATE_SENDING_HELLO;
 
-	ic_proxy_peer_update_name(peer);
 	ic_proxy_peer_send_message(peer, IC_PROXY_MESSAGE_PEER_HELLO, &key,
 							   ic_proxy_peer_on_sent_hello);
 }
@@ -874,7 +1055,11 @@ ic_proxy_peer_connect(ICProxyPeer *peer, struct sockaddr_in *dest)
 	char		name[HOST_NAME_MAX];
 
 	if (peer->state & IC_PROXY_PEER_STATE_CONNECTING)
+	{
+		/* this is called once a second, see ic_proxy_server_ensure_peers */
+		ic_proxy_peer_tls_check_handshake_timeout(peer);
 		return;
+	}
 
 	peer->state |= IC_PROXY_PEER_STATE_CONNECTING;
 
@@ -944,7 +1129,7 @@ ic_proxy_peer_route_data(ICProxyPeer *peer, ICProxyPkt *pkt,
 		return;
 	}
 
-	ic_proxy_router_write((uv_stream_t *) &peer->tcp, pkt, 0, callback, opaque);
+	ic_proxy_peer_write(peer, pkt, callback, opaque);
 }
 
 /*
@@ -967,7 +1152,7 @@ ic_proxy_peer_send_message(ICProxyPeer *peer, ICProxyMessageType mtype,
 
 	pkt = ic_proxy_message_new(mtype, key);
 
-	ic_proxy_router_write((uv_stream_t *) &peer->tcp, pkt, 0, callback, peer);
+	ic_proxy_peer_write(peer, pkt, callback, peer);
 }
 
 /*
@@ -1015,4 +1200,305 @@ ic_proxy_peer_handle_out_cache(ICProxyPeer *peer)
 	 * only need to free the list itself.
 	 */
 	list_free(reqs);
+}
+
+
+/*
+ * ============================================================
+ * TLS filter — see the overview near the top of the file.
+ * ============================================================
+ */
+
+/*
+ * Create the TLS state of a freshly connected or accepted peer.
+ */
+static void
+ic_proxy_peer_tls_start(ICProxyPeer *peer, bool is_server)
+{
+	struct sockaddr_storage remote;
+	int			addrlen = sizeof(remote);
+
+	memset(&remote, 0, sizeof(remote));
+	uv_tcp_getpeername(&peer->tcp, (struct sockaddr *) &remote, &addrlen);
+
+	peer->tls = ic_proxy_tls_conn_new(is_server, peer->name,
+									  (struct sockaddr *) &remote);
+	peer->tls_start = uv_now(peer->tcp.loop);
+}
+
+/*
+ * Give up a handshake that we started and the remote did not complete in
+ * time.  Without this the peer would stay in the connecting state for
+ * good, never retried, with the packets for it piling up in its cache
+ * and the queries that sent them waiting.
+ */
+static void
+ic_proxy_peer_tls_check_handshake_timeout(ICProxyPeer *peer)
+{
+	if (peer->tls == NULL ||
+		ic_proxy_tls_conn_handshake_done(peer->tls) ||
+		(peer->state & IC_PROXY_PEER_STATE_SHUTTING))
+		return;
+
+	if (uv_now(peer->tcp.loop) - peer->tls_start <
+		IC_PROXY_PEER_TLS_HANDSHAKE_TIMEOUT_MS)
+		return;
+
+	elog(ic_proxy_tls_conn_failure_elevel(peer->tls),
+		 "ic-proxy TLS: %s: the remote did not complete the TLS handshake "
+		 "within %d seconds, closing the connection; is "
+		 "gp_interconnect_proxy_tls_enable on there?",
+		 peer->name, IC_PROXY_PEER_TLS_HANDSHAKE_TIMEOUT_MS / 1000);
+
+	ic_proxy_peer_shutdown(peer);
+}
+
+/*
+ * A ciphertext write in flight: the plaintext packet it carries (NULL for
+ * handshake / close_notify output) and the user callback to fire when the
+ * socket write completes.
+ */
+typedef struct ICProxyTlsWriteReq
+{
+	uv_write_t	req;
+	ICProxyPeer *peer;
+	ICProxyPkt *pkt;
+	char	   *cipher;
+	ic_proxy_sent_cb callback;
+	void	   *opaque;
+} ICProxyTlsWriteReq;
+
+static void
+ic_proxy_peer_tls_on_write(uv_write_t *req, int status)
+{
+	ICProxyTlsWriteReq *wreq = (ICProxyTlsWriteReq *) req;
+
+	if (wreq->callback != NULL)
+		wreq->callback(wreq->opaque, wreq->pkt, status);
+	if (wreq->pkt != NULL)
+		ic_proxy_pkt_cache_free(wreq->pkt);
+	ic_proxy_free(wreq->cipher);
+	ic_proxy_free(wreq);
+}
+
+/*
+ * Move whatever ciphertext OpenSSL produced to the socket, attaching the
+ * plaintext packet (if any) so its callback fires on completion.
+ */
+static void
+ic_proxy_peer_tls_submit(ICProxyPeer *peer, ICProxyPkt *pkt,
+						 ic_proxy_sent_cb callback, void *opaque)
+{
+	ICProxyTlsWriteReq *wreq;
+	uv_buf_t	wbuf;
+	int			len = ic_proxy_tls_conn_output_pending(peer->tls);
+	int			ret;
+
+	if (len <= 0)
+	{
+		/* only a flush can find nothing: a packet always encrypts to something */
+		Assert(pkt == NULL);
+		return;
+	}
+
+	wreq = ic_proxy_new(ICProxyTlsWriteReq);
+	wreq->peer = peer;
+	wreq->pkt = pkt;
+	wreq->callback = callback;
+	wreq->opaque = opaque;
+	wreq->cipher = ic_proxy_alloc(len);
+	len = ic_proxy_tls_conn_output_take(peer->tls, wreq->cipher, len);
+
+	wbuf.base = wreq->cipher;
+	wbuf.len = len;
+
+	ret = uv_write(&wreq->req, (uv_stream_t *) &peer->tcp, &wbuf, 1,
+				   ic_proxy_peer_tls_on_write);
+	if (ret < 0)
+	{
+		/* the handle is closing; complete the request like a cancelled write */
+		elogif(gp_log_interconnect >= GPVARS_VERBOSITY_VERBOSE, LOG,
+			   "ic-proxy TLS: %s: uv_write failed: %s",
+			   peer->name, uv_strerror(ret));
+		ic_proxy_peer_tls_on_write(&wreq->req, ret);
+	}
+}
+
+/*
+ * Flush handshake records, KeyUpdates, close_notify: output with no
+ * packet attached.
+ */
+static void
+ic_proxy_peer_tls_flush(ICProxyPeer *peer)
+{
+	if (peer->tls == NULL || (peer->state & IC_PROXY_PEER_STATE_CLOSING))
+		return;
+	ic_proxy_peer_tls_submit(peer, NULL, NULL, NULL);
+}
+
+/*
+ * The write path of a TLS peer, see ic_proxy_peer_write.
+ */
+static void
+ic_proxy_peer_tls_write(ICProxyPeer *peer, ICProxyPkt *pkt,
+						ic_proxy_sent_cb callback, void *opaque)
+{
+	Assert(ic_proxy_tls_conn_handshake_done(peer->tls));
+
+	if (!ic_proxy_tls_conn_write(peer->tls, pkt, pkt->len))
+	{
+		/* like a failed uv_write: complete the request, drop the peer */
+		if (callback != NULL)
+			callback(opaque, pkt, UV_EPIPE);
+		ic_proxy_pkt_cache_free(pkt);
+		ic_proxy_peer_shutdown(peer);
+		return;
+	}
+
+	ic_proxy_peer_tls_submit(peer, pkt, callback, opaque);
+}
+
+/*
+ * One handshake step with the ciphertext fed so far; flush what it wrote
+ * and, when done, resume the role-specific HELLO path.
+ */
+static void
+ic_proxy_peer_tls_step_handshake(ICProxyPeer *peer)
+{
+	ICProxyTlsHandshakeResult r = ic_proxy_tls_conn_handshake_step(peer->tls);
+
+	if (r == IC_PROXY_TLS_HS_FATAL)
+	{
+		/* like a read error: drop the clients bound to this dbid, close */
+		ic_proxy_peer_shutdown(peer);
+		return;
+	}
+
+	ic_proxy_peer_tls_flush(peer);
+
+	if (r != IC_PROXY_TLS_HS_DONE)
+		return;
+
+	if (peer->state & IC_PROXY_PEER_STATE_ACCEPTED)
+		ic_proxy_peer_read_hello(peer);	/* arms the HELLO reader */
+	else
+	{
+		Assert(peer->state & IC_PROXY_PEER_STATE_CONNECTED);
+		ic_proxy_peer_client_send_hello(peer);
+	}
+}
+
+/*
+ * Hand decrypted plaintext to the current reader until OpenSSL needs more
+ * ciphertext.  The reader is re-read on every iteration: it may switch
+ * (HELLO ACK → DATA) or stop reading.
+ */
+static void
+ic_proxy_peer_tls_drain_rx(ICProxyPeer *peer)
+{
+	bool		save_in_read = peer->tls_in_read;
+
+	/* a reader re-armed by one of our callbacks must not start a nested loop */
+	peer->tls_in_read = true;
+
+	for (;;)
+	{
+		uv_read_cb	cb = peer->tls_real_read_cb;
+		size_t		plain_size;
+		char	   *plain;
+		int			n;
+
+		if (cb == NULL || (peer->state & IC_PROXY_PEER_STATE_CLOSING))
+			break;
+
+		plain = ic_proxy_pkt_cache_alloc(&plain_size);
+		n = ic_proxy_tls_conn_read(peer->tls, plain, (int) plain_size);
+		if (n > 0)
+		{
+			uv_buf_t	plain_buf = { plain, plain_size };
+
+			cb((uv_stream_t *) &peer->tcp, (ssize_t) n, &plain_buf);
+			/* the reader owns the buffer now */
+			continue;
+		}
+
+		ic_proxy_pkt_cache_free(plain);
+		if (n < 0)
+		{
+			/* close_notify or a fatal error: the reader sees EOF */
+			uv_buf_t	empty = { NULL, 0 };
+
+			cb((uv_stream_t *) &peer->tcp, UV_EOF, &empty);
+		}
+		/* else more ciphertext is needed */
+		break;
+	}
+
+	peer->tls_in_read = save_in_read;
+}
+
+/*
+ * The uv_read callback of a TLS peer: ciphertext in, handshake or
+ * plaintext out.
+ */
+static void
+ic_proxy_peer_tls_on_cipher_data(uv_stream_t *stream, ssize_t nread,
+								 const uv_buf_t *buf)
+{
+	ICProxyPeer *peer = CONTAINER_OF((void *) stream, ICProxyPeer, tcp);
+
+	if (unlikely(nread < 0))
+	{
+		uv_read_cb	cb = peer->tls_real_read_cb;
+		uv_buf_t	empty = { NULL, 0 };
+
+		if (buf->base)
+			ic_proxy_pkt_cache_free(buf->base);
+
+		/* no close_notify to a socket that is already gone */
+		ic_proxy_tls_conn_remote_closed(peer->tls);
+
+		if (cb != NULL)
+		{
+			/* the reader logs and shuts the peer down */
+			cb(stream, nread, &empty);
+			return;
+		}
+
+		if (nread != UV_EOF)
+			elog(WARNING, "ic-proxy TLS: %s: failed to receive: %s",
+				 peer->name, uv_strerror(nread));
+		else
+			elogif(gp_log_interconnect >= GPVARS_VERBOSITY_VERBOSE, LOG,
+				   "ic-proxy TLS: %s: received EOF during the handshake",
+				   peer->name);
+		ic_proxy_peer_shutdown(peer);
+		return;
+	}
+	else if (unlikely(nread == 0))
+	{
+		if (buf->base)
+			ic_proxy_pkt_cache_free(buf->base);
+		return;
+	}
+
+	ic_proxy_tls_conn_feed(peer->tls, buf->base, (int) nread);
+	ic_proxy_pkt_cache_free(buf->base);
+
+	peer->tls_in_read = true;
+
+	if (!ic_proxy_tls_conn_handshake_done(peer->tls))
+		ic_proxy_peer_tls_step_handshake(peer);
+
+	/*
+	 * Data that arrived with the handshake's last record, or plain data:
+	 * deliver as long as a reader is armed.
+	 */
+	if (ic_proxy_tls_conn_handshake_done(peer->tls))
+		ic_proxy_peer_tls_drain_rx(peer);
+
+	peer->tls_in_read = false;
+
+	/* anything OpenSSL wrote on its own while reading (KeyUpdate, alerts) */
+	ic_proxy_peer_tls_flush(peer);
 }

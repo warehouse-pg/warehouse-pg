@@ -31,6 +31,7 @@
 
 #ifdef ENABLE_IC_PROXY
 #include "ic_proxy_backend.h"
+#include "cdb/ic_proxy_bgworker.h"
 #endif  /* ENABLE_IC_PROXY */
 
 #include <fcntl.h>
@@ -1292,14 +1293,32 @@ SetupTCPInterconnect(EState *estate)
 	interconnect_context->doSendStopMessage = doSendStopMessageTCP;
 
 #ifdef ENABLE_IC_PROXY
-	/* check if current Segment's ICProxy listener failed */
-	if (pg_atomic_read_u32(ic_proxy_peer_listener_failed) > 0)
+	/*
+	 * Check if current Segment's ICProxy process cannot serve us.  Only
+	 * when we are going to use it: this function also sets up the plain
+	 * TCP interconnect, which does not care about the proxy.
+	 */
+	if (Gp_interconnect_type == INTERCONNECT_TYPE_PROXY)
 	{
-		ereport(ERROR,
-			(errcode(ERRCODE_GP_INTERCONNECTION_ERROR),
-			 errmsg("Failed to setup ic_proxy interconnect"),
-			 errdetail("The ic_proxy process failed to bind or listen."),
-			 errhint("Please check the server log for related WARNING messages.")));
+		switch (pg_atomic_read_u32(ic_proxy_peer_listener_failed))
+		{
+			case IC_PROXY_FAILURE_NONE:
+				break;
+			case IC_PROXY_FAILURE_TLS_CONFIG:
+				ereport(ERROR,
+					(errcode(ERRCODE_GP_INTERCONNECTION_ERROR),
+					 errmsg("Failed to setup ic_proxy interconnect"),
+					 errdetail("The ic_proxy process is not serving because the gp_interconnect_proxy_tls_* settings are invalid."),
+					 errhint("Fix the settings, then reload the configuration (gpstop -u); see the server log for the ERROR reported by the ic_proxy process.")));
+				break;
+			default:
+				ereport(ERROR,
+					(errcode(ERRCODE_GP_INTERCONNECTION_ERROR),
+					 errmsg("Failed to setup ic_proxy interconnect"),
+					 errdetail("The ic_proxy process failed to bind or listen."),
+					 errhint("Please check the server log for related WARNING messages.")));
+				break;
+		}
 	}
 
 	ic_proxy_backend_init_context(interconnect_context);

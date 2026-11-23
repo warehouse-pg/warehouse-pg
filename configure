@@ -1591,7 +1591,7 @@ Optional Features:
   --disable-orca          disable ORCA optimizer
   --enable-gpcloud        enable gpcloud support
   --enable-ic-proxy       enable interconnect proxy mode (requires libuv
-                          library)
+                          library and --with-openssl)
   --disable-thread-safety disable thread-safety in client libraries
   --disable-largefile     omit support for large files
 
@@ -13649,6 +13649,12 @@ else
   as_fn_error $? "libuv library not found, it is required by --enable-ic-proxy." "$LINENO" 5
 fi
 
+  # The ic-proxy peer connections can be protected with TLS
+  # (gp_interconnect_proxy_tls_enable); that code links OpenSSL
+  # unconditionally.
+  if test "$with_openssl" != yes; then
+    as_fn_error $? "--enable-ic-proxy requires --with-openssl." "$LINENO" 5
+  fi
 fi
 
 if test "$enable_spinlocks" = yes; then
