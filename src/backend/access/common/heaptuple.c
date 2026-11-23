@@ -61,7 +61,9 @@
 
 #include "access/sysattr.h"
 #include "access/tuptoaster.h"
+#include "common/int.h"
 #include "executor/tuptable.h"
+#include "utils/memutils.h"
 
 #include "catalog/pg_type.h"
 #include "cdb/cdbvars.h"                /* GpIdentity.segindex */
@@ -97,6 +99,24 @@ heap_compute_data_size(TupleDesc tupleDesc,
 					   Datum *values,
 					   bool *isnull)
 {
+	return heap_compute_data_size_ext(tupleDesc, values, isnull, false);
+}
+
+/*
+ * heap_compute_data_size_ext
+ *		Determine size of the data area of a tuple to be constructed,
+ *		potentially over MaxAllocSize
+ *
+ * If allow_huge is false, then we raise an error if any intermediate
+ * result goes beyond MaxAllocSize; in 32-bit architectures we also
+ * do that when the result of an addition overflows Size (which is 32-bit)
+ */
+Size
+heap_compute_data_size_ext(TupleDesc tupleDesc,
+						   const Datum *values,
+						   const bool *isnull,
+						   bool allow_huge)
+{
 	Size		data_length = 0;
 	int			i;
 	int			numberOfAttributes = tupleDesc->natts;
@@ -105,6 +125,7 @@ heap_compute_data_size(TupleDesc tupleDesc,
 	for (i = 0; i < numberOfAttributes; i++)
 	{
 		Datum		val;
+		bool		ovfl;
 
 		if (isnull[i])
 			continue;
@@ -118,15 +139,28 @@ heap_compute_data_size(TupleDesc tupleDesc,
 			 * we're anticipating converting to a short varlena header, so
 			 * adjust length and don't count any alignment
 			 */
-			data_length += VARATT_CONVERTED_SHORT_SIZE(DatumGetPointer(val));
+			ovfl = pg_add_size_overflow(data_length,
+										VARATT_CONVERTED_SHORT_SIZE(DatumGetPointer(val)),
+										&data_length);
 		}
 		else
 		{
 			data_length = att_align_datum(data_length, att[i]->attalign,
 										  att[i]->attlen, val);
-			data_length = att_addlength_datum(data_length, att[i]->attlen,
-											  val);
+			data_length = att_addlength_datum_overflow(data_length, att[i]->attlen,
+													   val, &ovfl);
 		}
+
+		/*
+		 * Unless caller allows huge values, prevent going beyond the palloc
+		 * limit.  In cases where caller does allow huge values, we can't
+		 * trust the AllocSizeIsValid() test alone on 32-bit platforms, which
+		 * is why we use overflow-detecting addition above.
+		 */
+		if (ovfl || (!allow_huge && !AllocSizeIsValid(data_length)))
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("tuple is too big")));
 	}
 
 	return data_length;
@@ -354,9 +388,15 @@ nocachegetattr(HeapTuple tuple,
 	char	   *tp;				/* ptr to data part of tuple */
 	bits8	   *bp = tup->t_bits;		/* ptr to null bitmap in tuple */
 	bool		slow = false;	/* do we have to walk attrs? */
-	int			off;			/* current offset within data */
+	Size		off;			/* current offset within data */
 
 	Assert(!is_memtuple((GenericTuple) tuple));
+
+	/*
+	 * It shouldn't be possible to allocate overlength tuples, so it's not
+	 * possible to get in wraparound problems in the arithmetic below.
+	 */
+	Assert(AllocSizeIsValid(tuple->t_len));
 
 	/* ----------------
 	 *	 Three cases:
