@@ -1520,6 +1520,8 @@ CREATE OR REPLACE FUNCTION mv_action() RETURNS bool LANGUAGE sql AS
 REFRESH MATERIALIZED VIEW sro_mv;
 \c -
 REFRESH MATERIALIZED VIEW sro_mv;
+-- WHPG: the trigger fires on a segment, where the GRANT is rejected as a
+-- utility statement before its privilege check is reached.
 BEGIN; SET allow_segment_DML = ON; SET CONSTRAINTS ALL IMMEDIATE; REFRESH MATERIALIZED VIEW sro_mv; COMMIT;
 
 DROP OWNED BY regress_sro_user;
@@ -1549,6 +1551,11 @@ SET SESSION AUTHORIZATION regress_sro_user;
 CREATE TABLE executor (s varchar) DISTRIBUTED REPLICATED;
 CREATE TABLE trap (a int) WITH(appendonly = true) DISTRIBUTED REPLICATED;
 
+-- Populate data in a "trap" table to run ANALYZE on, before the index
+-- exists: an INSERT through the index can leave its expression cached with the
+-- immutable function inlined, and then the volatile one never runs.
+INSERT INTO trap VALUES(1);
+
 -- Create a "firestarter" stable index funcion
 CREATE OR REPLACE FUNCTION trap_sfunc(integer) RETURNS integer
 LANGUAGE sql IMMUTABLE AS
@@ -1559,11 +1566,7 @@ CREATE INDEX trap_idx ON trap (trap_sfunc(a));
 -- and replace it with volatile security invoker to prodice insert operation on ANALYZE.
 CREATE OR REPLACE FUNCTION trap_sfunc(integer) RETURNS integer
 LANGUAGE sql SECURITY INVOKER AS
-'SET allow_segment_DML = ON; INSERT INTO executor VALUES (current_user); SELECT $1';
-
--- Populate data in a "trap" table to run ANALYZE on.
-SET allow_segment_DML = ON;
-INSERT INTO trap VALUES(1);
+'INSERT INTO executor VALUES (current_user); SELECT $1';
 
 -- Create malicious function to run in defered trigger
 CREATE OR REPLACE FUNCTION executor_sfunc(integer) RETURNS integer
@@ -1588,10 +1591,14 @@ $$ LANGUAGE sql EXECUTE ON ALL SEGMENTS;
 
 SELECT DISTINCT is_superuser_on_segments('regress_sro_user');
 
--- Execute a trap with superuser.
+-- Execute a trap with superuser.  ANALYZE evaluates the index expression on
+-- the segments, so the superuser has to allow DML there for the trap to reach
+-- its INSERT.
 RESET SESSION AUTHORIZATION;
 
+SET allow_segment_DML = ON;
 ANALYZE trap;
+RESET allow_segment_DML;
 
 -- Check "regress_sro_user" superuser privileges on segments.
 SELECT DISTINCT is_superuser_on_segments('regress_sro_user');

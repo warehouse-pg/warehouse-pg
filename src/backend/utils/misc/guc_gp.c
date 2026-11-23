@@ -654,7 +654,7 @@ struct config_bool ConfigureNamesBool_gp[] =
 	},
 
 	{
-		{"allow_segment_DML", PGC_USERSET, CUSTOM_OPTIONS,
+		{"allow_segment_DML", PGC_SUSET, CUSTOM_OPTIONS,
 			gettext_noop("Allow DML on segments"),
 			NULL,
 			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
