@@ -146,6 +146,8 @@ extern Datum memtuple_getattr(MemTuple mtup, MemTupleBinding *pbind, int attnum,
 extern bool memtuple_attisnull(MemTuple mtup, MemTupleBinding *pbind, int attnum);
 
 extern uint32 compute_memtuple_size(MemTupleBinding *pbind, Datum *values, bool *isnull, bool hasnull, uint32 *nullsaves);
+extern Size compute_memtuple_size_ext(MemTupleBinding *pbind, Datum *values, bool *isnull,
+									  bool hasnull, uint32 *nullsaves, bool allow_huge);
 
 extern MemTuple memtuple_copy_to(MemTuple mtup, MemTuple dest, uint32 *destlen);
 extern MemTuple memtuple_form_to(MemTupleBinding *pbind, Datum *values, bool *isnull, MemTuple dest, uint32 *destlen, bool inline_toast);
