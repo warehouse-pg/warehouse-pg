@@ -1625,6 +1625,8 @@ select count(*) from sagg_t, (select count(*) n from sagg_f where a = 15 and b =
 select count(*) from sagg_t, (select count(*) n from sagg_f where a = 15 and b = 0) s where s.n > 0;
 -- the predicate on the aggregate must not be lost next to a real join
 -- predicate either (dropping it would match id = 1 against n = 0)
+-- WHPG: with optimizer=on GPORCA compares the bigint count() with the integer
+-- expression without a cast (bfv_aggregate_optimizer.out).
 explain (costs off)
 select count(*) from sagg_t, (select count(*) n from sagg_f where a = 15 and b = 3) s where s.n > 0 and s.n = sagg_t.id - 1;
 select count(*) from sagg_t, (select count(*) n from sagg_f where a = 15 and b = 3) s where s.n > 0 and s.n = sagg_t.id - 1;
@@ -1686,6 +1688,8 @@ create function agg_vol_mark(int) returns bool language plpgsql volatile as
 explain (costs off)
 select a, c from (select a, count(*) c from agg_vol group by a) s where agg_vol_mark(s.a) order by a;
 select a, c from (select a, count(*) c from agg_vol group by a) s where agg_vol_mark(s.a) order by a;
+-- WHPG: with optimizer=on GPORCA compares the bigint count() with the integer
+-- column without a cast (bfv_aggregate_optimizer.out).
 explain (costs off)
 select count(*) from agg_vol t, (select a, count(*) c from agg_vol group by a) s where t.b = s.c and agg_vol_mark(s.a);
 select count(*) from agg_vol t, (select a, count(*) c from agg_vol group by a) s where t.b = s.c and agg_vol_mark(s.a);

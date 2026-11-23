@@ -2258,6 +2258,8 @@ select aa, bb, unique1, unique1
 --
 -- regression test: check handling of empty-FROM subquery underneath outer join
 --
+-- WHPG: with optimizer=on GPORCA compares integers of different widths without
+-- a cast (join_optimizer.out).
 explain (costs off)
 select * from int8_tbl i1 left join (int8_tbl i2 join
   (select 123 as x) ss on i2.q1 = x) on i1.q2 = i2.q2
@@ -2277,7 +2279,7 @@ order by 1, 2;
                      ->  Redistribute Motion 3:3  (slice3; segments: 3)
                            Hash Key: i2.q2
                            ->  Hash Join
-                                 Hash Cond: (i2.q1 = ((123))::bigint)
+                                 Hash Cond: (i2.q1 = (123))
                                  ->  Seq Scan on int8_tbl i2
                                        Filter: (q1 = 123)
                                  ->  Hash
@@ -2323,6 +2325,8 @@ where t4.thousand = t5.unique1 and ss.x1 = t4.tenthous and ss.x2 = t5.stringu1;
 --
 set enable_hashjoin = false;
 set enable_nestloop = true;
+-- WHPG: with optimizer=on GPORCA compares integers of different widths without
+-- a cast (join_optimizer.out).
 explain (costs off)
 select a.f1, b.f1, t.thousand, t.tenthous from
   tenk1 t,
@@ -2334,7 +2338,7 @@ where b.f1 = t.thousand and a.f1 = b.f1 and (a.f1+b.f1+999) = t.tenthous;
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Join
          Hash Cond: ((sum(i4b.f1)) = (((sum(i4a.f1)) + 1)))
-         Join Filter: ((((((sum(i4a.f1)) + 1)) + (sum(i4b.f1))) + 999) = (t.tenthous)::bigint)
+         Join Filter: ((((((sum(i4a.f1)) + 1)) + (sum(i4b.f1))) + 999) = t.tenthous)
          ->  Nested Loop
                Join Filter: true
                ->  Broadcast Motion 1:3  (slice2)
@@ -3327,6 +3331,8 @@ where thousand = (q1 + q2);
 -- test ability to generate a suitable plan for a star-schema query
 --
 set enable_nestloop to true;
+-- WHPG: with optimizer=on GPORCA compares integers of different widths without
+-- a cast (join_optimizer.out).
 explain (costs off)
 select * from
   tenk1, int8_tbl a, int8_tbl b
@@ -3335,7 +3341,7 @@ where thousand = a.q1 and tenthous = b.q1 and a.q2 = 1 and b.q2 = 2;
 ------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Join
-         Hash Cond: ((tenk1.thousand)::bigint = a.q1)
+         Hash Cond: (tenk1.thousand = a.q1)
          ->  Nested Loop
                Join Filter: true
                ->  Broadcast Motion 3:3  (slice2; segments: 3)
@@ -3836,6 +3842,8 @@ select b.unique1 from
         
 (5 rows)
 
+-- WHPG: with optimizer=on GPORCA compares integers of different widths without
+-- a cast (join_optimizer.out).
 explain (costs off)
 select * from
 (
@@ -3853,9 +3861,9 @@ order by fault;
          ->  Result
                Filter: ((COALESCE(tenk1.unique1, '-1'::integer) + int8_tbl.q1) = 122)
                ->  Hash Right Join
-                     Hash Cond: ((tenk1.unique2)::bigint = int8_tbl.q2)
+                     Hash Cond: (tenk1.unique2 = int8_tbl.q2)
                      ->  Redistribute Motion 3:3  (slice2; segments: 3)
-                           Hash Key: (tenk1.unique2)::bigint
+                           Hash Key: tenk1.unique2
                            ->  Seq Scan on tenk1
                      ->  Hash
                            ->  Redistribute Motion 3:3  (slice3; segments: 3)
@@ -3907,6 +3915,8 @@ left join unnest(v1ys) as u1(u1y) on u1y = v2y;
 --
 -- test handling of potential equivalence clauses above outer joins
 --
+-- WHPG: with optimizer=on GPORCA compares integers of different widths without
+-- a cast (join_optimizer.out).
 explain (costs off)
 select q1, unique2, thousand, hundred
   from int8_tbl a left join tenk1 b on q1 = unique2
@@ -3917,9 +3927,9 @@ select q1, unique2, thousand, hundred
    ->  Result
          Filter: ((COALESCE(b.thousand, 123) = a.q1) AND (a.q1 = COALESCE(b.hundred, 123)))
          ->  Hash Right Join
-               Hash Cond: ((b.unique2)::bigint = a.q1)
+               Hash Cond: (b.unique2 = a.q1)
                ->  Redistribute Motion 3:3  (slice2; segments: 3)
-                     Hash Key: (b.unique2)::bigint
+                     Hash Key: b.unique2
                      ->  Seq Scan on tenk1 b
                ->  Hash
                      ->  Seq Scan on int8_tbl a
@@ -4063,6 +4073,8 @@ using (join_key);
 --
 -- test successful handling of nested outer joins with degenerate join quals
 --
+-- WHPG: with optimizer=on GPORCA compares integers of different widths without
+-- a cast (join_optimizer.out).
 explain (verbose, costs off)
 select t1.* from
   text_tbl t1
@@ -4080,7 +4092,7 @@ select t1.* from
    Output: t1.f1
    ->  Hash Left Join
          Output: t1.f1
-         Hash Cond: (i8.q2 = (i4.f1)::bigint)
+         Hash Cond: (i8.q2 = i4.f1)
          ->  Redistribute Motion 1:3  (slice2)
                Output: t1.f1, i8.q2
                ->  Hash Right Join
@@ -4088,7 +4100,7 @@ select t1.* from
                      Hash Cond: (('***'::text) = t1.f1)
                      ->  Hash Right Join
                            Output: ('***'::text), i8.q2
-                           Hash Cond: (((NULL::integer))::bigint = i8b1.q2)
+                           Hash Cond: ((NULL::integer) = i8b1.q2)
                            ->  Gather Motion 3:1  (slice3; segments: 3)
                                  Output: i8.q2, (NULL::integer)
                                  ->  Hash Left Join
@@ -4139,6 +4151,8 @@ select t1.* from
  doh!
 (2 rows)
 
+-- WHPG: with optimizer=on GPORCA compares integers of different widths without
+-- a cast (join_optimizer.out).
 explain (verbose, costs off)
 select t1.* from
   text_tbl t1
@@ -4156,7 +4170,7 @@ select t1.* from
    Output: t1.f1
    ->  Hash Left Join
          Output: t1.f1
-         Hash Cond: (i8.q2 = (i4.f1)::bigint)
+         Hash Cond: (i8.q2 = i4.f1)
          ->  Redistribute Motion 1:3  (slice2)
                Output: t1.f1, i8.q2
                ->  Hash Right Join
@@ -4164,7 +4178,7 @@ select t1.* from
                      Hash Cond: (('***'::text) = t1.f1)
                      ->  Hash Right Join
                            Output: ('***'::text), i8.q2
-                           Hash Cond: (((NULL::integer))::bigint = i8b1.q2)
+                           Hash Cond: ((NULL::integer) = i8b1.q2)
                            ->  Gather Motion 3:1  (slice3; segments: 3)
                                  Output: i8.q2, (NULL::integer)
                                  ->  Hash Left Join
@@ -4221,6 +4235,8 @@ select t1.* from
  hi de ho neighbor
 (2 rows)
 
+-- WHPG: with optimizer=on GPORCA compares integers of different widths without
+-- a cast (join_optimizer.out).
 explain (verbose, costs off)
 select t1.* from
   text_tbl t1
@@ -4239,7 +4255,7 @@ select t1.* from
    Output: t1.f1
    ->  Hash Left Join
          Output: t1.f1
-         Hash Cond: (i8.q2 = (i4.f1)::bigint)
+         Hash Cond: (i8.q2 = i4.f1)
          ->  Redistribute Motion 1:3  (slice2)
                Output: t1.f1, i8.q2
                ->  Hash Right Join
@@ -4247,7 +4263,7 @@ select t1.* from
                      Hash Cond: (('***'::text) = t1.f1)
                      ->  Hash Right Join
                            Output: ('***'::text), i8.q2
-                           Hash Cond: (((NULL::integer))::bigint = i8b1.q2)
+                           Hash Cond: ((NULL::integer) = i8b1.q2)
                            ->  Gather Motion 3:1  (slice3; segments: 3)
                                  Output: i8.q2, (NULL::integer)
                                  ->  Hash Left Join
@@ -4259,32 +4275,30 @@ select t1.* from
                                              Output: (NULL::integer), i8b2.q1
                                              ->  Hash Join
                                                    Output: NULL::integer, i8b2.q1
-                                                   Hash Cond: (i8b2.q1 = (i4b2.f1)::bigint)
+                                                   Hash Cond: (i8b2.q1 = i4b2.f1)
                                                    ->  Seq Scan on public.int8_tbl i8b2
                                                          Output: i8b2.q1
                                                    ->  Hash
                                                          Output: i4b2.f1
-                                                         ->  Broadcast Motion 3:3  (slice4; segments: 3)
+                                                         ->  Seq Scan on public.int4_tbl i4b2
                                                                Output: i4b2.f1
-                                                               ->  Seq Scan on public.int4_tbl i4b2
-                                                                     Output: i4b2.f1
                            ->  Hash
                                  Output: ('***'::text), i8b1.q2
                                  ->  Result
                                        Output: '***'::text, i8b1.q2
-                                       ->  Gather Motion 3:1  (slice5; segments: 3)
+                                       ->  Gather Motion 3:1  (slice4; segments: 3)
                                              Output: i8b1.q2
                                              ->  Seq Scan on public.int8_tbl i8b1
                                                    Output: i8b1.q2
                      ->  Hash
                            Output: t1.f1
-                           ->  Gather Motion 3:1  (slice6; segments: 3)
+                           ->  Gather Motion 3:1  (slice5; segments: 3)
                                  Output: t1.f1
                                  ->  Seq Scan on public.text_tbl t1
                                        Output: t1.f1
          ->  Hash
                Output: i4.f1
-               ->  Broadcast Motion 3:3  (slice7; segments: 3)
+               ->  Broadcast Motion 3:3  (slice6; segments: 3)
                      Output: i4.f1
                      ->  Seq Scan on public.int4_tbl i4
                            Output: i4.f1
@@ -4308,6 +4322,8 @@ select t1.* from
  doh!
 (2 rows)
 
+-- WHPG: with optimizer=on GPORCA compares integers of different widths without
+-- a cast (join_optimizer.out).
 explain (verbose, costs off)
 select * from
   text_tbl t1
@@ -4323,7 +4339,7 @@ select * from
    Output: t1.f1, i8.q1, i8.q2, t2.f1, i4.f1
    ->  Hash Left Join
          Output: t1.f1, i8.q1, i8.q2, t2.f1, i4.f1
-         Hash Cond: (i8.q1 = (i4.f1)::bigint)
+         Hash Cond: (i8.q1 = i4.f1)
          ->  Nested Loop Left Join
                Output: t2.f1, t1.f1, i8.q1, i8.q2
                Join Filter: true

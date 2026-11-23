@@ -15846,3 +15846,377 @@ select count(*) from notnot_chk where b = 2;
 
 reset optimizer_array_expansion_threshold;
 drop table notnot_chk;
+-- WHPG: a cross-type equality keeps its native operator in GPORCA's
+-- hash join when the operator's hash opfamily is the distribution opfamily of
+-- both types, as the Postgres-based planner already does: each side is hashed
+-- as it is, with no cast. Casting the text side to name would truncate it to
+-- 63 bytes, so rows 1 and 3 below (70-byte and multibyte values) would match
+-- the name their text value starts with -- in the join and in DELETE/UPDATE.
+-- WarehousePG 7 has no collation-mismatch fallback for this type pair, so these
+-- cases are planned by GPORCA end to end, not only through the CJoinPredTest
+-- minidumps.
+create table cx_text (id int, k text, v varchar, c char(70)) distributed by (id);
+create table cx_name (id int, n name) distributed by (id);
+create table cx_name2 (id int, n name) distributed by (id);
+insert into cx_text values
+  (1, repeat('x', 70), repeat('x', 70), repeat('x', 70)),
+  (2, 'short', 'short', 'short'),
+  (3, repeat('é', 40), repeat('é', 40), repeat('é', 40));
+insert into cx_name values (1, repeat('x', 63)), (2, 'short'), (3, repeat('é', 31));
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-default collation
+insert into cx_name2 select * from cx_name;
+analyze cx_text;
+analyze cx_name;
+analyze cx_name2;
+-- only row 2 is equal on both sides
+explain (costs off)
+select t.id, n.id from cx_text t join cx_name n on t.k = n.n;
+                            QUERY PLAN                            
+------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Hash Join
+         Hash Cond: (n.n = t.k)
+         ->  Redistribute Motion 3:3  (slice2; segments: 3)
+               Hash Key: n.n
+               ->  Seq Scan on cx_name n
+         ->  Hash
+               ->  Redistribute Motion 3:3  (slice3; segments: 3)
+                     Hash Key: t.k
+                     ->  Seq Scan on cx_text t
+ Optimizer: GPORCA
+(11 rows)
+
+select t.id, n.id from cx_text t join cx_name n on t.k = n.n order by 1;
+ id | id 
+----+----
+  2 |  2
+(1 row)
+
+select t.id, n.id from cx_name n join cx_text t on n.n = t.k order by 1;
+ id | id 
+----+----
+  2 |  2
+(1 row)
+
+-- varchar and char(n) reach the same text-family cross-type operator
+explain (costs off)
+select t.id, n.id from cx_text t join cx_name n on t.v = n.n;
+                            QUERY PLAN                            
+------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Hash Join
+         Hash Cond: (n.n = (t.v)::text)
+         ->  Redistribute Motion 3:3  (slice2; segments: 3)
+               Hash Key: n.n
+               ->  Seq Scan on cx_name n
+         ->  Hash
+               ->  Redistribute Motion 3:3  (slice3; segments: 3)
+                     Hash Key: t.v
+                     ->  Seq Scan on cx_text t
+ Optimizer: GPORCA
+(11 rows)
+
+select t.id, n.id from cx_text t join cx_name n on t.v = n.n order by 1;
+ id | id 
+----+----
+  2 |  2
+(1 row)
+
+select t.id, n.id from cx_text t join cx_name n on t.c = n.n order by 1;
+ id | id 
+----+----
+  2 |  2
+(1 row)
+
+-- LEFT JOIN: the right side's non-matching rows are NULL-extended, not matched
+select t.id, n.id from cx_text t left join cx_name n on t.k = n.n order by 1;
+ id | id 
+----+----
+  1 |   
+  2 |  2
+  3 |   
+(3 rows)
+
+-- a 3-way join carries the same equality through a second join
+select t.id, n2.id from cx_text t join cx_name n on t.k = n.n
+  join cx_name2 n2 on n.n = n2.n order by 1;
+ id | id 
+----+----
+  2 |  2
+(1 row)
+
+-- semi join / anti join (IN / NOT EXISTS) over the same cross-type equality
+select id from cx_name where n in (select v from cx_text) order by 1;
+ id 
+----
+  2
+(1 row)
+
+select id from cx_name where n in (select c from cx_text) order by 1;
+ id 
+----
+  2
+(1 row)
+
+select id from cx_text t where exists (select 1 from cx_name n where t.k = n.n)
+  order by 1;
+ id 
+----
+  2
+(1 row)
+
+select id from cx_text t
+  where not exists (select 1 from cx_name n where t.k = n.n) order by 1;
+ id 
+----
+  1
+  3
+(2 rows)
+
+-- DELETE and UPDATE over the join change only row 2
+begin;
+delete from cx_text t using cx_name n where t.k = n.n;
+select id from cx_text order by 1;
+ id 
+----
+  1
+  3
+(2 rows)
+
+rollback;
+begin;
+update cx_text t set id = t.id + 100 from cx_name n where t.k = n.n;
+select id from cx_text order by 1;
+ id  
+-----
+   1
+   3
+ 102
+(3 rows)
+
+rollback;
+drop table cx_text, cx_name, cx_name2;
+-- WHPG: integer types share the hash opfamily integer_ops: no
+-- cast, and two tables distributed by an int4 and an int2 key are joined
+-- without redistributing either side.
+create table cx_i8 (id int, x int8) distributed by (id);
+create table cx_i4 (id int, y int4) distributed by (id);
+create table cx_i4k (k int4) distributed by (k);
+create table cx_i2k (k int2) distributed by (k);
+insert into cx_i8 select i, i from generate_series(1, 100) i;
+insert into cx_i8 values (101, 4294967297), (102, null);
+insert into cx_i4 select i, i from generate_series(1, 100, 2) i;
+insert into cx_i4 values (101, 1), (102, null);
+insert into cx_i4k select i from generate_series(1, 100) i;
+insert into cx_i2k select i from generate_series(1, 100, 2) i;
+analyze cx_i8;
+analyze cx_i4;
+analyze cx_i4k;
+analyze cx_i2k;
+explain (costs off)
+select count(*) from cx_i8 a join cx_i4 b on a.x = b.y;
+                                  QUERY PLAN                                  
+------------------------------------------------------------------------------
+ Finalize Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Partial Aggregate
+               ->  Hash Join
+                     Hash Cond: (a.x = b.y)
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                           Hash Key: a.x
+                           ->  Seq Scan on cx_i8 a
+                     ->  Hash
+                           ->  Redistribute Motion 3:3  (slice3; segments: 3)
+                                 Hash Key: b.y
+                                 ->  Seq Scan on cx_i4 b
+ Optimizer: GPORCA
+(13 rows)
+
+select count(*) from cx_i8 a join cx_i4 b on a.x = b.y;
+ count 
+-------
+    51
+(1 row)
+
+explain (costs off)
+select count(*) from cx_i4k a join cx_i2k b on a.k = b.k;
+                     QUERY PLAN                     
+----------------------------------------------------
+ Finalize Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Partial Aggregate
+               ->  Hash Join
+                     Hash Cond: (a.k = b.k)
+                     ->  Seq Scan on cx_i4k a
+                     ->  Hash
+                           ->  Seq Scan on cx_i2k b
+ Optimizer: GPORCA
+(9 rows)
+
+select count(*) from cx_i4k a join cx_i2k b on a.k = b.k;
+ count 
+-------
+    50
+(1 row)
+
+-- IS NOT DISTINCT FROM between integer types, and between types without a
+-- common hash opfamily (timestamp and date), is planned by GPORCA
+explain (costs off)
+select count(*) from cx_i8 a join cx_i4 b on a.x is not distinct from b.y;
+                                  QUERY PLAN                                  
+------------------------------------------------------------------------------
+ Finalize Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Partial Aggregate
+               ->  Hash Join
+                     Hash Cond: (NOT (a.x IS DISTINCT FROM b.y))
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                           Hash Key: a.x
+                           ->  Seq Scan on cx_i8 a
+                     ->  Hash
+                           ->  Redistribute Motion 3:3  (slice3; segments: 3)
+                                 Hash Key: b.y
+                                 ->  Seq Scan on cx_i4 b
+ Optimizer: GPORCA
+(13 rows)
+
+select count(*) from cx_i8 a join cx_i4 b on a.x is not distinct from b.y;
+ count 
+-------
+    52
+(1 row)
+
+create table cx_ts (id int, x timestamp) distributed by (id);
+create table cx_d (id int, y date) distributed by (id);
+insert into cx_ts select i, '2026-01-01'::timestamp + (i || ' hours')::interval
+  from generate_series(0, 100) i;
+insert into cx_d select i, '2026-01-01'::date + i from generate_series(0, 5) i;
+analyze cx_ts;
+analyze cx_d;
+explain (costs off)
+select count(*) from cx_ts a join cx_d b on a.x is not distinct from b.y;
+                          QUERY PLAN                           
+---------------------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Nested Loop
+               Join Filter: (NOT (a.x IS DISTINCT FROM b.y))
+               ->  Broadcast Motion 3:3  (slice2; segments: 3)
+                     ->  Seq Scan on cx_d b
+               ->  Seq Scan on cx_ts a
+ Optimizer: GPORCA
+(8 rows)
+
+select count(*) from cx_ts a join cx_d b on a.x is not distinct from b.y;
+ count 
+-------
+     5
+(1 row)
+
+drop table cx_i8, cx_i4, cx_i4k, cx_i2k, cx_ts, cx_d;
+-- start_ignore
+DROP SCHEMA orca CASCADE;
+NOTICE:  drop cascades to 191 other objects
+DETAIL:  drop cascades to table bar1
+drop cascades to table bar2
+drop cascades to table r
+drop cascades to table s
+drop cascades to table m
+drop cascades to table m1
+drop cascades to table orca_w1
+drop cascades to table orca_w2
+drop cascades to table orca_w3
+drop cascades to table rcte
+drop cascades to table onek
+drop cascades to table pp
+drop cascades to table multilevel_p
+drop cascades to table t
+drop cascades to table t_date
+drop cascades to table t_text
+drop cascades to table t_ceeval_ints
+drop cascades to function csq_f(integer)
+drop cascades to table csq_r
+drop cascades to table fooh1
+drop cascades to table fooh2
+drop cascades to table t77
+drop cascades to table prod9
+drop cascades to table toanalyze
+drop cascades to table ur
+drop cascades to table us
+drop cascades to table ut
+drop cascades to table uu
+drop cascades to table twf1
+drop cascades to table twf2
+drop cascades to table tab1
+drop cascades to table tab2
+drop cascades to function sum_sfunc(anyelement,anyelement)
+drop cascades to function sum_combinefunc(anyelement,anyelement)
+drop cascades to function myagg1(anyelement)
+drop cascades to function sum_sfunc2(anyelement,anyelement,anyelement)
+drop cascades to function myagg2(anyelement,anyelement)
+drop cascades to function gptfp(anyarray,anyelement)
+drop cascades to function gpffp(anyarray)
+drop cascades to function myagg3(anyelement)
+drop cascades to table array_table
+drop cascades to table mpp22453
+drop cascades to table mpp22791
+drop cascades to table p1
+drop cascades to table tmp_verd_s_pp_provtabs_agt_0015_extract1
+drop cascades to table arrtest
+drop cascades to table foo_missing_stats
+drop cascades to table bar_missing_stats
+drop cascades to table table_with_small_statistic_precision_diff
+drop cascades to table cust
+drop cascades to table datedim
+drop cascades to function plusone(integer)
+drop cascades to table bm_test
+drop cascades to table bm_dyn_test
+drop cascades to table bm_dyn_test_onepart
+drop cascades to table bm_dyn_test_multilvl_part
+drop cascades to table my_tt_agg_opt
+drop cascades to table my_tq_agg_opt_part
+drop cascades to function plusone(numeric)
+drop cascades to table ggg
+drop cascades to table t3
+drop cascades to table index_test
+drop cascades to table btree_test
+drop cascades to table bitmap_test
+drop cascades to type rainbow
+drop cascades to table foo_ctas
+drop cascades to table input_tab1
+drop cascades to table input_tab2
+drop cascades to table tab_1
+drop cascades to table tab_2
+drop cascades to table tab_3
+drop cascades to table t_outer
+drop cascades to table t_inner
+drop cascades to table wst0
+drop cascades to table wst1
+drop cascades to table wst2
+drop cascades to table test1
+drop cascades to table t_new
+drop cascades to table x_tab
+drop cascades to table y_tab
+drop cascades to table z_tab
+drop cascades to function test_func_pg_stats()
+drop cascades to function myintin(cstring)
+drop cascades to type myint
+drop cascades to function myintout(myint)
+drop cascades to function myint_int8(myint)
+drop cascades to table csq_cast_param_outer
+drop cascades to table csq_cast_param_inner
+drop cascades to function myint_numeric(myint)
+drop cascades to cast from myint to numeric
+drop cascades to table onetimefilter1
+drop cascades to table onetimefilter2
+drop cascades to table ffoo
+drop cascades to table fbar
+drop cascades to table touter
+drop cascades to table tinnerbitmap
+drop cascades to table tinnerbtree
+drop cascades to table ds_part
+drop cascades to table non_part1
+drop cascades to table non_part2
+and 91 other objects (see server log for list)
+-- end_ignore

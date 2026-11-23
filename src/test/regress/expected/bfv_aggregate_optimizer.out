@@ -2309,6 +2309,8 @@ select count(*) from sagg_t, (select count(*) n from sagg_f where a = 15 and b =
 
 -- the predicate on the aggregate must not be lost next to a real join
 -- predicate either (dropping it would match id = 1 against n = 0)
+-- WHPG: with optimizer=on GPORCA compares the bigint count() with the integer
+-- expression without a cast (bfv_aggregate_optimizer.out).
 explain (costs off)
 select count(*) from sagg_t, (select count(*) n from sagg_f where a = 15 and b = 3) s where s.n > 0 and s.n = sagg_t.id - 1;
                                   QUERY PLAN                                  
@@ -2316,7 +2318,7 @@ select count(*) from sagg_t, (select count(*) n from sagg_f where a = 15 and b =
  Aggregate
    ->  Gather Motion 3:1  (slice1; segments: 3)
          ->  Hash Join
-               Hash Cond: ((count()) = ((sagg_t.id - 1))::bigint)
+               Hash Cond: ((count()) = (sagg_t.id - 1))
                ->  Redistribute Motion 1:3  (slice2)
                      Hash Key: (count())
                      ->  Result
@@ -2327,7 +2329,7 @@ select count(*) from sagg_t, (select count(*) n from sagg_f where a = 15 and b =
                                              Filter: ((a = 15) AND (b = 3))
                ->  Hash
                      ->  Redistribute Motion 3:3  (slice4; segments: 3)
-                           Hash Key: ((sagg_t.id - 1))::bigint
+                           Hash Key: (sagg_t.id - 1)
                            ->  Seq Scan on sagg_t
  Optimizer: GPORCA
 (17 rows)
@@ -2567,6 +2569,8 @@ NOTICE:  agg_vol_mark  (seg1 slice1 172.17.0.5:7003 pid=3113089)
  2 | 10
 (3 rows)
 
+-- WHPG: with optimizer=on GPORCA compares the bigint count() with the integer
+-- column without a cast (bfv_aggregate_optimizer.out).
 explain (costs off)
 select count(*) from agg_vol t, (select a, count(*) c from agg_vol group by a) s where t.b = s.c and agg_vol_mark(s.a);
                                   QUERY PLAN                                  
@@ -2575,9 +2579,9 @@ select count(*) from agg_vol t, (select a, count(*) c from agg_vol group by a) s
    ->  Gather Motion 3:1  (slice1; segments: 3)
          ->  Partial Aggregate
                ->  Hash Join
-                     Hash Cond: ((t.b)::bigint = (count()))
+                     Hash Cond: (t.b = (count()))
                      ->  Redistribute Motion 3:3  (slice2; segments: 3)
-                           Hash Key: (t.b)::bigint
+                           Hash Key: t.b
                            ->  Seq Scan on agg_vol t
                      ->  Hash
                            ->  Redistribute Motion 3:3  (slice3; segments: 3)

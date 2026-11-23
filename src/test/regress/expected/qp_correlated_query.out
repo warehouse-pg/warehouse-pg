@@ -789,6 +789,9 @@ select * from A,B where exists (select * from C where C.j = A.j and B.i = all (s
  99 | 62 | 1 | 1
 (4 rows)
 
+-- WHPG: with optimizer=on GPORCA compares the bigint sum() with the integer A.j
+-- without a cast. A.j is then in both hash join keys, and GPORCA matches the
+-- first one, so it redistributes on sum() (qp_correlated_query_optimizer.out).
 explain select A.i, B.i, C.j from A, B, C where A.j = (select sum(C.j) from C where C.j = A.j and C.i = all (select B.i from B where C.i = B.i and B.i !=10)) order by A.i, B.i, C.j limit 10;
                                                                                    QUERY PLAN                                                                                    
 ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------

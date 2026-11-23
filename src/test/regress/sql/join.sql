@@ -390,6 +390,8 @@ select aa, bb, unique1, unique1
 --
 -- regression test: check handling of empty-FROM subquery underneath outer join
 --
+-- WHPG: with optimizer=on GPORCA compares integers of different widths without
+-- a cast (join_optimizer.out).
 explain (costs off)
 select * from int8_tbl i1 left join (int8_tbl i2 join
   (select 123 as x) ss on i2.q1 = x) on i1.q2 = i2.q2
@@ -419,6 +421,8 @@ where t4.thousand = t5.unique1 and ss.x1 = t4.tenthous and ss.x2 = t5.stringu1;
 --
 set enable_hashjoin = false;
 set enable_nestloop = true;
+-- WHPG: with optimizer=on GPORCA compares integers of different widths without
+-- a cast (join_optimizer.out).
 explain (costs off)
 select a.f1, b.f1, t.thousand, t.tenthous from
   tenk1 t,
@@ -994,6 +998,8 @@ where thousand = (q1 + q2);
 --
 
 set enable_nestloop to true;
+-- WHPG: with optimizer=on GPORCA compares integers of different widths without
+-- a cast (join_optimizer.out).
 explain (costs off)
 select * from
   tenk1, int8_tbl a, int8_tbl b
@@ -1171,6 +1177,8 @@ select b.unique1 from
   right join int4_tbl i2 on i2.f1 = b.tenthous
   order by 1;
 
+-- WHPG: with optimizer=on GPORCA compares integers of different widths without
+-- a cast (join_optimizer.out).
 explain (costs off)
 select * from
 (
@@ -1203,6 +1211,8 @@ left join unnest(v1ys) as u1(u1y) on u1y = v2y;
 -- test handling of potential equivalence clauses above outer joins
 --
 
+-- WHPG: with optimizer=on GPORCA compares integers of different widths without
+-- a cast (join_optimizer.out).
 explain (costs off)
 select q1, unique2, thousand, hundred
   from int8_tbl a left join tenk1 b on q1 = unique2
@@ -1269,6 +1279,8 @@ using (join_key);
 -- test successful handling of nested outer joins with degenerate join quals
 --
 
+-- WHPG: with optimizer=on GPORCA compares integers of different widths without
+-- a cast (join_optimizer.out).
 explain (verbose, costs off)
 select t1.* from
   text_tbl t1
@@ -1292,6 +1304,8 @@ select t1.* from
   left join int4_tbl i4
   on (i8.q2 = i4.f1);
 
+-- WHPG: with optimizer=on GPORCA compares integers of different widths without
+-- a cast (join_optimizer.out).
 explain (verbose, costs off)
 select t1.* from
   text_tbl t1
@@ -1315,6 +1329,8 @@ select t1.* from
   left join int4_tbl i4
   on (i8.q2 = i4.f1);
 
+-- WHPG: with optimizer=on GPORCA compares integers of different widths without
+-- a cast (join_optimizer.out).
 explain (verbose, costs off)
 select t1.* from
   text_tbl t1
@@ -1340,6 +1356,8 @@ select t1.* from
   left join int4_tbl i4
   on (i8.q2 = i4.f1);
 
+-- WHPG: with optimizer=on GPORCA compares integers of different widths without
+-- a cast (join_optimizer.out).
 explain (verbose, costs off)
 select * from
   text_tbl t1
