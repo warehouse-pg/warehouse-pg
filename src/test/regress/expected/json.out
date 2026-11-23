@@ -1397,6 +1397,13 @@ DETAIL:  Returned row contains 3 attributes, but query expects 2.
 select * from json_populate_recordset(row(1000000000::int,50::int),'[{"b":"2"},{"a":"3"}]') q (a text, b text);
 ERROR:  function return row and query-specified return row do not match
 DETAIL:  Returned type integer at ordinal position 1, but query expects text.
+-- anonymous record type with variable rowtype
+-- WHPG: json_populate_recordset() requires an expected row type here, so this
+-- errors out rather than returning rows
+SELECT i,
+  json_populate_recordset(r, '[{"f1":"10000","f2":"20000","f3":"30000"}]')
+FROM (VALUES (1, row(0,0)), (2, row(0,0,0)), (3, row(0,0))) v(i, r);
+ERROR:  set-valued function called in context that cannot accept a set
 --json_typeof() function
 select value, json_typeof(value)
   from (values (json '123.4'),
