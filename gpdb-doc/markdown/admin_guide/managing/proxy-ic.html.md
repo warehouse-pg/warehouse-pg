@@ -151,3 +151,29 @@ gpconfig -c  gp_interconnect_type -v proxy
 
 Reload the `postgresql.conf` file with the `gpstop -u` command. This command does not stop and restart the Greenplum system.
 
+
+### <a id="tls_proxy"></a>Encrypting the Interconnect Proxy Connections 
+
+The connections between the interconnect proxies can be encrypted with TLS 1.3. The traffic between a query process and the proxy of its own instance stays on a local socket and is not encrypted.
+
+To turn encryption on, set [gp\_interconnect\_proxy\_tls\_enable](../../ref_guide/config_params/guc-list.html#gp_interconnect_proxy_tls_enable) for all instances and restart the system. A proxy with TLS enabled and a proxy without it cannot connect to each other.
+
+```
+gpconfig -c gp_interconnect_proxy_tls_enable -v on
+gpstop -ar
+```
+
+With only this parameter set, each proxy generates a self-signed certificate when it starts. The connections are encrypted, but the proxies do not verify each other. To have the proxies verify each other, issue a certificate from your certificate authority \(CA\) for the proxies, place the certificate, its private key, and the CA certificate at the same path on every host, and set these parameters:
+
+```
+gpconfig -c gp_interconnect_proxy_tls_cert_file -v /path/to/proxy.crt
+gpconfig -c gp_interconnect_proxy_tls_key_file -v /path/to/proxy.key
+gpconfig -c gp_interconnect_proxy_tls_ca_file -v /path/to/ca.crt
+gpstop -u
+```
+
+The private key file must be readable only by the operating system user that runs Greenplum Database \(mode `0600`\) and must not be protected by a passphrase. A proxy accepts any certificate that the CA issued; the certificate is not matched against the host name.
+
+The certificate, key, and CA files are read again whenever the configuration is reloaded with `gpstop -u`. To renew a certificate, replace the files and reload the configuration; a restart is not required. New proxy connections use the new files, established connections are not interrupted.
+
+> **Note** Encryption does not make the proxy ports safe to expose outside of the cluster network. Restrict access to the proxy ports to the Greenplum Database hosts.

@@ -11,7 +11,8 @@ ic-proxy is developed with libuv, the minimal supported libuv version is
 1.18.0, you could install it with rpm, apt, or build from the source code.
 
 ic-proxy is disabled by default, we could enable it with `configure
---enable-ic-proxy`.
+--enable-ic-proxy`, which requires `--with-openssl` since the peer connections
+can be protected with TLS (see "TLS" below).
 
 After the installation we also need to setup the ic-proxy network, it is done
 by setting the GUC `gp_interconnect_proxy_addresses`, for example if a cluster
@@ -604,6 +605,71 @@ and mirror promotion:
 In summary, a proxy bgworker's life cycle is controled by the postmaster during
 the standby activation and mirror promotion, the bgworker itself can establish
 the proxy-proxy connections unconditionally.
+
+### TLS
+
+The proxy-proxy connections can be encrypted with TLS 1.3 by setting the GUC
+`gp_interconnect_proxy_tls_enable=on` (PGC_POSTMASTER, needs a restart).  The
+backend-proxy traffic stays on the local domain socket in clear text; the
+trust boundary is the host.  The switch is cluster-wide: set it on every
+instance and restart the whole cluster.  A proxy with TLS and one without
+cannot talk to each other; the proxy with TLS reports the failed attempts
+with a hint to check the setting on the other end.
+
+Without further settings every proxy generates an ephemeral self-signed
+certificate at startup, which encrypts the traffic but authenticates nobody.
+`gp_interconnect_proxy_tls_cert_file` + `gp_interconnect_proxy_tls_key_file`
+(always together; the key file must not be group or world accessible and
+must not be protected by a passphrase) make the proxy present a configured
+identity instead, the certificate file may carry the intermediate CA
+certificates after the leaf.  `gp_interconnect_proxy_tls_ca_file` (requires
+the former two) turns on mutual verification against that CA on both ends of
+every connection; a peer that fails it is reported with the X.509 verify
+result and its certificate subject.  The verification is of the chain only:
+any certificate issued by the CA is accepted for any peer, it is not bound to
+the host name or the dbid, and no revocation list is consulted.
+
+These three settings are PGC_SIGHUP and the files are read again on every
+reload (`gpstop -u`), also when the settings still name the same paths, so a
+certificate is renewed by replacing the files and reloading.  New connections
+use what was loaded last, established connections are left alone; to replace
+the CA, load a bundle with both the old and the new CA first, then the new
+certificates, then the new CA alone.  When the reloaded settings cannot be
+used the error is logged and the proxy keeps the previous ones.  At startup
+there is nothing to keep: the proxy bgworker reports the error and then
+idles instead of serving, so that the postmaster does not restart it in a
+loop, and proxy-mode queries on that segment fail at interconnect setup with
+the reason instead of hanging; a reload with usable settings makes it serve.
+
+The cipher suite is pinned to `TLS_AES_256_GCM_SHA384` and the ALPN
+`ic-proxy/1` is required: a TLS client that offers other protocols is turned
+away with an alert, and both ends drop a connection whose handshake did not
+negotiate it.  A peer connection lives as long as the cluster, so the sender
+rotates the traffic keys (TLS 1.3 KeyUpdate) every 2^23 records, well below
+the AES-GCM limit of RFC 8446.  A handshake that the remote does not complete
+within 10 seconds is given up and retried.  With `gp_log_interconnect` at
+`verbose` each connection logs `handshake complete` with its role and cipher.
+A peer that cannot be connected to is retried every second; the failures are
+logged as a WARNING once a minute per remote address, with the number of
+attempts in between.
+
+TLS does not make the proxy port safe to expose.  Anyone who can reach it
+can make a proxy spend CPU on handshakes, and a connection that stops
+talking before it identified itself stays open; keep the port inside the
+cluster network.
+
+The implementation (`ic_proxy_tls.c`, the TLS section of `ic_proxy_peer.c`)
+is a byte filter between the socket and the peer protocol: OpenSSL reads and
+writes two memory BIOs, the peer code feeds it the ciphertext libuv read from
+the socket and writes the ciphertext it produced with `uv_write`.  libuv keeps
+owning the socket, so connect, read, write, shutdown and close work exactly as
+on a plain peer and the TLS state machine never sees a file descriptor; a TLS
+failure on a connection is handled like a read error.  The price is that the
+encryption always runs in user space: kernel TLS needs OpenSSL to own the
+socket, and on CPUs with AES instructions it would save only a few percent.
+TLS costs the proxy processes roughly half again as much CPU as plain TCP on
+a large redistribute, the query's wall time is unaffected as long as the
+proxies are not the bottleneck.  OpenSSL 1.1.1 or newer is required.
 
 ### Cluster Expansion
 
