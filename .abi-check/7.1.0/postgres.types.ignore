@@ -21,3 +21,5 @@ struct SeqScan
 SeqScan
 struct DynamicSeqScan
 SeqScan*
+struct ExprEvalStep
+ExprEvalStep
