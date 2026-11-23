@@ -117,6 +117,7 @@ static void ExecPrepareTuplestoreResult(FuncExprState *fcache,
 							ExprContext *econtext,
 							Tuplestorestate *resultStore,
 							TupleDesc resultDesc);
+static void ExecReleaseTuplestoreResult(FuncExprState *fcache);
 static void tupledesc_match(TupleDesc dst_tupdesc, TupleDesc src_tupdesc);
 static Datum ExecMakeFunctionResult(FuncExprState *fcache,
 					   ExprContext *econtext,
@@ -1602,14 +1603,16 @@ ShutdownFuncExpr(Datum arg)
 {
 	FuncExprState *fcache = (FuncExprState *) DatumGetPointer(arg);
 
-	/* If we have a slot, make sure it's let go of any tuplestore pointer */
+	/* Release any open tuplestore */
+	ExecReleaseTuplestoreResult(fcache);
+
+	/*
+	 * If each invocation of the function can return a different row type,
+	 * ExecReleaseTuplestoreResult will have already dropped the slot.  If
+	 * not, we must clear it here.
+	 */
 	if (fcache->funcResultSlot)
 		ExecClearTuple(fcache->funcResultSlot);
-
-	/* Release any open tuplestore */
-	if (fcache->funcResultStore)
-		tuplestore_end(fcache->funcResultStore);
-	fcache->funcResultStore = NULL;
 
 	/* Clear any active set-argument state */
 	fcache->setArgsValid = false;
@@ -1733,6 +1736,13 @@ ExecPrepareTuplestoreResult(FuncExprState *fcache,
 							Tuplestorestate *resultStore,
 							TupleDesc resultDesc)
 {
+	/*
+	 * Any previous result must have been released.  In particular, a slot not
+	 * built from funcResultDesc must not survive to be reused here.
+	 */
+	Assert(fcache->funcResultStore == NULL);
+	Assert(fcache->funcResultDesc != NULL || fcache->funcResultSlot == NULL);
+
 	fcache->funcResultStore = resultStore;
 
 	if (fcache->funcResultSlot == NULL)
@@ -1793,6 +1803,40 @@ ExecPrepareTuplestoreResult(FuncExprState *fcache,
 									PointerGetDatum(fcache));
 		fcache->shutdown_reg = true;
 	}
+}
+
+/*
+ *		ExecReleaseTuplestoreResult
+ *
+ * Release a tuplestore function result set up by ExecPrepareTuplestoreResult,
+ * if any.
+ */
+static void
+ExecReleaseTuplestoreResult(FuncExprState *fcache)
+{
+	/*
+	 * A slot built from a per-invocation record descriptor describes only
+	 * this materialized result and owns a private copy of its descriptor.
+	 * Drop it with the tuplestore so the next invocation builds a slot from
+	 * its own result descriptor.
+	 */
+	if (fcache->funcResultSlot && fcache->funcResultDesc == NULL)
+	{
+		TupleDesc	slotDesc = fcache->funcResultSlot->tts_tupleDescriptor;
+
+		ExecDropSingleTupleTableSlot(fcache->funcResultSlot);
+		fcache->funcResultSlot = NULL;
+
+		/*
+		 * The slot's descriptor is not reference counted, so we have to free
+		 * the memory manually.
+		 */
+		FreeTupleDesc(slotDesc);
+	}
+
+	if (fcache->funcResultStore)
+		tuplestore_end(fcache->funcResultStore);
+	fcache->funcResultStore = NULL;
 }
 
 /*
@@ -1899,8 +1943,7 @@ restart:
 			}
 		}
 		/* Exhausted the tuplestore, so clean up */
-		tuplestore_end(fcache->funcResultStore);
-		fcache->funcResultStore = NULL;
+		ExecReleaseTuplestoreResult(fcache);
 		/* We are done unless there was a set-valued argument */
 		if (!fcache->setHasSetArg)
 		{
