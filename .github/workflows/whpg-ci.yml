@@ -83,7 +83,7 @@ concurrency:
 
 jobs:
   installcheck:
-    name: installcheck${{ matrix.suite == 'hot-standby' && '-hot-standby' || '' }} / EL${{ matrix.el_version }} / optimizer=${{ matrix.optimizer }}
+    name: installcheck${{ matrix.suite != 'regress' && format('-{0}', matrix.suite) || '' }} / EL${{ matrix.el_version }} / optimizer=${{ matrix.optimizer }}
     if: github.event_name != 'workflow_dispatch' || inputs.test_type == 'all' || inputs.test_type == 'installcheck'
     runs-on: ubuntu-latest
     timeout-minutes: 180
@@ -104,6 +104,14 @@ jobs:
           - el_version: '8'
             optimizer: 'off'
             suite: 'hot-standby'
+          # The small suites that neither installcheck-good nor
+          # installcheck-world reaches, one after the other on one cluster:
+          # the isolation2 ic-proxy and ic-tcp schedules, the gpMgmt unit
+          # tests, PITR and installcheck-icudp. See run_extras in
+          # run-installcheck.bash.
+          - el_version: '8'
+            optimizer: 'off'
+            suite: 'extras'
     container:
       image: ghcr.io/warehouse-pg/whpg-${{ format('rocky{0}', matrix.el_version) }}-build
       options: --privileged
@@ -112,7 +120,7 @@ jobs:
       EL_VERSION: ${{ matrix.el_version }}
       # hot-standby suite -> installcheck-hot-standby (always); regress suite: push to main/stable -> installcheck-world;
       # PRs and ci/** -> installcheck-good; dispatch -> chosen target
-      TEST_TARGET: ${{ (matrix.suite == 'hot-standby' && 'installcheck-hot-standby') || (inputs.installcheck_target != '' && inputs.installcheck_target) || ((github.ref_name == 'main' || startsWith(github.ref_name, 'WHPG_')) && 'installcheck-world' || 'installcheck-good') }}
+      TEST_TARGET: ${{ (matrix.suite == 'hot-standby' && 'installcheck-hot-standby') || (matrix.suite == 'extras' && 'extras') || (inputs.installcheck_target != '' && inputs.installcheck_target) || ((github.ref_name == 'main' || startsWith(github.ref_name, 'WHPG_')) && 'installcheck-world' || 'installcheck-good') }}
       WHPG_SRC: ${{ github.workspace }}
       RESULTS_DIR: /tmp/test-results
 
@@ -169,6 +177,9 @@ jobs:
           ccache --set-config=compression=true
           ccache --zero-stats
 
+      # --enable-cassert: a PR should meet the assertions before it is merged,
+      # and installcheck-icudp needs the fault injection GUCs of such a build.
+      # The release packages are built without it, by their own pipeline.
       # Note: --with-quicklz, --enable-mapreduce, and --with-pythonsrc-ext are recognized
       # only in whpg6. They produce "unrecognized options" warnings in whpg7 but don't
       # fail the build. Kept for compatibility with both versions using a single workflow.
@@ -178,7 +189,7 @@ jobs:
           CFLAGS='-O2 -g3' LDFLAGS='-Wl,--enable-new-dtags -Wl,--export-dynamic' \
           ./configure --with-quicklz --disable-gpperfmon --with-gssapi --enable-mapreduce --enable-orafce --enable-ic-proxy \
                       --enable-orca --with-libxml --with-pythonsrc-ext --with-uuid=e2fs --with-pgport=5432 --enable-tap-tests --with-llvm \
-                      --enable-debug-extensions --with-perl --with-python --with-openssl --with-pam --with-ldap --with-includes="" \
+                      --enable-cassert --enable-debug-extensions --with-perl --with-python --with-openssl --with-pam --with-ldap --with-includes="" \
                       --with-libraries="" --disable-rpath \
                       --prefix=/usr/local/greenplum-db-devel \
                       --mandir=/usr/local/greenplum-db-devel/man
@@ -216,15 +227,28 @@ jobs:
         run: |
           source concourse/scripts/common.bash
           export WITH_MIRRORS=true
+          # The extras suite runs the ic-proxy schedule: make_cluster sets up
+          # gp_interconnect_proxy_addresses when it finds the proxy
+          # interconnect in MAKE_TEST_COMMAND. The cluster itself stays on the
+          # default interconnect, each suite selects its own through PGOPTIONS.
+          if [ "${{ matrix.suite }}" = "extras" ]; then
+            export MAKE_TEST_COMMAND="PGOPTIONS='-c gp_interconnect_type=proxy'"
+          fi
           make_cluster
+
+      - name: Install the Python requirements of the gpMgmt unit tests
+        if: matrix.suite == 'extras'
+        run: |
+          source concourse/scripts/common.bash
+          install_python_requirements_on_single_host gpMgmt/requirements-dev.txt
 
       - name: Run installcheck tests
         id: tests
         run: |
           export TEST_TARGET="${TEST_TARGET}"
           export MAKE_FLAGS="-k"
-          # the hot-standby suite adds jit=off, the same options the Concourse hot_standby job passes
-          export PGOPTIONS="-c optimizer=${{ matrix.optimizer }}${{ matrix.suite == 'hot-standby' && ' -c jit=off' || '' }}"
+          # the hot-standby and extras suites add jit=off, the same options the Concourse jobs pass
+          export PGOPTIONS="-c optimizer=${{ matrix.optimizer }}${{ matrix.suite != 'regress' && ' -c jit=off' || '' }}"
           bash .github/scripts/run-installcheck.bash
 
       - name: Installcheck Summary
@@ -257,7 +281,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results-el${{ matrix.el_version }}-optimizer-${{ matrix.optimizer }}${{ matrix.suite == 'hot-standby' && '-hot-standby' || '' }}
+          name: test-results-el${{ matrix.el_version }}-optimizer-${{ matrix.optimizer }}${{ matrix.suite != 'regress' && format('-{0}', matrix.suite) || '' }}
           path: |
             /tmp/test-results/
             src/test/regress/regression.diffs
@@ -266,13 +290,16 @@ jobs:
             src/test/isolation2/regression.diffs
             src/test/isolation2/regression.out
             src/test/isolation2/results/
+            src/test/gpdb_pitr/regression.diffs
+            src/test/gpdb_pitr/results/
+            gpMgmt/gpMgmt_testunit_results.log
           if-no-files-found: ignore
 
       - name: Upload cluster logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: cluster-logs-el${{ matrix.el_version }}-optimizer-${{ matrix.optimizer }}${{ matrix.suite == 'hot-standby' && '-hot-standby' || '' }}
+          name: cluster-logs-el${{ matrix.el_version }}-optimizer-${{ matrix.optimizer }}${{ matrix.suite != 'regress' && format('-{0}', matrix.suite) || '' }}
           path: |
             gpAux/gpdemo/datadirs/qddir/demoDataDir-1/log/
             gpAux/gpdemo/datadirs/standby/log/
