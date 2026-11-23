@@ -368,10 +368,22 @@ ic_proxy_peer_new(uv_loop_t *loop, int16 content, uint16 dbid)
 
 	uv_tcp_init(loop, &peer->tcp);
 	uv_tcp_nodelay(&peer->tcp, true);
+	peer->tcp_open = true;
 
 	ic_proxy_peer_update_name(peer);
 
 	return peer;
+}
+
+/*
+ * The tcp handle of a freed peer is closed, the memory can go now.
+ */
+static void
+ic_proxy_peer_on_free_close(uv_handle_t *handle)
+{
+	ICProxyPeer *peer = CONTAINER_OF((void *) handle, ICProxyPeer, tcp);
+
+	ic_proxy_free(peer);
 }
 
 /*
@@ -402,7 +414,23 @@ ic_proxy_peer_free(ICProxyPeer *peer)
 	list_free(peer->reqs);
 
 	ic_proxy_ibuf_uninit(&peer->ibuf);
-	ic_proxy_free(peer);
+
+	/*
+	 * A placeholder that was never connected still has its tcp handle in
+	 * the loop's handle queue, since uv_tcp_init().  Close the handle
+	 * first and free the memory when the loop is done with it, otherwise
+	 * the queue keeps pointing into freed memory and the loop writes to it
+	 * when a neighbour handle comes or goes.
+	 */
+	if (peer->tcp_open)
+	{
+		peer->tcp_open = false;
+		/* no ic_proxy_peer_close() from a cancelled connect request */
+		peer->state |= IC_PROXY_PEER_STATE_CLOSING;
+		uv_close((uv_handle_t *) &peer->tcp, ic_proxy_peer_on_free_close);
+	}
+	else
+		ic_proxy_free(peer);
 
 	/*
 	 * TODO: if a peer disconnected, should we also disconnect all the relative
@@ -425,6 +453,7 @@ ic_proxy_peer_on_close(uv_handle_t *handle)
 
 	/* reset the state */
 	peer->state = 0;
+	peer->tcp_open = false;
 
 	/* it's unlikely that the ibuf is non-empty, but clear it for sure */
 	ic_proxy_ibuf_clear(&peer->ibuf);
@@ -854,9 +883,17 @@ ic_proxy_peer_connect(ICProxyPeer *peer, struct sockaddr_in *dest)
 		   "ic-proxy: %s: connecting to %s:%d",
 				 peer->name, name, ntohs(dest->sin_port));
 
-	/* reinit the tcp handle */
-	uv_tcp_init(peer->tcp.loop, &peer->tcp);
-	uv_tcp_nodelay(&peer->tcp, true);
+	/*
+	 * Reinit the tcp handle after it was closed.  A fresh placeholder has
+	 * an initialized one already, and initializing a handle twice links it
+	 * into the loop's handle queue twice, which corrupts the queue.
+	 */
+	if (!peer->tcp_open)
+	{
+		uv_tcp_init(peer->tcp.loop, &peer->tcp);
+		uv_tcp_nodelay(&peer->tcp, true);
+		peer->tcp_open = true;
+	}
 
 	conn = ic_proxy_new(uv_connect_t);
 

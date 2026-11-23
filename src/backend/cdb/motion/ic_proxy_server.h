@@ -33,6 +33,10 @@ typedef struct ICProxyDelay ICProxyDelay;
 struct ICProxyPeer
 {
 	uv_tcp_t	tcp;			/* the libuv handle */
+	bool		tcp_open;		/* tcp is initialized and not closed: the
+								 * loop knows the handle, so it must be
+								 * closed before the peer is freed and must
+								 * not be initialized again */
 
 	int16		content;		/* content, aka segid, only for logging */
 	uint16		dbid;			/* dbid is peerid */
