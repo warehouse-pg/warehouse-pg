@@ -328,6 +328,19 @@ extern int Gp_postmaster_address_family_type;
 
 extern char *gp_interconnect_proxy_addresses;
 
+#ifdef ENABLE_IC_PROXY
+/*
+ * ic-proxy peer TLS configuration. See guc_gp.c for full semantics.
+ * Toggling the enable bit requires a restart (PGC_POSTMASTER); the cert /
+ * key / ca files are loaded at proxy bgworker startup and again on reload
+ * (PGC_SIGHUP).
+ */
+extern bool gp_interconnect_proxy_tls_enable;
+extern char *gp_interconnect_proxy_tls_cert_file;
+extern char *gp_interconnect_proxy_tls_key_file;
+extern char *gp_interconnect_proxy_tls_ca_file;
+#endif
+
 typedef enum GpVars_Interconnect_Method
 {
 	INTERCONNECT_FC_METHOD_CAPACITY = 0,
