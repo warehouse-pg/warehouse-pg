@@ -140,6 +140,9 @@ private:
 	// a region root being translated as its own leaf
 	const CDXLNode *m_ext_root_leaf{nullptr};
 
+	// the plan's root, whose output columns are the query's targetlist's
+	const CDXLNode *m_plan_root{nullptr};
+
 	// is target table distributed, false when in non DML statements
 	BOOL m_is_tgt_tbl_distributed;
 

@@ -192,6 +192,7 @@ CTranslatorDXLToPlStmt::GetPlannedStmtFromDXL(const CDXLNode *dxlnode,
 	m_dxl_to_plstmt_context->AddSlice(topslice);
 	m_dxl_to_plstmt_context->SetCurrentSlice(topslice);
 
+	m_plan_root = dxlnode;
 	FindExtensionRegions(dxlnode);
 
 	CDXLTranslationContextArray *ctxt_translation_prev_siblings =
@@ -902,6 +903,8 @@ CTranslatorDXLToPlStmt::FindExtensionRegions(const CDXLNode *plan_dxlnode)
 	m_dxl_to_plstmt_context->m_ext_regions = std::move(ext);
 }
 
+static bool update_unknown_locale_walker(Node *node, void *context);
+
 // An extension region becomes a CustomScan of the extension's methods:
 // custom_private holds its payload, custom_plans the PG plans of its leaves,
 // and its targetlist the output columns it declares.
@@ -919,6 +922,16 @@ CTranslatorDXLToPlStmt::TranslateDXLExtensionRegion(
 	plan->plan_node_id = m_dxl_to_plstmt_context->GetNextPlanId();
 	TranslatePlanCosts(root_dxlnode, plan);
 
+	// the table column an output column passes through from a leaf, as
+	// TranslateDXLProjList's entries take it from their child's
+	Oid *origtbl = (Oid *) gpdb::GPDBAlloc(sizeof(Oid) * (region->ncols + 1));
+	AttrNumber *origcol =
+		(AttrNumber *) gpdb::GPDBAlloc(sizeof(AttrNumber) * (region->ncols + 1));
+	for (int j = 0; j < region->ncols; j++)
+	{
+		origtbl[j] = InvalidOid;
+		origcol[j] = 0;
+	}
 	List *leaves = NIL;
 	for (int i = 0; i < region->nleaves; i++)
 	{
@@ -931,6 +944,16 @@ CTranslatorDXLToPlStmt::TranslateDXLExtensionRegion(
 		Plan *leaf = TranslateDXLOperatorToPlan(leaf_dxlnode, &child_context,
 												ctxt_translation_prev_siblings);
 		m_ext_root_leaf = outer_root_leaf;
+		for (int j = 0; j < region->ncols; j++)
+		{
+			const TargetEntry *orig =
+				child_context.GetTargetEntry(region->cols[j].colid);
+			if (InvalidOid == origtbl[j] && nullptr != orig)
+			{
+				origtbl[j] = orig->resorigtbl;
+				origcol[j] = orig->resorigcol;
+			}
+		}
 		// the consumer of an ipc producer reads its (segment, payload) rows
 		if (EdxlopPhysicalCTEConsumer ==
 				leaf_dxlnode->GetOperator()->GetDXLOperator() &&
@@ -953,6 +976,30 @@ CTranslatorDXLToPlStmt::TranslateDXLExtensionRegion(
 		te->expr = (Expr *) var;
 		te->resno = (AttrNumber)(i + 1);
 		te->resname = PStrDup(col->name);
+		te->resorigtbl = origtbl[i];
+		te->resorigcol = origcol[i];
+		// Orca names columns it can't widen in the database's locale
+		// "UNKNOWN"; restore the query's name, as TranslateDXLProjList does
+		if (strcmp(te->resname, "UNKNOWN") == 0)
+		{
+			update_unknown_locale_walker((Node *) output_context->GetQuery(),
+										 (void *) te);
+		}
+		// a region at the plan's root, over leaves that don't carry their
+		// table columns (a motion's payload rows), outputs the query's
+		// targetlist in order
+		Query *query = m_dxl_to_plstmt_context->m_orig_query;
+		if (strcmp(te->resname, "UNKNOWN") == 0 && root_dxlnode == m_plan_root &&
+			nullptr != query &&
+			(uint32) i < gpdb::ListLength(query->targetList))
+		{
+			TargetEntry *query_te =
+				(TargetEntry *) gpdb::ListNth(query->targetList, i);
+			if (!query_te->resjunk && nullptr != query_te->resname)
+			{
+				te->resname = PStrDup(query_te->resname);
+			}
+		}
 		target_list = gpdb::LAppend(target_list, te);
 		if (!region->pg_filter)
 		{

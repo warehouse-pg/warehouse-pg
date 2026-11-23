@@ -315,3 +315,23 @@ RESET test_orca_regions.mode;
 RESET test_orca_regions.ext_relation;
 DROP TABLE t, u, u2, e, s;
 DROP ACCESS METHOD test_orca_ext;
+
+-- In a database whose LC_CTYPE can't widen a multibyte name, ORCA names its
+-- columns UNKNOWN; a region's output columns take the query's names back,
+-- as the columns of PG's nodes do
+\set orig_db :DBNAME
+CREATE DATABASE test_orca_regions_c ENCODING 'UTF8' LC_COLLATE 'C' LC_CTYPE 'C'
+	TEMPLATE template0;
+ALTER DATABASE test_orca_regions_c SET session_preload_libraries = 'test_orca_regions';
+\c test_orca_regions_c
+SET optimizer = on;
+SET optimizer_trace_fallback = on;
+CREATE TABLE loc (a int, "ÄÖ" int) DISTRIBUTED BY (a);
+INSERT INTO loc VALUES (1, 10), (2, 20);
+ANALYZE loc;
+-- the decode region is the plan's root, its columns the client's
+SET test_orca_regions.mode = ipc;
+EXPLAIN (COSTS OFF) SELECT a AS "Ñame", "ÄÖ" FROM loc WHERE "ÄÖ" = 10;
+SELECT a AS "Ñame", "ÄÖ" FROM loc WHERE "ÄÖ" = 10;
+\c :orig_db
+DROP DATABASE test_orca_regions_c;
