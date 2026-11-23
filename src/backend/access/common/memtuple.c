@@ -18,6 +18,8 @@
 #include "access/transam.h"
 #include "access/tuptoaster.h"
 #include "catalog/pg_type.h"
+#include "common/int.h"
+#include "utils/memutils.h"
 
 #include "cdb/cdbvars.h"
 
@@ -440,16 +442,22 @@ MemTupleBinding *create_memtuple_binding(TupleDesc tupdesc)
 	return pbind;
 }
 
-static uint32 compute_memtuple_size_using_bind(
+/*
+ * WHPG: the length is accumulated in a Size with overflow-checked additions.
+ * Unless allow_huge is true, it must also stay within MaxAllocSize, which
+ * keeps it below what MEMTUP_LEN_MASK can encode in the memtuple header.
+ */
+static Size compute_memtuple_size_using_bind(
 		Datum *values,
 		bool *isnull,
 		bool hasnull,
 		int nullbit_extra,
 		uint32 *nullsaves,
 		MemTupleBindingCols *colbind,
-		TupleDesc tupdesc)
+		TupleDesc tupdesc,
+		bool allow_huge)
 {
-	uint32 data_length = colbind->var_start; 
+	Size		data_length = colbind->var_start;
 	int i;
 
 	*nullsaves = 0;
@@ -481,6 +489,7 @@ static uint32 compute_memtuple_size_using_bind(
 	{
 		MemTupleAttrBinding *bind = &colbind->bindings[i];
 		Form_pg_attribute attr = tupdesc->attrs[i];
+		bool		ovfl;
 
 		if(isnull[i] || bind->flag == MTB_ByVal_Native || bind->flag == MTB_ByVal_Ptr)
 			continue;
@@ -491,30 +500,59 @@ static uint32 compute_memtuple_size_using_bind(
 			attr->attstorage != 'p' &&
 			value_type_could_short(DatumGetPointer(values[i]), attr->atttypid))
 		{
-			data_length += VARSIZE_ANY_EXHDR(DatumGetPointer(values[i])) + VARHDRSZ_SHORT;
+			ovfl = pg_add_size_overflow(data_length,
+										VARSIZE_ANY_EXHDR(DatumGetPointer(values[i])) + VARHDRSZ_SHORT,
+										&data_length);
 		}
 		else
 		{
 			data_length = att_align_nominal(data_length, attr->attalign); 
-			data_length = att_addlength_datum(data_length, attr->attlen, values[i]);
+			data_length = att_addlength_datum_overflow(data_length, attr->attlen,
+													   values[i], &ovfl);
 		}
+
+		if (ovfl || (!allow_huge && !AllocSizeIsValid(data_length)))
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("tuple is too big")));
 	}
+
+	if (!allow_huge && !AllocSizeIsValid(MEMTUP_ALIGN(data_length)))
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("tuple is too big")));
 
 	return MEMTUP_ALIGN(data_length);
 }
 
 /* Compute the memtuple size. 
  * nullsave is an output param
+ *
+ * Raises an error if the size exceeds MaxAllocSize.
  */
 uint32 compute_memtuple_size(MemTupleBinding *pbind, Datum *values, bool *isnull, bool hasnull, uint32 *nullsaves)
 {
-	uint32 ret_len = 0;
-	ret_len = compute_memtuple_size_using_bind(values, isnull, hasnull, pbind->null_bitmap_extra_size, nullsaves, &pbind->bind, pbind->tupdesc);
+	return (uint32) compute_memtuple_size_ext(pbind, values, isnull, hasnull,
+											  nullsaves, false);
+}
+
+/*
+ * As compute_memtuple_size(), but if allow_huge is true, the size may exceed
+ * MaxAllocSize.  The toaster uses that to measure a tuple whose attributes
+ * have not been compressed or moved out of line yet; such a size cannot be
+ * used to form a memtuple.
+ */
+Size
+compute_memtuple_size_ext(MemTupleBinding *pbind, Datum *values, bool *isnull,
+						  bool hasnull, uint32 *nullsaves, bool allow_huge)
+{
+	Size		ret_len = 0;
+	ret_len = compute_memtuple_size_using_bind(values, isnull, hasnull, pbind->null_bitmap_extra_size, nullsaves, &pbind->bind, pbind->tupdesc, allow_huge);
 
 	if(ret_len <= MEMTUPLE_LEN_FITSHORT) 
 		return ret_len;
 
-	ret_len = compute_memtuple_size_using_bind(values, isnull, hasnull, pbind->null_bitmap_extra_size, nullsaves, &pbind->large_bind, pbind->tupdesc);
+	ret_len = compute_memtuple_size_using_bind(values, isnull, hasnull, pbind->null_bitmap_extra_size, nullsaves, &pbind->large_bind, pbind->tupdesc, allow_huge);
 	Assert(ret_len > MEMTUPLE_LEN_FITSHORT);
 
 	return ret_len;
