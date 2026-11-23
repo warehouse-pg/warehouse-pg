@@ -3147,22 +3147,11 @@ ExecEvalFieldSelect(ExprState *state, ExprEvalStep *op, ExprContext *econtext)
 void
 ExecEvalFieldStoreDeForm(ExprState *state, ExprEvalStep *op, ExprContext *econtext)
 {
-	TupleDesc	tupDesc;
-
-	/* Lookup tupdesc if first time through or if type changes */
-	tupDesc = get_cached_rowtype(op->d.fieldstore.fstore->resulttype, -1,
-								 op->d.fieldstore.rowcache, NULL);
-
-	/* Check that current tupdesc doesn't have more fields than we allocated */
-	if (unlikely(tupDesc->natts > op->d.fieldstore.ncolumns))
-		elog(ERROR, "too many columns in composite type %u",
-			 op->d.fieldstore.fstore->resulttype);
-
 	if (*op->resnull)
 	{
 		/* Convert null input tuple into an all-nulls row */
 		memset(op->d.fieldstore.nulls, true,
-			   op->d.fieldstore.ncolumns * sizeof(bool));
+			   op->d.fieldstore.tupdesc->natts * sizeof(bool));
 	}
 	else
 	{
@@ -3180,7 +3169,7 @@ ExecEvalFieldStoreDeForm(ExprState *state, ExprEvalStep *op, ExprContext *econte
 		tmptup.t_tableOid = InvalidOid;
 		tmptup.t_data = tuphdr;
 
-		heap_deform_tuple(&tmptup, tupDesc,
+		heap_deform_tuple(&tmptup, op->d.fieldstore.tupdesc,
 						  op->d.fieldstore.values,
 						  op->d.fieldstore.nulls);
 	}
@@ -3193,14 +3182,9 @@ ExecEvalFieldStoreDeForm(ExprState *state, ExprEvalStep *op, ExprContext *econte
 void
 ExecEvalFieldStoreForm(ExprState *state, ExprEvalStep *op, ExprContext *econtext)
 {
-	TupleDesc	tupDesc;
 	HeapTuple	tuple;
 
-	/* Lookup tupdesc (should be valid already) */
-	tupDesc = get_cached_rowtype(op->d.fieldstore.fstore->resulttype, -1,
-								 op->d.fieldstore.rowcache, NULL);
-
-	tuple = heap_form_tuple(tupDesc,
+	tuple = heap_form_tuple(op->d.fieldstore.tupdesc,
 							op->d.fieldstore.values,
 							op->d.fieldstore.nulls);
 
