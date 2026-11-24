@@ -47,6 +47,35 @@ setup
         FROM show_heaptest_flags() v
         FULL OUTER JOIN heaptest ON heaptest.gp_segment_id = v.contentid AND
         heaptest.ctid = v.ctid;
+
+    -- WHPG: VACUUM can only freeze tuples older than every snapshot in the
+    -- database, including those of backends outside this test, such as an
+    -- auto-ANALYZE that the coordinator runs on user tables.  Wait until no
+    -- backend other than this test's sessions holds a snapshot or an xid, so
+    -- that only the snapshots the test takes on purpose hold VACUUM back.
+    CREATE FUNCTION wait_for_other_snapshots() RETURNS void AS $$
+    DECLARE
+        -- application_name of every session of this test is
+        -- 'isolation/<test name>/<session name>'
+        prefix text := regexp_replace(current_setting('application_name'),
+                                      '[^/]*$', '');
+    BEGIN
+        FOR i IN 1 .. 600 LOOP
+            PERFORM pg_stat_clear_snapshot();
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_stat_activity
+                 WHERE datname = current_database()
+                   AND pid <> pg_backend_pid()
+                   AND (backend_xmin IS NOT NULL OR backend_xid IS NOT NULL)
+                   AND left(coalesce(application_name, ''),
+                            length(prefix)) <> prefix) THEN
+                RETURN;
+            END IF;
+            PERFORM pg_sleep(0.1);
+        END LOOP;
+        RAISE WARNING 'another backend still holds a snapshot';
+    END
+    $$ LANGUAGE plpgsql;
 }
 
 teardown
@@ -54,12 +83,14 @@ teardown
     DROP VIEW show_heaptest_content;
     DROP TABLE IF EXISTS heaptest;
     DROP FUNCTION show_heaptest_flags();
+    DROP FUNCTION wait_for_other_snapshots();
 }
 
 session "s1"
 step "s1insert" { SET Debug_print_full_dtm=on; INSERT INTO heaptest SELECT i, i FROM generate_series(10, 19) i; }
 step "s1delete"	{ DELETE FROM heaptest; }
 step "s1setfreezeminage" { SET vacuum_freeze_min_age = 0; }
+step "s1waitsnapshots" { SELECT wait_for_other_snapshots(); }
 step "s1vacuumfreeze" { VACUUM heaptest; }
 step "s1select" { SELECT COUNT(*) FROM heaptest; }
 
@@ -94,14 +125,14 @@ step "s4abort"  { ABORT; }
 # xmax as invalid and make the deleted tuple visible to everyone. Also, make
 # sure relfrozenxid in pg_class after vacuum freeze is not set to freezelimit
 # locally but actually reflects the lowest xmax it was able to freeze till.
-permutation "s2begin" "s1delete" "s1setfreezeminage" "s1vacuumfreeze" "s2select" "s1select" "s2abort" "s3select" "s1vacuumfreeze" "s3select"
+permutation "s2begin" "s1delete" "s1setfreezeminage" "s1waitsnapshots" "s1vacuumfreeze" "s2select" "s1select" "s2abort" "s3select" "s1waitsnapshots" "s1vacuumfreeze" "s3select"
 
 # Intent of this permutation is to validate xmax freezing is correctly
 # continuing to work, when deleting transaction is aborted.
 #
 # So, its pretty simple sequence, start transaction, delete and abort. Then
 # vacuum freeze and check if xmax was freezed means set to invalidXid.
-permutation "s4begin" "s4delete" "s4abort" "s1setfreezeminage" "s1vacuumfreeze" "s2select"
+permutation "s4begin" "s4delete" "s4abort" "s1setfreezeminage" "s1waitsnapshots" "s1vacuumfreeze" "s2select"
 
 # Intent of this permutation is to validate xmin of tuple is not freezed
 # incorrectly just because its lower than local lowest xmin for that segment but
@@ -118,4 +149,4 @@ permutation "s4begin" "s4delete" "s4abort" "s1setfreezeminage" "s1vacuumfreeze" 
 # additional tuples after vacuum freeze. Also, make sure relfrozenxid in
 # pg_class after vacuum freeze is not set to freezelimit locally but actually
 # reflects the lowest xmin it was able to freeze till.
-permutation "s2begin" "s1insert" "s1setfreezeminage" "s1vacuumfreeze" "s2select" "s1select" "s2abort" "s2select" "s3select" "s1vacuumfreeze" "s2select" "s3select"
+permutation "s2begin" "s1insert" "s1setfreezeminage" "s1waitsnapshots" "s1vacuumfreeze" "s2select" "s1select" "s2abort" "s2select" "s3select" "s1waitsnapshots" "s1vacuumfreeze" "s2select" "s3select"
