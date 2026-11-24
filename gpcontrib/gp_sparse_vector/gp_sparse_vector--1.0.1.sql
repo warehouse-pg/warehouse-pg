@@ -341,12 +341,12 @@ CREATE OPERATOR <= (
 CREATE OPERATOR <> (
 	leftarg = svec, rightarg = svec, procedure = svec_l2_eq,
 	commutator = <> ,
-	negator = =,
+	negator = == ,
 	restrict = eqsel, join = eqjoinsel
 );
 CREATE OPERATOR == (
 	leftarg = svec, rightarg = svec, procedure = svec_l2_eq,
-	commutator = = ,
+	commutator = == ,
 	negator = <> ,
 	restrict = eqsel, join = eqjoinsel
 );
