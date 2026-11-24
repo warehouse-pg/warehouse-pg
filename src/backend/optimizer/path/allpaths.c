@@ -2647,8 +2647,9 @@ set_subquery_pathlist(PlannerInfo *root, RelOptInfo *rel,
 		 * subquery's planner; the slot is cleared again right below.
 		 */
 		Assert(root->subquery_window_prefilters == NIL);
-		root->subquery_window_prefilters =
-			find_window_prefilters(root, rel, rte, rti, subquery);
+		if (whpg_enable_window_topn)
+			root->subquery_window_prefilters =
+				find_window_prefilters(root, rel, rte, rti, subquery);
 
 		/*
 		 * The upper query might not use all the subquery's output columns; if

@@ -536,6 +536,16 @@ extern bool gp_enable_minmax_optimization;
 extern bool gp_enable_multiphase_agg;
 
 /*
+ * "whpg_enable_window_topn"
+ *
+ * Enables the window top-N pre-filter: when the outer query filters a
+ * window's rank-like output with "rank() <= N", keep only the rows that can
+ * pass it before the window's Sort and Motion (see create_one_window_path()).
+ * Cost based: the alternative path is added next to the regular one.
+ */
+extern bool whpg_enable_window_topn;
+
+/*
  * Perform a post-planning scan of the final plan looking for motion deadlocks:
  * emit verbose messages about any found.
  */
