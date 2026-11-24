@@ -352,3 +352,19 @@ drop function at_md_forget(regclass);
 drop table at_md_tab;
 drop function at_md_f(int), at_md_fa(int);
 drop type at_md_ct;
+
+--
+-- An index on an expression that returns an array of the type depends on
+-- the array type, while the index column has the element type.
+--
+create type at_gin_ct as (a int, b text);
+create table at_gin_tab (id int, x int) distributed by (id);
+create function at_gin_f(int) returns at_gin_ct[] immutable language sql as
+  $$ select array[row($1, 'x')::at_gin_ct] $$;
+create index at_gin_idx on at_gin_tab using gin (at_gin_f(x));
+alter type at_gin_ct alter attribute b type varchar; -- fails
+drop index at_gin_idx;
+alter type at_gin_ct alter attribute b type varchar;
+drop table at_gin_tab;
+drop function at_gin_f(int);
+drop type at_gin_ct;

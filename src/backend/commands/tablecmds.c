@@ -7691,10 +7691,13 @@ check_composite_type_dependency(ObjectAddress *depobj, Oid typeOid,
 				else
 				{
 					/*
-					 * We've covered all reasons for this dependency to exist,
-					 * so why are we here?  Better play safe and reject it.
+					 * None of the reasons above explains this dependency.
+					 * That is not an internal error: an index on an
+					 * expression that returns an array of the type records
+					 * its dependency on the array type, while the index
+					 * column has the array's element type, for example with
+					 * GIN.  Play safe and reject it.
 					 */
-					Assert(false);
 					report_type_used_in_expr(depobj, origRelation, origTypeName);
 				}
 			}
