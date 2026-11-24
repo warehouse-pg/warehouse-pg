@@ -127,6 +127,14 @@ struct TBMIterator
 	int			spageptr;		/* next spages index */
 	int			schunkptr;		/* next schunks index */
 	int			schunkbit;		/* next bit to check in current schunk */
+
+	/*
+	 * WHPG: the entry tbm_next_page() returns for a page of a lossy chunk.
+	 * The bitmap has no entry of its own for such a page, and a caller reads
+	 * the one it is given only until it asks for the next page, so a single
+	 * entry per iterator serves all of them.
+	 */
+	PagetableEntry lossypage;
 	TBMIterateResult output;	/* MUST BE LAST (because variable-size) */
 };
 
@@ -733,6 +741,8 @@ tbm_begin_iterate(TIDBitmap *tbm)
 	iterator->spageptr = 0;
 	iterator->schunkptr = 0;
 	iterator->schunkbit = 0;
+	MemSet(&iterator->lossypage, 0, sizeof(PagetableEntry));
+	iterator->lossypage.ischunk = true;
 
 	/*
 	 * If we have a hashtable, create and fill the sorted page lists, unless
@@ -1192,8 +1202,7 @@ tbm_next_page(TBMIterator *iterator, bool *more)
 			chunk_blockno < tbm->spages[iterator->spageptr]->blockno)
 		{
 			/* Return a lossy page indicator from the chunk */
-			nextpage = (PagetableEntry *) palloc(sizeof(PagetableEntry));
-			nextpage->ischunk = true;
+			nextpage = &iterator->lossypage;
 			nextpage->blockno = chunk_blockno;
 			iterator->schunkbit++;
 			return nextpage;
