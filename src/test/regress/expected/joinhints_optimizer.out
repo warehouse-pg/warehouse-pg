@@ -896,7 +896,7 @@ JoinHint:(t1 t2)
 not used hint:
 JoinHint:(t2 t1)
 ]",
-                       QUERY PLAN
+                       QUERY PLAN                        
 ---------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Nested Loop
@@ -920,7 +920,7 @@ used hint:
 JoinHint:(((t5 t4) (t1 t3)) t2)
 not used hint:
 ]",
-                                   QUERY PLAN
+                                   QUERY PLAN                                    
 ---------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Nested Loop
@@ -957,7 +957,7 @@ used hint:
 JoinHint:((t5 t4) (t1 t3))
 not used hint:
 ]",
-                                   QUERY PLAN
+                                   QUERY PLAN                                    
 ---------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Nested Loop
@@ -994,7 +994,7 @@ used hint:
 JoinHint:(t2 t1)
 not used hint:
 ]",
-                                QUERY PLAN
+                                QUERY PLAN                                 
 ---------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Join
@@ -1004,6 +1004,7 @@ not used hint:
                ->  Hash Join
                      Hash Cond: (t2.a = t1.a)
                      ->  Seq Scan on t2
+                           Runtime Filter: a
                      ->  Hash
                            ->  Seq Scan on t1
                ->  Materialize
@@ -1017,7 +1018,7 @@ not used hint:
                            ->  Broadcast Motion 3:3  (slice3; segments: 3)
                                  ->  Seq Scan on t4
  Optimizer: GPORCA
-(21 rows)
+(22 rows)
 
 /*+
     Leading((t5 (((t4 t3) t2) t1)))
@@ -1249,7 +1250,7 @@ used hint:
 JoinHint:t1 t2 t3
 not used hint:
 ]",
-                          QUERY PLAN
+                          QUERY PLAN                           
 ---------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Nested Loop
@@ -1278,7 +1279,7 @@ used hint:
 JoinHint:t3 t2 t1
 not used hint:
 ]",
-                          QUERY PLAN
+                          QUERY PLAN                           
 ---------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Nested Loop
@@ -1324,16 +1325,17 @@ used hint:
 JoinTypeHint: aliases:t1,t2 type:HashJoin
 not used hint:
 ]",
-                QUERY PLAN
+                QUERY PLAN                
 ------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Join
          Hash Cond: (t1.a = t2.a)
          ->  Seq Scan on t1
+               Runtime Filter: a
          ->  Hash
                ->  Seq Scan on t2
  Optimizer: GPORCA
-(7 rows)
+(8 rows)
 
 /*+
     NoHashJoin(t1 t2)
@@ -1348,7 +1350,7 @@ used hint:
 JoinTypeHint: aliases:t1,t2 type:NoHashJoin
 not used hint:
 ]",
-                QUERY PLAN
+                QUERY PLAN                
 ------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Nested Loop
@@ -1378,7 +1380,7 @@ ScanHint: t2[indexes: types:SeqScan]
 JoinTypeHint: aliases:t1,t2 type:NestedLoopJoin
 not used hint:
 ]",
-                QUERY PLAN
+                QUERY PLAN                
 ------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Nested Loop
@@ -1404,7 +1406,7 @@ ScanHint: t1[indexes: types:IndexScan]
 JoinTypeHint: aliases:t1,t2 type:NestedLoopJoin
 not used hint:
 ]",
-                QUERY PLAN
+                QUERY PLAN                
 ------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Nested Loop
@@ -1431,7 +1433,7 @@ ScanHint: t2[indexes: types:IndexScan]
 JoinTypeHint: aliases:t1,t2 type:NestedLoopJoin
 not used hint:
 ]",
-                QUERY PLAN
+                QUERY PLAN                
 ------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Nested Loop
@@ -1455,16 +1457,17 @@ used hint:
 JoinTypeHint: aliases:t1,t2 type:NoNestedLoopJoin
 not used hint:
 ]",
-                QUERY PLAN
+                QUERY PLAN                
 ------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Join
          Hash Cond: (t1.a = t2.a)
          ->  Seq Scan on t1
+               Runtime Filter: a
          ->  Hash
                ->  Seq Scan on t2
  Optimizer: GPORCA
-(7 rows)
+(8 rows)
 
 /*+
     NoHashJoin(t1 t2 t3)
@@ -1479,7 +1482,7 @@ used hint:
 JoinTypeHint: aliases:t1,t2,t3 type:NoHashJoin
 not used hint:
 ]",
-                 QUERY PLAN
+                 QUERY PLAN                  
 ---------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Nested Loop
@@ -1516,7 +1519,7 @@ JoinTypeHint: aliases:t2,t3 type:NoHashJoin
 JoinTypeHint: aliases:t1,t2,t3 type:NoHashJoin
 not used hint:
 ]",
-                 QUERY PLAN
+                 QUERY PLAN                  
 ---------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Nested Loop
@@ -1544,7 +1547,7 @@ used hint:
 JoinTypeHint: aliases:t1,t2,t3 type:NoNestedLoopJoin
 not used hint:
 ]",
-                 QUERY PLAN
+                 QUERY PLAN                  
 ---------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Join
@@ -1552,12 +1555,13 @@ not used hint:
          ->  Nested Loop
                Join Filter: true
                ->  Seq Scan on t1
+                     Runtime Filter: a
                ->  Index Scan using i3 on t3
                      Index Cond: (a = t1.a)
          ->  Hash
                ->  Seq Scan on t2
  Optimizer: GPORCA
-(11 rows)
+(12 rows)
 
 /*+
     NoNestLoop(t2 t3)
@@ -1581,20 +1585,22 @@ JoinTypeHint: aliases:t2,t3 type:NoNestedLoopJoin
 JoinTypeHint: aliases:t1,t2,t3 type:NoNestedLoopJoin
 not used hint:
 ]",
-                  QUERY PLAN
+                  QUERY PLAN                  
 ----------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Join
          Hash Cond: (t2.a = t1.a)
          ->  Seq Scan on t2
+               Runtime Filter: a
          ->  Hash
                ->  Hash Join
                      Hash Cond: (t1.a = t3.a)
                      ->  Seq Scan on t1
+                           Runtime Filter: a
                      ->  Hash
                            ->  Seq Scan on t3
  Optimizer: GPORCA
-(11 rows)
+(13 rows)
 
 --
 -- Test nest loop join type hints
@@ -1877,7 +1883,7 @@ MergeJoin(t1 t2)
 not used hint:
 duplication hint:
 error hint:
-                          QUERY PLAN
+                          QUERY PLAN                           
 ---------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Nested Loop Anti Join
@@ -1905,7 +1911,7 @@ used hint:
 JoinTypeHint: aliases:t1,t2 type:HashJoin
 not used hint:
 ]",
-                QUERY PLAN
+                QUERY PLAN                
 ------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Left Join
@@ -1929,7 +1935,7 @@ used hint:
 JoinTypeHint: aliases:t1,t2 type:HashJoin
 not used hint:
 ]",
-                QUERY PLAN
+                QUERY PLAN                
 ------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Left Join
@@ -1953,7 +1959,7 @@ used hint:
 JoinTypeHint: aliases:t1,t2 type:HashJoin
 not used hint:
 ]",
-                QUERY PLAN
+                QUERY PLAN                
 ------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Full Join
@@ -1977,16 +1983,17 @@ used hint:
 JoinTypeHint: aliases:t1,t2 type:HashJoin
 not used hint:
 ]",
-                QUERY PLAN
+                QUERY PLAN                
 ------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Semi Join
          Hash Cond: (t1.a = t2.a)
          ->  Seq Scan on t1
+               Runtime Filter: a
          ->  Hash
                ->  Seq Scan on t2
  Optimizer: GPORCA
-(7 rows)
+(8 rows)
 
 /*+
     HashJoin(t1 t2)
@@ -2052,7 +2059,7 @@ EXPLAIN (COSTS off) SELECT * FROM t1 WHERE t1.a IN (SELECT t2.a FROM t2);
 INFO:  pg_hint_plan: hint syntax error at or near "InvalidJoinTypeHint(t1)
 "
 DETAIL:  Unrecognized hint keyword "InvalidJoinTypeHint".
-                QUERY PLAN
+                QUERY PLAN                
 ------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Nested Loop
@@ -2151,12 +2158,13 @@ not used hint:
          ->  Hash Right Join
                Hash Cond: (t3.a = t2.a)
                ->  Seq Scan on t3
+                     Runtime Filter: a
                ->  Hash
                      ->  Seq Scan on t2
          ->  Index Scan using i1 on t1
                Index Cond: (a = t2.a)
  Optimizer: GPORCA
-(11 rows)
+(12 rows)
 
 /*+
     Leading(((t3 t2) t1))
@@ -2179,13 +2187,14 @@ not used hint:
          ->  Hash Right Join
                Hash Cond: (t3.a = t2.a)
                ->  Seq Scan on t3
+                     Runtime Filter: a
                ->  Hash
                      ->  Seq Scan on t2
          ->  Materialize
                ->  Broadcast Motion 3:3  (slice2; segments: 3)
                      ->  Seq Scan on t1
  Optimizer: GPORCA
-(12 rows)
+(13 rows)
 
 /*+
     Leading(((t3 t2) t1))
@@ -2235,10 +2244,11 @@ not used hint:
    ->  Hash Right Join
          Hash Cond: (t2.a = t1.a)
          ->  Seq Scan on t2
+               Runtime Filter: a
          ->  Hash
                ->  Seq Scan on t1
  Optimizer: GPORCA
-(7 rows)
+(8 rows)
 
 -- WHPG: hints over the inner-join children of an N-ary join
 -- that also has LEFT JOIN children. The hinted join takes only the inner-join
@@ -2301,6 +2311,7 @@ not used hint:
                ->  Nested Loop
                      Join Filter: true
                      ->  Seq Scan on t1
+                           Runtime Filter: a
                      ->  Index Scan using i2 on t2
                            Index Cond: (a = t1.a)
                ->  Index Scan using i3 on t3
@@ -2308,7 +2319,7 @@ not used hint:
          ->  Hash
                ->  Seq Scan on t4
  Optimizer: GPORCA
-(15 rows)
+(16 rows)
 
 /*+
     Leading((t1 t2))
@@ -2484,12 +2495,13 @@ JoinHint:(t1 t2)
          ->  Nested Loop
                Join Filter: true
                ->  Seq Scan on t2
+                     Runtime Filter: a
                ->  Index Scan using i3 on t3
                      Index Cond: (a = t2.a)
          ->  Hash
                ->  Seq Scan on t1
  Optimizer: GPORCA
-(11 rows)
+(12 rows)
 
 -- Tables (t2 and t3) of INNER JOIN on the outer side of a RIGHT JOIN cannot be
 -- reordered with the tables (t1) on the inner side.
@@ -2514,12 +2526,13 @@ JoinHint:(t1 t2)
          ->  Nested Loop
                Join Filter: true
                ->  Seq Scan on t2
+                     Runtime Filter: a
                ->  Index Scan using i3 on t3
                      Index Cond: (a = t2.a)
          ->  Hash
                ->  Seq Scan on t1
  Optimizer: GPORCA
-(11 rows)
+(12 rows)
 
 -- Test that only *valid* join order hint shapes are applied for LOJ.
 --
@@ -3545,12 +3558,13 @@ not used hint:
          ->  Hash Right Join
                Hash Cond: (t3.a = t1.a)
                ->  Seq Scan on t3
+                     Runtime Filter: a
                ->  Hash
                      ->  Seq Scan on t1
          ->  Index Scan using i2 on t2
                Index Cond: (a = t1.a)
  Optimizer: GPORCA
-(11 rows)
+(12 rows)
 
 /*+
     Leading(((t3 t1) t2))
@@ -3591,6 +3605,7 @@ not used hint:
    ->  Hash Join
          Hash Cond: (t2.a = t1.a)
          ->  Seq Scan on t2
+               Runtime Filter: a
          ->  Hash
                ->  Nested Loop Left Join
                      Join Filter: true
@@ -3598,7 +3613,7 @@ not used hint:
                      ->  Index Scan using i3 on t3
                            Index Cond: (a = t1.a)
  Optimizer: GPORCA
-(11 rows)
+(12 rows)
 
 /*+
     Leading((t2 (t1 t3)))
@@ -3639,14 +3654,16 @@ not used hint:
    ->  Hash Join
          Hash Cond: (t2.a = t1.a)
          ->  Seq Scan on t2
+               Runtime Filter: a
          ->  Hash
                ->  Hash Right Join
                      Hash Cond: (t3.a = t1.a)
                      ->  Seq Scan on t3
+                           Runtime Filter: a
                      ->  Hash
                            ->  Seq Scan on t1
  Optimizer: GPORCA
-(11 rows)
+(13 rows)
 
 /*+
     Leading((t2 (t3 t1)))
@@ -3783,6 +3800,7 @@ not used hint:
    ->  Hash Right Join
          Hash Cond: (t3.a = t1.a)
          ->  Seq Scan on t3
+               Runtime Filter: a
          ->  Hash
                ->  Nested Loop
                      Join Filter: true
@@ -3790,7 +3808,7 @@ not used hint:
                      ->  Index Scan using i2 on t2
                            Index Cond: (a = t1.a)
  Optimizer: GPORCA
-(11 rows)
+(12 rows)
 
 /*+
     Leading((t3 (t1 t2)))
@@ -3831,6 +3849,7 @@ not used hint:
    ->  Hash Right Join
          Hash Cond: (t3.a = t1.a)
          ->  Seq Scan on t3
+               Runtime Filter: a
          ->  Hash
                ->  Nested Loop
                      Join Filter: true
@@ -3838,7 +3857,7 @@ not used hint:
                      ->  Index Scan using i1 on t1
                            Index Cond: (a = t2.a)
  Optimizer: GPORCA
-(11 rows)
+(12 rows)
 
 /*+
     Leading((t3 (t2 t1)))
@@ -3935,12 +3954,13 @@ not used hint:
                ->  Hash Right Join
                      Hash Cond: (t2.a = t1.a)
                      ->  Seq Scan on t2
+                           Runtime Filter: a
                      ->  Hash
                            ->  Seq Scan on t1
          ->  Index Scan using i3 on t3
                Index Cond: (a = t2.a)
  Optimizer: GPORCA
-(13 rows)
+(14 rows)
 
 /*+
     Leading((t2 t1))
@@ -3985,12 +4005,13 @@ not used hint:
          ->  Nested Loop Left Join
                Join Filter: true
                ->  Seq Scan on t2
+                     Runtime Filter: a
                ->  Index Scan using i3 on t3
                      Index Cond: (a = t2.a)
          ->  Hash
                ->  Seq Scan on t1
  Optimizer: GPORCA
-(11 rows)
+(12 rows)
 
 /*+
     Leading((t2 t3))
@@ -4035,12 +4056,13 @@ not used hint:
          ->  Hash Right Join
                Hash Cond: (t3.a = t2.a)
                ->  Seq Scan on t3
+                     Runtime Filter: a
                ->  Hash
                      ->  Seq Scan on t2
          ->  Hash
                ->  Seq Scan on t1
  Optimizer: GPORCA
-(11 rows)
+(12 rows)
 
 /*+
     Leading((t3 t2))
@@ -4202,6 +4224,7 @@ not used hint:
                            ->  Nested Loop Left Join
                                  Join Filter: true
                                  ->  Seq Scan on t2
+                                       Runtime Filter: a
                                  ->  Index Scan using i3 on t3
                                        Index Cond: (a = t2.a)
                            ->  Hash
@@ -4211,7 +4234,7 @@ not used hint:
          ->  Index Scan using i4 on t4
                Index Cond: (a = t3.a)
  Optimizer: GPORCA
-(21 rows)
+(22 rows)
 
 /*+
     Leading((t2 t3))
@@ -4262,6 +4285,7 @@ not used hint:
                            ->  Hash Right Join
                                  Hash Cond: (t3.a = t2.a)
                                  ->  Seq Scan on t3
+                                       Runtime Filter: a
                                  ->  Hash
                                        ->  Seq Scan on t2
                            ->  Hash
@@ -4271,7 +4295,7 @@ not used hint:
          ->  Index Scan using i4 on t4
                Index Cond: (a = t3.a)
  Optimizer: GPORCA
-(21 rows)
+(22 rows)
 
 /*+
     Leading((t3 t2))
@@ -4324,16 +4348,18 @@ not used hint:
                      ->  Hash Right Join
                            Hash Cond: (t4.a = t3.a)
                            ->  Seq Scan on t4
+                                 Runtime Filter: a
                            ->  Hash
                                  ->  Redistribute Motion 3:3  (slice3; segments: 3)
                                        Hash Key: t3.a
                                        ->  Hash Right Join
                                              Hash Cond: (t3.a = t2.a)
                                              ->  Seq Scan on t3
+                                                   Runtime Filter: a
                                              ->  Hash
                                                    ->  Seq Scan on t2
  Optimizer: GPORCA
-(23 rows)
+(25 rows)
 
 /*+
     Leading((t4 (t3 t2)))
@@ -4851,8 +4877,8 @@ used hint:
 JoinHint:((t5 t4) (t3 (t1 t2)))
 not used hint:
 ]",
-                                            QUERY PLAN                                            
---------------------------------------------------------------------------------------------------
+                                         QUERY PLAN                                          
+---------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Nested Loop
          Join Filter: true
@@ -4911,6 +4937,7 @@ not used hint:
                            ->  Hash Right Join
                                  Hash Cond: (t2.a = t1.a)
                                  ->  Seq Scan on t2
+                                       Runtime Filter: a
                                  ->  Hash
                                        ->  Seq Scan on t1
          ->  Materialize
@@ -4924,7 +4951,7 @@ not used hint:
                            ->  Seq Scan on t4
                      ->  Seq Scan on t5
  Optimizer: GPORCA
-(25 rows)
+(26 rows)
 
 --
 -- 2. LOJ inside/outside subquery
@@ -4944,8 +4971,8 @@ used hint:
 JoinHint:((t5 t4) (t3 (t1 t2)))
 not used hint:
 ]",
-                                      QUERY PLAN                                      
---------------------------------------------------------------------------------------
+                                      QUERY PLAN                                       
+---------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Nested Loop
          Join Filter: true
@@ -5007,6 +5034,7 @@ not used hint:
                                        ->  Hash Right Join
                                              Hash Cond: (t2.a = t1.a)
                                              ->  Seq Scan on t2
+                                                   Runtime Filter: a
                                              ->  Hash
                                                    ->  Seq Scan on t1
                ->  Index Scan using i3 on t3
@@ -5019,7 +5047,7 @@ not used hint:
                                  ->  Seq Scan on t4
                            ->  Seq Scan on t5
  Optimizer: GPORCA
-(27 rows)
+(28 rows)
 
 RESET client_min_messages;
 LOG:  statement: RESET client_min_messages;

@@ -1216,7 +1216,7 @@ typedef struct HashJoin
 	/*
 	 * WHPG: why no runtime filter was planned for this join, an RfDecline
 	 * (runtimefilter.h); 0 when one was, or the join was never looked at.
-	 * Shown by EXPLAIN under whpg_runtime_filter_explain.
+	 * Shown by EXPLAIN (VERBOSE).
 	 */
 	int			rf_decline;
 

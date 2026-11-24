@@ -129,7 +129,7 @@ never matches a NULL, and the join types that get a filter drop such rows.
 A join over a non-strict hash operator, which hashes NULL as 0 and may match
 it (`ExecHashGetHashValue()`), gets no filter.
 It also watches the filter's usefulness, 65536 rows at a time: a filter that
-let more than `whpg_runtime_filter_disable_ratio` of them through is rested,
+let more than nine in ten of them through (`RF_REST_PASS_RATIO`) is rested,
 and the rows go straight to the join -- the estimate was wrong, or the keys
 are all there, and every further probe would be a hash and a cache line for
 nothing. The rest is not for good, because what a filter removes depends on
@@ -280,34 +280,82 @@ call per row.
   "One key of several" below);
 - parallel-aware joins or scans (the Param would have to reach the workers);
 - plans under row-level security, as for the Staged Scan;
-- a probe estimated below `whpg_runtime_filter_min_probe_rows`, a join
-  expected to keep more than `whpg_runtime_filter_max_selectivity` of the
-  probe rows, or an inner side that would need a filter above
-  `whpg_runtime_filter_max_size` to stay useful. The first two, and the
-  statistics a join on several keys needs to choose one by, hold under
-  `whpg_runtime_filter_mode = estimate`; `eager` plans the filter anyway
-  and `auto` does so when the probe's key column has no statistics, leaving
-  the rows that arrive to decide (see "The filter"). Rows are a segment's. In
-  a slice GPORCA runs on one segment (a join of replicated tables) its
-  estimate counts a replicated table read there once per segment of the
-  cluster; the pass divides that back by the segment count before the
-  gates, so that a join of two replicated tables is judged on what the one
-  segment reads.
+- a probe estimated below 10 000 rows (`RF_MIN_PROBE_ROWS`), a join
+  expected to keep more than half of the probe rows
+  (`RF_MAX_SELECTIVITY`), or an inner side that would need a filter above
+  `whpg_runtime_filter_max_size` to stay useful. The first two are judged
+  on the planner's estimates (see "The gates" below), as is the choice of
+  a key for a join on several; a probe whose key column has no statistics
+  is not judged by them and gets its filter (see "Tables never analyzed").
+  Rows are a segment's. In a slice GPORCA runs on one segment (a
+  join of replicated tables) its estimate counts a replicated table read
+  there once per segment of the cluster; the pass divides that back by the
+  segment count before the gates, so that a join of two replicated tables
+  is judged on what the one segment reads.
 
-## GUCs
+## Settings
 
 | GUC | default | meaning |
 |---|---|---|
 | `whpg_enable_runtime_filter` | on | master switch, both optimizers. The executor reads it too: a plan cached while it was on builds no filter once it is off, and EXPLAIN shows none |
-| `whpg_runtime_filter_mode` | estimate | how far the planner pass trusts its estimates: `estimate` gates a filter on them (the three developer GUCs below); `eager` plans one for every join whose shape allows it and leaves the rows that arrive to size it, publish it or not, and switch it off; `auto` is `eager` for a probe whose key column has no statistics (a table never analyzed), `estimate` otherwise. The size gate stays in every mode |
 | `whpg_runtime_filter_max_size` | 4 MB | the largest filter planned (64 kB to 64 MB); a denser one is dropped at run time. The filter is memory of its own: up to this much per filtered join and segment process on top of the join's share of `statement_mem`, which the hash table does not shrink to make room for |
-| `whpg_runtime_filter_max_selectivity` | 0.5 | developer: no filter when more of the probe is expected to match |
-| `whpg_runtime_filter_min_probe_rows` | 10000 | developer: no filter for a smaller probe (rows as the plan node estimates them) |
-| `whpg_runtime_filter_disable_ratio` | 0.9 | developer: a filter letting more of the probe rows through than this is rested by the scan, and sampled again later; 1 never rests a filter |
-| `whpg_runtime_filter_explain` | off | developer: EXPLAIN adds `Runtime Filter: declined: <reason>` under every hash join the planner looked at and gave no filter (join type, probe under a Motion, probe not a scan, too small, too many matches, no key of several selective enough, ...) |
 
-The first five are synchronized to the segments; the last is read by EXPLAIN
-on the coordinator.
+Both are synchronized to the segments. There is one developer option
+besides, hidden from `SHOW ALL`: `whpg_runtime_filter_force` plans a filter
+for every join whose shape allows one, leaving out the two gates on the
+estimates, so that a test can have a filter on a small table and a
+diagnosis can see what a declined filter would have done. It forces the
+planning only: the size limit holds, and the rows that arrive still size
+the filter, decide whether it is published and rest it. The numbers the
+feature decides by are constants, not settings: nobody would tune them in
+the field, and each is a decision about what a filter is worth, written
+down where it is made, with a test on each side of it.
+
+## The gates
+
+`RF_MIN_PROBE_ROWS` (10 000 rows a segment, `planrtfilter.c`): building a
+filter is a pass over the hash table and at least 8 kB, and a probe this
+small is a few blocks; there is nothing to win back. The probe is the
+join's outer side as it reaches the join: after the scan's own predicate,
+and for the upper join of a chain over one scan after the joins below it,
+which is what another filter could still remove.
+
+`RF_MAX_SELECTIVITY` (0.5, `planrtfilter.c`): testing a row against the
+filter costs about a quarter of the hash table lookup it can spare, so on
+the join alone a filter breaks even when three rows in four pass it (see
+"The threshold of the rest"). The gate sits well under that because it
+judges by an estimate -- the join's estimated output over the probe's rows
+-- and not by the rows.
+
+Both values were checked against their neighbours on TPC-DS at scale
+factor 30 under GPORCA (95 queries, statistics in place; only the queries
+whose plan changes under the other value are timed, three interleaved
+rounds, medians):
+
+| gate | value tried | queries whose plan changes | their total time |
+|---|---|---|---|
+| selectivity (0.5) | 0.3 | 9 | +8.7% (q64 +24%, q06 +9%, q66 +7%; q33 -10%) |
+| selectivity (0.5) | 0.7 | 8 | -0.8% |
+| probe rows (10 000) | 1 000 | 5 | +1.4% |
+| probe rows (10 000) | 100 000 | 17 | +6.0% (q48 +56%, q91 +21%, q72 +12%, q58 +11%) |
+
+A stricter gate gives up filters that pay; a laxer one adds filters that
+change nothing beyond the run-to-run noise of a few percent. This is one
+benchmark on one machine (three segments on four cores): the values are a
+decision, recorded here with what it rests on, and not a result that holds
+for every workload.
+
+`RF_REST_PASS_RATIO` (0.9, `runtimefilter.h`): the share of the 65 536 rows
+a filter is judged over that it may let through before the scan rests it.
+A rest is windowed, undone by a later sample and backs off, so a wrong
+call either way costs little; "The threshold of the rest" has the
+measurements.
+
+EXPLAIN (VERBOSE) says why a hash join the pass looked at got no filter, on
+a line under the join: `Runtime Filter: declined: <reason>` (the join type,
+a probe under a Motion, a probe that is not a scan, too few probe rows, too
+many expected to match, no key of several selective enough, ...). With the
+feature off no such line is shown.
 
 EXPLAIN shows the clause apart from the predicate, by the column it filters,
 and EXPLAIN ANALYZE counts what the filters removed:
@@ -361,11 +409,10 @@ say -- or are sparse enough to leave most blocks empty.
 
 **A useless filter**, a 6M-row heap fact against a 100k-key dimension every
 key of which it holds (every probe row has a match), with the selectivity
-gate lifted so that a filter is planned anyway: 235 ms with no filter;
-269 ms with the filter never rested (`whpg_runtime_filter_disable_ratio =
-1`); 243 ms at the default -- the scan rests the filter after its first
-65536 rows, and what remains is those rows and the samples. (Without the
-rest, a wrong estimate would cost a good part of what a right one gains.)
+gate left out so that a filter is planned anyway: 235 ms with no filter;
+269 ms with the filter never rested; 243 ms as it is -- the scan rests the
+filter after its first 65536 rows, and what remains is those rows and the
+samples. (Without the rest, a wrong estimate would cost a good part of what a right one gains.)
 
 **A filter that is useless only at first**, a 6.3M-row AO row fact whose
 first 300,000 rows all have a match in a 1000-key dimension and whose other
@@ -391,7 +438,7 @@ filter (heap 964 ms against 841 off) and 0.9 gives it up (848 ms); at 88%,
 side here is 40,000 keys, a hash table that stays in cache, so a saved hash
 probe is worth about four filter probes and the break-even is near 75%; a
 larger build side, a Staged Scan or more work downstream of the join move it
-up. Across SF30 under `eager`, the filters the gates would have declined
+up. Across SF30 with every filter forced, the filters the gates would have declined
 sort by their real pass rate: those passing 90-95% (q31, q51, q72) only
 cost, +2% to +7%; those passing 80-90% both win (q15 -27% on filters
 passing 81% and 87%, whose dropped rows are spared every later join and
@@ -517,42 +564,60 @@ them in another order, and q64, under `ORDER BY ... LIMIT 100` on columns
 with ties, returned other tied rows within its hundred (without the LIMIT
 its 582 rows are identical).
 
-**The mode GUC, and tables never analyzed.** `whpg_runtime_filter_mode =
-eager` plans a filter for every structurally eligible join, leaving out the
-gates on probe rows and selectivity and letting the rows that arrive decide.
-Measured against `estimate` on the same SF30 setup, statistics in place, two
-interleaved rounds, the filter on under both: the 96 queries 281.8 s against
-285.9 s (+1.5%). Eager adds filters to 72 of them, the joins the gates had
-declined as too small or too unselective: those 72 take 224.9 s against
-229.1 s (+1.9%), median change per query +0.0%, 9 queries more than 5%
-faster (q15 -27%, 439 to 321 ms; q46 -23%, 3.65 to 2.81 s; q08 and q68
--14%; q73 -13%) and 10 more than 5% slower (q10 +22%, 641 to 785 ms; q64
-+20%, 6.7 to 8.0 s; q78 +11%; q80 and q19 +10%); the 24 queries whose plans
-are the same under both modes move -0.1%. With statistics in place, then,
-the filters the gates decline are worth nothing in the whole, and the gates
-spare the ten losses: `estimate` is the default. Without statistics -- the
-`tpcds` schema's `pg_statistic` rows parked and its `reltuples` zeroed, as
-a schema loaded and never analyzed -- GPORCA plans every query differently:
-with no row counts it takes the dimension for the large side, so in q03,
-q42, q52 and q89 the 86M-row fact is redistributed and hashed and the
-73k-row `date_dim` is the probe, while q07, q19, q27, q34, q55 and q73 keep
-the fact as the probe. Under `estimate` no query of the 99 gets a filter
-(GPORCA puts every unanalyzed table at one row, so every probe falls under
-the 10 000-row gate); under `eager`, and `auto` (eager where the probe's key
-column has no statistics, which is everywhere here), 83 queries get 222
-filters. Timed on twelve star-join queries, two interleaved rounds,
-estimate against eager: 78.5 s against 64.9 s in total, but the difference
-is two long queries' noise -- q52's first estimate run took 37 s against
-11 s for its second, and q03 (-18%) and q89 (+15%), at 10 to 17 s a run,
-have runs 2 to 4 s apart -- while the other nine move within 5% and the
-median change per query is +0.9%. The filters eager adds to these plans sit
-on a dimension probe or on a fact probed against a hashed table of unknown
-size, and change nothing the noise does not hide; what a never-analyzed
-schema needs under GPORCA is ANALYZE, not a filter. The Postgres planner without
-statistics sizes a table from its file, so its estimates keep the right
-side large, but it plans a partitioned fact as an Append of partition
-scans, which the pass does not reach yet (follow-up), so the TPC-DS facts
-get no filter under it in either mode.
+**Forcing a filter.** The developer option
+`whpg_runtime_filter_force` plans a filter for every structurally eligible
+join, leaving out the gates on probe rows and selectivity and letting the
+rows that arrive decide. Measured against the default on the same SF30
+setup, statistics in place, two interleaved rounds, the filter on under
+both: the 96 queries 281.8 s against 285.9 s (+1.5%). Forcing adds filters to
+72 of them, the joins the gates had declined as too small or too
+unselective: those 72 take 224.9 s against 229.1 s (+1.9%), median change
+per query +0.0%, 9 queries more than 5% faster (q15 -27%, 439 to 321 ms;
+q46 -23%, 3.65 to 2.81 s; q08 and q68 -14%; q73 -13%) and 10 more than 5%
+slower (q10 +22%, 641 to 785 ms; q64 +20%, 6.7 to 8.0 s; q78 +11%; q80 and
+q19 +10%); the 24 queries whose plans are the same either way move -0.1%.
+With statistics in place, then, the filters the gates decline are worth
+nothing in the whole on this benchmark, and the gates spare the ten losses:
+the gates are what the pass does where it has statistics, and forcing is
+for tests and diagnosis.
+
+**Tables never analyzed.** A probe whose key column has no statistics in
+the catalog is not judged by the two gates: the pass plans its filter, and
+for a join on several keys takes the first eligible one. The estimates the
+gates would judge by are defaults there. GPORCA puts a table never analyzed
+at one row; the Postgres planner takes it for ten pages whatever its size,
+and so, by the row width, for 3 400 rows a segment when it is a 21.6M-row
+AOCO copy of `web_sales` and for 32 100 when it is three rows of one
+integer. A gate on such a number turns down the large table and lets the
+small one through. What decides instead is what arrives: the hash table's
+rows size the filter, one over `whpg_runtime_filter_max_size` is not
+published, and the scan rests a filter that lets more than nine rows in ten
+through. The criterion is the catalog's, not an estimate, so both
+optimizers behave alike.
+
+What it costs is bounded and not nothing. A small table never analyzed gets
+a filter too, since nothing tells it from a large one: a pass over its hash
+table, 8 kB at the least, and a test per probe row, never judged when the
+probe is under the 65 536 rows a judgement takes. A filter that lets
+between three rows in four and nine in ten through is kept and loses a few
+percent on the join.
+
+Measured on that unanalyzed copy of `web_sales` (release build, five runs
+each way, medians), a join to `date_dim` restricted to one month:
+
+| optimizer | plan | filter off | filter on |
+|---|---|---|---|
+| Postgres planner | the copy is the probe and gets the filter, which removes 21.35M of its 21.6M rows | 437 ms | 67 ms |
+| GPORCA | the copy, taken for one row, is hashed and `date_dim` is the probe: no filter | 1544 ms | 1621 ms |
+
+Under GPORCA the rule seldom applies, because a table taken for one row
+ends up on the hashed side, and then it is the join order that is wrong
+and ANALYZE that mends it: on a TPC-DS schema loaded and never analyzed,
+q03, q42, q52 and q89 redistribute and hash the 86M-row fact and probe with
+the 73k-row `date_dim`. This is one table on one machine; it shows the
+mechanism, not what every schema gains. The Postgres planner also plans a partitioned fact as an Append of
+partition scans, which the pass does not reach yet (follow-up), so the
+TPC-DS facts get no filter under it.
 
 **The fast path alone.** A 12M-row AOCO fact of 8 columns joined to a
 120k-key dimension, 1% of the fact's keys, clustered at the start of each

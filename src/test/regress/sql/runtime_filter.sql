@@ -75,6 +75,19 @@ BEGIN
 	RETURN n;
 END $$;
 
+-- rf_declined(q) reads the reason EXPLAIN (VERBOSE) gives under a hash join
+-- that got no filter.
+CREATE FUNCTION rf_declined(q text) RETURNS SETOF text LANGUAGE plpgsql AS $$
+DECLARE
+	l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (VERBOSE, COSTS OFF) ' || q LOOP
+		IF l LIKE '%Runtime Filter: declined:%' THEN
+			RETURN NEXT trim(l);
+		END IF;
+	END LOOP;
+END $$;
+
 -- The dimension: 5000 keys, a flag that keeps 2% of them, a bigint copy of
 -- the key and a text one for cross-type and text joins.
 CREATE TABLE rf_dim(k int, flag int, kb bigint, name text) DISTRIBUTED BY (k);
@@ -99,9 +112,6 @@ ANALYZE rf_dim;
 ANALYZE rf_fact_heap;
 ANALYZE rf_fact_ao;
 ANALYZE rf_fact_aoco;
-
--- the tables are small; let a probe of a few thousand rows qualify
-SET whpg_runtime_filter_min_probe_rows = 1000;
 
 ----------------------------------------------------------------------
 -- Part 1: the Postgres planner
@@ -225,7 +235,7 @@ INSERT INTO rf_dim_arr SELECT i, ARRAY[i, i % 7], i % 50 FROM generate_series(1,
 CREATE TABLE rf_fact_arr(id int, karr int[]) DISTRIBUTED BY (id);
 INSERT INTO rf_fact_arr
 	SELECT i, ARRAY[(i * 7919) % 6000 + 1, ((i * 7919) % 6000 + 1) % 7]
-	  FROM generate_series(1, 20000) i;
+	  FROM generate_series(1, 60000) i;
 ANALYZE rf_dim_arr;
 ANALYZE rf_fact_arr;
 EXPLAIN (COSTS OFF)
@@ -237,30 +247,53 @@ SELECT rf_same($$SELECT md5(string_agg(f.id::text, ',' ORDER BY f.id)) FROM rf_f
 SELECT rf_planned($$SELECT count(*) FROM rf_fact_aoco f JOIN rf_fact_heap g ON f.k = g.id$$) AS probe_under_motion;
 SELECT rf_same($$SELECT count(*)::text FROM rf_fact_aoco f JOIN rf_fact_heap g ON f.k = g.id$$) AS probe_under_motion;
 
--- Too many probe rows would match: no filter.
-SELECT rf_planned($$SELECT count(*) FROM rf_fact_aoco f JOIN rf_dim d ON f.k = d.k$$) AS unselective;
+-- The two gates on the planner's estimates, one case on each side of each.
+-- A probe estimated under 10000 rows a segment gets no filter: 9000 rows a
+-- segment against 11000.
+CREATE TABLE rf_probe_9k(id int, k int) DISTRIBUTED BY (id);
+INSERT INTO rf_probe_9k SELECT i, (i * 7919) % 6000 + 1 FROM generate_series(1, 27000) i;
+CREATE TABLE rf_probe_11k(id int, k int) DISTRIBUTED BY (id);
+INSERT INTO rf_probe_11k SELECT i, (i * 7919) % 6000 + 1 FROM generate_series(1, 33000) i;
+ANALYZE rf_probe_9k;
+ANALYZE rf_probe_11k;
+SELECT rf_planned($$SELECT count(*) FROM rf_probe_9k f JOIN rf_dim d ON f.k = d.k WHERE d.flag = 3$$) AS probe_9000_rows,
+	   rf_planned($$SELECT count(*) FROM rf_probe_11k f JOIN rf_dim d ON f.k = d.k WHERE d.flag = 3$$) AS probe_11000_rows;
+SELECT rf_declined($$SELECT count(*) FROM rf_probe_9k f JOIN rf_dim d ON f.k = d.k WHERE d.flag = 3$$);
+-- A join expected to keep more than half of the probe rows gets none: the
+-- fact's keys are spread over 1..6000, and a dimension holding 2400 of them
+-- keeps 40% of the rows, one holding 3600 keeps 60%.
+CREATE TABLE rf_dim_40(k int) DISTRIBUTED BY (k);
+INSERT INTO rf_dim_40 SELECT i FROM generate_series(1, 2400) i;
+CREATE TABLE rf_dim_60(k int) DISTRIBUTED BY (k);
+INSERT INTO rf_dim_60 SELECT i FROM generate_series(1, 3600) i;
+ANALYZE rf_dim_40;
+ANALYZE rf_dim_60;
+SELECT rf_planned($$SELECT count(*) FROM rf_fact_aoco f JOIN rf_dim_40 d ON f.k = d.k$$) AS keeps_40_percent,
+	   rf_planned($$SELECT count(*) FROM rf_fact_aoco f JOIN rf_dim_60 d ON f.k = d.k$$) AS keeps_60_percent;
+SELECT rf_declined($$SELECT count(*) FROM rf_fact_aoco f JOIN rf_dim_60 d ON f.k = d.k$$);
+SELECT rf_same($$SELECT count(*)::text FROM rf_fact_aoco f JOIN rf_dim_40 d ON f.k = d.k$$) AS keeps_40_percent;
 
--- The mode. estimate, the default, judges by the estimates; eager plans a
--- filter wherever the shape allows one and leaves the rows to decide, so
--- the unselective join gets one and the scan gives it up as it runs; auto
--- does so only for a probe whose key column has no statistics.
-SET whpg_runtime_filter_mode = eager;
-SELECT rf_planned($$SELECT count(*) FROM rf_fact_aoco f JOIN rf_dim d ON f.k = d.k$$) AS eager_unselective;
-SELECT rf_same($$SELECT count(*)::text FROM rf_fact_aoco f JOIN rf_dim d ON f.k = d.k$$) AS eager_unselective;
-SET whpg_runtime_filter_mode = auto;
-SELECT rf_planned($$SELECT count(*) FROM rf_fact_aoco f JOIN rf_dim d ON f.k = d.k$$) AS auto_with_statistics;
-RESET whpg_runtime_filter_mode;
+-- whpg_runtime_filter_force, a developer option for tests and diagnosis,
+-- leaves both gates out: a filter is planned wherever the shape allows one,
+-- and the rows that arrive decide what becomes of it.
+SET whpg_runtime_filter_force = on;
+SELECT rf_planned($$SELECT count(*) FROM rf_probe_9k f JOIN rf_dim d ON f.k = d.k WHERE d.flag = 3$$) AS forced_small_probe,
+	   rf_planned($$SELECT count(*) FROM rf_fact_aoco f JOIN rf_dim_60 d ON f.k = d.k$$) AS forced_unselective;
+SELECT rf_same($$SELECT count(*)::text FROM rf_fact_aoco f JOIN rf_dim_60 d ON f.k = d.k$$) AS forced_unselective;
 
--- A filter that turns out useless is rested as the scan runs: the
--- selectivity gate is lifted so that one is planned although five probe rows
--- in six have a match, and the ratio lowered so that the scan rests the
--- filter after its first 65536 rows. The answer is the same.
-SET whpg_runtime_filter_max_selectivity = 1.0;
-SET whpg_runtime_filter_disable_ratio = 0.5;
-SELECT rf_planned($$SELECT count(*) FROM rf_fact_heap f JOIN rf_dim d ON f.k = d.k$$) AS forced;
-SELECT rf_same($$SELECT md5(string_agg(f.id::text, ',' ORDER BY f.id)) FROM rf_fact_heap f JOIN rf_dim d ON f.k = d.k$$) AS useless_filter_heap;
-SELECT rf_same($$SELECT md5(string_agg(f.id::text, ',' ORDER BY f.id)) FROM rf_fact_aoco f JOIN rf_dim d ON f.k = d.k$$) AS useless_filter_aoco;
-RESET whpg_runtime_filter_disable_ratio;
+-- A filter that turns out useless is rested as the scan runs. The dimension
+-- holds every key of the fact, so all its rows but those with a NULL key
+-- pass the filter, more than the nine in ten a filter may let through of
+-- the 65536 rows it is judged over; forced, so that one is planned at all.
+-- The answer is the same.
+CREATE TABLE rf_dim_all(k int) DISTRIBUTED REPLICATED;
+INSERT INTO rf_dim_all SELECT i FROM generate_series(1, 6000) i;
+ANALYZE rf_dim_all;
+SELECT rf_planned($$SELECT count(*) FROM rf_fact_heap f JOIN rf_dim_all d ON f.k = d.k$$) AS forced;
+SELECT rf_fault_hits('runtime_filter_rested', $$SELECT count(*) FROM rf_fact_heap f JOIN rf_dim_all d ON f.k = d.k$$) > 0 AS useless_filter_rested;
+SELECT rf_same($$SELECT md5(string_agg(f.id::text, ',' ORDER BY f.id)) FROM rf_fact_heap f JOIN rf_dim_all d ON f.k = d.k$$) AS useless_filter_heap;
+SELECT rf_same($$SELECT md5(string_agg(f.id::text, ',' ORDER BY f.id)) FROM rf_fact_aoco f JOIN rf_dim_all d ON f.k = d.k$$) AS useless_filter_aoco;
+RESET whpg_runtime_filter_force;
 
 -- The rest is not for good. A table loaded in key order has the matching
 -- rows together: here the first 80000 rows a segment all have a match and
@@ -295,7 +328,6 @@ SELECT rf_fault_hits('runtime_filter_rested', $$SELECT count(*), sum(f.amt) FROM
 SELECT rf_removed($$SELECT count(*), sum(f.amt) FROM rf_run_aoco f JOIN rf_dim d ON f.k = d.k$$) BETWEEN 150000 AND 360000 AS aoco_removed_after_waking;
 SELECT rf_same($$SELECT count(*) || ':' || sum(f.amt) FROM rf_run_aoco f JOIN rf_dim d ON f.k = d.k$$) AS run_aoco;
 RESET whpg_staged_scan_min_selectivity;
-RESET whpg_runtime_filter_max_selectivity;
 
 -- EXPLAIN ANALYZE counts what the filter removed on a line of its own, and
 -- "Rows Removed by Filter" stays the scan's own predicate's: absent when the
@@ -381,6 +413,7 @@ SELECT rf_same($$SELECT count(*)::text FROM rf_fact_wide f JOIN rf_stale_small s
 -- would remove, so it is published all the same and the probe's own tally
 -- decides: every row of rf_dim_wide has a match and none is removed; of a
 -- probe whose rows mostly have none, nearly all are.
+SET whpg_runtime_filter_force = on;	-- the probes are under 10000 rows
 SELECT rf_fault_hits('runtime_filter_published', $$SELECT count(*) FROM rf_dim_wide d JOIN rf_stale_small s ON d.k = s.k$$) AS more_keys_than_rows_published;
 SELECT rf_removed($$SELECT count(*) FROM rf_dim_wide d JOIN rf_stale_small s ON d.k = s.k$$) AS more_keys_than_rows_removed;
 SELECT rf_same($$SELECT count(*)::text FROM rf_dim_wide d JOIN rf_stale_small s ON d.k = s.k$$) AS more_keys_than_rows;
@@ -389,6 +422,7 @@ INSERT INTO rf_dim_miss SELECT i::bigint * 1000000 + CASE WHEN i % 100 = 0 THEN 
 ANALYZE rf_dim_miss;
 SELECT rf_removed($$SELECT count(*) FROM rf_dim_miss d JOIN rf_stale_small s ON d.k = s.k$$) > 4800 AS more_keys_than_rows_mostly_removed;
 SELECT rf_same($$SELECT count(*)::text FROM rf_dim_miss d JOIN rf_stale_small s ON d.k = s.k$$) AS more_keys_than_rows_miss;
+RESET whpg_runtime_filter_force;
 
 -- Statistics far above the rows: analyzed at 200000 keys, a hundred are
 -- left, and the 128 kB filter sized for the 33000 a segment the planner
@@ -400,10 +434,10 @@ CREATE TABLE rf_shrunk(k bigint, grp int) DISTRIBUTED BY (k);
 INSERT INTO rf_shrunk SELECT i::bigint * 1000000, i % 2 FROM generate_series(1, 200000) i;
 ANALYZE rf_shrunk;
 DELETE FROM rf_shrunk WHERE k > 100 * 1000000;
-SET whpg_runtime_filter_max_selectivity = 1.0;
+SET whpg_runtime_filter_force = on;	-- the planner expects every probe row to match
 SELECT rf_fault_hits('runtime_filter_folded', $$SELECT count(*) FROM rf_fact_wide_k f JOIN rf_shrunk s ON f.k = s.k WHERE s.grp = 0$$) AS folded_one_per_segment;
 SELECT rf_same($$SELECT count(*)::text FROM rf_fact_wide_k f JOIN rf_shrunk s ON f.k = s.k WHERE s.grp = 0$$) AS folded;
-RESET whpg_runtime_filter_max_selectivity;
+RESET whpg_runtime_filter_force;
 
 -- Rescans. A hash join on the inner side of a nested loop runs again for
 -- every outer row; it keeps its hash table across those runs when its own
@@ -532,7 +566,10 @@ SET search_path = runtime_filter;
 -- pessimistic estimate), so the second filter is left out and the scan
 -- keeps its staged read of the first key. Through a LEFT join (fact outer)
 -- the upper filter still reaches the scan, while the LEFT join itself gets
--- none; a key taken from a lower join's inner side gets none.
+-- none; a key taken from a lower join's inner side gets none. (The upper
+-- join's probe is the lower join's output, a thousand rows a segment and
+-- under the gate on the probe's size: the two-filter case is planned
+-- by force.)
 CREATE FUNCTION rf_filters(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE
 	l text;
@@ -551,11 +588,13 @@ ANALYZE rf_dim_amt;
 -- (k and amt are both derived from the row number, so only amt values 8 and
 -- 18 modulo 20 occur among the rows whose k has flag 3: flag 8 keeps half
 -- of them, flags 0-7 none)
+SET whpg_runtime_filter_force = on;
 EXPLAIN (COSTS OFF)
 SELECT count(*) FROM rf_fact_heap f JOIN rf_dim d ON f.k = d.k JOIN rf_dim_amt a ON f.amt = a.amt WHERE d.flag = 3 AND a.flag = 8;
 SELECT count(*) FROM rf_fact_heap f JOIN rf_dim d ON f.k = d.k JOIN rf_dim_amt a ON f.amt = a.amt WHERE d.flag = 3 AND a.flag = 8;
 SELECT rf_filters($$SELECT count(*) FROM rf_fact_heap f JOIN rf_dim d ON f.k = d.k JOIN rf_dim_amt a ON f.amt = a.amt WHERE d.flag = 3 AND a.flag = 8$$) AS star_two_filters_heap;
 SELECT rf_same($$SELECT md5(string_agg(f.id::text, ',' ORDER BY f.id)) FROM rf_fact_heap f JOIN rf_dim d ON f.k = d.k JOIN rf_dim_amt a ON f.amt = a.amt WHERE d.flag = 3 AND a.flag = 8$$) AS star_two_filters_heap;
+RESET whpg_runtime_filter_force;
 EXPLAIN (COSTS OFF)
 SELECT count(*) FROM rf_fact_aoco f JOIN rf_dim d ON f.k = d.k JOIN rf_dim_amt a ON f.amt = a.amt WHERE d.flag = 3 AND a.flag = 8;
 SELECT rf_filters($$SELECT count(*) FROM rf_fact_aoco f JOIN rf_dim d ON f.k = d.k JOIN rf_dim_amt a ON f.amt = a.amt WHERE d.flag = 3 AND a.flag = 8$$) AS star_keeps_staged_scan;
@@ -604,34 +643,51 @@ SELECT public.gp_inject_fault('runtime_filter_create', 'reset', dbid)
 FROM gp_segment_configuration WHERE role = 'p' AND content >= 0;
 SELECT count(*) FROM rf_fact_aoco f JOIN rf_dim d ON f.k = d.k WHERE d.flag = 3;
 
--- Why a join got no filter: EXPLAIN says, when asked. The last two are joins
--- on two keys: one where neither key alone would drop enough rows (rf_dim's
--- k and name cover 5000 of the fact's 6000), one whose probe has no
--- statistics to choose a key by.
+-- Why a join got no filter: EXPLAIN (VERBOSE) says, under the join. The last
+-- is a join on two keys where neither key alone would drop enough rows
+-- (rf_dim's k and name cover 5000 of the fact's 6000). A join that got a
+-- filter has no such line, and with the feature off there is none anywhere.
+SELECT rf_declined($$SELECT count(*) FROM rf_fact_aoco f LEFT JOIN rf_dim d ON f.k = d.k AND d.flag = 3$$) AS left_join;
+SELECT rf_declined($$SELECT count(*) FROM rf_fact_aoco f JOIN rf_dim d ON f.k = d.k$$) AS unselective;
+SELECT rf_declined($$SELECT count(*) FROM rf_fact_aoco f JOIN rf_fact_heap g ON f.k = g.id$$) AS probe_under_motion;
+SELECT rf_declined($$SELECT count(*) FROM rf_fact_aoco f JOIN rf_dim d ON f.k = d.k AND f.tag = d.name$$) AS two_keys_neither_selective;
+SELECT count(*) AS declined_lines_with_a_filter FROM rf_declined($$SELECT count(*) FROM rf_fact_aoco f JOIN rf_dim d ON f.k = d.k WHERE d.flag = 3$$);
+SET whpg_enable_runtime_filter = off;
+SELECT count(*) AS declined_lines_switched_off FROM rf_declined($$SELECT count(*) FROM rf_fact_aoco f JOIN rf_dim d ON f.k = d.k$$);
+RESET whpg_enable_runtime_filter;
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT count(*) FROM rf_fact_aoco f JOIN rf_dim d ON f.k = d.k;
+
+-- A probe whose key column has no statistics, a table never analyzed, is
+-- not judged by the estimates: they are defaults, the same for a large
+-- table and a small one. It gets its filter and the rows that arrive
+-- decide. So does the small table, the join every probe row has a match
+-- in (rf_dim_all), whose filter the scan then rests, and the join on two
+-- keys, which takes the first eligible one for want of anything to choose
+-- by. Once the table is analyzed the gates judge it again.
 SET gp_autostats_mode = none;
 CREATE TABLE rf_fact_nostats(LIKE rf_fact_heap) DISTRIBUTED BY (id);
 INSERT INTO rf_fact_nostats SELECT * FROM rf_fact_heap;
+CREATE TABLE rf_small_nostats(LIKE rf_fact_heap) DISTRIBUTED BY (id);
+INSERT INTO rf_small_nostats SELECT * FROM rf_fact_heap WHERE id <= 3000;
 RESET gp_autostats_mode;
-SET whpg_runtime_filter_explain = on;
-EXPLAIN (COSTS OFF)
-SELECT count(*) FROM rf_fact_aoco f LEFT JOIN rf_dim d ON f.k = d.k AND d.flag = 3;
-EXPLAIN (COSTS OFF)
-SELECT count(*) FROM rf_fact_aoco f JOIN rf_dim d ON f.k = d.k;
-EXPLAIN (COSTS OFF)
-SELECT count(*) FROM rf_fact_aoco f JOIN rf_fact_heap g ON f.k = g.id;
-EXPLAIN (COSTS OFF)
-SELECT count(*) FROM rf_fact_aoco f JOIN rf_dim d ON f.k = d.k AND f.tag = d.name;
+SELECT rf_planned($$SELECT count(*) FROM rf_fact_nostats f JOIN rf_dim d ON f.k = d.k WHERE d.flag = 3$$) AS no_statistics,
+	   rf_planned($$SELECT count(*) FROM rf_small_nostats f JOIN rf_dim d ON f.k = d.k WHERE d.flag = 3$$) AS no_statistics_small,
+	   rf_planned($$SELECT count(*) FROM rf_fact_nostats f JOIN rf_dim_all d ON f.k = d.k$$) AS no_statistics_every_row_matches;
+SELECT rf_same($$SELECT md5(string_agg(f.id::text, ',' ORDER BY f.id)) FROM rf_fact_nostats f JOIN rf_dim d ON f.k = d.k WHERE d.flag = 3$$) AS no_statistics,
+	   rf_same($$SELECT md5(string_agg(f.id::text, ',' ORDER BY f.id)) FROM rf_small_nostats f JOIN rf_dim d ON f.k = d.k WHERE d.flag = 3$$) AS no_statistics_small;
+SELECT rf_fault_hits('runtime_filter_rested', $$SELECT count(*) FROM rf_fact_nostats f JOIN rf_dim_all d ON f.k = d.k$$) > 0 AS no_statistics_useless_filter_rested;
+SELECT rf_same($$SELECT md5(string_agg(f.id::text, ',' ORDER BY f.id)) FROM rf_fact_nostats f JOIN rf_dim_all d ON f.k = d.k$$) AS no_statistics_every_row_matches;
 EXPLAIN (COSTS OFF)
 SELECT count(*) FROM rf_fact_nostats f JOIN rf_dim_mk d ON f.k = d.k AND f.amt = d.amt;
-RESET whpg_runtime_filter_explain;
-
--- Under auto, the probe without statistics gets a filter over the first
--- eligible key, and the rows decide.
-SET whpg_runtime_filter_mode = auto;
-EXPLAIN (COSTS OFF)
-SELECT count(*) FROM rf_fact_nostats f JOIN rf_dim_mk d ON f.k = d.k AND f.amt = d.amt;
-SELECT rf_same($$SELECT md5(string_agg(f.id::text, ',' ORDER BY f.id)) FROM rf_fact_nostats f JOIN rf_dim_mk d ON f.k = d.k AND f.amt = d.amt$$) AS auto_without_statistics;
-RESET whpg_runtime_filter_mode;
+SELECT rf_same($$SELECT md5(string_agg(f.id::text, ',' ORDER BY f.id)) FROM rf_fact_nostats f JOIN rf_dim_mk d ON f.k = d.k AND f.amt = d.amt$$) AS no_statistics_two_keys;
+ANALYZE rf_fact_nostats;
+ANALYZE rf_small_nostats;
+SELECT rf_planned($$SELECT count(*) FROM rf_fact_nostats f JOIN rf_dim d ON f.k = d.k WHERE d.flag = 3$$) AS analyzed,
+	   rf_planned($$SELECT count(*) FROM rf_small_nostats f JOIN rf_dim d ON f.k = d.k WHERE d.flag = 3$$) AS analyzed_small,
+	   rf_planned($$SELECT count(*) FROM rf_fact_nostats f JOIN rf_dim_all d ON f.k = d.k$$) AS analyzed_every_row_matches;
+SELECT rf_declined($$SELECT count(*) FROM rf_small_nostats f JOIN rf_dim d ON f.k = d.k WHERE d.flag = 3$$) AS analyzed_small;
+SELECT rf_declined($$SELECT count(*) FROM rf_fact_nostats f JOIN rf_dim_all d ON f.k = d.k$$) AS analyzed_every_row_matches;
 
 -- A stage reorder rebuilds the staged quals, probe states included; the
 -- filter's count must survive it, and the rebuild must not trip over the
@@ -640,7 +696,9 @@ RESET whpg_runtime_filter_mode;
 -- d = 1 looks like it keeps 5% of the rows where it keeps 99%, and the
 -- executor swaps the d and e stages at the first window. The filter leads
 -- Phase A (its 2% is the most selective estimate), so the join builds
--- first and the count is exact.
+-- first and the count is exact. (By the planted statistics the scan's own
+-- predicate leaves a few hundred rows a segment, under the gate on the
+-- probe's size: the filter is forced.)
 CREATE FUNCTION rf_plant(rel regclass, att name, freqs real[]) RETURNS bool AS $$
     UPDATE pg_statistic
        SET stanullfrac = 0, stawidth = 4, stadistinct = 2,
@@ -664,6 +722,7 @@ INSERT INTO rf_fact_reorder
 	  FROM generate_series(1, 200000) i;
 ANALYZE rf_fact_reorder;
 SELECT rf_plant('rf_fact_reorder', 'd', '{0.95, 0.05}');
+SET whpg_runtime_filter_force = on;
 EXPLAIN (COSTS OFF)
 SELECT count(*) FROM rf_fact_reorder f JOIN rf_dim dm ON f.k = dm.k
  WHERE dm.flag = 3 AND f.d = 1 AND f.e = 4;
@@ -676,6 +735,7 @@ SELECT rf_same($$SELECT md5(string_agg(f.id::text, ',' ORDER BY f.id)) FROM rf_f
 	AS same_after_reorder;
 SELECT rf_removed($$SELECT count(*) FROM rf_fact_reorder f JOIN rf_dim dm ON f.k = dm.k WHERE dm.flag = 3 AND f.d = 1 AND f.e = 4$$)
 	= :unmatched_reorder AS removed_exact_after_reorder;
+RESET whpg_runtime_filter_force;
 
 -- A scan whose own qual has a SubPlan keeps the one qual it compiled. The
 -- qual without the filter clauses, which a scan otherwise runs while none of
@@ -700,7 +760,6 @@ SELECT rf_same($$SELECT count(*) || ':' || sum(f.amt) FROM rf_fact_heap f JOIN r
 	AS subplan_heap;
 SELECT rf_removed($$SELECT count(*) FROM rf_fact_heap f JOIN rf_dim d ON f.k = d.k WHERE d.flag = 3 AND (f.id IN (SELECT x FROM rf_ids_a) OR f.id IN (SELECT x FROM rf_ids_b))$$) > 0
 	AS subplan_heap_removed;
-SET whpg_runtime_filter_max_selectivity = 1;
 EXPLAIN (COSTS OFF)
 SELECT count(*) FROM rf_run_heap f JOIN rf_dim d ON f.k = d.k
  WHERE f.id IN (SELECT x FROM rf_ids_a) OR f.amt < 7;
@@ -710,7 +769,6 @@ SELECT rf_removed($$SELECT count(*) FROM rf_run_heap f JOIN rf_dim d ON f.k = d.
 	AS subplan_removed_after_waking;
 SELECT rf_same($$SELECT count(*) || ':' || sum(f.amt) FROM rf_run_heap f JOIN rf_dim d ON f.k = d.k WHERE f.id IN (SELECT x FROM rf_ids_a) OR f.amt < 7$$)
 	AS subplan_run_heap;
-RESET whpg_runtime_filter_max_selectivity;
 
 ----------------------------------------------------------------------
 -- Part 2: GPORCA
@@ -738,12 +796,12 @@ SELECT rf_same($$SELECT md5(string_agg(f.id::text, ',' ORDER BY f.id)) FROM rf_f
 SELECT rf_same($$SELECT md5(string_agg(f.id::text, ',' ORDER BY f.id)) FROM rf_fact_aoco f JOIN rf_dim d ON f.tag = d.name WHERE d.flag = 3$$) AS text_key;
 -- The array key GPORCA relabels to anyarray: the filter is on the column,
 -- hashed by its own type. GPORCA expects every probe row to match (it has
--- no statistics on an array column), so the selectivity gate is lifted.
-SET whpg_runtime_filter_max_selectivity = 1.0;
+-- no statistics on an array column), so the filter is forced.
+SET whpg_runtime_filter_force = on;
 EXPLAIN (COSTS OFF)
 SELECT count(*) FROM rf_fact_arr f JOIN rf_dim_arr d ON f.karr = d.karr WHERE d.flag = 3;
 SELECT rf_same($$SELECT md5(string_agg(f.id::text, ',' ORDER BY f.id)) FROM rf_fact_arr f JOIN rf_dim_arr d ON f.karr = d.karr WHERE d.flag = 3$$) AS array_key;
-RESET whpg_runtime_filter_max_selectivity;
+RESET whpg_runtime_filter_force;
 SELECT rf_filters($$SELECT count(*) FROM rf_fact_aoco f JOIN rf_dim d ON f.k = d.k JOIN rf_dim_amt a ON f.amt = a.amt WHERE d.flag = 3 AND a.flag = 8$$) AS star_keeps_staged_scan;
 SELECT rf_same($$SELECT md5(string_agg(f.id::text, ',' ORDER BY f.id)) FROM rf_fact_aoco f JOIN rf_dim d ON f.k = d.k JOIN rf_dim_amt a ON f.amt = a.amt WHERE d.flag = 3 AND a.flag = 8$$) AS star_keeps_staged_scan;
 SELECT rf_planned($$SELECT count(*) FROM rf_fact_aoco f JOIN rf_fact_heap g ON f.k = g.id$$) AS probe_under_motion;
@@ -777,10 +835,8 @@ SELECT rf_planned($$SELECT count(*) FROM rf_fact_aoco f JOIN rf_dim d ON f.k = d
 -- cluster. The gates read the rows the one segment sees: a build side of
 -- 50000 ids fits a 64 kB filter, which three times as many would not.
 SET whpg_runtime_filter_max_size = '64kB';
-SET whpg_runtime_filter_explain = on;
 EXPLAIN (COSTS OFF)
 SELECT count(*) FROM rf_fact_rep f JOIN rf_fact_rep g ON f.id = g.id WHERE g.amt < 250;
-RESET whpg_runtime_filter_explain;
 SELECT rf_same($$SELECT md5(string_agg(f.id::text, ',' ORDER BY f.id)) FROM rf_fact_rep f JOIN rf_fact_rep g ON f.id = g.id WHERE g.amt < 250$$) AS replicated_build;
 RESET whpg_runtime_filter_max_size;
 
@@ -808,15 +864,14 @@ SELECT rf_same($$SELECT count(*) || ':' || sum(f.amt) FROM rf_fact_part f JOIN r
 -- A useless filter on the partitioned fact is rested for every partition's
 -- scan together: the tally is the filter's own, not each scan's, so the
 -- partitions (50000 rows each, fewer than the 65536 a filter is judged over)
--- do not each start it over. Forty of the fifty flags keep four fifths of
--- the dimension, which GPORCA still broadcasts (the whole dimension it
--- would redistribute the fact to), and two probe rows in three match.
-SET whpg_runtime_filter_max_selectivity = 1.0;
-SET whpg_runtime_filter_disable_ratio = 0.5;
-SELECT rf_planned($$SELECT count(*) FROM rf_fact_part f JOIN rf_dim d ON f.k = d.k WHERE d.flag < 40$$) AS forced_partitioned;
-SELECT rf_same($$SELECT md5(string_agg(f.id::text, ',' ORDER BY f.id)) FROM rf_fact_part f JOIN rf_dim d ON f.k = d.k WHERE d.flag < 40$$) AS useless_filter_partitioned;
-RESET whpg_runtime_filter_disable_ratio;
-RESET whpg_runtime_filter_max_selectivity;
+-- do not each start it over, and the filter is rested although no one
+-- partition's scan reads enough rows to judge it. The dimension holds every
+-- key of the fact (Part 1), and the filter is forced.
+SET whpg_runtime_filter_force = on;
+SELECT rf_planned($$SELECT count(*) FROM rf_fact_part f JOIN rf_dim_all d ON f.k = d.k$$) AS forced_partitioned;
+SELECT rf_fault_hits('runtime_filter_rested', $$SELECT count(*) FROM rf_fact_part f JOIN rf_dim_all d ON f.k = d.k$$) > 0 AS useless_filter_partitioned_rested;
+SELECT rf_same($$SELECT md5(string_agg(f.id::text, ',' ORDER BY f.id)) FROM rf_fact_part f JOIN rf_dim_all d ON f.k = d.k$$) AS useless_filter_partitioned;
+RESET whpg_runtime_filter_force;
 
 -- EXPLAIN ANALYZE counts what a scan's filters removed, summed over the
 -- segments ("Rows Removed by Runtime Filter"), apart from "Rows Removed by
@@ -880,6 +935,5 @@ SELECT rf_planned($$SELECT count(*) FROM rf_fact_heap f JOIN rf_dim d ON f.k = d
        rf_planned($$SELECT count(*) FROM rf_fact_aoco f JOIN rf_dim d ON f.k = d.k WHERE d.flag = 3$$) AS hook_sees_jointree_aoco_planner;
 
 RESET optimizer;
-RESET whpg_runtime_filter_min_probe_rows;
 RESET search_path;
 DROP SCHEMA runtime_filter CASCADE;

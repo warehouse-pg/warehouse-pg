@@ -40,7 +40,6 @@ static void
 reset_gucs(void)
 {
 	whpg_runtime_filter_max_size = 4096;
-	whpg_runtime_filter_disable_ratio = 0.9;
 }
 
 /* the hash value a join would compute for the int4 key i */
@@ -442,11 +441,6 @@ test__probe_count__rests_and_wakes(void **state)
 	probe_rows(f, RF_ADAPT_JUDGE_ROWS, 91);
 	assert_true(runtimefilter_resting(f));
 	runtimefilter_wake(f);
-
-	/* a ratio of 1 never rests the filter */
-	whpg_runtime_filter_disable_ratio = 1.0;
-	probe_rows(f, 1000000, 100);
-	assert_false(runtimefilter_resting(f));
 	pfree(f);
 
 	/* the dead filter is never at work, and never written to */

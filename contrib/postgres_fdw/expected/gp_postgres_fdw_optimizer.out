@@ -208,6 +208,7 @@ EXPLAIN (VERBOSE, COSTS FALSE) SELECT * FROM gp_ft1 t1 INNER JOIN gp_ft1 t2 ON t
                ->  Hash Join
                      Output: t1.f1, t1.f2, t1.f3, t2.f1, t2.f2, t2.f3
                      Hash Cond: (t1.f1 = t2.f1)
+                     Runtime Filter: declined: the probe rows come from another slice
                      ->  Redistribute Motion 4:4  (slice2; segments: 4)
                            Output: t1.f1, t1.f2, t1.f3
                            Hash Key: t1.f1
@@ -1425,6 +1426,7 @@ explain (costs false) update t1 set b = b + 1 where b in (select a from gp_all w
    ->  Hash Semi Join
          Hash Cond: (t1.b = a)
          ->  Seq Scan on t1
+               Runtime Filter: b
          ->  Hash
                ->  Broadcast Motion 3:3  (slice1; segments: 3)
                      ->  Foreign Scan on gp_all
@@ -1432,12 +1434,13 @@ explain (costs false) update t1 set b = b + 1 where b in (select a from gp_all w
 (8 rows)
 
 explain (costs false) update t1 set b = b + 1 where b in (select a from gp_any where gp_any.a > 10);
-                               QUERY PLAN
-------------------------------------------------------------------------
+                QUERY PLAN                
+------------------------------------------
  Update on t1
    ->  Hash Semi Join
          Hash Cond: (t1.b = a)
          ->  Seq Scan on t1
+               Runtime Filter: b
          ->  Hash
                ->  Foreign Scan on gp_any
  Optimizer: Pivotal Optimizer (GPORCA)

@@ -25,27 +25,16 @@
 /* GUCs, see guc_gp.c */
 extern bool whpg_enable_runtime_filter;
 
-/*
- * How far the planner pass trusts its estimates (whpg_runtime_filter_mode):
- * estimate gates a filter on them; eager plans one for every join whose
- * shape allows it and leaves the rows that arrive to decide (nodeHashjoin.c:
- * sizing, publishing, resting it while useless); auto is eager for a probe whose key
- * column has no statistics -- a table never analyzed -- and estimate
- * otherwise.
- */
-typedef enum RuntimeFilterMode
-{
-	RF_MODE_ESTIMATE,
-	RF_MODE_EAGER,
-	RF_MODE_AUTO
-} RuntimeFilterMode;
-
-extern int	whpg_runtime_filter_mode;
 extern int	whpg_runtime_filter_max_size;	/* kB, one filter */
-extern double whpg_runtime_filter_max_selectivity;
-extern int	whpg_runtime_filter_min_probe_rows;
-extern double whpg_runtime_filter_disable_ratio;
-extern bool whpg_runtime_filter_explain;
+
+/*
+ * Developer option, for tests and diagnosis: plan a filter for every join
+ * whose shape allows one, whatever the planner pass's estimates say of the
+ * probe's size and of the rows expected to match (planrtfilter.c), and
+ * leave the rows that arrive to decide (nodeHashjoin.c: sizing, publishing;
+ * the probe: resting it while useless).
+ */
+extern bool whpg_runtime_filter_force;
 
 /*
  * Building a filter from the inner side's hash values, one insert per
@@ -228,7 +217,7 @@ extern void runtimefilter_discard(RuntimeFilterBuilder *builder);
 
 /*
  * The probe watches the filter's usefulness, RF_ADAPT_JUDGE_ROWS rows at a
- * time. A filter that let more than whpg_runtime_filter_disable_ratio of
+ * time. A filter that let more than RF_REST_PASS_RATIO of
  * them through is rested: the rows go straight to the join, since every
  * probe would be a hash and a cache line for nothing. The rest is not for
  * good. The rows that pass a filter depend on where the scan is -- a table
@@ -247,6 +236,7 @@ extern void runtimefilter_discard(RuntimeFilterBuilder *builder);
  * qual's probe a row at a time, a scan that has dropped the clause and the
  * Staged Scan's fast path in batches. The dead filter is never written to.
  */
+#define RF_REST_PASS_RATIO		0.9
 #define RF_ADAPT_WINDOW			4096
 #define RF_ADAPT_JUDGE_ROWS		65536
 #define RF_REST_MIN_WINDOWS		16
@@ -331,7 +321,7 @@ extern double runtimefilter_probes_removed(List *probes);
 
 /*
  * Why the planner gave a hash join no filter (HashJoin.rf_decline), for
- * EXPLAIN under whpg_runtime_filter_explain. 0 means a filter was planned,
+ * EXPLAIN (VERBOSE). 0 means a filter was planned,
  * or the join was never considered.
  */
 typedef enum RfDecline

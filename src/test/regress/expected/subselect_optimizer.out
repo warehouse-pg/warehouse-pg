@@ -1378,6 +1378,7 @@ select * from int4_tbl o where (f1, f1) in
    ->  Hash Semi Join
          Output: o.f1
          Hash Cond: (o.f1 = "ANY_subquery".f1)
+         Runtime Filter: declined: too few probe rows
          ->  Seq Scan on public.int4_tbl o
                Output: o.f1
          ->  Hash
@@ -1838,6 +1839,7 @@ select * from x, x x2 where x.n = x2.n;
    ->  Hash Join
          Output: share0_ref2.f1, share0_ref2.n, share0_ref1.f1, share0_ref1.n
          Hash Cond: (share0_ref2.n = share0_ref1.n)
+         Runtime Filter: declined: the probe rows come from another slice
          ->  Redistribute Motion 3:3  (slice2; segments: 3)
                Output: share0_ref2.f1, share0_ref2.n
                Hash Key: share0_ref2.n
@@ -1866,6 +1868,7 @@ select * from x, x x2 where x.n = x2.n;
    ->  Hash Join
          Output: subselect_tbl.f1, ('regression'::name), subselect_tbl_1.f1, ('regression'::name)
          Hash Cond: (('regression'::name) = ('regression'::name))
+         Runtime Filter: declined: the probe rows come from another slice
          ->  Redistribute Motion 3:3  (slice2; segments: 3)
                Output: subselect_tbl.f1, ('regression'::name)
                Hash Key: ('regression'::name)
@@ -2192,6 +2195,7 @@ where
    ->  Hash Join
          Output: tl1.a, tl1.b, tl1.c, tl1.d
          Hash Cond: ((tl1.b = (max(tl2.a))) AND (tl1.c = tl2.b))
+         Runtime Filter: declined: the probe rows come from another slice
          ->  Redistribute Motion 3:3  (slice2; segments: 3)
                Output: tl1.a, tl1.b, tl1.c, tl1.d
                Hash Key: tl1.c
@@ -2211,6 +2215,7 @@ where
                                  ->  Hash Join
                                        Output: tl2.a, tl2.b
                                        Hash Cond: (tl2.d = tl4.d)
+                                       Runtime Filter: declined: the probe rows come from another slice
                                        ->  Redistribute Motion 3:3  (slice4; segments: 3)
                                              Output: tl2.a, tl2.b, tl2.d
                                              Hash Key: tl2.d

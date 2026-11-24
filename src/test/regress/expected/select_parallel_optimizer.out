@@ -1053,6 +1053,7 @@ explain (costs off, verbose)
                Output: PARTIAL count(*)
                ->  Hash Semi Join
                      Hash Cond: ((a.unique1 = b.unique1) AND (a.two = (row_number() OVER (?))))
+                     Runtime Filter: declined: too few probe rows
                      ->  Seq Scan on public.tenk1 a
                            Output: a.unique1, a.unique2, a.two, a.four, a.ten, a.twenty, a.hundred, a.thousand, a.twothousand, a.fivethous, a.tenthous, a.odd, a.even, a.stringu1, a.stringu2, a.string4
                      ->  Hash

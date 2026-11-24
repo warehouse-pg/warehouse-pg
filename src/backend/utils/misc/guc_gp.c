@@ -527,13 +527,6 @@ static const struct config_enum_entry explain_memory_verbosity_options[] = {
 	{NULL, 0}
 };
 
-static const struct config_enum_entry whpg_runtime_filter_mode_options[] = {
-	{"estimate", RF_MODE_ESTIMATE},
-	{"eager", RF_MODE_EAGER},
-	{"auto", RF_MODE_AUTO},
-	{NULL, 0}
-};
-
 static const struct config_enum_entry debug_dtm_action_options[] = {
 	{"none", DEBUG_DTM_ACTION_NONE},
 	{"delay", DEBUG_DTM_ACTION_DELAY},
@@ -727,12 +720,15 @@ struct config_bool ConfigureNamesBool_gp[] =
 		NULL, NULL, NULL
 	},
 	{
-		{"whpg_runtime_filter_explain", PGC_USERSET, DEVELOPER_OPTIONS,
-			gettext_noop("EXPLAIN says why a hash join got no runtime filter."),
-			gettext_noop("A \"Runtime Filter: declined: ...\" line under each hash join the planner looked at and gave none."),
+		{"whpg_runtime_filter_force", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Plans a runtime filter for every hash join whose shape allows one."),
+			gettext_noop("For tests and diagnosis: the planner's estimates of the probe's size and of "
+						 "the rows expected to match are not consulted. The size limit still holds, "
+						 "and the rows that arrive size the filter, decide whether it is published "
+						 "and rest it while it proves useless."),
 			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE | GUC_EXPLAIN
 		},
-		&whpg_runtime_filter_explain,
+		&whpg_runtime_filter_force,
 		false,
 		NULL, NULL, NULL
 	},
@@ -4120,16 +4116,6 @@ struct config_int ConfigureNamesInt_gp[] =
 		NULL, NULL, NULL
 	},
 	{
-		{"whpg_runtime_filter_min_probe_rows", PGC_USERSET, DEVELOPER_OPTIONS,
-			gettext_noop("Estimated probe rows below which a hash join gets no runtime filter."),
-			NULL,
-			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE | GUC_EXPLAIN
-		},
-		&whpg_runtime_filter_min_probe_rows,
-		10000, 0, INT_MAX,
-		NULL, NULL, NULL
-	},
-	{
 		{"gp_blockdirectory_entry_min_range", PGC_USERSET, GP_ARRAY_TUNING,
 			gettext_noop("Minimal range in bytes one block directory entry covers."),
 			gettext_noop("Used to reduce the size of a block directory."),
@@ -4580,26 +4566,6 @@ struct config_real ConfigureNamesReal_gp[] =
 		},
 		&whpg_staged_scan_min_selectivity,
 		0.10, 0.0, 1.0,
-		NULL, NULL, NULL
-	},
-	{
-		{"whpg_runtime_filter_max_selectivity", PGC_USERSET, DEVELOPER_OPTIONS,
-			gettext_noop("Estimated fraction of probe rows with a match above which a hash join gets no runtime filter."),
-			NULL,
-			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE | GUC_EXPLAIN
-		},
-		&whpg_runtime_filter_max_selectivity,
-		0.5, 0.0, 1.0,
-		NULL, NULL, NULL
-	},
-	{
-		{"whpg_runtime_filter_disable_ratio", PGC_USERSET, DEVELOPER_OPTIONS,
-			gettext_noop("Fraction of probe rows a runtime filter may let through before the scan rests it."),
-			gettext_noop("A rested filter is sampled again later in the scan and put back to work if it removes rows; 1 never rests a filter."),
-			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE | GUC_EXPLAIN
-		},
-		&whpg_runtime_filter_disable_ratio,
-		0.9, 0.0, 1.0,
 		NULL, NULL, NULL
 	},
 
@@ -5106,22 +5072,6 @@ struct config_enum ConfigureNamesEnum_gp[] =
 		},
 		&explain_memory_verbosity,
 		EXPLAIN_MEMORY_VERBOSITY_SUPPRESS, explain_memory_verbosity_options,
-		NULL, NULL, NULL
-	},
-
-	{
-		{"whpg_runtime_filter_mode", PGC_USERSET, QUERY_TUNING_OTHER,
-			gettext_noop("How far a hash join's runtime filter trusts the planner's estimates."),
-			gettext_noop("estimate: no filter for a probe estimated small, a join expected to keep "
-						 "most of its probe rows, or a join on several keys without statistics to "
-						 "choose one by. eager: a filter for every join whose shape allows one; the "
-						 "rows that arrive size it, decide whether it is published and switch it off "
-						 "when it proves useless. auto: eager for a probe whose key column has no "
-						 "statistics, estimate otherwise."),
-			GUC_NOT_IN_SAMPLE | GUC_EXPLAIN
-		},
-		&whpg_runtime_filter_mode,
-		RF_MODE_ESTIMATE, whpg_runtime_filter_mode_options,
 		NULL, NULL, NULL
 	},
 

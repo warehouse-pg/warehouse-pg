@@ -1115,6 +1115,7 @@ WHERE
          Output: hjtest_1.a, hjtest_2.a, hjtest_1.tableoid, hjtest_2.tableoid
          Hash Cond: (((1) = hjtest_1.id) AND (((SubPlan 2)) = ((SubPlan 4))))
          Join Filter: (hjtest_1.a <> hjtest_2.b)
+         Runtime Filter: declined: the probe rows come from another slice
          ->  Redistribute Motion 3:3  (slice2; segments: 3)
                Output: hjtest_2.a, hjtest_2.b, hjtest_2.tableoid, (1), ((SubPlan 2))
                Hash Key: (1)
@@ -1192,6 +1193,7 @@ WHERE
          Output: hjtest_1.a, hjtest_2.a, hjtest_1.tableoid, hjtest_2.tableoid
          Hash Cond: (((1) = hjtest_1.id) AND (((SubPlan 2)) = ((SubPlan 4))))
          Join Filter: (hjtest_1.a <> hjtest_2.b)
+         Runtime Filter: declined: the probe rows come from another slice
          ->  Redistribute Motion 3:3  (slice2; segments: 3)
                Output: hjtest_2.a, hjtest_2.b, hjtest_2.tableoid, (1), ((SubPlan 2))
                Hash Key: (1), ((SubPlan 2))

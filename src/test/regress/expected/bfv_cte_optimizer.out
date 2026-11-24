@@ -564,7 +564,7 @@ explain (analyze off, costs off, verbose off)
 with cte1 as ( select *,row_number() over ( partition by i) as rank_desc from rep),
 cte2 as ( select 'col1' tblnm,count(*) diffcnt from ( select * from cte1) x)
 select * from ( select 'col1' tblnm from cte1) a left join cte2 c on a.tblnm=c.tblnm;
-                                             QUERY PLAN                                             
+                           QUERY PLAN                           
 ----------------------------------------------------------------
  Sequence
    ->  Shared Scan (share slice:id 0:0)
@@ -610,7 +610,7 @@ with
     t1 as (select * from rep1),
     t2 as (select id, rc from rep2 where ri = 101991)
 select p.*from t1 p join t2 r on p.isc = r.rc join t2 r1 on p.iscd = r1.rc;
-                                             QUERY PLAN                                             
+                                 QUERY PLAN                                  
 -----------------------------------------------------------------------------
  Gather Motion 1:1  (slice1; segments: 1)
    ->  Sequence
@@ -622,12 +622,14 @@ select p.*from t1 p join t2 r on p.isc = r.rc join t2 r1 on p.iscd = r1.rc;
                ->  Hash Join
                      Hash Cond: ((rep1.iscd)::text = (share1_ref3.rc)::text)
                      ->  Seq Scan on rep1
+                           Runtime Filter: iscd
+                           Runtime Filter: isc
                      ->  Hash
                            ->  Shared Scan (share slice:id 1:1)
                ->  Hash
                      ->  Shared Scan (share slice:id 1:1)
  Optimizer: GPORCA
-(15 rows)
+(17 rows)
 
 with
     t1 as (select * from rep1),
@@ -663,7 +665,7 @@ case when (t2.b in (1,2)) then (select rep_cte.a from rep_cte)
 when (t2.b in (1,2)) then (select rep_cte.a from rep_cte)
 end as rep_cte_a
 from t1_cte join t2 on t1_cte.b = t2.b;
-                                                          QUERY PLAN                                                          
+                                        QUERY PLAN                                        
 ------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Sequence
@@ -678,6 +680,7 @@ from t1_cte join t2 on t1_cte.b = t2.b;
                      ->  Hash Join
                            Hash Cond: (t1.b = t2.b)
                            ->  Seq Scan on t1
+                                 Runtime Filter: b
                            ->  Hash
                                  ->  Broadcast Motion 3:3  (slice6; segments: 3)
                                        ->  Seq Scan on t2
@@ -696,7 +699,7 @@ from t1_cte join t2 on t1_cte.b = t2.b;
                                        ->  Gather Motion 3:1  (slice3; segments: 3)
                                              ->  Shared Scan (share slice:id 3:1)
  Optimizer: GPORCA
-(31 rows)
+(32 rows)
 
 with t1_cte as (select b from t1),
 rep_cte as (select a from rep)

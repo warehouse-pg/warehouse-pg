@@ -1875,13 +1875,14 @@ explain (verbose on, costs off) select ex2.b/2, sum(ex1.a) from ex1, (select a, 
                            Hash Cond: (ex1.a = ex2.a)
                            ->  Seq Scan on bfv_aggregate.ex1
                                  Output: ex1.a, ex1.b, ex1.c
+                                 Runtime Filter: ex1.a
                            ->  Hash
                                  Output: ex2.b, ex2.a
                                  ->  Seq Scan on bfv_aggregate.ex2
                                        Output: ex2.b, ex2.a
  Optimizer: Postgres query optimizer
  Settings: optimizer = 'off'
-(22 rows)
+(23 rows)
 
 select ex2.b/2, sum(ex1.a) from ex1, (select a, coalesce(b, 1) b from ex2) ex2 where ex1.a = ex2.a group by ex2.b/2;
  ?column? | sum 
@@ -1982,6 +1983,7 @@ explain SELECT t1.a, sum(c) from t1_replicated as t1 join t2_replicated as t2 on
          ->  Hash Join  (cost=1463.50..707023.85 rows=5217660 width=12)
                Hash Cond: (t2.a = t1.a)
                ->  Seq Scan on t2_replicated t2  (cost=0.00..961.00 rows=86100 width=4)
+                     Runtime Filter: a
                ->  Hash  (cost=706.00..706.00 rows=60600 width=12)
                      ->  Seq Scan on t1_replicated t1  (cost=0.00..706.00 rows=60600 width=12)
  Optimizer: Postgres query optimizer

@@ -9886,12 +9886,13 @@ select c.cid cid,
 from cust c, sales s, datedim d
 where c.cid = s.cid and s.date_sk = d.date_sk and
       ((d.year = 2001 and lower(s.type) = 't1' and plusone(d.moy) = 5) or (d.moy = 4 and upper(s.type) = 'T2'));
-                                                                                            QUERY PLAN                                                                                            
---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+                                                                               QUERY PLAN                                                                               
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)  (cost=0.00..1293.00 rows=1 width=24)
    ->  Hash Join  (cost=0.00..1293.00 rows=1 width=24)
          Hash Cond: (c.cid = s.cid)
          ->  Seq Scan on cust c  (cost=0.00..431.00 rows=1 width=20)
+               Runtime Filter: cid
          ->  Hash  (cost=862.00..862.00 rows=1 width=8)
                ->  Redistribute Motion 3:3  (slice2; segments: 3)  (cost=0.00..862.00 rows=1 width=8)
                      Hash Key: s.cid
@@ -9906,7 +9907,7 @@ where c.cid = s.cid and s.date_sk = d.date_sk and
                                  ->  Seq Scan on datedim d  (cost=0.00..431.00 rows=1 width=12)
                                        Filter: ((year = 2001) OR (moy = 4))
  Optimizer: Pivotal Optimizer (GPORCA)
-(18 rows)
+(19 rows)
 
 -- Bitmap indexes
 drop table if exists orca.bm_test;
@@ -11481,18 +11482,19 @@ NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 INSERT INTO varchar_sc_array_cmp VALUES ('a'), ('b'), ('c'), ('d');
 EXPLAIN SELECT * FROM varchar_sc_array_cmp t1, varchar_sc_array_cmp t2 where t1.a = t2.a and t1.a in ('b', 'c');
-                                                  QUERY PLAN                                                   
----------------------------------------------------------------------------------------------------------------
+                                                QUERY PLAN                                                
+----------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)  (cost=0.00..862.00 rows=1 width=16)
    ->  Hash Join  (cost=0.00..862.00 rows=1 width=16)
          Hash Cond: ((t1.a)::text = (t2.a)::text)
          ->  Seq Scan on varchar_sc_array_cmp t1  (cost=0.00..431.00 rows=1 width=8)
                Filter: (((a)::text = ANY ('{b,c}'::text[])) AND (a = ANY ('{b,c}'::character varying[])))
+               Runtime Filter: a
          ->  Hash  (cost=431.00..431.00 rows=1 width=8)
                ->  Seq Scan on varchar_sc_array_cmp t2  (cost=0.00..431.00 rows=1 width=8)
                      Filter: (a = ANY ('{b,c}'::character varying[]))
  Optimizer: Pivotal Optimizer (GPORCA)
-(9 rows)
+(10 rows)
 
 SELECT * FROM varchar_sc_array_cmp t1, varchar_sc_array_cmp t2 where t1.a = t2.a and t1.a in ('b', 'c');
  a | a 
@@ -11510,11 +11512,12 @@ EXPLAIN SELECT * FROM varchar_sc_array_cmp t1, varchar_sc_array_cmp t2 where t1.
          Hash Cond: ((t1.a)::text = (t2.a)::text)
          ->  Seq Scan on varchar_sc_array_cmp t1  (cost=0.00..431.00 rows=1 width=8)
                Filter: ((((a)::text = ANY ('{b,c}'::text[])) OR ((a)::text = 'a'::text)) AND (a = ANY ('{a,b,c}'::character varying[])))
+               Runtime Filter: a
          ->  Hash  (cost=431.00..431.00 rows=1 width=8)
                ->  Seq Scan on varchar_sc_array_cmp t2  (cost=0.00..431.00 rows=1 width=8)
                      Filter: (a = ANY ('{a,b,c}'::character varying[]))
  Optimizer: Pivotal Optimizer (GPORCA)
-(9 rows)
+(10 rows)
 
 SELECT * FROM varchar_sc_array_cmp t1, varchar_sc_array_cmp t2 where t1.a = t2.a and (t1.a in ('b', 'c') OR t1.a = 'a');
  a | a 
@@ -11871,13 +11874,14 @@ explain select * from part1, part2 where part1.b = part2.b limit 5;
                      Hash Cond: (part1.b = part2.b)
                      ->  Dynamic Seq Scan on part1  (cost=0.00..431.01 rows=334 width=8)
                            Number of partitions to scan: 4 (out of 4)
+                           Runtime Filter: b
                      ->  Hash  (cost=431.02..431.02 rows=100 width=8)
                            ->  Partition Selector (selector id: $0)  (cost=0.00..431.02 rows=100 width=8)
                                  ->  Broadcast Motion 3:3  (slice2; segments: 3)  (cost=0.00..431.02 rows=100 width=8)
                                        ->  Dynamic Seq Scan on part2  (cost=0.00..431.00 rows=34 width=8)
                                              Number of partitions to scan: 4 (out of 4)
  Optimizer: Pivotal Optimizer (GPORCA)
-(13 rows)
+(14 rows)
 
 -- test opfamily handling in ORCA
 CREATE FUNCTION abseq(int, int) RETURNS BOOL AS
@@ -12184,6 +12188,7 @@ NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause. Creating a NULL policy entr
                      ->  Hash Join  (cost=0.00..431.07 rows=1 width=8)
                            Output: c, lid
                            Hash Cond: (l1.lid = int4in(textout(('99'::text))))
+                           Runtime Filter: declined: too few probe rows
                            ->  Seq Scan on orca.t55 l1  (cost=0.00..431.01 rows=334 width=8)
                                  Output: c, lid
                            ->  Hash  (cost=0.00..0.00 rows=1 width=8)
@@ -12192,7 +12197,7 @@ NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause. Creating a NULL policy entr
                                        Output: '2020-01-01'::text, '99'::text
  Optimizer: Pivotal Optimizer (GPORCA)
  Settings: optimizer_enable_coordinator_only_queries = 'on', optimizer_enable_master_only_queries = 'on', optimizer_join_order = 'query', optimizer_segments = '3'
-(25 rows)
+(22 rows)
 
 CREATE TABLE TP AS
 WITH META AS (SELECT '2020-01-01' AS VALID_DT, '99' AS LOAD_ID)
@@ -13629,20 +13634,21 @@ where d.msisdn=f.subscriberaddress and
       f.sessioncreationtimestamp >= d.start_dtm and
       f.sessioncreationtimestamp <d.end_dtm and
       (mkt_model like '%IPHONE%');
-                                                                                    QUERY PLAN                                                                                     
------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+                                                                  QUERY PLAN                                                                   
+-----------------------------------------------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Join
          Hash Cond: ((d.msisdn)::text = (stg_xdr_crce_cdr.subscriberaddress)::text)
          Join Filter: ((stg_xdr_crce_cdr.sessioncreationtimestamp >= d.start_dtm) AND (stg_xdr_crce_cdr.sessioncreationtimestamp < d.end_dtm))
          ->  Seq Scan on dim_customer_device d
                Filter: ((mkt_model)::text ~~ '%IPHONE%'::text)
+               Runtime Filter: msisdn
          ->  Hash
                ->  Broadcast Motion 3:3  (slice2; segments: 3)
                      ->  Dynamic Seq Scan on stg_xdr_crce_cdr
                            Number of partitions to scan: 2 (out of 2)
  Optimizer: Pivotal Optimizer (GPORCA)
-(11 rows)
+(12 rows)
 
 -- PartTbl-Relabel-Equality.mdp
 -- from dxl
@@ -14348,8 +14354,8 @@ EXPLAIN (COSTS OFF) SELECT (
     LEFT JOIN join_null_rej2 t2 ON t1.i = t2.i
     WHERE t2.i < join_null_rej_func()
 );
-                                 QUERY PLAN                                 
-----------------------------------------------------------------------------
+                                QUERY PLAN                                
+--------------------------------------------------------------------------
  Nested Loop Left Join
    Join Filter: true
    ->  Result
@@ -14359,11 +14365,12 @@ EXPLAIN (COSTS OFF) SELECT (
                      ->  Hash Join
                            Hash Cond: (t1.i = t2.i)
                            ->  Seq Scan on join_null_rej1 t1
+                                 Runtime Filter: i
                            ->  Hash
                                  ->  Seq Scan on join_null_rej2 t2
                                        Filter: (i < join_null_rej_func())
  Optimizer: Pivotal Optimizer (GPORCA)
-(13 rows)
+(14 rows)
 
 -- Optional, but let's check we get same result for both, folded and
 -- not folded join_null_rej_func() function.
@@ -14883,7 +14890,7 @@ CREATE TABLE schema_test_table(a numeric, b numeric(5,2), c char(10) NOT NULL) d
 -- Below query is used by external libraries to fetch schema of table.
 -- Test that the typmod of column type is correct in explain plan.
 EXPLAIN (VERBOSE, COSTS OFF) SELECT * FROM schema_test_table WHERE 1=0;
-                                                            QUERY PLAN
+                                                            QUERY PLAN                                                             
 -----------------------------------------------------------------------------------------------------------------------------------
  Result
    Output: NULL::numeric, NULL::numeric(5,2), NULL::character(10)
@@ -14897,7 +14904,7 @@ EXPLAIN (VERBOSE, COSTS OFF) SELECT * FROM schema_test_table WHERE 1=0;
 -- Test ALL NULL scalar array compare 
 create table DatumSortedSet_core (a int, b character varying NOT NULL) distributed by (a);
 explain select * from DatumSortedSet_core where b in (NULL, NULL);
-                QUERY PLAN
+                QUERY PLAN                 
 -------------------------------------------
  Result  (cost=0.00..0.00 rows=0 width=12)
    One-Time Filter: false
@@ -14953,17 +14960,18 @@ create table foo (a int, b int) distributed by(a);
 create table bar (a int, b int) distributed by(a);
 -- gp_max_slices : 0 (unlimited) and gp_max_system_slices : 0 (unlimited)
 explain (costs off) select foo.a, foo.b from foo, bar where foo.b=bar.b;
-                          QUERY PLAN
+                          QUERY PLAN                           
 ---------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Join
          Hash Cond: (foo.b = bar.b)
          ->  Seq Scan on foo
+               Runtime Filter: b
          ->  Hash
                ->  Broadcast Motion 3:3  (slice2; segments: 3)
                      ->  Seq Scan on bar
  Optimizer: GPORCA
-(8 rows)
+(9 rows)
 
 -- gp_max_slices : 1 and gp_max_system_slices : 0 (unlimited)
 -- Query should generate an error because the number of slices in the query exceeds the gp_max_slices

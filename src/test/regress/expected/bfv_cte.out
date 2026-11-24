@@ -542,7 +542,7 @@ explain (analyze off, costs off, verbose off)
 with cte1 as ( select *,row_number() over ( partition by i) as rank_desc from rep),
 cte2 as ( select 'col1' tblnm,count(*) diffcnt from ( select * from cte1) x)
 select * from ( select 'col1' tblnm from cte1) a left join cte2 c on a.tblnm=c.tblnm;
-                                                       QUERY PLAN                                                       
+                           QUERY PLAN                            
 -----------------------------------------------------------------
  Hash Left Join
    Hash Cond: (('col1'::text) = ('col1'::text))
@@ -589,7 +589,7 @@ with
     t1 as (select * from rep1),
     t2 as (select id, rc from rep2 where ri = 101991)
 select p.*from t1 p join t2 r on p.isc = r.rc join t2 r1 on p.iscd = r1.rc;
-                                            QUERY PLAN                                             
+                            QUERY PLAN                            
 ------------------------------------------------------------------
  Gather Motion 1:1  (slice1; segments: 1)
    ->  Hash Join
@@ -598,6 +598,7 @@ select p.*from t1 p join t2 r on p.isc = r.rc join t2 r1 on p.iscd = r1.rc;
                Hash Cond: ((rep1.isc)::text = (r.rc)::text)
                ->  Seq Scan on rep1
                      Runtime Filter: isc
+                     Runtime Filter: iscd
                ->  Hash
                      ->  Subquery Scan on r
                            ->  Seq Scan on rep2
@@ -607,7 +608,7 @@ select p.*from t1 p join t2 r on p.isc = r.rc join t2 r1 on p.iscd = r1.rc;
                      ->  Seq Scan on rep2 rep2_1
                            Filter: (ri = '101991'::numeric)
  Optimizer: Postgres-based planner
-(15 rows)
+(17 rows)
 
 with
     t1 as (select * from rep1),

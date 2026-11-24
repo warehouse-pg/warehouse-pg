@@ -531,24 +531,58 @@ rf_plan_rows(RuntimeFilterPlanContext *cx, Plan *plan)
 }
 
 /*
- * Plan a filter for this join whatever the estimates say? Under
- * whpg_runtime_filter_mode = eager, always; under auto, when the probe
- * column has no statistics to estimate by (a table never analyzed), since
- * the gates would then judge on defaults. The rows that arrive decide the
- * rest (nodeHashjoin.c): the filter's size, whether it is published, and
- * its rest while it proves useless.
+ * The gates on the planner's estimates. Rows are a segment's, as a plan's
+ * are.
+ *
+ * RF_MIN_PROBE_ROWS: a probe estimated smaller gets no filter. Building one
+ * is a pass over the hash table and an allocation of 8 kB at the least, and
+ * the scan it would spare is a few blocks: there is nothing to win back.
+ * The probe is the join's outer side as it reaches the join, after the
+ * scan's own predicate and, for the upper join of a chain over one scan,
+ * after the joins below it: the rows another filter could still remove.
+ *
+ * RF_MAX_SELECTIVITY: no filter when more than this share of the probe rows
+ * is expected to find a match. Testing a row against the filter costs about
+ * a quarter of the hash table lookup it can spare, so a filter that lets
+ * three rows in four through breaks even on the join alone, and one that
+ * lets nine in ten through only costs (RF_REST_PASS_RATIO). The gate sits
+ * under the break-even because it judges by an estimate, the join's output
+ * over the probe's rows, which errs.
+ *
+ * Both values were checked against their neighbours on TPC-DS at scale
+ * factor 30 (README.runtime_filter.md, "The gates"): a stricter gate, 0.3
+ * or 100000 rows, gives up filters that pay, and a laxer one, 0.7 or 1000
+ * rows, adds filters that change nothing measurable.
+ *
+ * Both are left out for a probe whose key column has no statistics
+ * (rf_plan_unjudged()), and by whpg_runtime_filter_force, a developer
+ * option, for every probe. The gate on the inner side's size
+ * (runtimefilter_fits()) is no estimate of worth but a limit on memory, and
+ * always holds.
+ */
+#define RF_MIN_PROBE_ROWS		10000
+#define RF_MAX_SELECTIVITY		0.5
+
+/*
+ * Plan a filter for this probe without judging it by the estimates? Yes
+ * when its key column has no statistics -- a table never analyzed. The
+ * estimates are defaults then (one row under GPORCA, ten pages under the
+ * Postgres planner, whatever the table's size), and a gate that judged by
+ * them would turn down the large table with the small one. The rows that
+ * arrive decide instead (nodeHashjoin.c: the filter's size, whether it is
+ * published; the probe: its rest while it proves useless), so that a wrong
+ * guess costs a bounded amount, where no filter on a large fact costs the
+ * whole benefit. Also yes under whpg_runtime_filter_force.
  */
 static bool
-rf_eager(RuntimeFilterPlanContext *cx, SeqScan *scan, Node *scanKey)
+rf_plan_unjudged(RuntimeFilterPlanContext *cx, SeqScan *scan, Node *scanKey)
 {
 	RangeTblEntry *rte;
 	Relation	rel;
 	bool		stats;
 
-	if (whpg_runtime_filter_mode == RF_MODE_EAGER)
+	if (whpg_runtime_filter_force)
 		return true;
-	if (whpg_runtime_filter_mode != RF_MODE_AUTO)
-		return false;
 
 	while (scanKey != NULL && IsA(scanKey, RelabelType))
 		scanKey = (Node *) ((RelabelType *) scanKey)->arg;
@@ -581,7 +615,7 @@ rf_consider_hashjoin(RuntimeFilterPlanContext *cx, HashJoin *hj)
 	double		probeRows;
 	double		buildRows;
 	double		joinSel;
-	bool		eager;
+	bool		unjudged;
 	Oid			collation;
 	int			paramid;
 	Expr	   *clause;
@@ -691,8 +725,8 @@ rf_consider_hashjoin(RuntimeFilterPlanContext *cx, HashJoin *hj)
 			else if (rf_key_match_fraction(cx, hj, i, keyScan, keyScanKey,
 										   probeRows, buildRows, &keySel))
 				keySel = Max(keySel, joinSel);
-			else if (rf_eager(cx, keyScan, keyScanKey))
-				keySel = joinSel;	/* no statistics: the first such key will do */
+			else if (rf_plan_unjudged(cx, keyScan, keyScanKey))
+				keySel = joinSel;	/* nothing to choose by: the first such key will do */
 			else
 				keyDecline = RF_DECLINE_KEY_STATS;
 		}
@@ -726,19 +760,19 @@ rf_consider_hashjoin(RuntimeFilterPlanContext *cx, HashJoin *hj)
 
 	/*
 	 * Worth it? A small probe gains nothing; a probe most of whose rows
-	 * match pays the probes for little -- by the estimates, which the mode
-	 * says how far to trust (rf_eager()). An inner side too large for a
-	 * filter within the size limit would only be dropped at run time, after
-	 * a pass over it, in any mode.
+	 * match pays the probes for little -- by the estimates, where there are
+	 * statistics to estimate from (rf_plan_unjudged()). An inner side
+	 * too large for a filter within the size limit would only be dropped at
+	 * run time, after a pass over it.
 	 */
-	eager = rf_eager(cx, scan, scanKey);
-	if (!eager &&
-		(probeRows < (double) whpg_runtime_filter_min_probe_rows || probeRows <= 0))
+	unjudged = rf_plan_unjudged(cx, scan, scanKey);
+	if (!unjudged &&
+		(probeRows < RF_MIN_PROBE_ROWS || probeRows <= 0))
 	{
 		hj->rf_decline = RF_DECLINE_PROBE_SMALL;
 		return;
 	}
-	if (!eager && sel > whpg_runtime_filter_max_selectivity)
+	if (!unjudged && sel > RF_MAX_SELECTIVITY)
 	{
 		hj->rf_decline = (nkeys == 1) ? RF_DECLINE_UNSELECTIVE
 			: RF_DECLINE_KEYS_UNSELECTIVE;

@@ -3292,13 +3292,12 @@ DEALLOCATE p6;
 -- plan: a join on two keys there looks the probe's statistics up by range
 -- table index, and gets a filter over the selective key.
 CREATE TABLE tf_rf_probe(id int, k int, k2 int) DISTRIBUTED BY (id);
-INSERT INTO tf_rf_probe SELECT i, i % 500, i % 7 FROM generate_series(1, 20000) i;
+INSERT INTO tf_rf_probe SELECT i, i % 500, i % 7 FROM generate_series(1, 60000) i;
 CREATE TABLE tf_rf_build(k int, k2 int, flag int) DISTRIBUTED BY (k);
 INSERT INTO tf_rf_build SELECT i, i % 7, i % 10 FROM generate_series(1, 500) i;
 ANALYZE tf_rf_probe;
 ANALYZE tf_rf_build;
 SET optimizer = off;
-SET whpg_runtime_filter_min_probe_rows = 0;
 EXPLAIN (COSTS OFF)
 SELECT * FROM multiset_2(TABLE(SELECT p.id, 'x'::text FROM tf_rf_probe p JOIN tf_rf_build b ON p.k = b.k AND p.k2 = b.k2 WHERE b.flag = 3));
                              QUERY PLAN                              
@@ -3314,15 +3313,14 @@ SELECT * FROM multiset_2(TABLE(SELECT p.id, 'x'::text FROM tf_rf_probe p JOIN tf
                            ->  Seq Scan on tf_rf_build b
                                  Filter: (flag = 3)
  Optimizer: Postgres-based planner
-(10 rows)
+(11 rows)
 
 SELECT count(*) FROM multiset_2(TABLE(SELECT p.id, 'x'::text FROM tf_rf_probe p JOIN tf_rf_build b ON p.k = b.k AND p.k2 = b.k2 WHERE b.flag = 3));
  count 
 -------
-   300
+   900
 (1 row)
 
-RESET whpg_runtime_filter_min_probe_rows;
 RESET optimizer;
 -- =======
 -- Cleanup

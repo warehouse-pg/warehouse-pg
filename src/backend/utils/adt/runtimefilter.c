@@ -63,12 +63,8 @@
 
 /* GUCs */
 bool		whpg_enable_runtime_filter = true;
-int			whpg_runtime_filter_mode = RF_MODE_ESTIMATE;
 int			whpg_runtime_filter_max_size = 4096;	/* kB */
-double		whpg_runtime_filter_max_selectivity = 0.5;
-int			whpg_runtime_filter_min_probe_rows = 10000;
-double		whpg_runtime_filter_disable_ratio = 0.9;
-bool		whpg_runtime_filter_explain = false;
+bool		whpg_runtime_filter_force = false;
 
 #define RF_BITS_PER_KEY			16	/* sizing target */
 #define RF_MIN_BITS_PER_KEY		6	/* planner gate: fewer and no filter is planned */
@@ -158,7 +154,7 @@ rf_alloc(int log2, MemoryContext cxt)
 void
 runtimefilter_window_end(RuntimeFilter *f)
 {
-	if ((double) f->passed > whpg_runtime_filter_disable_ratio * (double) f->seen)
+	if ((double) f->passed > RF_REST_PASS_RATIO * (double) f->seen)
 	{
 		f->rest_rows = (int64) f->rest_windows * RF_ADAPT_WINDOW;
 		f->rest_windows = Min(f->rest_windows * 2, RF_REST_MAX_WINDOWS);
@@ -850,7 +846,7 @@ runtimefilter_decline_reason(int code)
 		case RF_DECLINE_KEY_STATS:
 			return "no statistics on the probe's key columns to choose a hash key by";
 		case RF_DECLINE_PROBE_SMALL:
-			return "fewer probe rows than whpg_runtime_filter_min_probe_rows";
+			return "too few probe rows";
 		case RF_DECLINE_UNSELECTIVE:
 			return "too many probe rows expected to match";
 		case RF_DECLINE_KEYS_UNSELECTIVE:

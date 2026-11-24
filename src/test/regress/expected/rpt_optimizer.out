@@ -739,8 +739,8 @@ create table t_hashdist(a int, b int, c int) distributed by (a);
 create table t_replicate_volatile(a int, b int, c int) distributed replicated;
 ---- pushed down filter
 explain (costs off) select * from t_replicate_volatile, t_hashdist where t_replicate_volatile.a > random();
-                        QUERY PLAN                        
-----------------------------------------------------------
+                           QUERY PLAN                           
+----------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Nested Loop
          Join Filter: true
@@ -753,8 +753,8 @@ explain (costs off) select * from t_replicate_volatile, t_hashdist where t_repli
 
 -- join qual
 explain (costs off) select * from t_hashdist, t_replicate_volatile x, t_replicate_volatile y where x.a + y.a > random();
-                                                QUERY PLAN                                                 
------------------------------------------------------------------------------------------------------------
+                            QUERY PLAN                             
+-------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Nested Loop
          Join Filter: (((x.a + y.a))::double precision > random())
@@ -788,6 +788,7 @@ explain (costs off) select * from t_hashdist where a in (select random()::int fr
    ->  Hash Semi Join
          Hash Cond: (t_hashdist.a = (int4(random())))
          ->  Seq Scan on t_hashdist
+               Runtime Filter: a
          ->  Hash
                ->  Redistribute Motion 1:3  (slice2; segments: 1)
                      Hash Key: (int4(random()))

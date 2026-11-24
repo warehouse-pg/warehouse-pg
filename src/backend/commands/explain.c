@@ -2602,10 +2602,13 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			show_upper_qual(((HashJoin *) plan)->join.joinqual,
 							"Join Filter", planstate, ancestors, es);
 			/*
-			 * WHPG: why this join got no runtime filter (planrtfilter.c), when
-			 * asked for; the join that got one shows it at its probe scan.
+			 * WHPG: why this join got no runtime filter (planrtfilter.c), in
+			 * verbose output; the join that got one shows it at its probe
+			 * scan. Nothing while the feature is off, whenever the plan was
+			 * made.
 			 */
-			if (whpg_runtime_filter_explain && hash_join->rf_paramids == NIL &&
+			if (es->verbose && whpg_enable_runtime_filter &&
+				hash_join->rf_paramids == NIL &&
 				runtimefilter_decline_reason(hash_join->rf_decline) != NULL)
 			{
 				const char *why = runtimefilter_decline_reason(hash_join->rf_decline);
