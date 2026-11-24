@@ -914,6 +914,8 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	root->non_recursive_path = NULL;
 	root->partColsUpdated = false;
 	root->is_correlated_subplan = false;
+	root->window_prefilters = parent_root ? parent_root->subquery_window_prefilters : NIL;
+	root->subquery_window_prefilters = NIL;
 
 	/*
 	 * If there is a WITH list, process each WITH query and either convert it
