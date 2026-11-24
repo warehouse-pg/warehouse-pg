@@ -473,7 +473,38 @@ struct PlannerInfo
 	bool		is_correlated_subplan; /* true for correlated subqueries nested within subplans */
 
 	bool		is_from_orca; /* true if this PlannerInfo was created from Orca*/
+
+	/*
+	 * WHPG: window top-N pre-filter.
+	 *
+	 * 'window_prefilters' holds the WindowPrefilter entries the parent query
+	 * found in its restriction clauses on this subquery (see
+	 * find_window_prefilters() in allpaths.c).  create_one_window_path() uses
+	 * them to build a pre-Motion WindowAgg + Filter step for the matching
+	 * window clause.  'subquery_window_prefilters' is a hand-over slot that
+	 * set_subquery_pathlist() fills immediately before planning one subquery
+	 * and clears right after it returns, so a sibling subquery can never
+	 * inherit a stale entry.
+	 */
+	List	   *window_prefilters;
+	List	   *subquery_window_prefilters;
 };
+
+/*
+ * WindowPrefilter
+ *	  A restriction clause of the form "<monotonic window func> <= <const>"
+ *	  (or "<") found in the parent query on a subquery output column.
+ *
+ * Not a Node: it never gets copied, printed or dispatched; it only lives in
+ * PlannerInfo during planning.
+ */
+typedef struct WindowPrefilter
+{
+	Index		winref;			/* window clause the function belongs to */
+	WindowFunc *wfunc;			/* the window function (copied from the tlist) */
+	OpExpr	   *clause;			/* normalized clause: wfunc <= / < bound */
+	int			strategy;		/* BTLessStrategyNumber or BTLessEqualStrategyNumber */
+} WindowPrefilter;
 
 /*
  * CtePlanInfo
