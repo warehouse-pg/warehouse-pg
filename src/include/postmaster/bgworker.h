@@ -67,6 +67,19 @@
 #define BGWORKER_CLASS_PARALLEL					0x0010
 /* add additional bgworker classes here */
 
+/*
+ * WHPG: the worker runs in utility mode on whichever node of the cluster
+ * starts it, the coordinator included.  It works on the state of that node
+ * alone: it never dispatches and never writes a distributed table.  Such a
+ * worker may connect to a database on a segment, where a worker without the
+ * flag is refused, and on a postmaster started in utility mode, where
+ * ordinary connections are refused.  InitProcess() reads the flag, so it
+ * must be set at registration time.
+ *
+ * Kept away from the low-order bits, which upstream extends.
+ */
+#define BGWORKER_WHPG_UTILITY_MODE				0x1000
+
 
 typedef void (*bgworker_main_type) (Datum main_arg);
 typedef bool (*bgworker_start_rule) (Datum rule_arg);
@@ -137,6 +150,11 @@ extern void TerminateBackgroundWorker(BackgroundWorkerHandle *handle);
 
 /* This is valid in a running worker */
 extern PGDLLIMPORT BackgroundWorker *MyBgworkerEntry;
+
+/* WHPG: is this a background worker registered with BGWORKER_WHPG_UTILITY_MODE? */
+#define AmUtilityModeBackgroundWorker() \
+	(MyBgworkerEntry != NULL && \
+	 (MyBgworkerEntry->bgw_flags & BGWORKER_WHPG_UTILITY_MODE) != 0)
 
 /*
  * Connect to the specified database, as the specified user.  Only a worker

@@ -6245,6 +6245,31 @@ MaxLivePostmasterChildren(void)
 }
 
 /*
+ * WHPG: refuse a database connection that a segment cannot serve.
+ *
+ * A segment postmaster runs in execute mode and its children inherit that
+ * role.  A worker that still carries it when it connects has no session to
+ * join, and a segment does not host sessions of its own.  The workers a
+ * segment does admit have changed identity before getting here: those
+ * registered with BGWORKER_WHPG_UTILITY_MODE run in utility mode (see
+ * InitProcess()) and a parallel worker carries its leader's session id.
+ * InitPostgres() would refuse the rest as well, but without saying which
+ * worker it was; name it here.  A worker bound to no database never reaches
+ * that check and is left alone.
+ */
+static void
+check_segment_connection(BackgroundWorker *worker, bool database_bound)
+{
+	if (database_bound &&
+		Gp_role == GP_ROLE_EXECUTE && gp_session_id < 0)
+		ereport(FATAL,
+				(errcode(ERRCODE_CANNOT_CONNECT_NOW),
+				 errmsg("background worker \"%s\" cannot connect to a database on a segment",
+						worker->bgw_name),
+				 errhint("Register the worker with BGWORKER_WHPG_UTILITY_MODE if it needs only the state of the node it runs on.")));
+}
+
+/*
  * Connect background worker to a database.
  */
 void
@@ -6257,6 +6282,8 @@ BackgroundWorkerInitializeConnection(const char *dbname, const char *username, u
 		ereport(FATAL,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("database connection requirement not indicated during registration")));
+
+	check_segment_connection(worker, dbname != NULL);
 
 	InitPostgres(dbname, InvalidOid, username, InvalidOid, NULL, (flags & BGWORKER_BYPASS_ALLOWCONN) != 0);
 
@@ -6280,6 +6307,8 @@ BackgroundWorkerInitializeConnectionByOid(Oid dboid, Oid useroid, uint32 flags)
 		ereport(FATAL,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("database connection requirement not indicated during registration")));
+
+	check_segment_connection(worker, OidIsValid(dboid));
 
 	InitPostgres(NULL, dboid, NULL, useroid, NULL, (flags & BGWORKER_BYPASS_ALLOWCONN) != 0);
 
