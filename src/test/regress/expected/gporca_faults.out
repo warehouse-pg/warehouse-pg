@@ -30,6 +30,15 @@ select count(*) from foo;
      1
 (1 row)
 
+-- WHPG: an interrupted optimization releases its log buffer (10 MB) instead
+-- of leaving it in the session's optimizer memory context (counted rather
+-- than compared, so that a build without GPORCA gives the same answer)
+select count(*) as held from pg_backend_memory_contexts where name = 'GPORCA Top-level Memory Context' and total_bytes >= 1024 * 1024;
+ held 
+------
+    0
+(1 row)
+
 -- Ensure that ORCA is not called on any process other than the coordinator QD
 CREATE FUNCTION func1_nosql_vol(x int) RETURNS int AS $$
 BEGIN

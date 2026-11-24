@@ -48,6 +48,15 @@ SELECT abs(get_executor_mem(50000) - get_executor_mem(1000)) < 10000;
  t
 (1 row)
 
+-- WHPG: planning the body of the function while the query executes does not
+-- count as executor memory: GPORCA takes a 10 MB buffer for every statement
+-- it plans, and the query needs well under 5 MB.
+SELECT get_executor_mem(1000) < 5000;
+ ?column? 
+----------
+ t
+(1 row)
+
 -- clean
 DROP FUNCTION get_executor_mem(calls_num int);
 DROP SCHEMA auto_explain_mem_leak_test;
