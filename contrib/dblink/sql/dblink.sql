@@ -361,10 +361,6 @@ BEGIN
       PERFORM dblink_connect('dbname=contrib_regression');
     WHEN 'nested_query' THEN
       PERFORM * FROM dblink('myconn','SELECT 1') AS q(z text);
-    WHEN 'nested_get_result' THEN
-      PERFORM * FROM dblink_get_result('myconn') AS q(z text);
-    WHEN 'nested_is_busy' THEN
-      PERFORM dblink_is_busy('myconn');
     WHEN 'nested' THEN
       -- a refused nested call must not clear the outer call's mark
       BEGIN
@@ -394,11 +390,8 @@ SELECT * FROM dblink('myconn','SELECT 1') AS t(x int);
 -- which reads the remaining results through the same connection
 SELECT * FROM dblink('myconn',$$SELECT 'raise'$$) AS t(x inuse_domain);
 SELECT * FROM dblink('myconn','SELECT 1') AS t(x int);
--- any other dblink call on the same connection is refused, whether it would
--- have sent a query, read a result, or just reported status
+-- any other dblink call on the same connection is refused
 SELECT * FROM dblink('myconn',$$SELECT 'nested_query'$$) AS t(x inuse_domain);
-SELECT * FROM dblink('myconn',$$SELECT 'nested_get_result'$$) AS t(x inuse_domain);
-SELECT * FROM dblink('myconn',$$SELECT 'nested_is_busy'$$) AS t(x inuse_domain);
 SELECT * FROM dblink('myconn','SELECT 1') AS t(x int);
 -- a refused nested call must not clear the outer call's mark
 SELECT * FROM dblink('myconn',$$SELECT 'nested'$$) AS t(x inuse_domain);

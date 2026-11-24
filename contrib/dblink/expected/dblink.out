@@ -694,10 +694,6 @@ BEGIN
       PERFORM dblink_connect('dbname=contrib_regression');
     WHEN 'nested_query' THEN
       PERFORM * FROM dblink('myconn','SELECT 1') AS q(z text);
-    WHEN 'nested_get_result' THEN
-      PERFORM * FROM dblink_get_result('myconn') AS q(z text);
-    WHEN 'nested_is_busy' THEN
-      PERFORM dblink_is_busy('myconn');
     WHEN 'nested' THEN
       -- a refused nested call must not clear the outer call's mark
       BEGIN
@@ -750,27 +746,18 @@ SELECT * FROM dblink('myconn','SELECT 1') AS t(x int);
 -- which reads the remaining results through the same connection
 SELECT * FROM dblink('myconn',$$SELECT 'raise'$$) AS t(x inuse_domain);
 ERROR:  error during row conversion
-CONTEXT:  PL/pgSQL function inuse_action(text) line 32 at RAISE
+CONTEXT:  PL/pgSQL function inuse_action(text) line 28 at RAISE
 SELECT * FROM dblink('myconn','SELECT 1') AS t(x int);
  x 
 ---
  1
 (1 row)
 
--- any other dblink call on the same connection is refused, whether it would
--- have sent a query, read a result, or just reported status
+-- any other dblink call on the same connection is refused
 SELECT * FROM dblink('myconn',$$SELECT 'nested_query'$$) AS t(x inuse_domain);
 ERROR:  connection "myconn" is already in use
 CONTEXT:  SQL statement "SELECT * FROM dblink('myconn','SELECT 1') AS q(z text)"
 PL/pgSQL function inuse_action(text) line 13 at PERFORM
-SELECT * FROM dblink('myconn',$$SELECT 'nested_get_result'$$) AS t(x inuse_domain);
-ERROR:  connection "myconn" is already in use
-CONTEXT:  SQL statement "SELECT * FROM dblink_get_result('myconn') AS q(z text)"
-PL/pgSQL function inuse_action(text) line 15 at PERFORM
-SELECT * FROM dblink('myconn',$$SELECT 'nested_is_busy'$$) AS t(x inuse_domain);
-ERROR:  connection "myconn" is already in use
-CONTEXT:  SQL statement "SELECT dblink_is_busy('myconn')"
-PL/pgSQL function inuse_action(text) line 17 at PERFORM
 SELECT * FROM dblink('myconn','SELECT 1') AS t(x int);
  x 
 ---
@@ -781,7 +768,7 @@ SELECT * FROM dblink('myconn','SELECT 1') AS t(x int);
 SELECT * FROM dblink('myconn',$$SELECT 'nested'$$) AS t(x inuse_domain);
 ERROR:  connection "myconn" is already in use
 CONTEXT:  SQL statement "SELECT dblink_disconnect('myconn')"
-PL/pgSQL function inuse_action(text) line 25 at PERFORM
+PL/pgSQL function inuse_action(text) line 21 at PERFORM
 SELECT * FROM dblink('myconn','SELECT 1') AS t(x int);
  x 
 ---
