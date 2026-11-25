@@ -1457,6 +1457,29 @@ def impl(context, dbname):
     sql = context.text
     execute_sql(dbname, sql)
 
+@given('table "{table}" in "{dbname}" db is created with content 0\'s share of {total_rows:d} rows')
+def impl(context, table, dbname, total_rows):
+    create_table_on_content0(dbname, table, total_rows)
+
+
+# Hold base backups taken from a primary once a tablespace has been
+# streamed, when pg_basebackup has reported its progress, however fast the
+# host transfers the data.  Replication to a mirror is not stopped.
+@given('the user {action} base backups on the primary on content {content} after a tablespace is streamed')
+@when('the user {action} base backups on the primary on content {content} after a tablespace is streamed')
+@then('the user {action} base backups on the primary on content {content} after a tablespace is streamed')
+def impl(context, action, content):
+    if action not in ('suspends', 'resets'):
+        raise Exception('action can only be suspends or resets')
+    execute_sql('postgres', "CREATE EXTENSION IF NOT EXISTS gp_inject_fault;")
+    # Reset first, so that a fault left by an earlier failed run does not
+    # stop this one from being set.
+    for fault_type in (['reset', 'suspend'] if action == 'suspends' else ['reset']):
+        execute_sql('postgres', "SELECT gp_inject_fault_infinite('basebackup_progress_tablespace_streamed', '%s', dbid) "
+                                "FROM gp_segment_configuration WHERE content = %s AND role = 'p';"
+                    % (fault_type, content))
+
+
 @given('sql "{sql}" is executed in "{dbname}" db')
 @when('sql "{sql}" is executed in "{dbname}" db')
 @then('sql "{sql}" is executed in "{dbname}" db')

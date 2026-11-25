@@ -429,6 +429,8 @@ perform_base_backup(basebackup_options *opt, DIR *tblspcdir)
 			}
 			else
 				pq_putemptymessage('c');		/* CopyDone */
+
+			SIMPLE_FAULT_INJECTOR("basebackup_progress_tablespace_streamed");
 		}
 	}
 	PG_END_ENSURE_ERROR_CLEANUP(base_backup_cleanup, (Datum) 0);

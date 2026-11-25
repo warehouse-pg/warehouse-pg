@@ -188,16 +188,20 @@ Feature: Tests for gpmovemirrors
     Given the database is running
     And all files in gpAdminLogs directory are deleted on all hosts in the cluster
     And user can start transactions
-    And sql "DROP TABLE if exists test_movemirrors; CREATE TABLE test_movemirrors AS SELECT generate_series(1,100000000) AS i" is executed in "postgres" db
+    # only content 0's recovery is held back and watched, so only it gets data
+    And table "test_movemirrors" in "postgres" db is created with content 0's share of 100000000 rows
     And a gpmovemirrors directory under '/tmp' with mode '0700' is created
     And a gpmovemirrors input file is created
     And edit the input file to recover mirror with content 0 to a new directory on remote host with mode 0700
     And edit the input file to recover mirror with content 1 to a new directory on remote host with mode 0700
+    And the user suspends base backups on the primary on content 0 after a tablespace is streamed
     When the user asynchronously runs gpmovemirrors with input file and additional args " " and the process is saved
-    And the user waits until mirror on content 0,1 is down
+    # the contents without data are back up before content 0's is seen down
+    And the user waits until mirror on content 0 is down
     And the user suspend the walsender on the primary on content 0
     Then the user waits until recovery_progress.file is created in gpAdminLogs and verifies its format
     And verify that lines from recovery_progress.file are present in segment progress files in gpAdminLogs
+    And the user resets base backups on the primary on content 0 after a tablespace is streamed
     And the user reset the walsender on the primary on content 0
     And the user waits until saved async process is completed
     And recovery_progress.file should not exist in gpAdminLogs
@@ -211,17 +215,21 @@ Feature: Tests for gpmovemirrors
     Given the database is running
     And all files in gpAdminLogs directory are deleted on all hosts in the cluster
     And user can start transactions
-    And sql "DROP TABLE if exists test_movemirrors; CREATE TABLE test_movemirrors AS SELECT generate_series(1,100000000) AS i" is executed in "postgres" db
+    # only content 0's recovery is held back and watched, so only it gets data
+    And table "test_movemirrors" in "postgres" db is created with content 0's share of 100000000 rows
     And a gpmovemirrors directory under '/tmp' with mode '0700' is created
     And a gpmovemirrors input file is created
     And edit the input file to recover mirror with content 0 to a new directory on remote host with mode 0700
     And edit the input file to recover mirror with content 1 to a new directory on remote host with mode 0700
     And edit the input file to recover mirror with content 2 to a new directory on remote host with mode 0700
+    And the user suspends base backups on the primary on content 0 after a tablespace is streamed
     When the user asynchronously runs gpmovemirrors with input file and additional args " " and the process is saved
-    And the user waits until mirror on content 0,1,2 is down
+    # the contents without data are back up before content 0's is seen down
+    And the user waits until mirror on content 0 is down
     And the user suspend the walsender on the primary on content 0
     Then the user waits until recovery_progress.file is created in gpAdminLogs and verifies its format
     And verify that lines from recovery_progress.file are present in segment progress files in gpAdminLogs
+    And the user resets base backups on the primary on content 0 after a tablespace is streamed
     And the user reset the walsender on the primary on content 0
     And the user waits until saved async process is completed
     And recovery_progress.file should not exist in gpAdminLogs
