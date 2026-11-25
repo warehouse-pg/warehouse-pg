@@ -35,6 +35,9 @@ class GpExpand(GpTestCase):
         self.apply_patches([
             patch('gpexpand.GpArray.initFromCatalog', return_value=self.gparray),
             patch('__builtin__.open', mock_open(), create=True),
+            # with open() mocked, gplog would open its log file on a mock and
+            # leave that handler on the logger for every test that follows
+            patch('gpexpand.setup_tool_logging'),
             patch('__builtin__.raw_input'),
             patch('gpexpand.copy.deepcopy', return_value=Mock()),
             patch('gpexpand.dbconn.execSQL', return_value=FakeCursor()),
