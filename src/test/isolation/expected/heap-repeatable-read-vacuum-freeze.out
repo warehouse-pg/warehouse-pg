@@ -1,6 +1,6 @@
 Parsed test spec with 4 sessions
 
-starting permutation: s2begin s1delete s1setfreezeminage s1vacuumfreeze s2select s1select s2abort s3select s1vacuumfreeze s3select
+starting permutation: s2begin s1delete s1setfreezeminage s1waitsnapshots s1vacuumfreeze s2select s1select s2abort s3select s1waitsnapshots s1vacuumfreeze s3select
 step s2begin: SET Debug_print_full_dtm=on; BEGIN ISOLATION LEVEL REPEATABLE READ;
 		 SELECT 123 AS "establish snapshot";
 establish snapshot
@@ -10,6 +10,12 @@ establish snapshot
 
 step s1delete: DELETE FROM heaptest;
 step s1setfreezeminage: SET vacuum_freeze_min_age = 0;
+step s1waitsnapshots: SELECT wait_for_other_snapshots();
+wait_for_other_snapshots
+------------------------
+                        
+(1 row)
+
 step s1vacuumfreeze: VACUUM heaptest;
 step s2select: 
     SELECT * from show_heaptest_content ORDER BY i;
@@ -52,6 +58,12 @@ FrozenXid|NormalXid| |
 FrozenXid|NormalXid| | 
 (10 rows)
 
+step s1waitsnapshots: SELECT wait_for_other_snapshots();
+wait_for_other_snapshots
+------------------------
+                        
+(1 row)
+
 step s1vacuumfreeze: VACUUM heaptest;
 step s3select: 
     SELECT * from show_heaptest_content ORDER BY i;
@@ -61,11 +73,17 @@ xmin_kind|xmax_kind|i|j
 (0 rows)
 
 
-starting permutation: s4begin s4delete s4abort s1setfreezeminage s1vacuumfreeze s2select
+starting permutation: s4begin s4delete s4abort s1setfreezeminage s1waitsnapshots s1vacuumfreeze s2select
 step s4begin: SET Debug_print_full_dtm=on; BEGIN;
 step s4delete: DELETE FROM heaptest;
 step s4abort: ABORT;
 step s1setfreezeminage: SET vacuum_freeze_min_age = 0;
+step s1waitsnapshots: SELECT wait_for_other_snapshots();
+wait_for_other_snapshots
+------------------------
+                        
+(1 row)
+
 step s1vacuumfreeze: VACUUM heaptest;
 step s2select: 
     SELECT * from show_heaptest_content ORDER BY i;
@@ -85,7 +103,7 @@ FrozenXid|InvalidXid|9|9
 (10 rows)
 
 
-starting permutation: s2begin s1insert s1setfreezeminage s1vacuumfreeze s2select s1select s2abort s2select s3select s1vacuumfreeze s2select s3select
+starting permutation: s2begin s1insert s1setfreezeminage s1waitsnapshots s1vacuumfreeze s2select s1select s2abort s2select s3select s1waitsnapshots s1vacuumfreeze s2select s3select
 step s2begin: SET Debug_print_full_dtm=on; BEGIN ISOLATION LEVEL REPEATABLE READ;
 		 SELECT 123 AS "establish snapshot";
 establish snapshot
@@ -95,6 +113,12 @@ establish snapshot
 
 step s1insert: SET Debug_print_full_dtm=on; INSERT INTO heaptest SELECT i, i FROM generate_series(10, 19) i;
 step s1setfreezeminage: SET vacuum_freeze_min_age = 0;
+step s1waitsnapshots: SELECT wait_for_other_snapshots();
+wait_for_other_snapshots
+------------------------
+                        
+(1 row)
+
 step s1vacuumfreeze: VACUUM heaptest;
 step s2select: 
     SELECT * from show_heaptest_content ORDER BY i;
@@ -183,6 +207,12 @@ NormalXid|InvalidXid|17|17
 NormalXid|InvalidXid|18|18
 NormalXid|InvalidXid|19|19
 (20 rows)
+
+step s1waitsnapshots: SELECT wait_for_other_snapshots();
+wait_for_other_snapshots
+------------------------
+                        
+(1 row)
 
 step s1vacuumfreeze: VACUUM heaptest;
 step s2select: 

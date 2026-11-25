@@ -434,6 +434,10 @@ ifdef REGRESS
 endif
 ifdef ISOLATION
 	$(pg_isolation_regress_installcheck) $(ISOLATION_OPTS) $(ISOLATION)
+# WHPG: pg_isolation_regress runs in utility mode, so its database exists only
+# on the coordinator. Drop it on success, like src/test/isolation does, so it
+# is not left behind to confuse later checks such as gp_replica_check.
+	$(bindir)/dropdb --if-exists $(ISOLATION_TESTDB)
 endif
 ifdef TAP_TESTS
 	$(prove_installcheck)
