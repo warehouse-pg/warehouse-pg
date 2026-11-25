@@ -1605,8 +1605,11 @@ def impl(context, filter):
     num_tries = 0
     num_matching = 10
     while num_matching and num_tries < MAX_TRIES:
+        # the probe scan is synchronous, so check right after it and sleep
+        # only before trying again
+        if num_tries:
+            time.sleep(SLEEP_PERIOD)
         num_tries += 1
-        time.sleep(SLEEP_PERIOD)
         context.execute_steps(u'''
         Given the user runs psql with "-c 'SELECT gp_request_fts_probe_scan()'" against database "postgres"
     ''')
@@ -3827,13 +3830,34 @@ def impl(context, command, input):
 
 @when('the user runs {command}, selects {input} and interrupt the process')
 def impl(context, command, input):
+    # The command only prompts once its smart-mode timeout (-t) has run out.
+    # Interrupt it as soon as its log shows it took the answer.
+    utility = command.split()[0]
+    logfile = os.path.join(_get_gpAdminLogs_directory(),
+                           '{}_{}.log'.format(utility, datetime.now().strftime('%Y%m%d')))
+    offset = os.path.getsize(logfile) if os.path.exists(logfile) else 0
+    answered = "Your choice was '{}'".format(input)
+
+    # stdin stays open so the interrupt below lands while the command waits;
+    # the newline is what ends the answer the prompt reads.
     p = Popen(command.split(), stdout=PIPE, stdin=PIPE, stderr=PIPE)
-    p.stdin.write(input.encode())
+    p.stdin.write((input + '\n').encode())
     p.stdin.flush()
-    time.sleep(120)
+    deadline = time.time() + 600
+    while time.time() < deadline and p.poll() is None:
+        if os.path.exists(logfile):
+            with open(logfile) as f:
+                f.seek(offset)
+                if answered in f.read():
+                    break
+        time.sleep(1)
+    else:
+        p.kill()
+        p.communicate()
+        raise Exception('{} did not log "{}" before exiting or within 600s'.format(utility, answered))
     # interrupt the process.
     p.terminate()
-    p.communicate(input=input.encode())
+    p.communicate()
 
 
 def are_on_different_subnets(primary_hostname, mirror_hostname):

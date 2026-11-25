@@ -82,7 +82,9 @@ Feature: gpstop behave tests
           And the user runs psql with "-c "CREATE EXTENSION IF NOT EXISTS gp_inject_fault;"" against database "postgres"
           And the user runs psql with "-c "SELECT gp_inject_fault('checkpoint', 'sleep', '', '', '', 1, -1, 3600, dbid) FROM gp_segment_configuration"" against database "postgres"
           And running postgres processes are saved in context
-         When the user runs "gpstop -a -M fast"
+         # pg_ctl times out on the sleeping checkpoint whatever the timeout;
+         # 30s rather than the 120s minimum, which --skipvalidation lifts
+         When the user runs "gpstop -a -M fast -t 30 --skipvalidation"
           And gpstop should print "Failed to shutdown coordinator with pg_ctl." to stdout
           And gpstop should return a return code of 0
           And verify no postgres process is running on all hosts
@@ -104,7 +106,7 @@ Feature: gpstop behave tests
         Given the database is running
         And the user asynchronously runs "psql postgres" and the process is saved
         And running postgres processes are saved in context
-        When the user runs gpstop -a, selects s and interrupt the process
+        When the user runs gpstop -a -t 10 --skipvalidation, selects s and interrupt the process
         Then verify if the gpstop.lock directory is present in coordinator_data_directory
         And the user runs gpstop -a and selects <option>
         And gpstop should print "The database is currently in the process of shutting down." to stdout
@@ -124,7 +126,7 @@ Feature: gpstop behave tests
         Given the database is running
         And the user asynchronously runs "psql postgres" and the process is saved
         And running postgres processes are saved in context
-        When the user runs gpstop -a, selects s and interrupt the process
+        When the user runs gpstop -a -t 10 --skipvalidation, selects s and interrupt the process
         Then the user runs gpstop -a and selects no mode but presses enter
         And gpstop should print "The database is currently in the process of shutting down." to stdout
         And gpstop should print "Your choice was 'f'" to stdout
@@ -138,7 +140,7 @@ Feature: gpstop behave tests
     Scenario Outline: when the first gpstop interrupted and second gpstop with <scenario> succeed
         Given the database is running
         And the user asynchronously runs "psql postgres" and the process is saved
-        When the user runs gpstop -a, selects s and interrupt the process
+        When the user runs gpstop -a -t 10 --skipvalidation, selects s and interrupt the process
         Then the user runs <command> and selects f
         And gpstop should print "The database is currently in the process of shutting down." to stdout
         And gpstop should print "Stopping the coordinator to finish the database shutdown" to stdout
@@ -155,7 +157,7 @@ Feature: gpstop behave tests
     Scenario: when the first gpstop interrupted and second gpstop with restart option succeed
         Given the database is running
         And the user asynchronously runs "psql postgres" and the process is saved
-        When the user runs gpstop -a, selects s and interrupt the process
+        When the user runs gpstop -a -t 10 --skipvalidation, selects s and interrupt the process
         Then the user runs gpstop -ar and selects f
         And gpstop should print "The database is currently in the process of shutting down." to stdout
         And gpstop should print "Stopping the coordinator to finish the database shutdown" to stdout
@@ -171,7 +173,7 @@ Feature: gpstop behave tests
     Scenario: when the first gpstop interrupted and second gpstop with sighup option fails
         Given the database is running
         And the user asynchronously runs "psql postgres" and the process is saved
-        When the user runs gpstop -a, selects s and interrupt the process
+        When the user runs gpstop -a -t 10 --skipvalidation, selects s and interrupt the process
         Then the user runs "gpstop -u"
         And gpstop should print "The database is currently in the process of shutting down." to stdout
         And gpstop should print "Cannot send SIGHUP to postmaster as the database is shutting down. Please run 'gpstop' to complete the shutdown process." to stdout
@@ -198,7 +200,7 @@ Feature: gpstop behave tests
     Scenario: gpstart succeed when the lock file is already held by a gpstop process
         Given the database is running
         And the user asynchronously runs "psql postgres" and the process is saved
-        When the user runs gpstop -a, selects s and interrupt the process
+        When the user runs gpstop -a -t 10 --skipvalidation, selects s and interrupt the process
         Then all postgres processes are killed on "current" hosts
         And verify if the gpstop.lock directory is present in coordinator_data_directory
         And the user runs "gpstart -a"
@@ -212,7 +214,7 @@ Feature: gpstop behave tests
     Scenario: when the first gpstop is killed abruptly and the lock file is getting removed.
         Given the database is running
         And the user asynchronously runs "psql postgres" and the process is saved
-        When the user runs gpstop -a, selects s and interrupt the process
+        When the user runs gpstop -a -t 10 --skipvalidation, selects s and interrupt the process
         Then the user runs "gpstop -a"
         And gpstop should not print "gpstop.lock indicates that an instance of gpstop is already running" to stdout
         # proceeding graceful shutdown of the database.
