@@ -160,8 +160,8 @@ Feature: gprecoverseg tests
       And user immediately stops all mirror processes for content 0
       And the user waits until mirror on content 0 is down
       And user can start transactions
-      And sql "DROP TABLE IF EXISTS test_recoverseg; CREATE TABLE test_recoverseg AS SELECT generate_series(1,100000000) AS a;" is executed in "postgres" db
-      And sql "DROP TABLE IF EXISTS test_recoverseg_1; CREATE TABLE test_recoverseg_1 AS SELECT generate_series(1,100000000) AS a;" is executed in "postgres" db
+      And table "test_recoverseg" in "postgres" db is created with content 0's share of 100000000 rows
+      And table "test_recoverseg_1" in "postgres" db is created with content 0's share of 100000000 rows
       When the user asynchronously runs "gprecoverseg -a --differential" and the process is saved
       Then the user waits until recovery_progress.file is created in gpAdminLogs and verifies that all dbids progress with pg_data are present
       When the user runs "gpstate -e"
@@ -918,11 +918,14 @@ Feature: gprecoverseg tests
     And user immediately stops all mirror processes for content 0,1,2
     And the user waits until mirror on content 0,1,2 is down
     And user can start transactions
-    And sql "DROP TABLE IF EXISTS test_recoverseg; CREATE TABLE test_recoverseg AS SELECT generate_series(1,100000000) AS a;" is executed in "postgres" db
+    # only content 0's recovery is held back and watched, so only it gets data
+    And table "test_recoverseg" in "postgres" db is created with content 0's share of 100000000 rows
+    And the user suspends base backups on the primary on content 0 after a tablespace is streamed
     When the user asynchronously runs "gprecoverseg -aF" and the process is saved
     And the user suspend the walsender on the primary on content 0
     Then the user waits until recovery_progress.file is created in gpAdminLogs and verifies its format
     And verify that lines from recovery_progress.file are present in segment progress files in gpAdminLogs
+    And the user resets base backups on the primary on content 0 after a tablespace is streamed
     And the user reset the walsender on the primary on content 0
     And the user waits until saved async process is completed
     And recovery_progress.file should not exist in gpAdminLogs
@@ -938,10 +941,12 @@ Feature: gprecoverseg tests
     And user immediately stops all mirror processes for content 0,1,2
     And the user waits until mirror on content 0,1,2 is down
     And user can start transactions
+    And the user suspends base backups on the primary on content 0 after a tablespace is streamed
     When the user asynchronously runs "gprecoverseg -aF -l /tmp/custom_logdir" and the process is saved
     And the user suspend the walsender on the primary on content 0
     Then the user waits until recovery_progress.file is created in /tmp/custom_logdir and verifies its format
     And verify that lines from recovery_progress.file are present in segment progress files in /tmp/custom_logdir
+    And the user resets base backups on the primary on content 0 after a tablespace is streamed
     And the user reset the walsender on the primary on content 0
     And the user waits until saved async process is completed
     And recovery_progress.file should not exist in /tmp/custom_logdir
@@ -975,16 +980,19 @@ Feature: gprecoverseg tests
     And user immediately stops all primary processes for content 0,1,2
     And the user waits until mirror on content 0,1,2 is down
     And user can start transactions
-    And sql "DROP TABLE IF EXISTS test_recoverseg; CREATE TABLE test_recoverseg AS SELECT generate_series(1,100000000) AS a;" is executed in "postgres" db
+    # only content 0's recovery is held back and watched, so only it gets data
+    And table "test_recoverseg" in "postgres" db is created with content 0's share of 100000000 rows
     And a gprecoverseg directory under '/tmp' with mode '0700' is created
     And a gprecoverseg input file is created
     And edit the input file to recover mirror with content 0 to a new directory on remote host with mode 0700
     And edit the input file to recover mirror with content 1 full inplace
     And edit the input file to recover mirror with content 2 incremental
+    And the user suspends base backups on the primary on content 0 after a tablespace is streamed
     When the user asynchronously runs gprecoverseg with input file and additional args "-a" and the process is saved
     And the user suspend the walsender on the primary on content 0
     Then the user waits until recovery_progress.file is created in gpAdminLogs and verifies its format
     And verify that lines from recovery_progress.file are present in segment progress files in gpAdminLogs
+    And the user resets base backups on the primary on content 0 after a tablespace is streamed
     And the user reset the walsender on the primary on content 0
     And the user waits until saved async process is completed
     And recovery_progress.file should not exist in gpAdminLogs
@@ -1003,13 +1011,16 @@ Feature: gprecoverseg tests
     And all files in gpAdminLogs directory are deleted on all hosts in the cluster
     And user immediately stops all primary processes for content 0,1,2
     And user can start transactions
-    And sql "DROP TABLE IF EXISTS test_recoverseg; CREATE TABLE test_recoverseg AS SELECT generate_series(1,100000000) AS a;" is executed in "postgres" db
+    # only content 0's recovery is held back and watched, so only it gets data
+    And table "test_recoverseg" in "postgres" db is created with content 0's share of 100000000 rows
     And the user suspend the walsender on the primary on content 0
+    And the user suspends base backups on the primary on content 0 after a tablespace is streamed
     When the user asynchronously runs "gprecoverseg -aF" and the process is saved
     Then the user waits until recovery_progress.file is created in gpAdminLogs and verifies its format
     When the user asynchronously sets up to end gprecoverseg process with SIGINT
     And the user waits until saved async process is completed
     Then recovery_progress.file should not exist in gpAdminLogs
+    And the user resets base backups on the primary on content 0 after a tablespace is streamed
     Then the user reset the walsender on the primary on content 0
     And the gprecoverseg lock directory is removed
     And an FTS probe is triggered
@@ -1048,8 +1059,10 @@ Feature: gprecoverseg tests
     And all files in gpAdminLogs directory are deleted on all hosts in the cluster
     And user immediately stops all primary processes for content 0,1,2
     And user can start transactions
-    And sql "DROP TABLE IF EXISTS test_recoverseg; CREATE TABLE test_recoverseg AS SELECT generate_series(1,100000000) AS a;" is executed in "postgres" db
+    # only content 0's recovery is held back and watched, so only it gets data
+    And table "test_recoverseg" in "postgres" db is created with content 0's share of 100000000 rows
     And the user suspend the walsender on the primary on content 0
+    And the user suspends base backups on the primary on content 0 after a tablespace is streamed
     When the user asynchronously runs "gprecoverseg -aF" and the process is saved
     Then the user waits until recovery_progress.file is created in gpAdminLogs and verifies its format
     Then verify if the gprecoverseg.lock directory is present in master_data_directory
@@ -1059,6 +1072,7 @@ Feature: gprecoverseg tests
     And the user waits until saved async process is completed
     When the user runs "gpstate -e"
     Then gpstate should not print "Segments in recovery" to stdout
+    And the user resets base backups on the primary on content 0 after a tablespace is streamed
     Then the user reset the walsender on the primary on content 0
     And the user waits until mirror on content 0,1,2 is up
     And the gprecoverseg lock directory is removed
@@ -1074,13 +1088,15 @@ Feature: gprecoverseg tests
     And user immediately stops all primary processes for content 0,1,2
     And user can start transactions
     And the user suspend the walsender on the primary on content 0
-    And sql "DROP TABLE if exists test_recoverseg; CREATE TABLE test_recoverseg AS SELECT generate_series(1,100000000) AS i" is executed in "postgres" db
+    # only content 0's recovery is held back and watched, so only it gets data
+    And table "test_recoverseg" in "postgres" db is created with content 0's share of 100000000 rows
     And the "test_recoverseg" table row count in "postgres" is saved
     And a gprecoverseg directory under '/tmp' with mode '0700' is created
     And a gprecoverseg input file is created
     And edit the input file to recover mirror with content 0 full inplace
     And edit the input file to recover mirror with content 1 full inplace
     And edit the input file to recover mirror with content 2 incremental
+    And the user suspends base backups on the primary on content 0 after a tablespace is streamed
     When the user asynchronously runs gprecoverseg with input file and additional args "-a" and the process is saved
     Then the user waits until recovery_progress.file is created in gpAdminLogs and verifies its format
     And user waits until gp_stat_replication table has no pg_basebackup entries for content 1
@@ -1089,6 +1105,7 @@ Feature: gprecoverseg tests
     And verify that mirror on content 0 is down
     And user can start transactions
     And verify that lines from recovery_progress.file are present in segment progress files in gpAdminLogs
+    And the user resets base backups on the primary on content 0 after a tablespace is streamed
     And the user reset the walsender on the primary on content 0
     And the user waits until saved async process is completed
     And gpAdminLogs directory has "pg_basebackup*" files on respective hosts only for content 0,1
