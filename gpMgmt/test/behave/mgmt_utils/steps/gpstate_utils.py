@@ -8,11 +8,6 @@ from test.behave_utils.utils import check_stdout_msg, check_string_not_present_s
 from gppylib.commands.gp import get_masterdatadir
 from gppylib.commands import unix
 
-@then('a sample recovery_progress.file is created from saved lines')
-def impl(context):
-    with open('{}/gpAdminLogs/recovery_progress.file'.format(os.path.expanduser("~")), 'w+') as fp:
-        fp.writelines(context.recovery_lines)
-
 @given('a sample recovery_progress.file is created with ongoing recoveries in gpAdminLogs')
 def impl(context):
     with open('{}/gpAdminLogs/recovery_progress.file'.format(os.path.expanduser("~")), 'w+') as fp:
