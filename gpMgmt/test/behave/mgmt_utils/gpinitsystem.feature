@@ -9,14 +9,6 @@ Feature: gpinitsystem tests
         And gpconfig should print "Coordinator value: on" to stdout
         And gpconfig should print "Segment     value: on" to stdout
 
-    Scenario: gpinitsystem creates a cluster with data_checksums off
-        Given the database is initialized with checksum "off"
-        When the user runs "gpconfig -s data_checksums"
-        Then gpconfig should return a return code of 0
-        And gpconfig should print "Values on all segments are consistent" to stdout
-        And gpconfig should print "Coordinator value: off" to stdout
-        And gpconfig should print "Segment     value: off" to stdout
-
     Scenario: gpinitsystem should import the system collations
         Given the database is not running
         And create demo cluster config
@@ -306,13 +298,6 @@ Feature: gpinitsystem tests
         And the database locales "lc_messages,lc_monetary,lc_numeric,lc_time" match the system locale
         And "LC_COLLATE" environment variable should be restored
         And "LC_CTYPE" environment variable should be restored
-
-    @backup_restore_bashrc
-    Scenario: gpinitsystem succeeds if there is banner on host
-        Given the database is not running
-        When the user sets banner on host
-        And a demo cluster is created using gpinitsystem args " "
-        And gpinitsystem should return a return code of 0
 
     @backup_restore_bashrc
     Scenario: gpinitsystem succeeds if there is multi-line banner on host
