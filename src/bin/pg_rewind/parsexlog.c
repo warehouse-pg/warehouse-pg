@@ -19,6 +19,15 @@
 #define FRONTEND 1
 #include "c.h"
 #undef FRONTEND
+
+/*
+ * In a build with assertions, c.h read as frontend code does not define
+ * TrapMacro, and the inline functions of the backend headers use it.
+ */
+#ifndef TrapMacro
+#define TrapMacro(condition, errorType) (true)
+#endif
+
 #include "postgres.h"
 
 #include <unistd.h>
