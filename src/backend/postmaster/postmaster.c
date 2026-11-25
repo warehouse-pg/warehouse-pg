@@ -2794,12 +2794,12 @@ retry1:
 			}
 
 			/*
-			 * Allow connections if hot_standby is on and our postmaster is
-			 * acting as a standby.
+			 * Everyone else is refused, hot_standby or not.  A hot standby
+			 * serves read-only clients once it is active: the postmaster is
+			 * then in PM_HOT_STANDBY and answers CAC_OK.  Until then, and
+			 * while it resets after a crash, the transaction state a snapshot
+			 * needs is incomplete or being torn down.
 			 */
-			if (EnableHotStandby)
-				break;
-
 			recptr = last_xlog_replay_location();
 			ereport(FATAL,
 					(errcode(ERRCODE_MIRROR_READY),
