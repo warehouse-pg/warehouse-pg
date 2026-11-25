@@ -194,6 +194,7 @@ extern void DropRelFileNodeBuffers(RelFileNodeBackend rnode,
 								   ForkNumber forkNum, BlockNumber firstDelBlock);
 extern void DropRelFileNodesAllBuffers(RelFileNodeBackend *rnodes, int nnodes);
 extern void DropDatabaseBuffers(Oid dbid);
+extern void DropDatabaseTablespaceBuffers(Oid spcOid, Oid dbid);
 
 /*
  * GPDB: it is possible to need to calculate the number of blocks from the table

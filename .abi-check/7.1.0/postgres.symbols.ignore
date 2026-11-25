@@ -24,3 +24,4 @@ AppendOptimizedCollectDeadSegments
 QEDtxContextInfo
 NextRecordTypmod
 build_tuple_node_list
+DropDatabaseDirectories

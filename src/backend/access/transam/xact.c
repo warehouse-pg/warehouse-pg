@@ -7262,7 +7262,7 @@ xact_redo_commit(xl_xact_parsed_commit *parsed,
 	{
 		XLogFlush(lsn);
 
-		DropDatabaseDirectories(parsed->deldbs, parsed->ndeldbs, true);
+		DropDatabaseDirectories(parsed->deldbs, parsed->ndeldbs, true, true);
 	}
 
 	DoTablespaceDeletionForRedoXlog(tablespace_oid_to_delete);
@@ -7391,7 +7391,7 @@ xact_redo_abort(xl_xact_parsed_abort *parsed, TransactionId xid,
 	{
 		XLogFlush(lsn);
 
-		DropDatabaseDirectories(parsed->deldbs, parsed->ndeldbs, true);
+		DropDatabaseDirectories(parsed->deldbs, parsed->ndeldbs, true, false);
 	}
 
 	DoTablespaceDeletionForRedoXlog(parsed->tablespace_oid_to_delete_on_abort);
