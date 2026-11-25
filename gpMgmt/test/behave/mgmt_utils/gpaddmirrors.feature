@@ -164,7 +164,7 @@ Feature: Tests for gpaddmirrors
         And the user resets base backups on the primary on content 0 after a tablespace is streamed
         And the user reset the walsender on the primary on content 0
         And the user waits until saved async process is completed
-        And recovery_progress.file should not exist in gpAdminLogs in gpAdminLogs
+        And recovery_progress.file should not exist in gpAdminLogs
         And the user waits until mirror on content 0,1,2 is up
 
         And check if mirrors on content 0,1,2 are moved to new location on input file
