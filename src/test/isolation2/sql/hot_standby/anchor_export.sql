@@ -325,7 +325,11 @@
 1: select gp_wait_until_triggered_fault('out_of_recovery_in_startupxlog', 1, dbid) from gp_segment_configuration where content = 1 and role = 'p';
 1: select gp_inject_fault('out_of_recovery_in_startupxlog', 'reset', dbid) from gp_segment_configuration where content = 1 and role = 'p';
 
--- the promoted node holds no anchors and its directory is empty
+-- the promoted node holds no anchors and its directory is empty.  The fault
+-- above fires before the end of recovery clears the anchors, so wait until
+-- the node has left recovery, which it does after the clear, and until the
+-- logger has written the message of the clear.
+!\retcode pport=$(psql -d postgres -Atc "select port from gp_segment_configuration where content = 1 and role = 'p'"); pdir=$(psql -d postgres -Atc "select datadir from gp_segment_configuration where content = 1 and role = 'p'"); for i in $(seq 1 300); do [ "$(PGOPTIONS='-c gp_role=utility' psql -X -p "$pport" -d postgres -Atc 'select pg_is_in_recovery()' 2> /dev/null)" = f ] && grep -q 'anchor snapshot(s) at the end of recovery' "$pdir"/log/*.csv && exit 0; sleep 0.1; done; exit 1;
 1U: select count(*) from gp_toolkit.whpg_anchor_snapshots();
 !\retcode pdir=$(psql -d postgres -Atc "select datadir from gp_segment_configuration where content = 1 and role = 'p'"); test -z "$(ls -A "$pdir/pg_anchor_snapshots")" && grep -q 'anchor snapshot(s) at the end of recovery' "$pdir"/log/*.csv;
 
