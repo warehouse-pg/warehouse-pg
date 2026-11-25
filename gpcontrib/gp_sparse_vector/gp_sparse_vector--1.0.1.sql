@@ -339,14 +339,14 @@ CREATE OPERATOR <= (
 	restrict = scalarltsel, join = scalarltjoinsel
 );
 CREATE OPERATOR <> (
-	leftarg = svec, rightarg = svec, procedure = svec_l2_eq,
+	leftarg = svec, rightarg = svec, procedure = svec_l2_ne,
 	commutator = <> ,
-	negator = =,
+	negator = == ,
 	restrict = eqsel, join = eqjoinsel
 );
 CREATE OPERATOR == (
 	leftarg = svec, rightarg = svec, procedure = svec_l2_eq,
-	commutator = = ,
+	commutator = == ,
 	negator = <> ,
 	restrict = eqsel, join = eqjoinsel
 );
