@@ -86,5 +86,11 @@ SELECT DISTINCT a.table_name, a.character_maximum_length
 FROM information_schema.columns a INNER JOIN information_schema.columns b ON a.table_name=b.table_name AND a.column_name=b.column_name 
 WHERE a.character_maximum_length == b.character_maximum_length ORDER BY a.table_name;
 
+-- == and <> compare the L2 norms and negate each other, = is exact equality
+SELECT a == b AS l2_eq, a <> b AS l2_ne, a = b AS eq
+FROM (VALUES ('{1,2}'::float8[]::svec, '{2,1}'::float8[]::svec),
+             ('{1,2}'::float8[]::svec, '{1,3}'::float8[]::svec),
+             ('{1,2}'::float8[]::svec, '{1,2}'::float8[]::svec)) v(a, b);
+
 DROP EXTENSION gp_sparse_vector;
 RESET search_path;
