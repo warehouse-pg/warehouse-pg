@@ -114,3 +114,26 @@ DROP USER regress_dep_user2;
 DROP OWNED BY regress_dep_user2, regress_dep_user0;
 DROP USER regress_dep_user2;
 DROP USER regress_dep_user0;
+
+-- REASSIGN OWNED must not give away a database without the CREATEDB
+-- privilege that ALTER DATABASE ... OWNER TO requires
+CREATE ROLE regress_dep_dbown_old;
+CREATE ROLE regress_dep_dbown_new;
+GRANT regress_dep_dbown_new TO regress_dep_dbown_old;
+CREATE DATABASE regression_dep_reassign TEMPLATE template0;
+ALTER DATABASE regression_dep_reassign OWNER TO regress_dep_dbown_old;
+-- fail, no CREATEDB
+SET SESSION AUTHORIZATION regress_dep_dbown_old;
+ALTER DATABASE regression_dep_reassign OWNER TO regress_dep_dbown_new;
+REASSIGN OWNED BY regress_dep_dbown_old TO regress_dep_dbown_new;
+RESET SESSION AUTHORIZATION;
+SELECT datdba::regrole FROM pg_database WHERE datname = 'regression_dep_reassign';
+-- ok, with CREATEDB
+ALTER ROLE regress_dep_dbown_old CREATEDB;
+SET SESSION AUTHORIZATION regress_dep_dbown_old;
+REASSIGN OWNED BY regress_dep_dbown_old TO regress_dep_dbown_new;
+RESET SESSION AUTHORIZATION;
+SELECT datdba::regrole FROM pg_database WHERE datname = 'regression_dep_reassign';
+DROP DATABASE regression_dep_reassign;
+DROP ROLE regress_dep_dbown_old;
+DROP ROLE regress_dep_dbown_new;
