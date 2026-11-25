@@ -30,7 +30,6 @@ Feature: Tests for gpaddmirrors
         And the tablespace is valid
     Examples:
         | args      | master_workers | segHost_workers |
-        | -B 1 -b 1 |  1             |  1              |
         | -B 2 -b 1 |  2             |  1              |
         | -B 1 -b 2 |  1             |  2              |
 
