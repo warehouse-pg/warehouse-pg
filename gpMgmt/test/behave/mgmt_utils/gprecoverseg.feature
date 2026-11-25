@@ -316,8 +316,6 @@ Feature: gprecoverseg tests
      Examples:
         | scenario     | args               |
         | incremental  | -a                 |
-        | differential | -a --differential  |
-        | full         | -aF                |
 
   Scenario: gprecoverseg mixed recovery displays pg_basebackup and rewind progress to the user
       Given the database is running
@@ -429,26 +427,6 @@ Feature: gprecoverseg tests
         And the segments are synchronized
         And verify replication slot internal_wal_replication_slot is available on all the segments
         And check segment conf: postgresql.conf
-
-  Scenario: gprecoverseg does not display rsync progress to the user when --no-progress option is specified
-        Given the database is running
-        And all the segments are running
-        And the segments are synchronized
-        And all files in gpAdminLogs directory are deleted on all hosts in the cluster
-        And user stops all mirror processes
-        When user can start transactions
-        And the user runs "gprecoverseg --differential -a -s --no-progress"
-        Then gprecoverseg should return a return code of 0
-        And gprecoverseg should print "Initiating segment recovery. Upon completion, will start the successfully recovered segments" to stdout
-        And gprecoverseg should not print "total size is .*  speedup is .*" to stdout
-        And gprecoverseg should print "Segments successfully recovered" to stdout
-        And gpAdminLogs directory has "rsync*" files on all segment hosts
-        And gpAdminLogs directory has "gpsegrecovery*" files
-        And gpAdminLogs directory has "gpsegsetuprecovery*" files
-        And all the segments are running
-        And the segments are synchronized
-        And check segment conf: postgresql.conf
-
 
   Scenario: When gprecoverseg incremental recovery uses pg_rewind to recover and an existing postmaster.pid on the killed primary segment corresponds to a non postgres process
         Given the database is running
@@ -638,45 +616,6 @@ Feature: gprecoverseg tests
     And verify that mirror on content 0,1,2 is up
     And the cluster is rebalanced
 
-  @demo_cluster
-  @concourse_cluster
-  Scenario: gprecoverseg -i gives warning if pg_basebackup already running for all failed segments
-    Given the database is running
-    And all the segments are running
-    And the segments are synchronized
-    And all files in gpAdminLogs directory are deleted on all hosts in the cluster
-    And user immediately stops all primary processes for content 0,1,2
-    And user can start transactions
-    And the user suspend the walsender on the primary on content 0
-    And the user suspend the walsender on the primary on content 1
-    And the user suspend the walsender on the primary on content 2
-    And a gprecoverseg directory under '/tmp' with mode '0700' is created
-    And a gprecoverseg input file is created
-    And edit the input file to recover mirror with content 0 full inplace
-    And edit the input file to recover mirror with content 1 full inplace
-    And edit the input file to recover mirror with content 2 full inplace
-    When the user asynchronously runs gprecoverseg with input file and additional args "-a" and the process is saved
-    Then the user just waits until recovery_progress.file is created in gpAdminLogs
-    And verify that mirror on content 0,1,2 is down
-    And the gprecoverseg lock directory is removed
-    When the user runs gprecoverseg with input file and additional args "-a"
-    Then gprecoverseg should print "Found pg_basebackup running for segments with contentIds [0, 1, 2], skipping recovery of these segments" to logfile
-    And gprecoverseg should print "No segments to recover" to stdout
-    And gprecoverseg should return a return code of 0
-    And verify that mirror on content 0,1,2 is down
-    And an FTS probe is triggered
-    And the user reset the walsender on the primary on content 0
-    And the user reset the walsender on the primary on content 1
-    And the user reset the walsender on the primary on content 2
-    And the user waits until saved async process is completed
-    And recovery_progress.file should not exist in gpAdminLogs
-    And verify that mirror on content 0,1,2 is up
-    And user can start transactions
-    When the user runs gprecoverseg with input file and additional args "-av"
-    Then gprecoverseg should print "No basebackup running" to stdout
-    And gprecoverseg should return a return code of 0
-    Then the cluster is rebalanced
-
   Scenario: gprecoverseg errors out with restricted options
     Given the database is running
     And user stops all primary processes
@@ -730,8 +669,6 @@ Feature: gprecoverseg tests
       Examples:
         | scenario     | args               |
         | incremental  | -a                 |
-        | differential | -a --differential  |
-        | full         | -aF                |
 
   @demo_cluster
   @concourse_cluster

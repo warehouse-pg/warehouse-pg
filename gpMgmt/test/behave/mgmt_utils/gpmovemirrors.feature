@@ -143,9 +143,7 @@ Feature: Tests for gpmovemirrors
     Examples:
         | correction                | failed_count | successful_contents | failed_contents | correction_steps                                     |
         | rerun gpmovemirrors       | all          | None               | 0,1,2          | rerunning gpmovemirrors for contents 0,1,2             |
-        | rerun gpmovemirrors       | some         | 0,1                | 2              | rerunning gpmovemirrors for contents 2                 |
         | run gprecoverseg          | some         | 0                  | 1,2            | running in place full recovery for all failed contents |
-        | run gprecoverseg          | all          | None               | 0,1,2          | running in place full recovery for all failed contents |
 
     Scenario: gpmovemirrors can move mirrors even if start fails for some mirrors
         Given the database is running

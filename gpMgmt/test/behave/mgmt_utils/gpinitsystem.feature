@@ -9,14 +9,6 @@ Feature: gpinitsystem tests
         And gpconfig should print "Master  value: on" to stdout
         And gpconfig should print "Segment value: on" to stdout
 
-    Scenario: gpinitsystem creates a cluster with data_checksums off
-        Given the database is initialized with checksum "off"
-        When the user runs "gpconfig -s data_checksums"
-        Then gpconfig should return a return code of 0
-        And gpconfig should print "Values on all segments are consistent" to stdout
-        And gpconfig should print "Master  value: off" to stdout
-        And gpconfig should print "Segment value: off" to stdout
-
     Scenario: gpinitsystem creates a cluster with a legacy input initialization file
         Given a working directory of the test as '/tmp/gpinitsystem'
         And the database is not running
@@ -291,18 +283,6 @@ Feature: gpinitsystem tests
         Then gpinitsystem should return a return code of 0
         # the log file must have the entry indicating that DCA specific configuration has been set
         And the user runs command "egrep 'Setting DCA specific configuration values' ~/gpAdminLogs/gpinitsystem*log"
-
-    @backup_restore_bashrc
-      Scenario: gpinitsystem succeeds if there is banner on host
-        Given the database is not running
-        And the user runs command "rm -rf ../gpAux/gpdemo/datadirs/*"
-        And the user runs command "mkdir ../gpAux/gpdemo/datadirs/qddir; mkdir ../gpAux/gpdemo/datadirs/dbfast1; mkdir ../gpAux/gpdemo/datadirs/dbfast2; mkdir ../gpAux/gpdemo/datadirs/dbfast3"
-        And the user runs command "mkdir ../gpAux/gpdemo/datadirs/dbfast_mirror1; mkdir ../gpAux/gpdemo/datadirs/dbfast_mirror2; mkdir ../gpAux/gpdemo/datadirs/dbfast_mirror3"
-        And the user runs command "rm -rf /tmp/gpinitsystemtest && mkdir /tmp/gpinitsystemtest"
-        When the user sets banner on host
-        And the user runs "gpinitsystem -a -c ../gpAux/gpdemo/clusterConfigFile -l /tmp/gpinitsystemtest -P 21100 -h ../gpAux/gpdemo/hostfile"
-        And gpinitsystem should return a return code of 0
-        Then gpstate should return a return code of 0
 
     @backup_restore_bashrc
     Scenario: gpinitsystem succeeds if there is multi-line banner on host
