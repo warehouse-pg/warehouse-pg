@@ -5796,7 +5796,15 @@ sigusr1_handler(SIGNAL_ARGS)
 		MaybeStartWalReceiver();
 	}
 
-	if (CheckPostmasterSignal(PMSIGNAL_WALRCV_STREAMING) && WalReceiverPID != 0)
+	/*
+	 * Report that the walreceiver is streaming, the point at which gpstart
+	 * considers a mirror or standby coordinator started.  Only while the
+	 * server is still starting up or recovering: once it has reported
+	 * "ready" because hot standby is active, that status stands, and a
+	 * walreceiver that starts or restarts later must not replace it.
+	 */
+	if (CheckPostmasterSignal(PMSIGNAL_WALRCV_STREAMING) && WalReceiverPID != 0 &&
+		(pmState == PM_STARTUP || pmState == PM_RECOVERY))
 		AddToDataDirLockFile(LOCK_FILE_LINE_PM_STATUS, PM_STATUS_WALRECV_STARTED_STREAMING);
 
 	if (CheckPostmasterSignal(PMSIGNAL_WAKEN_FTS) && FtsProbePID() != 0)

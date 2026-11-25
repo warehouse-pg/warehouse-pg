@@ -16,5 +16,6 @@ test: hot_standby/anchor_conflict
 test: hot_standby/anchor_partitions
 test: hot_standby/anchor_coverage
 test: hot_standby/anchor_archive_recovery
+test: hot_standby/pg_ctl_wait
 test: hot_standby/fts_topology_gate
 test: hot_standby/teardown
