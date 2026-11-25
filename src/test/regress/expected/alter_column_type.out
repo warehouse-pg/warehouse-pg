@@ -335,3 +335,72 @@ CREATE TYPE test_type1 AS (a int, b text);
 CREATE TYPE container_type AS (tab test_type1, arr test_type1[]);
 ALTER TYPE test_type1 ALTER ATTRIBUTE a TYPE int;
 DROP TYPE test_type1, container_type;
+--
+-- Expression indexes created before dependencies on the result type of
+-- their expressions were recorded have no pg_depend entry for it.  They
+-- are found by looking at the expressions themselves.  Simulate such
+-- objects by removing the entries.
+--
+create type at_md_ct as (a int, b text);
+create function at_md_f(int) returns at_md_ct immutable language sql as
+  $$ select row($1, 'x')::at_md_ct $$;
+create function at_md_fa(int) returns at_md_ct[] immutable language sql as
+  $$ select array[row($1, 'x')::at_md_ct] $$;
+create table at_md_tab (id int, x int) distributed by (id);
+set allow_system_table_mods = true;
+create function at_md_forget(regclass) returns bigint language sql as $$
+  with d as (delete from pg_depend
+               where classid = 'pg_class'::regclass and objid = $1
+                 and refclassid = 'pg_type'::regclass
+                 and refobjid in ('at_md_ct'::regtype, 'at_md_ct[]'::regtype)
+             returning 1)
+  select count(*) from d $$;
+create index at_md_idx on at_md_tab ((at_md_f(x)));
+select at_md_forget('at_md_idx');
+ at_md_forget 
+--------------
+            1
+(1 row)
+
+alter type at_md_ct alter attribute b type varchar; -- fails
+ERROR:  cannot alter type "at_md_ct" because index at_md_idx uses it
+drop index at_md_idx;
+-- the index is gone, so is the reason
+alter type at_md_ct alter attribute b type varchar;
+alter type at_md_ct alter attribute b type text;
+-- created again in the same session after a check
+create index at_md_idx on at_md_tab ((at_md_f(x)));
+select at_md_forget('at_md_idx');
+ at_md_forget 
+--------------
+            1
+(1 row)
+
+alter type at_md_ct alter attribute b type varchar; -- fails
+ERROR:  cannot alter type "at_md_ct" because index at_md_idx uses it
+-- inside a transaction that is rolled back, and after it
+begin;
+drop index at_md_idx;
+alter type at_md_ct alter attribute b type varchar;
+rollback;
+alter type at_md_ct alter attribute b type varchar; -- fails
+ERROR:  cannot alter type "at_md_ct" because index at_md_idx uses it
+drop index at_md_idx;
+-- an array of the type
+create index at_md_arr on at_md_tab ((at_md_fa(x)));
+select at_md_forget('at_md_arr');
+ at_md_forget 
+--------------
+            1
+(1 row)
+
+alter type at_md_ct alter attribute b type varchar; -- fails
+ERROR:  cannot alter type "at_md_ct" because index at_md_arr uses it
+drop index at_md_arr;
+alter type at_md_ct alter attribute b type varchar;
+reset allow_system_table_mods;
+drop function at_md_forget(regclass);
+drop table at_md_tab;
+drop function at_md_f(int);
+drop function at_md_fa(int);
+drop type at_md_ct;

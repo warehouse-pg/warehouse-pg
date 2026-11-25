@@ -5834,7 +5834,14 @@ ATRewriteTables(List **wqueue, LOCKMODE lockmode)
 	ListCell   *ltab;
 	char        relstorage;
 
-	/* Go through each table that needs to be checked or rewritten */
+	/*
+	 * Check the row type dependencies of all the tables before rewriting any
+	 * of them.  The check looks at every index expression in the database
+	 * (see find_missing_composite_type_dependencies()), and what it found is
+	 * only kept while pg_index does not change, which rewriting a table with
+	 * indexes does.  With thousands of partitions, checking each one right
+	 * before its rewrite would repeat that scan for each of them.
+	 */
 	foreach(ltab, *wqueue)
 	{
 		AlteredTableInfo *tab = (AlteredTableInfo *) lfirst(ltab);
@@ -5870,6 +5877,16 @@ ATRewriteTables(List **wqueue, LOCKMODE lockmode)
 			find_composite_type_dependencies(rel->rd_rel->reltype, rel, NULL);
 			heap_close(rel, NoLock);
 		}
+	}
+
+	/* Go through each table that needs to be checked or rewritten */
+	foreach(ltab, *wqueue)
+	{
+		AlteredTableInfo *tab = (AlteredTableInfo *) lfirst(ltab);
+
+		/* Foreign tables have no storage. */
+		if (tab->relkind == RELKIND_FOREIGN_TABLE)
+			continue;
 
 		/*
 		 * 'OldHeap' can be an AO or external table, but kept the upstream variable name
@@ -7797,68 +7814,158 @@ get_node_tree_attr(enum SysCacheIdentifier cacheId, HeapTuple tup, AttrNumber at
 }
 
 /*
+ * Result types of the index expressions of the current database, with one
+ * index that produces each.  Built on first use and rebuilt after any change
+ * of pg_index, so that an ALTER of a table with many partitions scans the
+ * catalog once instead of once per partition.
+ */
+typedef struct ExprResultTypeEntry
+{
+	Oid			typid;			/* hash key */
+	Oid			relid;			/* an index whose expression returns it */
+} ExprResultTypeEntry;
+
+static HTAB *expr_result_types = NULL;
+static bool expr_result_types_valid = false;
+static uint64 expr_result_types_inval_count = 0;
+
+static void
+expr_result_types_inval_callback(Datum arg, int cacheid, uint32 hashvalue)
+{
+	expr_result_types_valid = false;
+	expr_result_types_inval_count++;
+}
+
+static void
+remember_expr_result_types(List *exprs, Oid relid)
+{
+	ListCell   *lc;
+
+	foreach(lc, exprs)
+	{
+		Oid			resultType = exprType((Node *) lfirst(lc));
+		ExprResultTypeEntry *entry;
+		bool		found;
+
+		entry = hash_search(expr_result_types, &resultType, HASH_ENTER, &found);
+		if (!found)
+			entry->relid = relid;
+	}
+}
+
+static void
+build_expr_result_types(void)
+{
+	static bool callback_registered = false;
+	HASHCTL		hctl;
+	Relation	catalog_rel;
+	SysScanDesc scan;
+	HeapTuple	tup;
+	MemoryContext tmpcxt;
+	MemoryContext oldcxt;
+	uint64		inval_count;
+
+	if (!callback_registered)
+	{
+		CacheRegisterSyscacheCallback(INDEXRELID,
+									  expr_result_types_inval_callback, (Datum) 0);
+		callback_registered = true;
+	}
+
+	expr_result_types_valid = false;
+	if (expr_result_types)
+		hash_destroy(expr_result_types);
+	expr_result_types = NULL;
+
+	memset(&hctl, 0, sizeof(HASHCTL));
+	hctl.keysize = sizeof(Oid);
+	hctl.entrysize = sizeof(ExprResultTypeEntry);
+	hctl.hash = oid_hash;
+	hctl.hcxt = CacheMemoryContext;
+	expr_result_types = hash_create("expression result types", 64, &hctl,
+									HASH_ELEM | HASH_FUNCTION | HASH_CONTEXT);
+
+	inval_count = expr_result_types_inval_count;
+
+	/* the parsed expressions are only needed for one row at a time */
+	tmpcxt = AllocSetContextCreate(CurrentMemoryContext,
+								   "expression result types scan",
+								   ALLOCSET_DEFAULT_SIZES);
+
+	catalog_rel = heap_open(IndexRelationId, AccessShareLock);
+	scan = systable_beginscan(catalog_rel, InvalidOid, false, NULL, 0, NULL);
+	while (HeapTupleIsValid(tup = systable_getnext(scan)))
+	{
+		Form_pg_index index = (Form_pg_index) GETSTRUCT(tup);
+
+		oldcxt = MemoryContextSwitchTo(tmpcxt);
+		remember_expr_result_types((List *)
+								   get_node_tree_attr(INDEXRELID, tup,
+													  Anum_pg_index_indexprs),
+								   index->indexrelid);
+		MemoryContextSwitchTo(oldcxt);
+		MemoryContextReset(tmpcxt);
+	}
+	systable_endscan(scan);
+	heap_close(catalog_rel, AccessShareLock);
+
+	MemoryContextDelete(tmpcxt);
+
+	/* usable unless the catalog changed while we were scanning */
+	expr_result_types_valid = (inval_count == expr_result_types_inval_count);
+}
+
+/*
  * find_missing_composite_type_dependencies
  *
  * In the past, we failed to record pg_depend entries for a few cases that
  * clearly form a dependency and should prevent you from ALTERing a rowtype.
- * This function scans the catalogs for the missing dependencies.
- * Unfortunately, these need to resort to sequential scans, which is slow.
+ * This function finds them by looking at the expressions themselves.  That
+ * needs a sequential scan of the catalog, which is slow, so its outcome is
+ * kept, see build_expr_result_types().
  */
 static void
 find_missing_composite_type_dependencies(HTAB *types, Relation origRelation,
 										 const char *origTypeName)
 {
-	Relation	catalog_rel;
-	SysScanDesc scan;
-	HeapTuple	tup;
+	HASH_SEQ_STATUS seq;
+	Oid		   *typid;
 
 	/*
-	 * An expression index whose expression returns the target type stores
-	 * datums of that type in the index, but we used to not record a pg_depend
-	 * entry for that.  Often an expression depends on its result type for other
-	 * reasons, for example a Const does record a dependency on its type, but
-	 * as a counter-example, a function call records a dependency only on the
-	 * function, not on its return type.  The pg_depend scan in
-	 * find_composite_type_dependencies() therefore doesn't find it.
-	 *
-	 * To find such missing dependencies, scan pg_index directly for an
-	 * expression that produces typeOid.
+	 * An expression index stores datums of its expression's result type, but
+	 * we used to not record a pg_depend entry for that.  (A function call
+	 * records a dependency only on the function, not on its return type.)
+	 * Look the visited types up among the result types of all such
+	 * expressions.
 	 *
 	 * The expression might return the target type directly, or wrapped in a
-	 * container such as an array or a range.  We only check for the direct
-	 * case here, containers are handled by the recursion from
-	 * find_composite_type_dependencies()
+	 * container such as an array or a range.  Containers are among the
+	 * visited types because of the recursion in
+	 * find_composite_type_dependencies().
 	 *
 	 * The predicate of a partial index always returns a boolean, so we don't
 	 * need to worry about that here.
 	 */
-	catalog_rel = heap_open(IndexRelationId, AccessShareLock);
-	scan = systable_beginscan(catalog_rel, InvalidOid, false, NULL, 0, NULL);
-	while (HeapTupleIsValid(tup = systable_getnext(scan)))
+	if (!expr_result_types_valid)
+		build_expr_result_types();
+
+	hash_seq_init(&seq, types);
+	while ((typid = (Oid *) hash_seq_search(&seq)) != NULL)
 	{
-		List	   *exprs;
-		ListCell   *lc;
+		ExprResultTypeEntry *entry;
 
-		exprs = (List *) get_node_tree_attr(INDEXRELID, tup, Anum_pg_index_indexprs);
-		foreach(lc, exprs)
+		entry = hash_search(expr_result_types, typid, HASH_FIND, NULL);
+		if (entry)
 		{
-			Node	   *expr = (Node *) lfirst(lc);
-			Oid			resultType = exprType(expr);
+			ObjectAddress obj;
 
-			if (hash_search(types, &resultType, HASH_FIND, NULL))
-			{
-				Form_pg_index index = (Form_pg_index) GETSTRUCT(tup);
-				ObjectAddress obj;
-
-				obj.classId = RelationRelationId;
-				obj.objectId = index->indexrelid;
-				obj.objectSubId = 0;
-				report_type_used_in_expr(&obj, origRelation, origTypeName);
-			}
+			hash_seq_term(&seq);
+			obj.classId = RelationRelationId;
+			obj.objectId = entry->relid;
+			obj.objectSubId = 0;
+			report_type_used_in_expr(&obj, origRelation, origTypeName);
 		}
 	}
-	systable_endscan(scan);
-	heap_close(catalog_rel, AccessShareLock);
 }
 
 /*
