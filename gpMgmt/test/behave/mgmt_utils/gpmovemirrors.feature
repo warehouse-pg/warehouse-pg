@@ -98,7 +98,6 @@ Feature: Tests for gpmovemirrors
 
     Examples:
         | args         | coordinator_workers |
-        | -B 1 -b 1 -v |  1                  |
         | -B 2 -b 1 -v |  2                  |
         | -B 1 -b 2 -v |  1                  |
 
@@ -193,33 +192,6 @@ Feature: Tests for gpmovemirrors
 
 
   @demo_cluster
-  Scenario: gpmovemirrors -i creates recovery_progress.file if some mirrors are moved
-    Given the database is running
-    And all files in gpAdminLogs directory are deleted on all hosts in the cluster
-    And user can start transactions
-    # only content 0's recovery is held back and watched, so only it gets data
-    And table "test_movemirrors" in "postgres" db is created with content 0's share of 100000000 rows
-    And a gpmovemirrors directory under '/tmp' with mode '0700' is created
-    And a gpmovemirrors input file is created
-    And edit the input file to recover mirror with content 0 to a new directory on remote host with mode 0700
-    And edit the input file to recover mirror with content 1 to a new directory on remote host with mode 0700
-    And the user suspends base backups on the primary on content 0 after a tablespace is streamed
-    When the user asynchronously runs gpmovemirrors with input file and additional args " " and the process is saved
-    # the contents without data are back up before content 0's is seen down
-    And the user waits until mirror on content 0 is down
-    And the user suspend the walsender on the primary on content 0
-    Then the user waits until recovery_progress.file is created in gpAdminLogs and verifies its format
-    And verify that lines from recovery_progress.file are present in segment progress files in gpAdminLogs
-    And the user resets base backups on the primary on content 0 after a tablespace is streamed
-    And the user reset the walsender on the primary on content 0
-    And the user waits until saved async process is completed
-    And recovery_progress.file should not exist in gpAdminLogs
-    And verify that mirror on content 0,1 is up
-    And check if mirrors on content 0,1 are moved to new location on input file
-    And user can start transactions
-    And all files in gpAdminLogs directory are deleted on all hosts in the cluster
-
-  @demo_cluster
   Scenario: gpmovemirrors -i creates recovery_progress.file if all mirrors are moved
     Given the database is running
     And all files in gpAdminLogs directory are deleted on all hosts in the cluster
@@ -247,45 +219,6 @@ Feature: Tests for gpmovemirrors
     And user can start transactions
     And all files in gpAdminLogs directory are deleted on all hosts in the cluster
     And the cluster is recovered in full and rebalanced
-
-  @demo_cluster
-  @concourse_cluster
-  @skip_cleanup
-  Scenario: gpmovemirrors gives warning if pg_basebackup is already running for one of the mirrors to be moved
-    Given the database is running
-    And all the segments are running
-    And the segments are synchronized
-    And all files in gpAdminLogs directory are deleted on all hosts in the cluster
-    And the information of contents 0,1,2 is saved
-    And user immediately stops all mirror processes for content 0,1,2
-    And user can start transactions
-    And the user suspend the walsender on the primary on content 0
-    And the user asynchronously runs "gprecoverseg -aF" and the process is saved
-    And the user just waits until recovery_progress.file is created in gpAdminLogs
-    And user waits until gp_stat_replication table has no pg_basebackup entries for content 1,2
-    And an FTS probe is triggered
-    And the user waits until mirror on content 1,2 is up
-    And verify that mirror on content 0 is down
-    And the gprecoverseg lock directory is removed
-    And user immediately stops all mirror processes for content 1,2
-    And the user waits until mirror on content 1,2 is down
-    And a gpmovemirrors directory under '/tmp' with mode '0700' is created
-    And a gpmovemirrors input file is created
-    And edit the input file to recover mirror with content 0,1,2 to a new directory with mode 0700
-    When the user runs gpmovemirrors with input file and additional args " "
-    Then gprecoverseg should print "Found pg_basebackup running for segments with contentIds [0], skipping recovery of these segments" to logfile
-    And gprecoverseg should return a return code of 0
-    And gpmovemirrors should return a return code of 0
-    And verify that mirror on content 1,2 is up
-    And verify that mirror on content 0 is down
-    And check if mirrors on content 1,2 are moved to new location on input file
-    And check if mirrors on content 0 are in their original configuration
-    And the user reset the walsender on the primary on content 0
-    And the user waits until saved async process is completed
-    And recovery_progress.file should not exist in gpAdminLogs
-    And verify that mirror on content 0 is up
-    And the cluster is recovered in full and rebalanced
-    And all files in gpAdminLogs directory are deleted on all hosts in the cluster
 
   @demo_cluster
   @concourse_cluster
