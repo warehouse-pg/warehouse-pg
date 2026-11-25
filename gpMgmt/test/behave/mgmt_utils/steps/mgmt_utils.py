@@ -3446,9 +3446,17 @@ def step_impl(context):
 
             ## check postgresql.conf
             remote_postgresql_conf = "%s/%s" % (datadir, 'postgresql.conf')
-            local_conf_copy = os.path.join(gp.get_coordinatordatadir(), "%s.%s" % ('postgresql.conf', hostname))
+            # One local copy per segment, and -I: rsync skips a file whose
+            # size and modification time match the destination.  With one
+            # copy per host, the copy of the previous segment on that host
+            # is the destination, written a moment ago; a segment whose
+            # file was written in that same second (a mirror that was just
+            # added) and has the same size (the port has as many digits)
+            # was skipped, and the port of the other segment was checked.
+            local_conf_copy = os.path.join(gp.get_coordinatordatadir(),
+                                           "%s.%s.dbid%s" % ('postgresql.conf', hostname, segment[0]))
             cmd = Command(name="Copy remote conf to local to diff",
-                        cmdStr='rsync %s:%s %s' % (hostname, remote_postgresql_conf, local_conf_copy))
+                        cmdStr='rsync -I %s:%s %s' % (hostname, remote_postgresql_conf, local_conf_copy))
             cmd.run(validateAfter=True)
 
             dic = pgconf.readfile(filename=local_conf_copy)
