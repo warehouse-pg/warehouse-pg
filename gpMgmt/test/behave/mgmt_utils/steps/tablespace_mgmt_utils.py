@@ -8,7 +8,7 @@ from contextlib import closing
 
 from gppylib.db import dbconn
 from gppylib.gparray import GpArray
-from test.behave_utils.utils import run_cmd,wait_for_database_dropped
+from test.behave_utils.utils import run_cmd,wait_for_database_dropped,create_table_on_content0
 from gppylib.commands.base import Command, REMOTE
 from gppylib.commands.unix import get_remote_link_path
 
@@ -131,10 +131,9 @@ class Tablespace:
 
     def insert_more_data(self):
         with closing(dbconn.connect(dbconn.DbURL(dbname=self.dbname), unsetSearchPath=False)) as conn:
-            dbconn.execSQL(conn, "CREATE TABLE tbl_1 (i int) DISTRIBUTED RANDOMLY")
-            dbconn.execSQL(conn, "INSERT INTO tbl_1 VALUES (GENERATE_SERIES(0, 100000000))")
-            dbconn.execSQL(conn, "CREATE TABLE tbl_2 (i int) DISTRIBUTED RANDOMLY")
-            dbconn.execSQL(conn, "INSERT INTO tbl_2 VALUES (GENERATE_SERIES(0, 100000000))")
+            # only content 0 is recovered, so only it gets data
+            create_table_on_content0(conn, "tbl_1", 100000000, column="i")
+            create_table_on_content0(conn, "tbl_2", 100000000, column="i")
 
 
 def _checkpoint_and_wait_for_replication_replay(conn):

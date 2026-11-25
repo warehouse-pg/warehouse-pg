@@ -42,6 +42,28 @@ def execute_sql(dbname, sql):
     with closing(dbconn.connect(dbconn.DbURL(dbname=dbname), unsetSearchPath=False)) as conn:
         dbconn.execSQL(conn, sql)
 
+# Create a table whose rows are all on content 0, as many as content 0 would
+# hold of total_rows spread evenly.  For scenarios that recover or move
+# several segments and only watch content 0: what content 0 has to transfer
+# is the same, and the other segments have nothing to load.  The key value is
+# found by trying, and the placement is checked, so that a change to the
+# hashing or to the number of segments fails here instead of leaving content
+# 0 with less data than the scenario means to test.
+def create_table_on_content0(conn, table, total_rows, column="a"):
+    nsegs = dbconn.querySingleton(conn, "SELECT count(*) FROM gp_segment_configuration WHERE role = 'p' AND content >= 0")
+    dbconn.execSQL(conn, "DROP TABLE IF EXISTS pg_temp.content0_key")
+    dbconn.execSQL(conn, "CREATE TEMP TABLE content0_key (k int) DISTRIBUTED BY (k)")
+    dbconn.execSQL(conn, "INSERT INTO content0_key SELECT generate_series(1, 1000)")
+    key = dbconn.querySingleton(conn, "SELECT min(k) FROM content0_key WHERE gp_segment_id = 0")
+    if key is None:
+        raise Exception("no distribution key value in 1..1000 lands on content 0")
+    rows = total_rows // nsegs
+    dbconn.execSQL(conn, "CREATE TABLE %s (%s int) DISTRIBUTED BY (%s)" % (table, column, column))
+    dbconn.execSQL(conn, "INSERT INTO %s SELECT %d FROM generate_series(1, %d)" % (table, key, rows))
+    placed = [tuple(r) for r in dbconn.query(conn, "SELECT gp_segment_id, count(*) FROM %s GROUP BY 1" % table).fetchall()]
+    if placed != [(0, rows)]:
+        raise Exception("%s: expected %d rows, all on content 0, got (content, rows) %r" % (table, rows, placed))
+
 def execute_sql_singleton(dbname, sql):
     result = None
     with closing(dbconn.connect(dbconn.DbURL(dbname=dbname), unsetSearchPath=False)) as conn:

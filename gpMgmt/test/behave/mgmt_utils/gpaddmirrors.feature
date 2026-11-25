@@ -156,15 +156,18 @@ Feature: Tests for gpaddmirrors
     Scenario: gpaddmirrors can add mirrors and display progress in gpstate
         Given the cluster is generated with "3" primaries only
         And all files in gpAdminLogs directory are deleted
-        And sql "DROP TABLE if exists test_add; CREATE TABLE test_add AS SELECT generate_series(1,100000000) AS i" is executed in "postgres" db
+        # only content 0's recovery is held back and watched, so only it gets data
+        And table "test_add" in "postgres" db is created with content 0's share of 100000000 rows
         And a gprecoverseg directory under '/tmp' with mode '0700' is created
         And a gpaddmirrors input file is created
         And edit the input file to add mirror with content 0,1,2 to a new directory with mode 0700
 
+        And the user suspends base backups on the primary on content 0 after a tablespace is streamed
         When the user asynchronously runs gpaddmirrors with input file and additional args "-a" and the process is saved
         And the user suspend the walsender on the primary on content 0
         Then the user waits until recovery_progress.file is created in gpAdminLogs and verifies its format
         And verify that lines from recovery_progress.file are present in segment progress files in gpAdminLogs
+        And the user resets base backups on the primary on content 0 after a tablespace is streamed
         And the user reset the walsender on the primary on content 0
         And the user waits until saved async process is completed
         And recovery_progress.file should not exist in gpAdminLogs in gpAdminLogs
