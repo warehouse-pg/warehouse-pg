@@ -4922,12 +4922,6 @@ pgstat_combine_one_qe_result(List **oidList, struct pg_result *pgresult,
 			trans->inserted_pre_trunc = records[i].table_stat.inserted_pre_trunc;
 			trans->updated_pre_trunc = records[i].table_stat.updated_pre_trunc;
 			trans->deleted_pre_trunc = records[i].table_stat.deleted_pre_trunc;
-
-#ifdef FAULT_INJECTOR
-			FaultInjector_InjectFaultIfSet(
-				"gp_pgstat_report_on_master", DDLNotSpecified,
-				"", relname);
-#endif
 		}
 
 		ereport(DEBUG3,

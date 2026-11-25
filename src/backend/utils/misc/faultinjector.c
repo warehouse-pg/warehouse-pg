@@ -257,6 +257,7 @@ checkBgProcessSkipFault(const char* faultName)
 		/* autovacuum worker process */
 		 if (0 != strcmp("vacuum_update_dat_frozen_xid", faultName) &&
 				0 != strcmp("auto_vac_worker_before_do_autovacuum", faultName) &&
+				0 != strcmp("auto_vac_worker_after_do_autovacuum", faultName) &&
 				0 != strcmp("auto_vac_worker_after_report_activity", faultName) &&
 				0 != strcmp("auto_vac_worker_abort", faultName) &&
 				0 != strcmp("analyze_after_hold_lock", faultName) &&
