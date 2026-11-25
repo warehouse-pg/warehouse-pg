@@ -325,6 +325,18 @@ BEGIN
   RETURN 1;
 END
 $$ LANGUAGE plpgsql VOLATILE;
+CREATE FUNCTION dml_in_udf_cur_rep() RETURNS int AS $$
+DECLARE
+  r record;
+  n int := 0;
+BEGIN
+  FOR r IN WITH x AS (INSERT INTO dml_in_udf_rep VALUES (2) RETURNING a)
+           SELECT a FROM x LOOP
+    n := n + 1;
+  END LOOP;
+  RETURN n;
+END
+$$ LANGUAGE plpgsql VOLATILE;
 CREATE FUNCTION dml_in_udf_do() RETURNS int AS $$
   DO $d$ BEGIN ALTER TABLE dml_in_udf_victim ADD COLUMN c int; END $d$;
   SELECT 1;
@@ -336,6 +348,7 @@ CREATE FUNCTION dml_in_udf_set() RETURNS text AS $$
 $$ LANGUAGE sql VOLATILE;
 CREATE ROLE regress_dml_in_udf_user;
 GRANT SELECT ON dml_in_udf_driver TO regress_dml_in_udf_user;
+GRANT SELECT, INSERT ON dml_in_udf_rep TO regress_dml_in_udf_user;
 SET SESSION AUTHORIZATION regress_dml_in_udf_user;
 SET allow_segment_DML = on;
 ERROR:  permission denied to set parameter "allow_segment_dml"
@@ -373,7 +386,30 @@ SELECT dml_in_udf_ins_rep() FROM dml_in_udf_driver;
                   1
 (1 row)
 
+SELECT dml_in_udf_cur_rep() FROM dml_in_udf_driver;
+ dml_in_udf_cur_rep 
+--------------------
+                  1
+(1 row)
+
 RESET allow_segment_DML;
+-- the QE keeps the plans of the last two calls, but they are checked again
+-- each time they run: they fail now, for an ordinary user too
+SELECT dml_in_udf_ins_rep() FROM dml_in_udf_driver;
+ERROR:  function cannot execute on a QE slice because it issues a non-SELECT statement  (seg1 slice1 127.0.0.1:7003 pid=47918)
+CONTEXT:  SQL statement "INSERT INTO dml_in_udf_rep VALUES (1)"
+PL/pgSQL function dml_in_udf_ins_rep() line 3 at SQL statement
+SELECT dml_in_udf_cur_rep() FROM dml_in_udf_driver;
+ERROR:  function cannot execute on a QE slice because it issues a non-SELECT statement  (seg1 slice1 127.0.0.1:7003 pid=47918)
+CONTEXT:  SQL statement "WITH x AS (INSERT INTO dml_in_udf_rep VALUES (2) RETURNING a)
+           SELECT a FROM x"
+PL/pgSQL function dml_in_udf_cur_rep() line 6 at FOR over SELECT rows
+SET SESSION AUTHORIZATION regress_dml_in_udf_user;
+SELECT dml_in_udf_ins_rep() FROM dml_in_udf_driver;
+ERROR:  function cannot execute on a QE slice because it issues a non-SELECT statement  (seg1 slice1 127.0.0.1:7003 pid=47918)
+CONTEXT:  SQL statement "INSERT INTO dml_in_udf_rep VALUES (1)"
+PL/pgSQL function dml_in_udf_ins_rep() line 3 at SQL statement
+RESET SESSION AUTHORIZATION;
 -- the column was not added on any segment
 SELECT DISTINCT attname FROM gp_dist_random('pg_attribute')
 WHERE attrelid = 'dml_in_udf_victim'::regclass AND attnum > 0;
@@ -382,10 +418,32 @@ WHERE attrelid = 'dml_in_udf_victim'::regclass AND attnum > 0;
  a
 (1 row)
 
+-- a kept plan that reads a replicated table is checked again after the table
+-- is redistributed, rather than reading the slice of one segment
+CREATE TABLE dml_in_udf_rep2 (a int) DISTRIBUTED REPLICATED;
+INSERT INTO dml_in_udf_rep2 SELECT generate_series(1, 30);
+CREATE FUNCTION dml_in_udf_count_rep2() RETURNS bigint AS $$
+BEGIN
+  RETURN (SELECT count(*) FROM dml_in_udf_rep2);
+END
+$$ LANGUAGE plpgsql VOLATILE;
+SELECT dml_in_udf_count_rep2() FROM dml_in_udf_driver;
+ dml_in_udf_count_rep2 
+-----------------------
+                    30
+(1 row)
+
+ALTER TABLE dml_in_udf_rep2 SET DISTRIBUTED BY (a);
+SELECT dml_in_udf_count_rep2() FROM dml_in_udf_driver;
+ERROR:  function cannot execute on a QE slice because it accesses relation "public.dml_in_udf_rep2"  (seg1 slice1 127.0.0.1:7003 pid=47918)
+CONTEXT:  SQL statement "SELECT (SELECT count(*) FROM dml_in_udf_rep2)"
+PL/pgSQL function dml_in_udf_count_rep2() line 3 at RETURN
 DROP FUNCTION dml_in_udf_add_col();
+DROP FUNCTION dml_in_udf_count_rep2();
+DROP FUNCTION dml_in_udf_cur_rep();
 DROP FUNCTION dml_in_udf_ctas();
 DROP FUNCTION dml_in_udf_do();
 DROP FUNCTION dml_in_udf_ins_rep();
 DROP FUNCTION dml_in_udf_set();
-DROP TABLE dml_in_udf_driver, dml_in_udf_victim, dml_in_udf_rep;
+DROP TABLE dml_in_udf_driver, dml_in_udf_victim, dml_in_udf_rep, dml_in_udf_rep2;
 DROP ROLE regress_dml_in_udf_user;

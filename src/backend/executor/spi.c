@@ -82,6 +82,8 @@ static void _SPI_assign_query_mem(QueryDesc *queryDesc);
 
 static int	_SPI_pquery(QueryDesc *queryDesc, bool fire_triggers, uint64 tcount);
 
+static void _SPI_check_safe_for_qe(List *query_list);
+
 static void _SPI_error_callback(void *arg);
 
 static void _SPI_cursor_operation(Portal portal,
@@ -1570,6 +1572,12 @@ SPI_cursor_open_internal(const char *name, SPIPlanPtr plan,
 					  cplan);
 
 	/*
+	 * WHPG: check the queries again, as _SPI_execute_plan() does.  The portal
+	 * owns our plancache refcount now, so an error here does not leak it.
+	 */
+	_SPI_check_safe_for_qe(plansource->query_list);
+
+	/*
 	 * Set up options for portal.  Default SCROLL type is chosen the same way
 	 * as PerformCursorOpen does it.
 	 */
@@ -2099,6 +2107,22 @@ spi_printtup(TupleTableSlot *slot, DestReceiver *self)
  */
 
 /*
+ * Check that analyzed and rewritten queries are safe to execute on a QE; see
+ * querytree_safe_for_qe().  Does nothing elsewhere.
+ */
+static void
+_SPI_check_safe_for_qe(List *query_list)
+{
+	ListCell   *lc;
+
+	if (Gp_role != GP_ROLE_EXECUTE)
+		return;
+
+	foreach(lc, query_list)
+		querytree_safe_for_qe((Node *) lfirst(lc));
+}
+
+/*
  * Parse and analyze a querystring.
  *
  * At entry, plan->argtypes and plan->nargs (or alternatively plan->parserSetup
@@ -2176,17 +2200,7 @@ _SPI_prepare_plan(const char *src, SPIPlanPtr plan)
 		}
 
 		/* Check that all the queries are safe to execute on QE. */
-		if (Gp_role == GP_ROLE_EXECUTE)
-		{
-			ListCell *lc;
-
-			foreach (lc, stmt_list)
-			{
-				Query *query = (Query *) lfirst(lc);
-
-				querytree_safe_for_qe((Node *) query);
-			}
-		}
+		_SPI_check_safe_for_qe(stmt_list);
 
 		/* Finish filling in the CachedPlanSource */
 		CompleteCachedPlan(plansource,
@@ -2392,17 +2406,7 @@ _SPI_execute_plan(SPIPlanPtr plan, ParamListInfo paramLI,
 			}
 
 			/* Check that all the queries are safe to execute on QE. */
-			if (Gp_role == GP_ROLE_EXECUTE)
-			{
-				ListCell *lc;
-
-				foreach (lc, stmt_list)
-				{
-					Query *query = (Query *) lfirst(lc);
-
-					querytree_safe_for_qe((Node *) query);
-				}
-			}
+			_SPI_check_safe_for_qe(stmt_list);
 
 			/* Finish filling in the CachedPlanSource */
 			CompleteCachedPlan(plansource,
@@ -2423,6 +2427,16 @@ _SPI_execute_plan(SPIPlanPtr plan, ParamListInfo paramLI,
 		 */
 		cplan = GetCachedPlan(plansource, paramLI, plan->saved, _SPI_current->queryEnv, NULL);
 		stmt_list = cplan->stmt_list;
+
+		/*
+		 * WHPG: check the queries again before running a kept plan: the check
+		 * made when it was prepared no longer holds once allow_segment_DML is
+		 * turned off, and GetCachedPlan() analyzes a stale plan again without
+		 * coming back through _SPI_prepare_plan().  A one-shot plan was
+		 * checked just above.
+		 */
+		if (!plan->oneshot)
+			_SPI_check_safe_for_qe(plansource->query_list);
 
 		/*
 		 * If we weren't given a specific snapshot to use, and the statement
