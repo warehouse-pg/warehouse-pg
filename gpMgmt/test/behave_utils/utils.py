@@ -824,6 +824,13 @@ def wait_for_unblocked_transactions(context, num_retries=150):
     """
     attempt = 0
     while attempt < num_retries:
+        # Have FTS act on a segment the scenario just stopped now, rather than
+        # at its next scheduled probe or after a dispatch has timed out on it.
+        try:
+            with dbconn.connect(dbconn.DbURL(), unsetSearchPath=False) as conn:
+                dbconn.execSQLForSingleton(conn, "SELECT gp_request_fts_probe_scan()")
+        except Exception:
+            pass
         try:
             with dbconn.connect(dbconn.DbURL(), unsetSearchPath=False) as conn:
                 # Cursor.execute() will issue an implicit BEGIN for us.
