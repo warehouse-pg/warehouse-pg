@@ -282,5 +282,17 @@ WHERE a.character_maximum_length == b.character_maximum_length ORDER BY a.table_
  views                             |                        3
 (25 rows)
 
+-- == and <> compare the L2 norms and negate each other, = is exact equality
+SELECT a == b AS l2_eq, a <> b AS l2_ne, a = b AS eq
+FROM (VALUES ('{1,2}'::float8[]::svec, '{2,1}'::float8[]::svec),
+             ('{1,2}'::float8[]::svec, '{1,3}'::float8[]::svec),
+             ('{1,2}'::float8[]::svec, '{1,2}'::float8[]::svec)) v(a, b);
+ l2_eq | l2_ne | eq 
+-------+-------+----
+ t     | f     | f
+ f     | t     | f
+ t     | f     | t
+(3 rows)
+
 DROP EXTENSION gp_sparse_vector;
 RESET search_path;
