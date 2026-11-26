@@ -404,3 +404,34 @@ drop table at_md_tab;
 drop function at_md_f(int);
 drop function at_md_fa(int);
 drop type at_md_ct;
+--
+-- An external table is not rewritten, but its row type can be in use like
+-- that of any other table.
+--
+create external web table at_ext (a int, b bytea) execute 'echo 1' on master format 'text';
+create table at_ext_tab (id int, c at_ext) distributed by (id);
+alter external table at_ext alter column b type text; -- fails
+ERROR:  cannot alter table "at_ext" because column "at_ext_tab.c" uses its row type
+drop table at_ext_tab;
+create function at_ext_func(x at_ext default '(1,FIXME)') returns text
+  language sql as 'select ($1).b::text';
+alter external table at_ext alter column b type text; -- fails
+ERROR:  cannot alter table "at_ext" because function at_ext_func(at_ext) uses its row type
+drop function at_ext_func(at_ext);
+-- nothing uses the row type any more
+alter external table at_ext alter column b type text;
+\d at_ext
+External table "public.at_ext"
+ Column |  Type   | Modifiers 
+--------+---------+-----------
+ a      | integer | 
+ b      | text    | 
+Type: readable
+Encoding: UTF8
+Format type: text
+Format options: delimiter '	' null '\N' escape '\'
+External options: {}
+Command: echo 1
+Execute on: master segment
+
+drop external table at_ext;
