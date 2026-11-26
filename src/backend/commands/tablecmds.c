@@ -11769,11 +11769,13 @@ ATPrepAlterColumnType(List **wqueue,
 						RelationGetRelationName(rel))));
 
 	if (tab->relkind == RELKIND_COMPOSITE_TYPE ||
-		tab->relkind == RELKIND_FOREIGN_TABLE)
+		tab->relkind == RELKIND_FOREIGN_TABLE ||
+		RelationIsExternal(rel))
 	{
 		/*
 		 * For composite types, do this check now.  Tables will check it later
-		 * when the table is being rewritten.
+		 * when the table is being rewritten.  Foreign and external tables
+		 * are never rewritten, so they are checked here as well.
 		 */
 		find_composite_type_dependencies(rel->rd_rel->reltype, rel, NULL);
 	}
