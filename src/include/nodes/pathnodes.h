@@ -2019,6 +2019,7 @@ typedef struct SortPath
 {
 	Path		path;
 	Path	   *subpath;		/* path representing input source */
+	bool		keep_input_order;	/* WHPG: see Sort.keepInputOrder */
 } SortPath;
 
 /*

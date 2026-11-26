@@ -3247,6 +3247,7 @@ _readSort(void)
 	READ_OID_ARRAY(sortOperators, local_node->numCols);
 	READ_OID_ARRAY(collations, local_node->numCols);
 	READ_BOOL_ARRAY(nullsFirst, local_node->numCols);
+	READ_BOOL_FIELD(keepInputOrder);
 
 	READ_DONE();
 }

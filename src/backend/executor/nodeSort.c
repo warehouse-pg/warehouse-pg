@@ -18,6 +18,8 @@
 #include "postgres.h"
 
 #include "access/parallel.h"
+#include "catalog/pg_operator.h"
+#include "catalog/pg_type.h"
 #include "executor/execdebug.h"
 #include "executor/nodeSort.h"
 #include "lib/stringinfo.h"             /* StringInfo */
@@ -108,7 +110,18 @@ ExecSort(PlanState *pstate)
 		outerNode = outerPlanState(node);
 		tupDesc = ExecGetResultType(outerNode);
 
-		tuplesortstate = tuplesort_begin_heap(//&node->ss,
+		if (plannode->keepInputOrder)
+			tuplesortstate = tuplesort_begin_heap(node->inputOrderSlot->tts_tupleDescriptor,
+												  plannode->numCols + 1,
+												  node->inputOrderSortColIdx,
+												  node->inputOrderSortOperators,
+												  node->inputOrderCollations,
+												  node->inputOrderNullsFirst,
+												  PlanStateOperatorMemKB((PlanState *) node),
+												  NULL,
+												  node->randomAccess);
+		else
+			tuplesortstate = tuplesort_begin_heap(//&node->ss,
 											  tupDesc,
 											  plannode->numCols,
 											  plannode->sortColIdx,
@@ -146,14 +159,44 @@ ExecSort(PlanState *pstate)
 		 * Scan the subplan and feed all the tuples to tuplesort.
 		 */
 
-		for (;;)
+		if (plannode->keepInputOrder)
 		{
-			slot = ExecProcNode(outerNode);
+			TupleTableSlot *orderslot = node->inputOrderSlot;
+			int			natts = tupDesc->natts;
 
-			if (TupIsNull(slot))
-				break;
+			node->inputOrderNext = 0;
+			for (;;)
+			{
+				slot = ExecProcNode(outerNode);
 
-			tuplesort_puttupleslot(tuplesortstate, slot);
+				if (TupIsNull(slot))
+					break;
+
+				/* Append the row's position and sort on that last. */
+				slot_getallattrs(slot);
+				ExecClearTuple(orderslot);
+				memcpy(orderslot->tts_values, slot->tts_values,
+					   natts * sizeof(Datum));
+				memcpy(orderslot->tts_isnull, slot->tts_isnull,
+					   natts * sizeof(bool));
+				orderslot->tts_values[natts] = Int64GetDatum(node->inputOrderNext++);
+				orderslot->tts_isnull[natts] = false;
+				ExecStoreVirtualTuple(orderslot);
+				tuplesort_puttupleslot(tuplesortstate, orderslot);
+			}
+			ExecClearTuple(orderslot);
+		}
+		else
+		{
+			for (;;)
+			{
+				slot = ExecProcNode(outerNode);
+
+				if (TupIsNull(slot))
+					break;
+
+				tuplesort_puttupleslot(tuplesortstate, slot);
+			}
 		}
 
 		SIMPLE_FAULT_INJECTOR("execsort_before_sorting");
@@ -195,9 +238,30 @@ ExecSort(PlanState *pstate)
 	 * next fetch from the tuplesort.
 	 */
 	slot = node->ss.ps.ps_ResultTupleSlot;
-	(void) tuplesort_gettupleslot(tuplesortstate,
-								  ScanDirectionIsForward(dir),
-								  false, slot, NULL);
+	if (((Sort *) node->ss.ps.plan)->keepInputOrder)
+	{
+		TupleTableSlot *sortedslot = node->inputOrderSortedSlot;
+
+		/* Hand the row on without its position. */
+		ExecClearTuple(slot);
+		if (tuplesort_gettupleslot(tuplesortstate,
+								   ScanDirectionIsForward(dir),
+								   false, sortedslot, NULL))
+		{
+			int			natts = slot->tts_tupleDescriptor->natts;
+
+			slot_getallattrs(sortedslot);
+			memcpy(slot->tts_values, sortedslot->tts_values,
+				   natts * sizeof(Datum));
+			memcpy(slot->tts_isnull, sortedslot->tts_isnull,
+				   natts * sizeof(bool));
+			ExecStoreVirtualTuple(slot);
+		}
+	}
+	else
+		(void) tuplesort_gettupleslot(tuplesortstate,
+									  ScanDirectionIsForward(dir),
+									  false, slot, NULL);
 
 	if (TupIsNull(slot) && !node->delayEagerFree)
 	{
@@ -328,8 +392,44 @@ ExecInitSort(Sort *node, EState *estate, int eflags)
 	 * Initialize return slot and type. No need to initialize projection info
 	 * because this node doesn't do projections.
 	 */
-	ExecInitResultTupleSlotTL(&sortstate->ss.ps, &TTSOpsMinimalTuple);
+	ExecInitResultTupleSlotTL(&sortstate->ss.ps,
+							  node->keepInputOrder ? &TTSOpsVirtual : &TTSOpsMinimalTuple);
 	sortstate->ss.ps.ps_ProjInfo = NULL;
+
+	/*
+	 * tuplesort.c does not say in which order it returns rows that are equal
+	 * in all sort columns. To have them come back in the order they went
+	 * in, number them and sort on that number last: the rows are sorted
+	 * with one more column than the node reads and returns.
+	 */
+	if (node->keepInputOrder)
+	{
+		TupleDesc	outerTupDesc = ExecGetResultType(outerPlanState(sortstate));
+		int			natts = outerTupDesc->natts;
+		TupleDesc	orderDesc = CreateTemplateTupleDesc(natts + 1);
+
+		for (int i = 1; i <= natts; i++)
+			TupleDescCopyEntry(orderDesc, i, outerTupDesc, i);
+		TupleDescInitEntry(orderDesc, natts + 1, "input_order", INT8OID, -1, 0);
+
+		sortstate->inputOrderSlot =
+			ExecInitExtraTupleSlot(estate, orderDesc, &TTSOpsVirtual);
+		sortstate->inputOrderSortedSlot =
+			ExecInitExtraTupleSlot(estate, orderDesc, &TTSOpsMinimalTuple);
+
+		sortstate->inputOrderSortColIdx = palloc((node->numCols + 1) * sizeof(AttrNumber));
+		sortstate->inputOrderSortOperators = palloc((node->numCols + 1) * sizeof(Oid));
+		sortstate->inputOrderCollations = palloc((node->numCols + 1) * sizeof(Oid));
+		sortstate->inputOrderNullsFirst = palloc((node->numCols + 1) * sizeof(bool));
+		memcpy(sortstate->inputOrderSortColIdx, node->sortColIdx, node->numCols * sizeof(AttrNumber));
+		memcpy(sortstate->inputOrderSortOperators, node->sortOperators, node->numCols * sizeof(Oid));
+		memcpy(sortstate->inputOrderCollations, node->collations, node->numCols * sizeof(Oid));
+		memcpy(sortstate->inputOrderNullsFirst, node->nullsFirst, node->numCols * sizeof(bool));
+		sortstate->inputOrderSortColIdx[node->numCols] = natts + 1;
+		sortstate->inputOrderSortOperators[node->numCols] = Int8LessOperator;
+		sortstate->inputOrderCollations[node->numCols] = InvalidOid;
+		sortstate->inputOrderNullsFirst[node->numCols] = false;
+	}
 
 	SO1_printf("ExecInitSort: %s\n",
 			   "sort node initialized");

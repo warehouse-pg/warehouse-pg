@@ -1197,6 +1197,7 @@ _outSort(StringInfo str, const Sort *node)
     WRITE_OID_ARRAY(sortOperators, node->numCols);
     WRITE_OID_ARRAY(collations, node->numCols);
     WRITE_BOOL_ARRAY(nullsFirst, node->numCols);
+	WRITE_BOOL_FIELD(keepInputOrder);
 }
 
 static void
