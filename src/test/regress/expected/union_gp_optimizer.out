@@ -2442,6 +2442,157 @@ select json_data,id from my_table  where json_data->>'age' = '30' union all sele
 
 set optimizer_parallel_union to off;
 drop table if exists my_table;
+-- A UNION ALL branch that is a subquery over a grouped subquery: the
+-- grouped rows come sorted on g, and the branch keeps that order on the
+-- distribution key's equivalence class, but emits only 'a' || g.  The Gather
+-- Motion pushed into the branch must not merge on g, which the branch does
+-- not output (this used to fail with "could not find pathkey item to sort").
+CREATE TABLE union_sorted_sub (k int, v int) DISTRIBUTED BY (k);
+INSERT INTO union_sorted_sub SELECT i % 50, i FROM generate_series(1, 1000) i;
+ANALYZE union_sorted_sub;
+SET optimizer = off;
+SET enable_hashagg = off;
+SET gp_enable_multiphase_agg = off;
+EXPLAIN (COSTS OFF)
+SELECT id, sum(t) FROM (
+  SELECT 'a' || g AS id, t FROM (SELECT v AS g, sum(k) AS t FROM union_sorted_sub GROUP BY v) s
+  UNION ALL
+  SELECT * FROM (SELECT 'b' || k, v FROM union_sorted_sub ORDER BY v LIMIT 3) y
+) z GROUP BY id ORDER BY id LIMIT 3;
+                                              QUERY PLAN                                               
+-------------------------------------------------------------------------------------------------------
+ Limit
+   ->  GroupAggregate
+         Group Key: (('a'::text || (s.g)::text))
+         ->  Sort
+               Sort Key: (('a'::text || (s.g)::text))
+               ->  Append
+                     ->  Gather Motion 3:1  (slice1; segments: 3)
+                           ->  Subquery Scan on s
+                                 ->  GroupAggregate
+                                       Group Key: union_sorted_sub.v
+                                       ->  Sort
+                                             Sort Key: union_sorted_sub.v
+                                             ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                                                   Hash Key: union_sorted_sub.v
+                                                   ->  Seq Scan on union_sorted_sub
+                     ->  Subquery Scan on "*SELECT* 2"
+                           ->  Limit
+                                 ->  Gather Motion 3:1  (slice3; segments: 3)
+                                       Merge Key: union_sorted_sub_1.v
+                                       ->  Limit
+                                             ->  Sort
+                                                   Sort Key: union_sorted_sub_1.v
+                                                   ->  Seq Scan on union_sorted_sub union_sorted_sub_1
+ Optimizer: Postgres-based planner
+(24 rows)
+
+SELECT id, sum(t) FROM (
+  SELECT 'a' || g AS id, t FROM (SELECT v AS g, sum(k) AS t FROM union_sorted_sub GROUP BY v) s
+  UNION ALL
+  SELECT * FROM (SELECT 'b' || k, v FROM union_sorted_sub ORDER BY v LIMIT 3) y
+) z GROUP BY id ORDER BY id LIMIT 3;
+  id  | sum 
+------+-----
+ a1   |   1
+ a10  |  10
+ a100 |   0
+(3 rows)
+
+-- When the branch does output g, the pushed Motion still keeps g's order.
+EXPLAIN (COSTS OFF)
+SELECT id, sum(t) FROM (
+  SELECT g, 'a' || g AS id, t FROM (SELECT v AS g, sum(k) AS t FROM union_sorted_sub GROUP BY v) s
+  UNION ALL
+  SELECT * FROM (SELECT v, 'b' || k, v FROM union_sorted_sub ORDER BY v LIMIT 3) y
+) z GROUP BY id ORDER BY id LIMIT 3;
+                                                 QUERY PLAN                                                  
+-------------------------------------------------------------------------------------------------------------
+ Limit
+   ->  GroupAggregate
+         Group Key: z.id
+         ->  Sort
+               Sort Key: z.id
+               ->  Subquery Scan on z
+                     ->  Append
+                           ->  Gather Motion 3:1  (slice1; segments: 3)
+                                 Merge Key: s.g
+                                 ->  Subquery Scan on s
+                                       ->  GroupAggregate
+                                             Group Key: union_sorted_sub.v
+                                             ->  Sort
+                                                   Sort Key: union_sorted_sub.v
+                                                   ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                                                         Hash Key: union_sorted_sub.v
+                                                         ->  Seq Scan on union_sorted_sub
+                           ->  Subquery Scan on "*SELECT* 2"
+                                 ->  Limit
+                                       ->  Gather Motion 3:1  (slice3; segments: 3)
+                                             Merge Key: union_sorted_sub_1.v
+                                             ->  Limit
+                                                   ->  Sort
+                                                         Sort Key: union_sorted_sub_1.v
+                                                         ->  Seq Scan on union_sorted_sub union_sorted_sub_1
+ Optimizer: Postgres-based planner
+(26 rows)
+
+-- Grouped on (g, h), the branch outputs g but only 'a' || h: the pushed
+-- Motion merges on the prefix g alone.
+CREATE TABLE union_sorted_sub2 (k int, v int, w int) DISTRIBUTED BY (k);
+INSERT INTO union_sorted_sub2 SELECT i % 50, i % 100, i % 7 FROM generate_series(1, 1000) i;
+ANALYZE union_sorted_sub2;
+EXPLAIN (COSTS OFF)
+SELECT id, sum(t) FROM (
+  SELECT g, 'a' || h AS id, t FROM (SELECT v AS g, w AS h, sum(k) AS t FROM union_sorted_sub2 GROUP BY v, w) s
+  UNION ALL
+  SELECT * FROM (SELECT v, 'b' || k, v FROM union_sorted_sub2 ORDER BY v LIMIT 3) y
+) z GROUP BY id ORDER BY id LIMIT 3;
+                                                  QUERY PLAN                                                   
+---------------------------------------------------------------------------------------------------------------
+ Limit
+   ->  GroupAggregate
+         Group Key: z.id
+         ->  Sort
+               Sort Key: z.id
+               ->  Subquery Scan on z
+                     ->  Append
+                           ->  Gather Motion 3:1  (slice1; segments: 3)
+                                 Merge Key: s.g
+                                 ->  Subquery Scan on s
+                                       ->  GroupAggregate
+                                             Group Key: union_sorted_sub2.v, union_sorted_sub2.w
+                                             ->  Sort
+                                                   Sort Key: union_sorted_sub2.v, union_sorted_sub2.w
+                                                   ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                                                         Hash Key: union_sorted_sub2.v, union_sorted_sub2.w
+                                                         ->  Seq Scan on union_sorted_sub2
+                           ->  Subquery Scan on "*SELECT* 2"
+                                 ->  Limit
+                                       ->  Gather Motion 3:1  (slice3; segments: 3)
+                                             Merge Key: union_sorted_sub2_1.v
+                                             ->  Limit
+                                                   ->  Sort
+                                                         Sort Key: union_sorted_sub2_1.v
+                                                         ->  Seq Scan on union_sorted_sub2 union_sorted_sub2_1
+ Optimizer: Postgres-based planner
+(26 rows)
+
+SELECT id, sum(t) FROM (
+  SELECT g, 'a' || h AS id, t FROM (SELECT v AS g, w AS h, sum(k) AS t FROM union_sorted_sub2 GROUP BY v, w) s
+  UNION ALL
+  SELECT * FROM (SELECT v, 'b' || k, v FROM union_sorted_sub2 ORDER BY v LIMIT 3) y
+) z GROUP BY id ORDER BY id LIMIT 3;
+ id | sum  
+----+------
+ a0 | 3521
+ a1 | 3514
+ a2 | 3507
+(3 rows)
+
+RESET gp_enable_multiphase_agg;
+RESET enable_hashagg;
+RESET optimizer;
+DROP TABLE union_sorted_sub, union_sorted_sub2;
 --
 -- Clean up
 --
