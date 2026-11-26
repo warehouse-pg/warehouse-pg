@@ -237,3 +237,36 @@ CREATE TABLE IF NOT EXISTS ctas_ine_part AS SELECT 1 AS a
 DISTRIBUTED BY (a) PARTITION BY RANGE (a) (START (1) END (30) EVERY (10));
 
 DROP TABLE ctas_ine_hash, ctas_ine_rand, ctas_ine_repl, ctas_ine_nodata;
+
+-- CREATE TABLE AS EXECUTE takes the same DISTRIBUTED clauses as CTAS from a
+-- query, with and without IF NOT EXISTS and WITH NO DATA.  An existing name
+-- under IF NOT EXISTS is skipped with its policy unchanged.
+PREPARE ctas_ex_q(int) AS SELECT g AS a, 'r' || g AS b FROM generate_series(1, 6) g WHERE g > $1;
+
+SET optimizer = on;
+CREATE TABLE ctas_ex_hash AS EXECUTE ctas_ex_q(2) DISTRIBUTED BY (b);
+CREATE TABLE ctas_ex_rand AS EXECUTE ctas_ex_q(2) WITH DATA DISTRIBUTED RANDOMLY;
+CREATE TABLE IF NOT EXISTS ctas_ex_repl AS EXECUTE ctas_ex_q(2) DISTRIBUTED REPLICATED;
+CREATE TABLE ctas_ex_nodata AS EXECUTE ctas_ex_q(2) WITH NO DATA DISTRIBUTED BY (b);
+CREATE TABLE ctas_ex_cols(x, y) AS EXECUTE ctas_ex_q(2) DISTRIBUTED BY (y);
+SET optimizer = off;
+CREATE TABLE ctas_ex_hash_off AS EXECUTE ctas_ex_q(2) DISTRIBUTED BY (b);
+CREATE TABLE ctas_ex_rand_off AS EXECUTE ctas_ex_q(2) DISTRIBUTED RANDOMLY;
+CREATE TABLE IF NOT EXISTS ctas_ex_repl_off AS EXECUTE ctas_ex_q(2) DISTRIBUTED REPLICATED;
+RESET optimizer;
+SELECT localoid::regclass AS tbl, policytype, distkey
+FROM gp_distribution_policy
+WHERE localoid::regclass::text LIKE 'ctas_ex_%'
+ORDER BY localoid::regclass::text;
+SELECT count(*) FROM ctas_ex_nodata;
+SELECT * FROM ctas_ex_cols ORDER BY x;
+SELECT count(*) FROM ctas_ex_hash_off;
+SELECT count(*) FROM ctas_ex_repl_off;
+
+CREATE TABLE IF NOT EXISTS ctas_ex_hash AS EXECUTE ctas_ex_q(2) DISTRIBUTED RANDOMLY;
+SELECT policytype, distkey FROM gp_distribution_policy WHERE localoid = 'ctas_ex_hash'::regclass;
+CREATE TABLE ctas_ex_bad AS EXECUTE ctas_ex_q(2) DISTRIBUTED BY (nosuch);
+
+DEALLOCATE ctas_ex_q;
+DROP TABLE ctas_ex_hash, ctas_ex_rand, ctas_ex_repl, ctas_ex_nodata, ctas_ex_cols,
+  ctas_ex_hash_off, ctas_ex_rand_off, ctas_ex_repl_off;

@@ -333,13 +333,13 @@ ECPG: ExecuteStmtEXECUTEprepared_nameexecute_param_clauseexecute_rest block
 		$$.name = $2;
 		$$.type = $3;
 	}
-ECPG: ExecuteStmtCREATEOptTempTABLEcreate_as_targetASEXECUTEprepared_nameexecute_param_clauseopt_with_dataexecute_rest block
+ECPG: ExecuteStmtCREATEOptTempTABLEcreate_as_targetASEXECUTEprepared_nameexecute_param_clauseopt_with_dataOptDistributedByexecute_rest block
 	{
-		$$.name = cat_str(8,mm_strdup("create"),$2,mm_strdup("table"),$4,mm_strdup("as execute"),$7,$8,$9);
+		$$.name = cat_str(9,mm_strdup("create"),$2,mm_strdup("table"),$4,mm_strdup("as execute"),$7,$8,$9,$10);
 	}
-ECPG: ExecuteStmtCREATEOptTempTABLEIF_PNOTEXISTScreate_as_targetASEXECUTEprepared_nameexecute_param_clauseopt_with_dataexecute_rest block
+ECPG: ExecuteStmtCREATEOptTempTABLEIF_PNOTEXISTScreate_as_targetASEXECUTEprepared_nameexecute_param_clauseopt_with_dataOptDistributedByexecute_rest block
 	{
-		$$.name = cat_str(8,mm_strdup("create"),$2,mm_strdup("table if not exists"),$7,mm_strdup("as execute"),$10,$11,$12);
+		$$.name = cat_str(9,mm_strdup("create"),$2,mm_strdup("table if not exists"),$7,mm_strdup("as execute"),$10,$11,$12,$13);
 	}
 ECPG: DeclareCursorStmtDECLAREcursor_namecursor_optionsCURSORopt_holdFORSelectStmt block
 	{

@@ -79,6 +79,7 @@
 #include "utils/syscache.h"
 
 #include "cdb/cdbutil.h"
+#include "cdb/cdbvars.h"
 
 /*
  * We must skip "overhead" operations that involve database access when the
@@ -712,12 +713,23 @@ RevalidateCachedQuery(CachedPlanSource *plansource,
 									   plansource->num_params,
 									   queryEnv);
 
-	/* GPDB: For CTAS query, set its isCTAS to be true */
+	/* GPDB: Mark the query as the source of a CTAS */
 	if (intoClause)
 	{
 		Assert(list_length(tlist) == 1);
 		Query *query = (Query *) linitial(tlist);
 		query->parentStmtType = PARENTSTMTTYPE_CTAS;
+
+		/*
+		 * CREATE TABLE AS EXECUTE: the prepared SELECT's target list is only
+		 * known now, so resolve the DISTRIBUTED clause against it here.
+		 * No ParseState is available; an unknown column is reported
+		 * without a cursor position.
+		 */
+		if (intoClause->distributedBy != NULL &&
+			Gp_role == GP_ROLE_DISPATCH &&
+			query->commandType == CMD_SELECT)
+			setQryDistributionPolicy(NULL, intoClause, query);
 	}
 
 	/* Release snapshot if we got one */
