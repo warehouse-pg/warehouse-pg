@@ -1,0 +1,115 @@
+--
+-- gp_aoco_insert_buffer_limit: a command that inserts into many ao_column
+-- partitions releases the column buffers of the partitions it wrote to
+-- least recently.
+--
+create schema aoco_insert_buffer_limit;
+set search_path = aoco_insert_buffer_limit;
+--
+-- Releasing and reopening the buffers must not lose or duplicate rows.
+-- The smallest limit makes every partition but the current one release
+-- its buffers.
+--
+set gp_aoco_insert_buffer_limit = '1kB';
+create table ref (id int, k int, v text, w numeric, big text)
+  distributed by (id);
+insert into ref
+  select i, i % 20, 'v' || i, i * 1.5,
+         case when i % 50 = 0 then repeat(md5(i::text), 3000) end
+  from generate_series(1, 40000) i;
+create table pt (id int, k int, v text, w numeric, big text)
+  using ao_column with (compresstype = zlib, compresslevel = 1)
+  distributed by (id)
+  partition by range (k) (start (0) end (20) every (1));
+create index pt_id on pt (id);
+create unique index pt_uq on pt (id, k);
+-- rows of the partitions interleaved: each partition is reopened
+insert into pt select * from ref where id <= 10000;
+-- rows grouped by partition: each partition is released once
+insert into pt select * from ref where id > 10000 and id <= 30000 order by k;
+-- several inserts in one transaction, one of them rolled back
+begin;
+insert into pt select * from ref where id > 30000 and id <= 35000 order by k;
+savepoint s;
+insert into pt select id + 100000, k, v, w, big from ref;
+rollback to s;
+insert into pt select * from ref where id > 35000 order by k desc;
+commit;
+select (select count(*) from (select * from pt except select * from ref) x) as extra,
+       (select count(*) from (select * from ref except select * from pt) x) as missing;
+ extra | missing 
+-------+---------
+     0 |       0
+(1 row)
+
+-- the block directory covers the rows written after a reopen
+set enable_seqscan = off;
+set optimizer = off;
+select count(*), sum((p.v = r.v)::int) as matching
+  from ref r join pt p on p.id = r.id and p.k = r.k
+  where r.id in (7, 9999, 10001, 29999, 30001, 35001, 40000);
+ count | matching 
+-------+----------
+     7 |        7
+(1 row)
+
+reset enable_seqscan;
+reset optimizer;
+-- a unique violation is still detected
+insert into pt select * from ref where id = 5;
+ERROR:  duplicate key value violates unique constraint "pt_1_prt_6_id_k_idx"  (seg2 127.0.0.1:7506 pid=117399)
+DETAIL:  Key (id, k)=(5, 5) already exists.
+-- rows moved between partitions by UPDATE
+update pt set k = (k + 1) % 20 where id % 3 = 0;
+update ref set k = (k + 1) % 20 where id % 3 = 0;
+update pt set v = v || 'x' where id % 7 = 0;
+update ref set v = v || 'x' where id % 7 = 0;
+delete from pt where id % 11 = 0;
+delete from ref where id % 11 = 0;
+-- an aborted insert leaves nothing behind and the table stays writable
+begin;
+insert into pt select id + 200000, k, v, w, big from ref;
+rollback;
+insert into pt select id + 300000, k, v, w, big from ref where id < 100;
+insert into ref select id + 300000, k, v, w, big from ref where id < 100;
+vacuum pt;
+select (select count(*) from (select * from pt except select * from ref) x) as extra,
+       (select count(*) from (select * from ref except select * from pt) x) as missing;
+NOTICE:  One or more columns in the following table(s) do not have statistics: pt
+HINT:  For non-partitioned tables, run analyze <table_name>(<column_list>). For partitioned tables, run analyze (rootpartition) <table_name>(<column_list>). See log for columns missing statistics.
+ extra | missing 
+-------+---------
+     0 |       0
+(1 row)
+
+-- COPY goes through the same buffers
+create table pt_copy (like pt) using ao_column
+  distributed by (id)
+  partition by range (k) (start (0) end (20) every (1));
+copy (select * from ref) to '/tmp/aoco_insert_buffer_limit.data';
+copy pt_copy from '/tmp/aoco_insert_buffer_limit.data';
+select (select count(*) from (select * from pt_copy except select * from ref) x) as extra,
+       (select count(*) from (select * from ref except select * from pt_copy) x) as missing;
+ extra | missing 
+-------+---------
+     0 |       0
+(1 row)
+
+-- a limit of zero keeps every partition's buffers
+set gp_aoco_insert_buffer_limit = 0;
+truncate pt_copy;
+insert into pt_copy select * from ref;
+select (select count(*) from (select * from pt_copy except select * from ref) x) as extra,
+       (select count(*) from (select * from ref except select * from pt_copy) x) as missing;
+ extra | missing 
+-------+---------
+     0 |       0
+(1 row)
+
+reset gp_aoco_insert_buffer_limit;
+\! rm -f /tmp/aoco_insert_buffer_limit.data
+drop schema aoco_insert_buffer_limit cascade;
+NOTICE:  drop cascades to 3 other objects
+DETAIL:  drop cascades to table ref
+drop cascades to table pt
+drop cascades to table pt_copy

@@ -38,6 +38,7 @@
 		"gin_fuzzy_search_limit",
 		"gin_pending_list_limit",
 		"gp_allow_date_field_width_5digits",
+		"gp_aoco_insert_buffer_limit",
 		"gp_appendonly_compaction",
 		"gp_appendonly_compaction_threshold",
 		"gp_appendonly_verify_block_checksums",
