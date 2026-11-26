@@ -15117,8 +15117,8 @@ select * from extstats_estimated_rows('select gp_segment_id, x, y from ndist_t g
 -- reports the same 45 and, for the other two, its 0.1 x reltuples clamp of
 -- 100. Autovacuum is disabled on the table so that an automatic ANALYZE
 -- cannot change the statistics under the test.
-create table ndist_mixed (a int, b int, c int, d int) with (autovacuum_enabled = false) distributed by (a);
-insert into ndist_mixed select mod(g, 3), mod(g, 9), mod(g, 5), mod(g, 20) from generate_series(1, 1000) g;
+create table ndist_mixed (a int, b int, c int, d int, e int, f int) with (autovacuum_enabled = false) distributed by (a);
+insert into ndist_mixed select mod(g, 3), mod(g, 9), mod(g, 5), mod(g, 20), mod(g, 7), mod(g, 500) from generate_series(1, 1000) g;
 create statistics ndist_mixed_ab (ndistinct) on a, b from ndist_mixed;
 create statistics ndist_mixed_cd (ndistinct) on c, d from ndist_mixed;
 analyze ndist_mixed;
@@ -15140,7 +15140,69 @@ select * from extstats_estimated_rows('select a, b, c, d from ndist_mixed group 
        180 |    180
 (1 row)
 
+-- WHPG: two uncovered columns, c and e (7 distinct values). ORCA damps them
+-- against each other, 7 x 5 x 0.75^2 = 19.7, and multiplies the result by the
+-- joint count of (a, b): 9 x 19.7 = 178. The columns are independent here, so
+-- the actual count is the full product, 315.
+select * from extstats_estimated_rows('select a, b, c, e from ndist_mixed group by a, b, c, e');
+ estimated | actual 
+-----------+--------
+       178 |    315
+(1 row)
+
+-- WHPG: DISTINCT and ROLLUP take the same estimate as GROUP BY a, b, c. The
+-- ROLLUP adds its 13 subtotal rows: 9 for (a, b), 3 for (a) and the total.
+select * from extstats_estimated_rows('select distinct a, b, c from ndist_mixed');
+ estimated | actual 
+-----------+--------
+        45 |     45
+(1 row)
+
+select * from extstats_estimated_rows('select a, b, c from ndist_mixed group by rollup (a, b, c)');
+ estimated | actual 
+-----------+--------
+        58 |     58
+(1 row)
+
+-- WHPG: a product above the row count. f has 500 distinct values, and
+-- 9 x 500 = 4500 is bounded by the 1000 input rows.
+select * from extstats_estimated_rows('select a, b, f from ndist_mixed group by a, b, f');
+ estimated | actual 
+-----------+--------
+      1000 |   1000
+(1 row)
+
 drop table ndist_mixed;
+-- WHPG: two statistics objects that overlap in one grouping column. a is
+-- determined by b, so GROUP BY a, b, c has 45 groups. Both objects match two
+-- grouping columns, and ORCA and the planner take the one they find first.
+-- With ndist_ov_ab (9 groups) the column left over is c: 9 x 5 = 45. With
+-- ndist_ov_bc (45 groups) the column left over is a, which is multiplied in as
+-- if it were independent of b: 45 x 3 = 135; the planner's 0.1 x reltuples
+-- clamp turns that into 100. Which object is found first depends on the order
+-- in which the objects were created; both orders are shown.
+create table ndist_ov (a int, b int, c int) with (autovacuum_enabled = false) distributed by (a);
+insert into ndist_ov select mod(g, 3), mod(g, 9), mod(g, 5) from generate_series(1, 1000) g;
+create statistics ndist_ov_ab (ndistinct) on a, b from ndist_ov;
+create statistics ndist_ov_bc (ndistinct) on b, c from ndist_ov;
+analyze ndist_ov;
+select * from extstats_estimated_rows('select a, b, c from ndist_ov group by a, b, c');
+ estimated | actual 
+-----------+--------
+       135 |     45
+(1 row)
+
+drop statistics ndist_ov_ab, ndist_ov_bc;
+create statistics ndist_ov_bc (ndistinct) on b, c from ndist_ov;
+create statistics ndist_ov_ab (ndistinct) on a, b from ndist_ov;
+analyze ndist_ov;
+select * from extstats_estimated_rows('select a, b, c from ndist_ov group by a, b, c');
+ estimated | actual 
+-----------+--------
+        45 |     45
+(1 row)
+
+drop table ndist_ov;
 drop function extstats_estimated_rows(text);
 drop table ndist_t;
 -- Filter estimation with extended statistics must not crash when the memo

@@ -16,10 +16,10 @@
     EXPLAIN (ANALYZE, TIMING OFF) SELECT COUNT(*) FROM t GROUP BY a, b, c;
                                                   QUERY PLAN
     ---------------------------------------------------------------------------------------------------------
-     Gather Motion 3:1  (slice1; segments: 3)  (cost=0.00..431.14 rows=45 width=8) (actual rows=45.00 loops=1)
-       ->  HashAggregate  (cost=0.00..431.14 rows=15 width=8) (actual rows=30.00 loops=1)
+     Gather Motion 3:1  (slice1; segments: 3)  (cost=0.00..431.14 rows=45 width=8) (actual rows=45 loops=1)
+       ->  HashAggregate  (cost=0.00..431.14 rows=15 width=8) (actual rows=30 loops=1)
              Group Key: a, b, c
-             ->  Seq Scan on t  (cost=0.00..431.01 rows=334 width=12) (actual rows=667.00 loops=1)
+             ->  Seq Scan on t  (cost=0.00..431.01 rows=334 width=12) (actual rows=667 loops=1)
      Optimizer: GPORCA
   ]]>
   </dxl:Comment>
