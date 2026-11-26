@@ -194,7 +194,7 @@ Tests run in pre-built container images from `ghcr.io/warehouse-pg/`, selected p
 
 ### Xerces-c 3.1
 
-ORCA on WHPG 6 requires xerces-c **3.1**, but the distro ships 3.2. The `Install required packages` step removes the system `xerces-c` / `xerces-c-devel`, and the `Build Xerces with Python 2` step builds 3.1 from `src/backend/gporca/concourse/xerces-c` (a Python-2-only build script, which is why `python2-devel` is installed).
+ORCA on WHPG 6 requires xerces-c **3.1**, but the distro ships 3.2. The `Install required packages` step removes the system `xerces-c` / `xerces-c-devel`, and the `Build Xerces with Python 2` step builds 3.1 from `src/backend/gporca/ci/xerces-c` (a Python-2-only build script, which is why `python2-devel` is installed).
 
 ### Dual Python: Python 2 build + Python 3 PL/Python
 
