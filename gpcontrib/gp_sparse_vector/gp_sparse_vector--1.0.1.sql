@@ -342,7 +342,7 @@ CREATE OPERATOR <> (
 	leftarg = svec, rightarg = svec, procedure = svec_l2_ne,
 	commutator = <> ,
 	negator = == ,
-	restrict = eqsel, join = eqjoinsel
+	restrict = neqsel, join = neqjoinsel
 );
 CREATE OPERATOR == (
 	leftarg = svec, rightarg = svec, procedure = svec_l2_eq,
