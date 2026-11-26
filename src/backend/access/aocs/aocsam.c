@@ -2644,6 +2644,46 @@ aocs_insert_finish(AOCSInsertDesc idesc)
 }
 
 /*
+ * Estimate the memory the column streams of an insert descriptor on 'rel'
+ * take up, without opening one. 'rel' may be a partitioned table, in which
+ * case this is the estimate for one partition that has its column encodings.
+ * If 'attnos' is not NULL, only the columns with those attribute numbers are
+ * counted.
+ *
+ * A stream holds one block being assembled plus the write buffer of
+ * AppendOnlyStorageWrite_Init(), which is sized for a block and a large
+ * write of two; compressing takes one more block.
+ */
+Size
+aocs_insert_stream_mem_estimate(Relation rel, Bitmapset *attnos)
+{
+	int			natts = RelationGetNumberOfAttributes(rel);
+	StdRdOptions **opts = RelationGetAttributeOptions(rel);
+	Size		result = 0;
+
+	for (int i = 0; i < natts; i++)
+	{
+		int			blocksize = DEFAULT_APPENDONLY_BLOCK_SIZE;
+		bool		compress = false;
+
+		if (opts[i] != NULL)
+		{
+			if (opts[i]->blocksize != 0)
+				blocksize = opts[i]->blocksize;
+			compress = opts[i]->compresstype[0] != '\0' &&
+				pg_strcasecmp(opts[i]->compresstype, "none") != 0;
+			pfree(opts[i]);
+		}
+
+		if (attnos == NULL || bms_is_member(i + 1, attnos))
+			result += (Size) blocksize * (compress ? 5 : 4);
+	}
+	pfree(opts);
+
+	return result;
+}
+
+/*
  * Give back the memory and the file descriptors of an insert descriptor that
  * is not being written to right now.
  *

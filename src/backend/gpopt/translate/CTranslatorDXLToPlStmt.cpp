@@ -4788,6 +4788,25 @@ CTranslatorDXLToPlStmt::TranslateDXLDml(
 
 	child_plan = (Plan *) result;
 
+	if (CMD_INSERT == m_cmd_type)
+	{
+		// the optimizer does not know what the table access method needs
+		// to buffer for each partition it writes to, so it is here that
+		// the rows get grouped by partition where that keeps the buffers
+		// within bounds
+		Plan *sort_plan = gpdb::MakeSortPlanForPartitionedInsert(
+			CMDIdGPDB::CastMdid(mdid_target_table)->Oid(), child_plan,
+			result_plan->lefttree->plan_rows,
+			m_dxl_to_plstmt_context->GetRTableEntriesList());
+		if (sort_plan != child_plan)
+		{
+			sort_plan->plan_node_id =
+				m_dxl_to_plstmt_context->GetNextPlanId();
+			SetParamIds(sort_plan);
+			child_plan = sort_plan;
+		}
+	}
+
 	dml->operation = m_cmd_type;
 	dml->canSetTag = true;	// FIXME
 	dml->nominalRelation = index;

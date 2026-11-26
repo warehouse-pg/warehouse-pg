@@ -581,6 +581,11 @@ void CheckRTPermissions(List *rtable);
 // throw an error if table has update triggers.
 bool HasUpdateTriggers(Oid relid);
 
+// sort the rows to insert into a partitioned table by partition, if the
+// table calls for it
+Plan *MakeSortPlanForPartitionedInsert(Oid relid, Plan *subplan, double rows,
+									   List *rtable);
+
 // get index operator family properties
 void IndexOpProperties(Oid opno, Oid opfamily, StrategyNumber *strategynumber,
 					   Oid *righttype);

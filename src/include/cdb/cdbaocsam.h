@@ -509,6 +509,7 @@ extern void aocs_insert_finish(AOCSInsertDesc idesc);
 extern void aocs_insert_suspend(AOCSInsertDesc idesc);
 extern void aocs_insert_resume(AOCSInsertDesc idesc);
 extern Size aocs_insert_data_mem(AOCSInsertDesc idesc);
+extern Size aocs_insert_stream_mem_estimate(Relation rel, Bitmapset *attnos);
 extern AOCSFetchDesc aocs_fetch_init(Relation relation,
 									 Snapshot snapshot,
 									 Snapshot appendOnlyMetaDataSnapshot,

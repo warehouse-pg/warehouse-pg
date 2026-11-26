@@ -5525,6 +5525,13 @@ adjust_modifytable_subpaths(PlannerInfo *root, CmdType operation,
 
 		if (operation == CMD_INSERT)
 		{
+			/*
+			 * Sort before moving the rows, not after: a Motion delivers
+			 * what each sender sorted in bursts of a few partitions, which
+			 * is all the grouping the insert needs, and it lets the insert
+			 * run while the rows are still arriving.
+			 */
+			subpath = create_sort_path_for_partitioned_insert(root, rti, subpath);
 			subpath = create_motion_path_for_insert(root, targetPolicy, subpath);
 		}
 		else if (operation == CMD_DELETE)
