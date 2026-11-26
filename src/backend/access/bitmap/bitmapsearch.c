@@ -328,7 +328,7 @@ read_words(Relation rel, Buffer lovBuffer, OffsetNumber lovOffset,
 		bitmap = (BMBitmap) PageGetContentsMaxAligned(bitmapPage);
 		bo = (BMBitmapOpaque)PageGetSpecialPointer(bitmapPage);
 
-		*nextBlockNoP = bo->bm_bitmap_next;
+		*nextBlockNoP = BMBitmapPageGetNext(bo);
 		batchWords->nwords = bo->bm_hrl_words_used;
 
 		/*

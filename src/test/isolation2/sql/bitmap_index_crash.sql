@@ -39,6 +39,34 @@
 
 3:SELECT gp_inject_fault('fts_probe', 'reset', dbid) FROM gp_segment_configuration WHERE role='p' AND content=-1;
 
+-- Replaying an insert must leave the last bitmap page of a batch
+-- without a next page.  The first insert after the checkpoint is replayed
+-- from full-page images, so it takes a second one to replay the bitmap
+-- words themselves.
+4:SELECT gp_inject_fault_infinite('fts_probe', 'skip', dbid)
+    FROM gp_segment_configuration WHERE role='p' AND content=-1;
+4:SELECT gp_request_fts_probe_scan();
+4:SELECT gp_wait_until_triggered_fault('fts_probe', 1, dbid)
+    FROM gp_segment_configuration WHERE role='p' AND content=-1;
+4:CREATE TABLE bm_next(a int, b int) DISTRIBUTED BY (a);
+4:CREATE INDEX ON bm_next USING bitmap (b);
+4:SELECT gp_inject_fault_infinite('checkpoint', 'skip', dbid) FROM gp_segment_configuration WHERE role='p';
+4:CHECKPOINT;
+4:INSERT INTO bm_next SELECT i, i % 10 FROM generate_series(1, 20000) i;
+4:INSERT INTO bm_next SELECT i, i % 10 FROM generate_series(1, 2000) i;
+4:SELECT pg_ctl(datadir, 'restart') from gp_segment_configuration where role = 'p' and content = 1;
+5:SET enable_seqscan to off;
+5:SET optimizer to off;
+5:SET statement_timeout to '60s';
+5:SELECT count(*) FROM bm_next WHERE b = 3;
+5:INSERT INTO bm_next SELECT i, i % 10 FROM generate_series(1, 2000) i;
+5:SELECT count(*) FROM bm_next WHERE b = 3;
+5:DROP TABLE bm_next;
+5:SELECT gp_inject_fault_infinite('checkpoint', 'reset', dbid) FROM gp_segment_configuration WHERE role='p';
+5:SELECT gp_inject_fault('fts_probe', 'reset', dbid) FROM gp_segment_configuration WHERE role='p' AND content=-1;
+4q:
+5q:
+
 -- Test bitmap index replay XLog after crash
 -- More details could be found at https://github.com/greenplum-db/gpdb/issues/13517
 drop table if exists test_bitmap;

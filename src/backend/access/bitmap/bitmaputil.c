@@ -1037,7 +1037,6 @@ _bitmap_log_bitmapwords(Relation rel,
 	ListCell   *lcb;
 	bool		init_page;
 	int			num_bm_pages = list_length(xl_bm_bitmapword_pages);
-	int 		current_page = 0;
 
 	Assert(list_length(bitmapBuffers) == num_bm_pages);
 	if (num_bm_pages > MAX_BITMAP_PAGES_PER_INSERT)
@@ -1076,12 +1075,14 @@ _bitmap_log_bitmapwords(Relation rel,
 
 		Assert(BufferIsValid(bitmapBuffer));
 
-		/* fill bm_next_blkno field */
-		if (current_page + 1 < num_bm_pages)
-		{
-			xl_bm_bitmapwords_perpage *next_xl_bm_bitmapwords_perpage = lfirst(lnext(lcp));
-			xlBitmapwordsPage->bm_next_blkno = next_xl_bm_bitmapwords_perpage->bmp_blkno;
-		}
+		/*
+		 * The pages are linked up by now, so take each page's next pointer
+		 * from the page itself.  Redo stores it as is, and for the last page
+		 * that must be what the page has, normally InvalidBlockNumber: block
+		 * zero is the metapage, and a scan sent there never ends.
+		 */
+		xlBitmapwordsPage->bm_next_blkno =
+			BMBitmapPageGetNext((BMBitmapOpaque) PageGetSpecialPointer(bitmapPage));
 
 		XLogRegisterBuffer(rdata_no, bitmapBuffer, 0);
 
@@ -1091,7 +1092,6 @@ _bitmap_log_bitmapwords(Relation rel,
 		XLogRegisterBufData(rdata_no, (char *) &bitmap->cwords[xlBitmapwordsPage->bmp_start_cword_no],
 							xlBitmapwordsPage->bmp_num_cwords * sizeof(BM_HRL_WORD));
 		rdata_no++;
-		current_page++;
 	}
 
 	recptr = XLogInsert(RM_BITMAP_ID, XLOG_BITMAP_INSERT_WORDS);
@@ -1189,7 +1189,7 @@ _bitmap_log_updatewords(Relation rel,
 	xlBitmapWords.bm_first_last_tid = firstOpaque->bm_last_tid_location;
 	xlBitmapWords.bm_first_num_cwords =
 		firstOpaque->bm_hrl_words_used;
-	xlBitmapWords.bm_next_blkno = firstOpaque->bm_bitmap_next;
+	xlBitmapWords.bm_next_blkno = BMBitmapPageGetNext(firstOpaque);
 
 	if (BufferIsValid(secondBuffer))
 	{
@@ -1209,7 +1209,7 @@ _bitmap_log_updatewords(Relation rel,
 		xlBitmapWords.bm_second_last_tid = secondOpaque->bm_last_tid_location;
 		xlBitmapWords.bm_second_num_cwords =
 			secondOpaque->bm_hrl_words_used;
-		xlBitmapWords.bm_next_blkno = secondOpaque->bm_bitmap_next;
+		xlBitmapWords.bm_next_blkno = BMBitmapPageGetNext(secondOpaque);
 	}
 
 	xlBitmapWords.bm_node = rel->rd_node;

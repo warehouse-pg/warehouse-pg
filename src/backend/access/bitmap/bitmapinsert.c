@@ -840,9 +840,9 @@ updatesetbit_inpage(Relation rel, uint64 tidnum,
 
 	if (free_words < new_words.curword - 1)
 	{
-		if (bitmapOpaque->bm_bitmap_next != InvalidBlockNumber)
+		if (BMBitmapPageGetNext(bitmapOpaque) != InvalidBlockNumber)
 		{
-			nextBuffer = _bitmap_getbuf(rel, bitmapOpaque->bm_bitmap_next,
+			nextBuffer = _bitmap_getbuf(rel, BMBitmapPageGetNext(bitmapOpaque),
 										BM_WRITE);
 			nextPage = BufferGetPage(nextBuffer);
 			nextOpaque = (BMBitmapOpaque)PageGetSpecialPointer(nextPage);
@@ -952,7 +952,7 @@ updatesetbit_inpage(Relation rel, uint64 tidnum,
 		nextBitmap = (BMBitmap)PageGetContentsMaxAligned(nextPage);
 
 		nextOpaque->bm_last_tid_location = bitmapOpaque->bm_last_tid_location;
-		nextOpaque->bm_bitmap_next = bitmapOpaque->bm_bitmap_next;
+		nextOpaque->bm_bitmap_next = BMBitmapPageGetNext(bitmapOpaque);
 		bitmapOpaque->bm_bitmap_next = BufferGetBlockNumber(nextBuffer);
 	}
 
@@ -1036,7 +1036,7 @@ findbitmappage(Relation rel, BMLOVItem lovitem,
 			return;   		/* find the page */
 
 		(*firstTidNumberP) = bitmapOpaque->bm_last_tid_location + 1;
-		nextBlockNo = bitmapOpaque->bm_bitmap_next;
+		nextBlockNo = BMBitmapPageGetNext(bitmapOpaque);
 
 		_bitmap_relbuf(*bitmapBufferP);
 	}
@@ -1108,7 +1108,7 @@ verify_bitmappages(Relation rel, BMLOVItem lovitem)
 				 rel->rd_node.spcNode, rel->rd_node.dbNode, rel->rd_node.relNode, tidnum);
 		}
 
-		nextBlockNo = bitmapOpaque->bm_bitmap_next;
+		nextBlockNo = BMBitmapPageGetNext(bitmapOpaque);
 
 		_bitmap_relbuf(bitmapBuffer);
 	}
