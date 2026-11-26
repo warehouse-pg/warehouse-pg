@@ -1,0 +1,46 @@
+-- WHPG: gpexpand builds a new segment from a pg_basebackup of the coordinator
+-- and starts it once with -M to convert it into a segment. If distributed
+-- transactions commit on the coordinator while the backup is taken, the WAL
+-- copied into the new segment contains XLOG_XACT_DISTRIBUTED_COMMIT records.
+-- Replaying them on a segment, where max_tm_gxacts is 0, used to fail with
+-- "the limit of 0 distributed transactions has been reached".
+
+CREATE EXTENSION IF NOT EXISTS gp_inject_fault;
+CREATE TABLE gpexpand_dtx_redo(a int) DISTRIBUTED BY (a);
+
+!\retcode rm -rf /tmp/gpexpand_dtx_redo_test;
+
+-- Suspend the base backup right after its start checkpoint, so that the
+-- distributed commit below lands in the WAL the backup has to replay.
+SELECT gp_inject_fault('base_backup_post_create_checkpoint', 'suspend', dbid)
+FROM gp_segment_configuration WHERE content = -1 AND role = 'p';
+
+1&: SELECT pg_basebackup(hostname, 100, port, false, NULL,
+        '/tmp/gpexpand_dtx_redo_test', true, 'stream')
+    FROM gp_segment_configuration WHERE content = -1 AND role = 'p';
+
+SELECT gp_wait_until_triggered_fault('base_backup_post_create_checkpoint', 1, dbid)
+FROM gp_segment_configuration WHERE content = -1 AND role = 'p';
+
+-- Rows go to every segment, so this commits with two-phase commit and the
+-- coordinator writes a distributed commit record.
+INSERT INTO gpexpand_dtx_redo SELECT generate_series(1, 100);
+
+SELECT gp_inject_fault('base_backup_post_create_checkpoint', 'reset', dbid)
+FROM gp_segment_configuration WHERE content = -1 AND role = 'p';
+
+1<:
+
+-- Turn the backup into a new segment the way gpconfigurenewsegment does:
+-- pg_basebackup already wrote gp_dbid = 100 into internal.auto.conf, so give it
+-- an unused content id. The helper passes -R, so also drop standby.signal.
+!\retcode rm -f /tmp/gpexpand_dtx_redo_test/standby.signal;
+!\retcode echo "gp_contentid = 100" >> /tmp/gpexpand_dtx_redo_test/postgresql.conf;
+
+-- First start with -M in utility mode, as gpexpand does. Single-user mode
+-- runs the same crash recovery without needing a free port. It must not
+-- replay the coordinator's distributed commits and must start up.
+!\retcode echo "SELECT 1;" | postgres --single -D /tmp/gpexpand_dtx_redo_test -c gp_role=utility -M postgres;
+
+!\retcode rm -rf /tmp/gpexpand_dtx_redo_test;
+DROP TABLE gpexpand_dtx_redo;
