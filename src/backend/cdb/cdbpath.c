@@ -537,8 +537,15 @@ cdbpath_create_motion_path(PlannerInfo *root,
 	 * output.  It can only merge on the part of the subquery's order whose
 	 * keys that output carries: a key such as s.g under "SELECT 'a' || g
 	 * FROM s" is not in the subquery's target list at all.
+	 *
+	 * Only work that out when a push-down is possible at all, i.e. for a
+	 * bottleneck Motion over a SubqueryScan that has no pathkeys of its own
+	 * while the subquery's path does.
 	 */
-	if (IsA(subpath, SubqueryScanPath))
+	if (IsA(subpath, SubqueryScanPath) &&
+		CdbPathLocus_IsBottleneck(locus) &&
+		!subpath->pathkeys &&
+		((SubqueryScanPath *) subpath)->subpath->pathkeys)
 	{
 		Path	   *subquery_path = ((SubqueryScanPath *) subpath)->subpath;
 
@@ -547,10 +554,7 @@ cdbpath_create_motion_path(PlannerInfo *root,
 													make_tlist_from_pathtarget(subquery_path->pathtarget));
 	}
 
-    if(IsA(subpath,SubqueryScanPath)
-       && CdbPathLocus_IsBottleneck(locus)
-       && !subpath->pathkeys
-       && subquery_pathkeys)
+    if (subquery_pathkeys)
     {
         /*
          * In gpdb, when there is a Gather Motion on top of a SubqueryScan,

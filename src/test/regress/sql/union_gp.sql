@@ -741,10 +741,26 @@ SELECT id, sum(t) FROM (
   UNION ALL
   SELECT * FROM (SELECT v, 'b' || k, v FROM union_sorted_sub ORDER BY v LIMIT 3) y
 ) z GROUP BY id ORDER BY id LIMIT 3;
+-- Grouped on (g, h), the branch outputs g but only 'a' || h: the pushed
+-- Motion merges on the prefix g alone.
+CREATE TABLE union_sorted_sub2 (k int, v int, w int) DISTRIBUTED BY (k);
+INSERT INTO union_sorted_sub2 SELECT i % 50, i % 100, i % 7 FROM generate_series(1, 1000) i;
+ANALYZE union_sorted_sub2;
+EXPLAIN (COSTS OFF)
+SELECT id, sum(t) FROM (
+  SELECT g, 'a' || h AS id, t FROM (SELECT v AS g, w AS h, sum(k) AS t FROM union_sorted_sub2 GROUP BY v, w) s
+  UNION ALL
+  SELECT * FROM (SELECT v, 'b' || k, v FROM union_sorted_sub2 ORDER BY v LIMIT 3) y
+) z GROUP BY id ORDER BY id LIMIT 3;
+SELECT id, sum(t) FROM (
+  SELECT g, 'a' || h AS id, t FROM (SELECT v AS g, w AS h, sum(k) AS t FROM union_sorted_sub2 GROUP BY v, w) s
+  UNION ALL
+  SELECT * FROM (SELECT v, 'b' || k, v FROM union_sorted_sub2 ORDER BY v LIMIT 3) y
+) z GROUP BY id ORDER BY id LIMIT 3;
 RESET gp_enable_multiphase_agg;
 RESET enable_hashagg;
 RESET optimizer;
-DROP TABLE union_sorted_sub;
+DROP TABLE union_sorted_sub, union_sorted_sub2;
 
 --
 -- Clean up
