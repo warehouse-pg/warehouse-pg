@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Run ORCA unit tests for WHPG
-# Wrapper around concourse/scripts/unit_tests_gporca.bash
+# Wrapper around ci/scripts/unit_tests_gporca.bash
 
 set -eox pipefail
 
@@ -20,7 +20,7 @@ function _main() {
 
     # Source common functions and set build architecture dynamically
     cd "${WHPG_SRC}"
-    source concourse/scripts/common.bash
+    source ci/scripts/common.bash
     export BLD_ARCH=$(build_arch)
     export GPDB_SRC_PATH="${WHPG_SRC}"
 
@@ -31,8 +31,8 @@ function _main() {
         ln -s . "${WHPG_SRC}/gpdb_src"
     fi
 
-    # Run the concourse script
-    bash concourse/scripts/unit_tests_gporca.bash
+    # Run the ci script
+    bash ci/scripts/unit_tests_gporca.bash
 
     echo "========================================================================"
     echo "ORCA unit tests completed successfully"

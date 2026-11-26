@@ -17,7 +17,7 @@ source /usr/local/greenplum-db-devel/greenplum_path.sh
 [ -f ~/gpdb_src/gpAux/gpdemo/gpdemo-env.sh ] && source ~/gpdb_src/gpAux/gpdemo/gpdemo-env.sh
 
 # Source common functions
-source "${WHPG_SRC}/concourse/scripts/common.bash"
+source "${WHPG_SRC}/ci/scripts/common.bash"
 
 function setup_results_dir() {
     mkdir -p "${RESULTS_DIR}"

@@ -88,7 +88,7 @@ then run command `ldconfig`.
 
     ```bash
     # Requires gpdb clone to be named gpdb_src
-    gpdb_src/concourse/scripts/setup_gpadmin_user.bash
+    gpdb_src/ci/scripts/setup_gpadmin_user.bash
     ```
     to create the gpadmin user and set up keys,
 

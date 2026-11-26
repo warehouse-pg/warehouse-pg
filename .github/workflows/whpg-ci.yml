@@ -233,14 +233,14 @@ jobs:
       - name: Setup gpadmin user
         run: |
           # Create symlinks for easier navigation
-          ln -s . gpdb_src                          # For concourse scripts compatibility
+          ln -s . gpdb_src                          # For ci/scripts compatibility
           ln -s "${WHPG_SRC}" /workspace            # Easy to remember path
           ln -s "${WHPG_SRC}" /home/gpadmin/gpdb_src  # Accessible from gpadmin home
           # Delete the gpadmin user since the setup script doesn't handle existing users.
           userdel gpadmin 2>/dev/null || true
 
           export TEST_OS=centos
-          ./concourse/scripts/setup_gpadmin_user.bash
+          ./ci/scripts/setup_gpadmin_user.bash
           chown -h gpadmin:gpadmin /workspace /home/gpadmin/gpdb_src
           chown -R gpadmin:gpadmin /usr/local/greenplum-db-devel
           chown -R gpadmin:gpadmin "${WHPG_SRC}"
@@ -252,7 +252,7 @@ jobs:
       - name: Create demo cluster
         id: cluster
         run: |
-          source concourse/scripts/common.bash
+          source ci/scripts/common.bash
           export WITH_MIRRORS=true
           make_cluster
 
