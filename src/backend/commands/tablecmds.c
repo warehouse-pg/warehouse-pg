@@ -7706,10 +7706,9 @@ check_composite_type_dependency(ObjectAddress *depobj, Oid typeOid,
 				else
 				{
 					/*
-					 * We've covered all reasons for this dependency to exist,
-					 * so why are we here?  Better play safe and reject it.
+					 * None of the reasons we know of explains this
+					 * dependency.  Play safe and reject it.
 					 */
-					Assert(false);
 					report_type_used_in_expr(depobj, origRelation, origTypeName);
 				}
 			}
