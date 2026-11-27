@@ -1546,7 +1546,17 @@ CStatisticsUtils::MaxNumGroupsForGivenSrcGprCols(
 
 	CDoubleArray *ndvs = GPOS_NEW(mp) CDoubleArray(mp);
 
-	// Use all applicable multivariate n-distinct correlated stats
+	// Use all applicable multivariate n-distinct correlated stats. A joint
+	// distinct count from a statistics object is the measured number of
+	// groups of the columns it covers, correlation included. The joint
+	// counts and the per-column counts of the uncovered columns combine
+	// without damping between them, as the planner's estimate_num_groups()
+	// does: the object says nothing about how the uncovered columns
+	// correlate with the covered ones, and the estimate assumes
+	// independence there. Damping applies only among the uncovered
+	// columns, where it stands in for the correlation among columns no
+	// object describes.
+	CDouble joint_groups(1.0);
 	while (true)
 	{
 		if (CExtendedStatsProcessor::ApplyCorrelatedStatsToNDistinctCalculation(
@@ -1554,7 +1564,7 @@ CStatisticsUtils::MaxNumGroupsForGivenSrcGprCols(
 				input_stats->GetColidToAttnoMapping(),
 				updated_src_grouping_cols, &mvndistinct))
 		{
-			ndvs->Append(GPOS_NEW(mp) CDouble(mvndistinct));
+			joint_groups = joint_groups * CDouble(mvndistinct);
 		}
 		else
 		{
@@ -1564,22 +1574,21 @@ CStatisticsUtils::MaxNumGroupsForGivenSrcGprCols(
 	}
 
 	// add any remaining columns not covered by multivariate n-distinct
-	// correlated stats
+	// correlated stats; only these per-column counts are damped against
+	// each other
 	AddNdvForAllGrpCols(mp, input_stats, updated_src_grouping_cols, ndvs);
 	updated_src_grouping_cols->Release();
 
-	// take the minimum of (a) the estimated number of groups from the columns of this source,
-	// (b) input rows, and (c) cardinality upper bound for the given source in the
-	// input statistics object
-
-	// DNumOfDistVal internally damps the number of columns with our formula.
-	// (a) For columns from the same table, they will be damped based on the formula in DNumOfDistVal
-	// (b) If the group by has columns from multiple tables, they will again be damped by the formula
-	// in DNumOfDistVal when we compute the final group by cardinality
-	CDouble groups =
-		std::min(std::max(CStatistics::MinRows.Get(),
-						  GetCumulativeNDVs(stats_config, ndvs).Get()),
-				 std::min(input_rows.Get(), upper_bound_ndvs.Get()));
+	// The groups of this source are the product of the joint counts and the
+	// damped product of the uncovered per-column counts (GetCumulativeNDVs
+	// damps every entry after the first). When the GROUP BY spans several
+	// sources, the caller damps the per-source results against each other
+	// the same way. Bound the result by the input rows and by the
+	// cardinality upper bound of this source in the input statistics.
+	CDouble groups = std::min(
+		std::max(CStatistics::MinRows.Get(),
+				 (joint_groups * GetCumulativeNDVs(stats_config, ndvs)).Get()),
+		std::min(input_rows.Get(), upper_bound_ndvs.Get()));
 	ndvs->Release();
 
 	return groups;
