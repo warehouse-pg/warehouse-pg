@@ -1,0 +1,31 @@
+-- The checks on the objects of test_gpdb_pre_attribute_versions.sql that the
+-- coordinator can answer alone.  Run by test_gpdb.sh on the upgraded cluster
+-- also when only the coordinator has been upgraded; its output is compared
+-- with test_gpdb_post_attribute_versions_coordinator.out.
+\set VERBOSITY terse
+SET search_path = upgrade_attver, public;
+SET
+-- attribute options of zero-version column preserved
+SELECT attoptions FROM pg_attribute
+WHERE attrelid = 'rowunvdrop_src'::regclass AND attname = 'c';
+   attoptions   
+----------------
+ {n_distinct=5}
+(1 row)
+
+-- self-referencing partition key and bound readable
+SELECT regexp_replace(pg_get_partkeydef('rowself'::regclass) || ' ' ||
+                      pg_get_expr(relpartbound, oid), '\s+', ' ', 'g')
+FROM pg_class WHERE relname = 'rowself_1';
+                                              regexp_replace                                               
+-----------------------------------------------------------------------------------------------------------
+ LIST (( CASE WHEN (k > 0) THEN '(1,2,0)'::rowself ELSE '(3,4,0)'::rowself END)) FOR VALUES IN ('(1,2,0)')
+(1 row)
+
+-- self-referencing view usable
+SELECT a FROM rowselfv;
+     a     
+-----------
+ secondver
+(1 row)
+
