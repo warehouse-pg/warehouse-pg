@@ -362,6 +362,17 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 		Assert(!is_matview);	/* excluded by syntax */
 		ExecuteQuery(estmt, into, queryString, params, dest, completionTag);
 
+		/* A replicated target counts each row once per segment. */
+		if (completionTag && into->distributedBy &&
+			((DistributedBy *) into->distributedBy)->ptype == POLICYTYPE_REPLICATED &&
+			strncmp(completionTag, "SELECT ", 7) == 0)
+		{
+			uint64		nrows = strtoull(completionTag + 7, NULL, 10);
+
+			snprintf(completionTag, COMPLETION_TAG_BUFSIZE, "SELECT " UINT64_FORMAT,
+					 nrows / ((DistributedBy *) into->distributedBy)->numsegments);
+		}
+
 		/* get object address that intorel_startup saved for us */
 		address = ((DR_intorel *) dest)->reladdr;
 

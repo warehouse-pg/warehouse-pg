@@ -121,7 +121,6 @@ static bool test_raw_expression_coverage(Node *node, void *context);
 
 /* GPDB definitions follow */
 static int get_distkey_by_name(char *key, IntoClause *into, Query *qry, bool *found);
-static void setQryDistributionPolicy(ParseState *pstate, IntoClause *into, Query *qry);
 
 static bool checkCanOptSelectLockingClause(SelectStmt *stmt);
 static bool queryNodeSearch(Node *node, void *context);
@@ -3078,7 +3077,18 @@ transformCreateTableAsStmt(ParseState *pstate, CreateTableAsStmt *stmt)
 	 * should enable the setQryDistributionPolicy function in binary upgrade mode.
 	 */
 	DistributedBy *distributedBy = (DistributedBy *)stmt->into->distributedBy;
-	if (distributedBy && (Gp_role == GP_ROLE_DISPATCH || IsBinaryUpgrade))
+
+	/*
+	 * CREATE TABLE AS EXECUTE: the contained query is a utility wrapper with
+	 * no target list yet, so the policy cannot be resolved here.
+	 * RevalidateCachedQuery() applies it to the prepared SELECT when it is
+	 * re-analyzed for this EXECUTE.
+	 */
+	bool		is_execute = query->commandType == CMD_UTILITY &&
+		IsA(query->utilityStmt, ExecuteStmt);
+
+	if (distributedBy && !is_execute &&
+		(Gp_role == GP_ROLE_DISPATCH || IsBinaryUpgrade))
 	{
 		/*
 		 * CTAS into a DISTRIBUTED COORDINATOR ONLY table is supported.
@@ -3574,7 +3584,7 @@ get_distkey_by_name(char *key, IntoClause *into, Query *qry, bool *found)
  * default here. We delay that into the planner because we'll have more
  * information available at that point (see cdbllize_adjust_top_path()).
  */
-static void
+void
 setQryDistributionPolicy(ParseState *pstate, IntoClause *into, Query *qry)
 {
 	ListCell   *lc;

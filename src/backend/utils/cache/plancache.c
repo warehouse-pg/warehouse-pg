@@ -79,6 +79,7 @@
 #include "utils/syscache.h"
 
 #include "cdb/cdbutil.h"
+#include "cdb/cdbvars.h"
 
 /*
  * We must skip "overhead" operations that involve database access when the
@@ -712,14 +713,6 @@ RevalidateCachedQuery(CachedPlanSource *plansource,
 									   plansource->num_params,
 									   queryEnv);
 
-	/* GPDB: For CTAS query, set its isCTAS to be true */
-	if (intoClause)
-	{
-		Assert(list_length(tlist) == 1);
-		Query *query = (Query *) linitial(tlist);
-		query->parentStmtType = PARENTSTMTTYPE_CTAS;
-	}
-
 	/* Release snapshot if we got one */
 	if (snapshot_set)
 		PopActiveSnapshot();
@@ -811,6 +804,37 @@ RevalidateCachedQuery(CachedPlanSource *plansource,
 	 */
 
 	plansource->is_valid = true;
+
+	/*
+	 * GPDB: CREATE TABLE AS EXECUTE plans the prepared SELECT as the source
+	 * of a CTAS.  That is specific to this EXECUTE, so apply it to the
+	 * transient tree returned below only, never to the cached query_list that
+	 * a plain EXECUTE of the same statement will plan from.
+	 *
+	 * Only a SELECT can be the source of a CTAS; ExecuteQuery() rejects
+	 * anything else.
+	 */
+	if (intoClause)
+	{
+		Query	   *query;
+
+		Assert(list_length(tlist) == 1);
+		query = (Query *) linitial(tlist);
+
+		if (query->commandType == CMD_SELECT)
+		{
+			query->parentStmtType = PARENTSTMTTYPE_CTAS;
+
+			/*
+			 * The target list is only known now, so resolve the DISTRIBUTED
+			 * clause against it.  No ParseState is available; an unknown
+			 * column is reported without a cursor position.
+			 */
+			if (intoClause->distributedBy != NULL &&
+				Gp_role == GP_ROLE_DISPATCH)
+				setQryDistributionPolicy(NULL, intoClause, query);
+		}
+	}
 
 	/* Return transient copy of querytrees for possible use in planning */
 	return tlist;
