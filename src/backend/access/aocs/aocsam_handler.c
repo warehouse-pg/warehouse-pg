@@ -37,6 +37,8 @@
 #include "commands/progress.h"
 #include "commands/vacuum.h"
 #include "executor/executor.h"
+#include "lib/ilist.h"
+#include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "pgstat.h"
@@ -94,11 +96,16 @@ typedef struct AOCODMLState
 {
 	Oid relationOid;
 	AOCSInsertDesc insertDesc;
+	dlist_node	   activeInsertNode;	/* in activeInserts, unless the
+										 * insertDesc is missing or suspended */
+	Size		   insertDataMem;		/* part of activeInsertDataMem */
+	bool		   insertDataMemKnown;	/* is insertDataMem up to date? */
 	AOCSDeleteDesc deleteDesc;
 	AOCSUniqueCheckDesc uniqueCheckDesc;
 } AOCODMLState;
 
 static void reset_state_cb(void *arg);
+static void deactivate_insert_state(AOCODMLState *state);
 
 /*
  * A repository for per-relation backend-local DML states. Contains:
@@ -111,6 +118,18 @@ typedef struct AOCODMLStates
 {
 	AOCODMLState           *last_used_state;
 	HTAB				   *state_table;
+
+	/*
+	 * The states whose insertDesc holds column streams, most recently used
+	 * first, with the memory those streams have allocated and the part of
+	 * it they use. Each is bounded, with an allowance on top; see
+	 * activate_insert_state().
+	 */
+	dlist_head				activeInserts;
+	Size					activeInsertMem;
+	Size					activeInsertDataMem;
+	Size					insertMemAllowance;
+	Size					insertDataMemAllowance;
 
 	MemoryContext			stateCxt;
 	MemoryContextCallback	cb;
@@ -131,6 +150,11 @@ reset_state_cb(void *arg)
 	aocoDMLStates.state_table = NULL;
 	aocoDMLStates.last_used_state = NULL;
 	aocoDMLStates.stateCxt = NULL;
+	dlist_init(&aocoDMLStates.activeInserts);
+	aocoDMLStates.activeInsertMem = 0;
+	aocoDMLStates.activeInsertDataMem = 0;
+	aocoDMLStates.insertMemAllowance = 0;
+	aocoDMLStates.insertDataMemAllowance = 0;
 }
 
 
@@ -166,6 +190,11 @@ init_aoco_dml_states()
 		aocoDMLStates.state_table =
 			hash_create("AppendOnly DML state", 128, &hash_ctl,
 			            HASH_CONTEXT | HASH_ELEM | HASH_BLOBS);
+		dlist_init(&aocoDMLStates.activeInserts);
+		aocoDMLStates.activeInsertMem = 0;
+		aocoDMLStates.activeInsertDataMem = 0;
+		aocoDMLStates.insertMemAllowance = 0;
+		aocoDMLStates.insertDataMemAllowance = 0;
 	}
 }
 
@@ -299,6 +328,8 @@ aoco_dml_finish(Relation relation)
 	if (state->insertDesc)
 	{
 		Assert(state->insertDesc->aoi_rel == relation);
+		if (!state->insertDesc->suspended)
+			deactivate_insert_state(state);
 		aocs_insert_finish(state->insertDesc);
 		state->insertDesc = NULL;
 	}
@@ -328,6 +359,97 @@ aoco_dml_finish(Relation relation)
 	}
 
 	remove_dml_state(relationOid);
+}
+
+/*
+ * Account for the column streams that state's insert descriptor has just
+ * opened, and keep the total within bounds by suspending the descriptors
+ * that have gone unused the longest.
+ *
+ * Each column of an open descriptor owns a few blocks worth of buffers and a
+ * file, and a command gets a descriptor for every relation it inserts into;
+ * without a bound, loading a wide partitioned table needs memory in
+ * proportion to (partitions x columns). The descriptor being written to is
+ * never suspended, whatever its size.
+ *
+ * gp_aoco_insert_buffer_limit bounds the buffers in use, which leaves out
+ * those of the columns that get nothing but NULLs: they are allocated but
+ * hardly touched, so suspending their descriptor gains little. They do
+ * count towards the memory a segment may allocate for its queries, though,
+ * so what is allocated may not exceed half of gp_vmem_protect_limit. How
+ * much a descriptor uses is known once it has been written to, that is when
+ * the next one takes its place at the head of the list.
+ *
+ * Suspending only pays off for a relation the command is done with, which is
+ * what happens when the rows arrive grouped by relation. Coming back to a
+ * suspended descriptor costs a short block and an fsync per column, so the
+ * caller raises both allowances each time it has to resume one: a command
+ * whose rows jump between relations ends up with all of them open, as if
+ * there were no limit, after suspending each at most once.
+ */
+static void
+activate_insert_state(AOCODMLState *state)
+{
+	Size		datalimit = (Size) gp_aoco_insert_buffer_limit * 1024;
+	Size		alloclimit = (Size) gp_vmem_protect_limit * 1024 * 1024 / 2;
+
+	if (!dlist_is_empty(&aocoDMLStates.activeInserts))
+	{
+		AOCODMLState *prev = dlist_head_element(AOCODMLState,
+												activeInsertNode,
+												&aocoDMLStates.activeInserts);
+
+		if (!prev->insertDataMemKnown)
+		{
+			prev->insertDataMem = aocs_insert_data_mem(prev->insertDesc);
+			prev->insertDataMemKnown = true;
+			aocoDMLStates.activeInsertDataMem += prev->insertDataMem;
+		}
+	}
+
+	dlist_push_head(&aocoDMLStates.activeInserts, &state->activeInsertNode);
+	aocoDMLStates.activeInsertMem += state->insertDesc->streamMem;
+	state->insertDataMemKnown = false;
+
+	if (datalimit == 0)
+		return;
+	datalimit += aocoDMLStates.insertDataMemAllowance;
+	alloclimit += aocoDMLStates.insertMemAllowance;
+
+	while (aocoDMLStates.activeInsertDataMem > datalimit ||
+		   (gp_vmem_protect_limit > 0 &&
+			aocoDMLStates.activeInsertMem > alloclimit))
+	{
+		AOCODMLState *victim = dlist_tail_element(AOCODMLState,
+												  activeInsertNode,
+												  &aocoDMLStates.activeInserts);
+
+		if (victim == state)
+			break;
+
+		deactivate_insert_state(victim);
+		aocs_insert_suspend(victim->insertDesc);
+	}
+}
+
+/*
+ * Stop accounting for state's insert descriptor, which is about to be
+ * suspended or finished.
+ */
+static void
+deactivate_insert_state(AOCODMLState *state)
+{
+	Assert(aocoDMLStates.activeInsertMem >= state->insertDesc->streamMem);
+
+	dlist_delete(&state->activeInsertNode);
+	aocoDMLStates.activeInsertMem -= state->insertDesc->streamMem;
+	if (state->insertDataMemKnown)
+	{
+		Assert(aocoDMLStates.activeInsertDataMem >= state->insertDataMem);
+		aocoDMLStates.activeInsertDataMem -= state->insertDataMem;
+	}
+	else
+		state->insertDataMem = aocs_insert_data_mem(state->insertDesc);
 }
 
 /*
@@ -382,8 +504,22 @@ get_or_create_aoco_insert_descriptor(const Relation relation, int64 num_rows)
 													   uniqueCheckCol);
 		}
 		state->insertDesc = insertDesc;
+		activate_insert_state(state);
 		MemoryContextSwitchTo(oldcxt);
 	}
+	else if (state->insertDesc->suspended)
+	{
+		MemoryContext oldcxt;
+
+		oldcxt = MemoryContextSwitchTo(aocoDMLStates.stateCxt);
+		aocoDMLStates.insertMemAllowance += state->insertDesc->streamMem;
+		aocoDMLStates.insertDataMemAllowance += state->insertDataMem;
+		aocs_insert_resume(state->insertDesc);
+		activate_insert_state(state);
+		MemoryContextSwitchTo(oldcxt);
+	}
+	else
+		dlist_move_head(&aocoDMLStates.activeInserts, &state->activeInsertNode);
 
 	return state->insertDesc;
 }

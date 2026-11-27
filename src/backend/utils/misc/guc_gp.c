@@ -146,6 +146,7 @@ bool		gp_appendonly_verify_block_checksums = true;
 bool		gp_appendonly_verify_write_block = false;
 bool		gp_appendonly_compaction = true;
 int			gp_appendonly_compaction_threshold = 0;
+int			gp_aoco_insert_buffer_limit = 256 * 1024;
 bool		gp_heap_require_relhasoids_match = true;
 bool		gp_local_distributed_cache_stats = false;
 bool		debug_xlog_record_read = false;
@@ -3331,6 +3332,20 @@ struct config_int ConfigureNamesInt_gp[] =
 		},
 		&gp_max_partition_level,
 		0, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"gp_aoco_insert_buffer_limit", PGC_USERSET, APPENDONLY_TABLES,
+			gettext_noop("Sets the memory a command may use for the column buffers of the append-optimized column-oriented tables it inserts into."),
+			gettext_noop("When a command inserts into more tables or partitions than fit, the buffers of the ones "
+						 "written to least recently are flushed and released. The limit is raised for the rest "
+						 "of the command each time it writes to such a table again, so it is effective when "
+						 "the rows arrive grouped by partition. Zero disables the limit."),
+			GUC_UNIT_KB
+		},
+		&gp_aoco_insert_buffer_limit,
+		256 * 1024, 0, MAX_KILOBYTES,
 		NULL, NULL, NULL
 	},
 

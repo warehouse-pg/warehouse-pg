@@ -41,6 +41,10 @@ extern Path *cdbpath_create_redistribute_motion_path_for_exprs(PlannerInfo *root
 												  List *hashFamilies);
 
 extern Path *create_motion_path_for_ctas(PlannerInfo *root, GpPolicy *policy, Path *subpath);
+extern Path *create_sort_path_for_partitioned_insert(PlannerInfo *root, Index rti,
+													 Path *subpath);
+extern Plan *make_sort_plan_for_partitioned_insert(Oid relid, Plan *subplan,
+												   double rows, List *rtable);
 extern Path *create_motion_path_for_insert(PlannerInfo *root, GpPolicy *targetPolicy, Path *subpath);
 extern Path *create_motion_path_for_upddel(PlannerInfo *root, Index rti, GpPolicy *targetPolicy, Path *subpath);
 extern Path *create_split_update_path(PlannerInfo *root, Index rti, GpPolicy *targetPolicy, Path *subpath);

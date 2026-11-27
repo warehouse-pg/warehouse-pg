@@ -16,6 +16,9 @@
 #include "access/hash.h"
 #include "access/heapam.h"
 #include "access/htup_details.h"
+#include "access/table.h"
+#include "catalog/pg_am.h"
+#include "catalog/pg_inherits.h"
 #include "catalog/pg_amop.h"
 #include "catalog/pg_opclass.h"
 #include "catalog/pg_operator.h"
@@ -36,8 +39,17 @@
 #include "utils/catcache.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
+#include "utils/partcache.h"
+#include "catalog/pg_class.h"
+#include "catalog/pg_statistic.h"
+#include "parser/parse_coerce.h"
+#include "partitioning/partbounds.h"
+#include "partitioning/partdesc.h"
+#include "utils/rel.h"
+#include "utils/selfuncs.h"
 #include "utils/syscache.h"
 
+#include "cdb/cdbaocsam.h"
 #include "cdb/cdbdef.h"			/* CdbSwap() */
 #include "cdb/cdbhash.h"
 #include "cdb/cdbpath.h"		/* me */
@@ -2337,6 +2349,626 @@ create_motion_path_for_ctas(PlannerInfo *root, GpPolicy *policy, Path *subpath)
 	}
 	else
 		return create_motion_path_for_insert(root, policy, subpath);
+}
+
+/*
+ * Decide whether rows about to be inserted into 'relid' should be sorted by
+ * partition key first, and on which columns. 'rows' is the number of rows a
+ * segment is expected to insert.
+ *
+ * The sort keeps the rows of a partition in the order they are read in, see
+ * Sort.keepInputOrder: a source that is laid out so that similar values are
+ * next to each other would compress worse otherwise.
+ *
+ * This is for partitioned append-optimized column-oriented tables with more
+ * partitions and columns than can be written to at once within
+ * gp_aoco_insert_buffer_limit. Writing to such a partition takes a few
+ * blocks of buffer per column. The executor releases the buffers of the
+ * partitions it has not written to lately once the limit is reached, but that
+ * only helps if it does not have to come back to them (see
+ * activate_insert_state()). Rows that arrive grouped by partition guarantee
+ * that, and sorting on the partition key groups them: partitions of a range
+ * partitioned table are visited one after another, and those of a list
+ * partitioned table nearly so. Only the topmost partitioning level is
+ * considered; the sub-partitions of one partition are left to share the
+ * buffers.
+ *
+ * Returns the number of sort columns, zero if the rows should be left alone,
+ * and sets *attnos and *sortops to the attribute numbers of those columns in
+ * 'relid' and the operators to order them by.
+ *
+ * All this function knows is that a segment writes to no more partitions
+ * than there are, or than it has rows. *fits and *nleaves are set to the
+ * number of partitions that can be written to at once and the number there
+ * are, for the caller to settle the matter with
+ * estimate_insert_partitions().
+ */
+static int
+partitioned_insert_sort_columns(Oid relid, double rows, List *tlist,
+								AttrNumber **attnos, Oid **sortops,
+								double *fits, int *nleaves)
+{
+	Size		limit = (Size) gp_aoco_insert_buffer_limit * 1024;
+	Relation	rel;
+	PartitionKey key;
+	double		nparts;
+	Size		partmem;
+	Size		datamem;
+	Bitmapset  *datacols = NULL;
+	int			ncols = 0;
+	ListCell   *lc;
+
+	if (limit == 0 ||
+		get_rel_relkind(relid) != RELKIND_PARTITIONED_TABLE)
+		return 0;
+
+	rel = table_open(relid, NoLock);
+	if (rel->rd_rel->relam != AO_COLUMN_TABLE_AM_OID)
+	{
+		table_close(rel, NoLock);
+		return 0;
+	}
+	key = RelationRetrievePartitionKey(rel);
+
+	/*
+	 * Grouping the rows pays off because the insert then keeps working on
+	 * the buffers of one partition instead of touching those of all of them
+	 * in turn. The buffer of a column that is not given a value is hardly
+	 * touched at all, so what counts is the columns that are; and with the
+	 * gain being small where the buffers barely exceed the limit, sorting
+	 * waits for them to reach twice that.
+	 *
+	 * The buffers of all columns are allocated nevertheless. Rows that are
+	 * not grouped keep those of every partition, so sort as well before
+	 * they would take up half of the memory a segment may use for all its
+	 * queries, lest the insert fails.
+	 */
+	foreach(lc, tlist)
+	{
+		TargetEntry *tle = lfirst_node(TargetEntry, lc);
+
+		if (!tle->resjunk &&
+			!(IsA(tle->expr, Const) && ((Const *) tle->expr)->constisnull))
+			datacols = bms_add_member(datacols, tle->resno);
+	}
+	datamem = aocs_insert_stream_mem_estimate(rel, datacols);
+	partmem = aocs_insert_stream_mem_estimate(rel, NULL);
+
+	*fits = (double) gp_vmem_protect_limit * 1024 * 1024 / 2 / partmem;
+	if (datamem > 0)
+		*fits = Min(*fits, 2.0 * limit / datamem);
+
+	/*
+	 * A segment opens no more partitions than it gets rows, which settles
+	 * the matter for small inserts without counting the partitions.
+	 */
+	nparts = clamp_row_est(rows);
+	if (nparts > *fits)
+	{
+		List	   *inhoids = find_all_inheritors(relid, NoLock, NULL);
+
+		*nleaves = 0;
+		foreach(lc, inhoids)
+		{
+			if (get_rel_relkind(lfirst_oid(lc)) != RELKIND_PARTITIONED_TABLE)
+				(*nleaves)++;
+		}
+		list_free(inhoids);
+		nparts = Min(nparts, *nleaves);
+	}
+
+	if (nparts > *fits &&
+		key->strategy != PARTITION_STRATEGY_HASH)
+	{
+		*attnos = palloc(key->partnatts * sizeof(AttrNumber));
+		*sortops = palloc(key->partnatts * sizeof(Oid));
+
+		for (ncols = 0; ncols < key->partnatts; ncols++)
+		{
+			(*attnos)[ncols] = key->partattrs[ncols];
+			(*sortops)[ncols] = get_opfamily_member(key->partopfamily[ncols],
+													key->partopcintype[ncols],
+													key->partopcintype[ncols],
+													BTLessStrategyNumber);
+
+			/* Give up on expression keys: there is no column to sort on. */
+			if ((*attnos)[ncols] == 0 || !OidIsValid((*sortops)[ncols]))
+			{
+				ncols = 0;
+				break;
+			}
+		}
+	}
+
+	table_close(rel, NoLock);
+
+	return ncols;
+}
+
+/*
+ * Estimate how many of the 'nleaves' leaf partitions of 'relid' the rows to
+ * insert go to. 'statsTuple' is the pg_statistic entry of the column that
+ * supplies the first partition key column, and 'stattuples' the number of
+ * rows it describes. Returns -1 if the statistics do not tell.
+ *
+ * The rows cannot go to more partitions than the key has distinct values,
+ * nor, for a range partitioned table, to partitions outside of the range the
+ * values span. The latter is what recognizes a load of one day into a table
+ * partitioned by day on a timestamp.
+ */
+static double
+estimate_insert_partitions(Oid relid, int nleaves,
+						   HeapTuple statsTuple, double stattuples)
+{
+	Relation	rel;
+	PartitionKey key;
+	PartitionDesc partdesc;
+	Form_pg_statistic stats;
+	double		nparts = -1;
+
+	if (!HeapTupleIsValid(statsTuple))
+		return -1;
+	stats = (Form_pg_statistic) GETSTRUCT(statsTuple);
+
+	rel = table_open(relid, NoLock);
+	key = RelationRetrievePartitionKey(rel);
+	partdesc = RelationRetrievePartitionDesc(rel);
+
+	/* Distinct values of the first column bound the partitions of a key
+	 * that has no other. */
+	if (key->partnatts == 1)
+	{
+		if (stats->stadistinct > 0)
+			nparts = stats->stadistinct;
+		else if (stats->stadistinct < 0)
+			nparts = clamp_row_est(-stats->stadistinct * stattuples);
+	}
+
+	if (key->strategy == PARTITION_STRATEGY_RANGE && partdesc->nparts > 0)
+	{
+		PartitionBoundInfo boundinfo = partdesc->boundinfo;
+		AttStatsSlot slots[2];
+		int			kinds[2] = {STATISTIC_KIND_HISTOGRAM, STATISTIC_KIND_MCV};
+		bool		have_range = false;
+		Datum		min = 0;
+		Datum		max = 0;
+
+		for (int k = 0; k < 2; k++)
+		{
+			slots[k].nvalues = 0;
+			if (!get_attstatsslot(&slots[k], statsTuple, kinds[k], InvalidOid,
+								  ATTSTATSSLOT_VALUES))
+				continue;
+			if (!IsBinaryCoercible(slots[k].valuetype, key->partopcintype[0]))
+				continue;
+
+			for (int i = 0; i < slots[k].nvalues; i++)
+			{
+				Datum		value = slots[k].values[i];
+
+				if (!have_range ||
+					DatumGetInt32(FunctionCall2Coll(&key->partsupfunc[0],
+													key->partcollation[0],
+													value, min)) < 0)
+					min = value;
+				if (!have_range ||
+					DatumGetInt32(FunctionCall2Coll(&key->partsupfunc[0],
+													key->partcollation[0],
+													value, max)) > 0)
+					max = value;
+				have_range = true;
+			}
+		}
+
+		if (have_range)
+		{
+			bool		equal;
+			int			lo;
+			int			hi;
+			int			last = -1;
+			bool		gap = false;
+			double		spanned = 0;
+
+			/*
+			 * Walk the partitions between the one that holds the smallest
+			 * value and the one that holds the largest. A gap between them
+			 * stands for the default partition, if there is one.
+			 */
+			lo = partition_range_datum_bsearch(key->partsupfunc,
+											   key->partcollation,
+											   boundinfo, 1, &min, &equal);
+			hi = partition_range_datum_bsearch(key->partsupfunc,
+											   key->partcollation,
+											   boundinfo, 1, &max, &equal);
+			for (int i = lo + 1; i <= hi + 1; i++)
+			{
+				if (boundinfo->indexes[i] < 0)
+					gap = true;
+				else if (boundinfo->indexes[i] != last)
+				{
+					last = boundinfo->indexes[i];
+					spanned++;
+				}
+			}
+			if (gap && partition_bound_has_default(boundinfo))
+				spanned++;
+
+			nparts = (nparts < 0) ? spanned : Min(nparts, spanned);
+		}
+
+		for (int k = 0; k < 2; k++)
+		{
+			if (slots[k].nvalues > 0)
+				free_attstatsslot(&slots[k]);
+		}
+	}
+
+	/* That was about the topmost level; assume its partitions alike. */
+	if (nparts >= 0 && partdesc->nparts > 0)
+	{
+		nparts = Max(nparts, 1);
+		nparts = Min(nparts, partdesc->nparts);
+		nparts = nparts * nleaves / partdesc->nparts;
+	}
+
+	table_close(rel, NoLock);
+
+	return nparts;
+}
+
+/*
+ * Put a Sort on top of 'subpath' if its rows are to be inserted into a
+ * partitioned table that wants them grouped by partition; see
+ * partitioned_insert_sort_columns(). Any ordering the rows already have is
+ * kept within each partition.
+ */
+Path *
+create_sort_path_for_partitioned_insert(PlannerInfo *root, Index rti, Path *subpath)
+{
+	RangeTblEntry *rte = planner_rt_fetch(rti, root);
+	AttrNumber *attnos;
+	Oid		   *sortops;
+	int			ncols;
+	double		fits;
+	int			nleaves;
+	double		nparts;
+	VariableStatData vardata;
+	List	   *keyexprs = NIL;
+	List	   *pathkeys = NIL;
+	Path	   *sortedpath;
+	List	   *sortedkeys = NIL;
+	SortPath   *sortpath;
+	ListCell   *lc;
+
+	if (rte->rtekind != RTE_RELATION)
+		return subpath;
+
+	ncols = partitioned_insert_sort_columns(rte->relid, subpath->rows,
+											root->processed_tlist,
+											&attnos, &sortops, &fits, &nleaves);
+
+	for (int i = 0; i < ncols; i++)
+	{
+		TargetEntry *tle = get_tle_by_resno(root->processed_tlist, attnos[i]);
+		PathKey    *pathkey;
+
+		if (tle == NULL)
+			return subpath;
+		keyexprs = lappend(keyexprs, tle->expr);
+
+		pathkey = make_pathkey_from_sortop(root, tle->expr, NULL, sortops[i],
+										   false, 0, true);
+
+		/* A key that is the same for all rows does not tell them apart. */
+		if (!EC_MUST_BE_REDUNDANT(pathkey->pk_eclass))
+			pathkeys = list_append_unique_ptr(pathkeys, pathkey);
+	}
+
+	if (pathkeys == NIL)
+		return subpath;
+
+	/*
+	 * Sorting a load that goes to a few partitions only, such as that of a
+	 * single day or region, would be a waste. Leave the rows alone unless
+	 * their statistics say they are spread over more partitions than fit.
+	 */
+	examine_variable(root, (Node *) linitial(keyexprs), 0, &vardata);
+	nparts = estimate_insert_partitions(rte->relid, nleaves,
+										vardata.statsTuple,
+										vardata.rel ? vardata.rel->tuples : subpath->rows);
+	ReleaseVariableStats(vardata);
+	if (nparts < 0 || nparts <= fits)
+		return subpath;
+
+	/*
+	 * The rows may be sorted already. For INSERT ... SELECT ... ORDER BY the
+	 * order is that of a subquery, which nobody was interested in until the
+	 * pathkeys above were made, so have another look at it.
+	 */
+	sortedpath = subpath;
+	while (IsA(sortedpath, ProjectionPath))
+		sortedpath = ((ProjectionPath *) sortedpath)->subpath;
+	if (subpath->pathkeys != NIL)
+		sortedkeys = subpath->pathkeys;
+	else if (IsA(sortedpath, SubqueryScanPath))
+	{
+		Path	   *subquerypath = ((SubqueryScanPath *) sortedpath)->subpath;
+
+		sortedkeys = convert_subquery_pathkeys(root, sortedpath->parent,
+											   subquerypath->pathkeys,
+											   make_tlist_from_pathtarget(subquerypath->pathtarget));
+	}
+
+	/* Either direction groups the rows by partition. */
+	if (list_length(sortedkeys) >= list_length(pathkeys))
+	{
+		ListCell   *lc2;
+		bool		sorted = true;
+
+		forboth(lc, pathkeys, lc2, sortedkeys)
+		{
+			if (lfirst_node(PathKey, lc)->pk_eclass !=
+				lfirst_node(PathKey, lc2)->pk_eclass)
+			{
+				sorted = false;
+				break;
+			}
+		}
+		if (sorted)
+			return subpath;
+	}
+
+	sortpath = create_sort_path(root, subpath->parent, subpath, pathkeys, -1.0);
+	sortpath->keep_input_order = true;
+
+	return (Path *) sortpath;
+}
+
+/*
+ * Look through the nodes of a finished plan that merely pass a value on, to
+ * the expression that computes it. 'expr' is an expression in the target
+ * list of a node whose outer child is 'plan'. Returns NULL if the value comes
+ * from a node that does not have its inputs as children, such as an Append.
+ * If 'origin' is not NULL, it is set to the node that computes the expression,
+ * or to NULL if that is the node above 'plan'.
+ */
+static Expr *
+resolve_plan_expr(Plan *plan, Expr *expr, Plan **origin)
+{
+	Plan	   *outer = plan;
+	Plan	   *inner = NULL;
+
+	if (origin)
+		*origin = NULL;
+
+	for (;;)
+	{
+		Var		   *var;
+		Plan	   *child;
+		TargetEntry *tle;
+
+		while (expr && IsA(expr, RelabelType))
+			expr = ((RelabelType *) expr)->arg;
+
+		if (expr == NULL || !IsA(expr, Var))
+			return expr;
+		var = (Var *) expr;
+
+		if (var->varno == OUTER_VAR)
+			child = outer;
+		else if (var->varno == INNER_VAR)
+			child = inner;
+		else
+			return expr;
+
+		if (child == NULL)
+			return NULL;
+		tle = get_tle_by_resno(child->targetlist, var->varattno);
+		if (tle == NULL)
+			return NULL;
+
+		expr = tle->expr;
+		outer = outerPlan(child);
+		inner = innerPlan(child);
+		if (origin)
+			*origin = child;
+	}
+}
+
+/*
+ * Does 'plan' return its rows sorted by the given columns of its target
+ * list, in that order? Only recognizes a Sort below nodes that pass the
+ * columns on.
+ */
+static bool
+plan_is_sorted_by(Plan *plan, AttrNumber *attnos, int ncols)
+{
+	AttrNumber *cols = palloc(ncols * sizeof(AttrNumber));
+
+	memcpy(cols, attnos, ncols * sizeof(AttrNumber));
+
+	while (plan != NULL && IsA(plan, Result))
+	{
+		for (int i = 0; i < ncols; i++)
+		{
+			TargetEntry *tle = get_tle_by_resno(plan->targetlist, cols[i]);
+			Node	   *expr = tle ? strip_implicit_coercions((Node *) tle->expr) : NULL;
+
+			if (expr == NULL || !IsA(expr, Var) ||
+				((Var *) expr)->varno != OUTER_VAR)
+				return false;
+			cols[i] = ((Var *) expr)->varattno;
+		}
+		plan = outerPlan(plan);
+	}
+
+	if (plan == NULL || !IsA(plan, Sort) || ((Sort *) plan)->numCols < ncols)
+		return false;
+
+	for (int i = 0; i < ncols; i++)
+	{
+		if (((Sort *) plan)->sortColIdx[i] != cols[i])
+			return false;
+	}
+
+	return true;
+}
+
+/*
+ * Does a qual of 'plan' restrict 'var' to a single value, as in "var = 42"?
+ */
+static bool
+plan_qual_fixes_var(Plan *plan, Var *var)
+{
+	ListCell   *lc;
+
+	foreach(lc, plan->qual)
+	{
+		Node	   *clause = (Node *) lfirst(lc);
+		OpExpr	   *op = (OpExpr *) clause;
+		Node	   *left;
+		Node	   *right;
+
+		if (!IsA(clause, OpExpr) || list_length(op->args) != 2 ||
+			get_mergejoin_opfamilies(op->opno) == NIL)
+			continue;
+
+		left = strip_implicit_coercions(linitial(op->args));
+		right = strip_implicit_coercions(lsecond(op->args));
+		if ((equal(left, var) && IsA(right, Const)) ||
+			(equal(right, var) && IsA(left, Const)))
+			return true;
+	}
+
+	return false;
+}
+
+/*
+ * The same for a finished plan, as GPORCA produces it: the target list of
+ * 'subplan' has the columns of 'relid' in attribute order, 'rows' is the
+ * number of rows a segment is expected to insert, and 'rtable' the range
+ * table of the plan.
+ */
+Plan *
+make_sort_plan_for_partitioned_insert(Oid relid, Plan *subplan, double rows,
+									  List *rtable)
+{
+	AttrNumber *attnos;
+	Oid		   *sortops;
+	Oid		   *collations;
+	bool	   *nullsFirst;
+	int			ncols;
+	double		fits;
+	int			nleaves;
+	double		nparts = -1;
+	List	   *sources = NIL;
+	Expr	   *keysource;
+	Plan	   *keyplan;
+	Sort	   *sort;
+	ListCell   *lc;
+
+	/*
+	 * The target list on top is all Vars; what matters is what the plan
+	 * computes them from.
+	 */
+	foreach(lc, subplan->targetlist)
+	{
+		TargetEntry *tle = lfirst_node(TargetEntry, lc);
+
+		Expr	   *source = resolve_plan_expr(outerPlan(subplan), tle->expr,
+											   NULL);
+
+		sources = lappend(sources,
+						  makeTargetEntry(source ? source : tle->expr,
+										  tle->resno, NULL, tle->resjunk));
+	}
+
+	ncols = partitioned_insert_sort_columns(relid, rows, sources,
+											&attnos, &sortops, &fits, &nleaves);
+	if (ncols == 0 || plan_is_sorted_by(subplan, attnos, ncols))
+		return subplan;
+
+	collations = palloc(ncols * sizeof(Oid));
+	nullsFirst = palloc0(ncols * sizeof(bool));
+	for (int i = 0; i < ncols; i++)
+	{
+		TargetEntry *tle = get_tle_by_resno(subplan->targetlist, attnos[i]);
+
+		if (tle == NULL)
+			return subplan;
+		collations[i] = exprCollation((Node *) tle->expr);
+	}
+
+	/*
+	 * As in create_sort_path_for_partitioned_insert(), sort only if the
+	 * statistics of the column the first key column comes from say that
+	 * the rows are spread over more partitions than fit. The statistics
+	 * describe the whole column, so they do not apply to a scan that keeps
+	 * the rows of one value only; those need no sorting anyway.
+	 */
+	keysource = resolve_plan_expr(outerPlan(subplan),
+								  get_tle_by_resno(subplan->targetlist,
+												   attnos[0])->expr,
+								  &keyplan);
+	if (keysource != NULL && IsA(keysource, Var) &&
+		!plan_qual_fixes_var(keyplan ? keyplan : subplan, (Var *) keysource) &&
+		!IS_SPECIAL_VARNO(((Var *) keysource)->varno) &&
+		((Var *) keysource)->varno <= list_length(rtable) &&
+		((Var *) keysource)->varattno > 0 &&
+		rt_fetch(((Var *) keysource)->varno, rtable)->rtekind == RTE_RELATION)
+	{
+		Oid			srcrelid = rt_fetch(((Var *) keysource)->varno, rtable)->relid;
+		AttrNumber	srcattno = ((Var *) keysource)->varattno;
+		HeapTuple	statsTuple;
+		HeapTuple	classTuple;
+		double		reltuples = rows;
+
+		statsTuple = SearchSysCache3(STATRELATTINH,
+									 ObjectIdGetDatum(srcrelid),
+									 Int16GetDatum(srcattno),
+									 BoolGetDatum(true));
+		if (!HeapTupleIsValid(statsTuple))
+			statsTuple = SearchSysCache3(STATRELATTINH,
+										 ObjectIdGetDatum(srcrelid),
+										 Int16GetDatum(srcattno),
+										 BoolGetDatum(false));
+
+		classTuple = SearchSysCache1(RELOID, ObjectIdGetDatum(srcrelid));
+		if (HeapTupleIsValid(classTuple))
+		{
+			if (((Form_pg_class) GETSTRUCT(classTuple))->reltuples > 0)
+				reltuples = ((Form_pg_class) GETSTRUCT(classTuple))->reltuples;
+			ReleaseSysCache(classTuple);
+		}
+
+		nparts = estimate_insert_partitions(relid, nleaves, statsTuple, reltuples);
+		if (HeapTupleIsValid(statsTuple))
+			ReleaseSysCache(statsTuple);
+	}
+	if (nparts < 0 || nparts <= fits)
+		return subplan;
+
+	sort = make_sort(subplan, ncols, attnos, sortops, collations, nullsFirst);
+	sort->keepInputOrder = true;
+	sort->plan.targetlist = NIL;
+	foreach(lc, subplan->targetlist)
+	{
+		TargetEntry *tle = lfirst_node(TargetEntry, lc);
+
+		Var		   *var = makeVarFromTargetEntry(OUTER_VAR, tle);
+
+		sort->plan.targetlist = lappend(sort->plan.targetlist,
+										makeTargetEntry((Expr *) var,
+														tle->resno,
+														tle->resname,
+														tle->resjunk));
+	}
+	sort->plan.startup_cost = subplan->total_cost;
+	sort->plan.total_cost = subplan->total_cost;
+	sort->plan.plan_rows = rows;
+	sort->plan.plan_width = subplan->plan_width;
+
+	return (Plan *) sort;
 }
 
 /*

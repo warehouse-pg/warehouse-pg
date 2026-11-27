@@ -2468,6 +2468,17 @@ typedef struct SortState
 									 * when this node has outputted its last row? */
 	TuplesortInstrumentation sortstats; /* holds stats, if the Sort is eagerly free'd */
 
+	/*
+	 * For Sort.keepInputOrder. The rows are sorted with their input position
+	 * as an extra, last column, in inputOrderSlot's format.
+	 */
+	int64		inputOrderNext;
+	TupleTableSlot *inputOrderSlot;
+	TupleTableSlot *inputOrderSortedSlot;
+	AttrNumber *inputOrderSortColIdx;
+	Oid		   *inputOrderSortOperators;
+	Oid		   *inputOrderCollations;
+	bool	   *inputOrderNullsFirst;
 } SortState;
 
 /* ---------------------

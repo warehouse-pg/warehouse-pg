@@ -1270,6 +1270,12 @@ typedef struct Sort
 	Oid		   *sortOperators;	/* OIDs of operators to sort them by */
 	Oid		   *collations;		/* OIDs of collations */
 	bool	   *nullsFirst;		/* NULLS FIRST/LAST directions */
+
+	/*
+	 * Return rows that are equal in all sort columns in the order they
+	 * were read in?
+	 */
+	bool		keepInputOrder;
 } Sort;
 
 /* ---------------

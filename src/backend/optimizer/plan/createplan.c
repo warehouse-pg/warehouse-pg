@@ -2305,6 +2305,7 @@ create_sort_plan(PlannerInfo *root, SortPath *best_path, int flags)
 	plan = make_sort_from_pathkeys(subplan, best_path->path.pathkeys,
 								   IS_OTHER_REL(best_path->subpath->parent) ?
 								   best_path->path.parent->relids : NULL);
+	plan->keepInputOrder = best_path->keep_input_order;
 
 	copy_generic_path_info(&plan->plan, (Path *) best_path);
 

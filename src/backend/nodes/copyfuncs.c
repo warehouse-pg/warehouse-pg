@@ -1282,6 +1282,7 @@ _copySort(const Sort *from)
 	COPY_POINTER_FIELD(sortOperators, from->numCols * sizeof(Oid));
 	COPY_POINTER_FIELD(collations, from->numCols * sizeof(Oid));
 	COPY_POINTER_FIELD(nullsFirst, from->numCols * sizeof(bool));
+	COPY_SCALAR_FIELD(keepInputOrder);
 
 	return newnode;
 }

@@ -38,6 +38,7 @@ extern "C" {
 #include "access/genam.h"
 #include "catalog/aocatalog.h"
 #include "catalog/pg_inherits.h"
+#include "cdb/cdbpath.h"
 #include "foreign/fdwapi.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
@@ -2163,6 +2164,21 @@ gpdb::HasUpdateTriggers(Oid relid)
 	}
 	GP_WRAP_END;
 	return false;
+}
+
+// sort the rows to insert into a partitioned table by partition, if the
+// table calls for it
+Plan *
+gpdb::MakeSortPlanForPartitionedInsert(Oid relid, Plan *subplan, double rows,
+									   List *rtable)
+{
+	GP_WRAP_START;
+	{
+		return make_sort_plan_for_partitioned_insert(relid, subplan, rows,
+													 rtable);
+	}
+	GP_WRAP_END;
+	return subplan;
 }
 
 // get index op family properties

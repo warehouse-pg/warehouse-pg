@@ -857,30 +857,34 @@ UpdateAOCSFileSegInfo(AOCSInsertDesc idesc)
 		 * something is incorrect and updating the same will yield incorrect
 		 * result during reads. Hence abort the write transaction trying to
 		 * update the incorrect EOF value.
+		 *
+		 * The insert descriptor tracks the EOFs it has reached in its copy of
+		 * the segment file info.
 		 */
+		AOCSVPInfoEntry *newentry = getAOCSVPEntry(idesc->fsInfo, i);
 
-		if (oldvpinfo->entry[i].eof <= idesc->ds[i]->eof)
+		if (oldvpinfo->entry[i].eof <= newentry->eof)
 		{
-			vpinfo->entry[i].eof = idesc->ds[i]->eof;
+			vpinfo->entry[i].eof = newentry->eof;
 		}
 		else
 		{
 			elog(ERROR, "Unexpected compressed EOF for relation %s, relfilenode %u, segment file %d coln %d. "
 				 "EOF " INT64_FORMAT " to be updated cannot be smaller than current EOF " INT64_FORMAT " in pg_aocsseg",
 				 RelationGetRelationName(prel), prel->rd_node.relNode,
-				 idesc->cur_segno, i, idesc->ds[i]->eof, oldvpinfo->entry[i].eof);
+				 idesc->cur_segno, i, newentry->eof, oldvpinfo->entry[i].eof);
 		}
 
-		if (oldvpinfo->entry[i].eof_uncompressed <= idesc->ds[i]->eofUncompress)
+		if (oldvpinfo->entry[i].eof_uncompressed <= newentry->eof_uncompressed)
 		{
-			vpinfo->entry[i].eof_uncompressed = idesc->ds[i]->eofUncompress;
+			vpinfo->entry[i].eof_uncompressed = newentry->eof_uncompressed;
 		}
 		else
 		{
 			elog(ERROR, "Unexpected EOF for relation %s, relfilenode %u, segment file %d coln %d. "
 				 "EOF " INT64_FORMAT " to be updated cannot be smaller than current EOF " INT64_FORMAT " in pg_aocsseg",
 				 RelationGetRelationName(prel), prel->rd_node.relNode,
-				 idesc->cur_segno, i, idesc->ds[i]->eofUncompress, oldvpinfo->entry[i].eof_uncompressed);
+				 idesc->cur_segno, i, newentry->eof_uncompressed, oldvpinfo->entry[i].eof_uncompressed);
 		}
 	}
 

@@ -2331,28 +2331,16 @@ aocs_stagedscan_getnext_guts(AOCSScanDesc scan, ScanDirection direction,
 }
 
 
-/* Open next file segment for write.  See SetCurrentFileSegForWrite */
-/* XXX Right now, we put each column to different files */
+/*
+ * Look up the pg_aocsseg entry of the segment file we are going to insert
+ * into. The descriptor keeps it for its whole life: the per-column EOFs in it
+ * say where each column file is appended to next.
+ */
 static void
-OpenAOCSDatumStreams(AOCSInsertDesc desc)
+GetAOCSInsertSegInfo(AOCSInsertDesc desc)
 {
-	RelFileNodeBackend rnode;
-	char	   *basepath;
-	char		fn[MAXPGPATH];
-	int32		fileSegNo;
-
 	AOCSFileSegInfo *seginfo;
 
-	TupleDesc	tupdesc = RelationGetDescr(desc->aoi_rel);
-	int			nvp = tupdesc->natts;
-	int			i;
-
-	desc->ds = (DatumStreamWrite **) palloc0(sizeof(DatumStreamWrite *) * nvp);
-
-	open_ds_write(desc->aoi_rel, desc->ds, tupdesc,
-				  desc->checksum);
-
-	/* Now open seg info file and get eof mark. */
 	seginfo = GetAOCSFileSegInfo(desc->aoi_rel,
 								 desc->appendOnlyMetaDataSnapshot,
 								 desc->cur_segno,
@@ -2367,6 +2355,34 @@ OpenAOCSDatumStreams(AOCSInsertDesc desc)
 			 desc->cur_segno, RelationGetRelid(desc->aoi_rel));
 
 	desc->rowCount = seginfo->total_tupcount;
+}
+
+/*
+ * Create the write stream of every column and open the column files for
+ * append, each at the EOF recorded in desc->fsInfo.
+ */
+/* XXX Right now, we put each column to different files */
+static void
+OpenAOCSDatumStreams(AOCSInsertDesc desc)
+{
+	RelFileNodeBackend rnode;
+	char	   *basepath;
+	char		fn[MAXPGPATH];
+	int32		fileSegNo;
+
+	AOCSFileSegInfo *seginfo = desc->fsInfo;
+
+	TupleDesc	tupdesc = RelationGetDescr(desc->aoi_rel);
+	int			nvp = tupdesc->natts;
+	int			i;
+	MemoryContext oldcxt;
+
+	oldcxt = MemoryContextSwitchTo(desc->streamCxt);
+
+	desc->ds = (DatumStreamWrite **) palloc0(sizeof(DatumStreamWrite *) * nvp);
+
+	open_ds_write(desc->aoi_rel, desc->ds, tupdesc,
+				  desc->checksum);
 
 	rnode.node = desc->aoi_rel->rd_node;
 	rnode.backend = desc->aoi_rel->rd_backend;
@@ -2388,6 +2404,39 @@ OpenAOCSDatumStreams(AOCSInsertDesc desc)
 	}
 
 	pfree(basepath);
+
+	MemoryContextSwitchTo(oldcxt);
+
+	desc->streamMem = MemoryContextMemAllocated(desc->streamCxt, true);
+}
+
+/*
+ * Flush and close every column file, record the resulting EOFs in
+ * desc->fsInfo, and release the column streams.
+ */
+static void
+CloseAOCSDatumStreams(AOCSInsertDesc desc)
+{
+	int			nvp = RelationGetNumberOfAttributes(desc->aoi_rel);
+	int			i;
+
+	for (i = 0; i < nvp; ++i)
+	{
+		AOCSVPInfoEntry *e = getAOCSVPEntry(desc->fsInfo, i);
+
+		if (desc->ds[i]->blockWrite.physical_datum_count > 0)
+			desc->colHasData[i] = true;
+		datumstreamwrite_block(desc->ds[i], &desc->blockDirectory, i);
+		datumstreamwrite_close_file(desc->ds[i]);
+
+		e->eof = desc->ds[i]->eof;
+		e->eof_uncompressed = desc->ds[i]->eofUncompress;
+	}
+
+	close_ds_write(desc->ds, nvp);
+	desc->ds = NULL;
+
+	MemoryContextReset(desc->streamCxt);
 }
 
 static inline void
@@ -2441,6 +2490,12 @@ aocs_insert_init(Relation rel, int segno, int64 num_rows)
                               &desc->segrelid, &desc->blkdirrelid,
                               &desc->visimaprelid);
 
+	desc->streamCxt = AllocSetContextCreate(CurrentMemoryContext,
+											"AOCS insert column streams",
+											ALLOCSET_DEFAULT_SIZES);
+	desc->colHasData = palloc0(RelationGetNumberOfAttributes(rel) * sizeof(bool));
+
+	GetAOCSInsertSegInfo(desc);
 	OpenAOCSDatumStreams(desc);
 
 	/*
@@ -2506,6 +2561,8 @@ aocs_insert_values(AOCSInsertDesc idesc, Datum *d, bool *null, AOTupleId *aoTupl
 			void	   *toFree2;
 
 			/* write the block up to this one */
+			if (idesc->ds[i]->blockWrite.physical_datum_count > 0)
+				idesc->colHasData[i] = true;
 			datumstreamwrite_block(idesc->ds[i], &idesc->blockDirectory, i);
 			if (itemCount > 0)
 			{
@@ -2571,14 +2628,8 @@ aocs_insert_values(AOCSInsertDesc idesc, Datum *d, bool *null, AOTupleId *aoTupl
 void
 aocs_insert_finish(AOCSInsertDesc idesc)
 {
-	Relation	rel = idesc->aoi_rel;
-	int			i;
-
-	for (i = 0; i < rel->rd_att->natts; ++i)
-	{
-		datumstreamwrite_block(idesc->ds[i], &idesc->blockDirectory, i);
-		datumstreamwrite_close_file(idesc->ds[i]);
-	}
+	if (!idesc->suspended)
+		CloseAOCSDatumStreams(idesc);
 
 	AppendOnlyBlockDirectory_End_forInsert(&(idesc->blockDirectory));
 
@@ -2587,8 +2638,115 @@ aocs_insert_finish(AOCSInsertDesc idesc)
 	UnregisterSnapshot(idesc->appendOnlyMetaDataSnapshot);
 
 	pfree(idesc->fsInfo);
+	pfree(idesc->colHasData);
 
-	close_ds_write(idesc->ds, rel->rd_att->natts);
+	MemoryContextDelete(idesc->streamCxt);
+}
+
+/*
+ * Estimate the memory the column streams of an insert descriptor on 'rel'
+ * take up, without opening one. 'rel' may be a partitioned table, in which
+ * case this is the estimate for one partition that has its column encodings.
+ * If 'attnos' is not NULL, only the columns with those attribute numbers are
+ * counted.
+ *
+ * A stream holds one block being assembled plus the write buffer of
+ * AppendOnlyStorageWrite_Init(), which is sized for a block and a large
+ * write of two; compressing takes one more block.
+ */
+Size
+aocs_insert_stream_mem_estimate(Relation rel, Bitmapset *attnos)
+{
+	int			natts = RelationGetNumberOfAttributes(rel);
+	StdRdOptions **opts = RelationGetAttributeOptions(rel);
+	Size		result = 0;
+
+	for (int i = 0; i < natts; i++)
+	{
+		int			blocksize = DEFAULT_APPENDONLY_BLOCK_SIZE;
+		bool		compress = false;
+
+		if (opts[i] != NULL)
+		{
+			if (opts[i]->blocksize != 0)
+				blocksize = opts[i]->blocksize;
+			compress = opts[i]->compresstype[0] != '\0' &&
+				pg_strcasecmp(opts[i]->compresstype, "none") != 0;
+			pfree(opts[i]);
+		}
+
+		if (attnos == NULL || bms_is_member(i + 1, attnos))
+			result += (Size) blocksize * (compress ? 5 : 4);
+	}
+	pfree(opts);
+
+	return result;
+}
+
+/*
+ * Give back the memory and the file descriptors of an insert descriptor that
+ * is not being written to right now.
+ *
+ * Every column buffers up to a block of data and holds an open file, so a
+ * command that inserts into many wide relations at once (think of a
+ * partitioned table) would otherwise keep (relations x columns) buffers
+ * around until it ends. Suspending writes out the partially filled block of
+ * each column and closes its file. Nothing is recorded in pg_aocsseg: the new
+ * EOFs are kept in idesc->fsInfo, from where aocs_insert_resume() picks them
+ * up again and aocs_insert_finish() eventually stores them.
+ *
+ * The price is a short block per column, so callers should only suspend a
+ * descriptor they do not expect to need soon.
+ */
+void
+aocs_insert_suspend(AOCSInsertDesc idesc)
+{
+	Assert(!idesc->suspended);
+
+	CloseAOCSDatumStreams(idesc);
+	idesc->suspended = true;
+}
+
+/*
+ * Make a suspended insert descriptor writable again. Must be called in a
+ * memory context that lives as long as the descriptor.
+ */
+void
+aocs_insert_resume(AOCSInsertDesc idesc)
+{
+	Assert(idesc->suspended);
+
+	OpenAOCSDatumStreams(idesc);
+
+	/* All blocks were written out, the next one starts at the next row. */
+	SetBlockFirstRowNums(idesc->ds, RelationGetNumberOfAttributes(idesc->aoi_rel),
+						 idesc->lastSequence + 1);
+	idesc->suspended = false;
+}
+
+/*
+ * How much of the memory of its column streams does an insert descriptor
+ * actually use? That is the buffers of the columns that have been given a
+ * value so far. A column that got nothing but NULLs has the same buffers
+ * allocated, but leaves all but a few pages of them untouched.
+ */
+Size
+aocs_insert_data_mem(AOCSInsertDesc idesc)
+{
+	int			natts = RelationGetNumberOfAttributes(idesc->aoi_rel);
+	Size		result = 0;
+
+	Assert(!idesc->suspended);
+
+	for (int i = 0; i < natts; i++)
+	{
+		DatumStreamWrite *ds = idesc->ds[i];
+
+		if (idesc->colHasData[i] || ds->blockWrite.physical_datum_count > 0)
+			result += (Size) ds->maxAoBlockSize * (ds->ao_attr.compress ? 5 : 4);
+	}
+
+	return Min(result, idesc->streamMem);
 }
 
 static void

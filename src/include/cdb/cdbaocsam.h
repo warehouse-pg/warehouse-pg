@@ -67,6 +67,20 @@ typedef struct AOCSInsertDescData
 	struct DatumStreamWrite **ds;
 
 	AppendOnlyBlockDirectory blockDirectory;
+
+	/*
+	 * The column streams (ds and everything hanging off it) live in
+	 * streamCxt, so that a descriptor that is not being written to can give
+	 * their memory back; see aocs_insert_suspend(). streamMem is the size of
+	 * that context right after the streams were opened. Most of that memory
+	 * stays untouched for a column that only ever gets NULLs; colHasData
+	 * tells which columns have been given a value in a block that is no
+	 * longer in its stream, see aocs_insert_data_mem().
+	 */
+	MemoryContext streamCxt;
+	Size		streamMem;
+	bool		suspended;
+	bool	   *colHasData;
 } AOCSInsertDescData;
 
 typedef AOCSInsertDescData *AOCSInsertDesc;
@@ -492,6 +506,10 @@ static inline void aocs_insert(AOCSInsertDesc idesc, TupleTableSlot *slot)
 	aocs_insert_values(idesc, slot->tts_values, slot->tts_isnull, (AOTupleId *) &slot->tts_tid);
 }
 extern void aocs_insert_finish(AOCSInsertDesc idesc);
+extern void aocs_insert_suspend(AOCSInsertDesc idesc);
+extern void aocs_insert_resume(AOCSInsertDesc idesc);
+extern Size aocs_insert_data_mem(AOCSInsertDesc idesc);
+extern Size aocs_insert_stream_mem_estimate(Relation rel, Bitmapset *attnos);
 extern AOCSFetchDesc aocs_fetch_init(Relation relation,
 									 Snapshot snapshot,
 									 Snapshot appendOnlyMetaDataSnapshot,
