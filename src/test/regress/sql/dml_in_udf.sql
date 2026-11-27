@@ -190,3 +190,102 @@ SELECT * FROM volatilefn_dml_int8 ORDER BY 1,2,3;
 
 DELETE FROM volatilefn_dml_int8 WHERE col3 = (SELECT dml_in_udf_func(1));
 SELECT * FROM volatilefn_dml_int8 ORDER BY 1,2,3;
+
+--
+-- allow_segment_DML is superuser-only, and it lets DML through on a QE slice
+-- but never DDL: a utility statement run locally on a segment would skip the
+-- QD's locking and change only that segment's catalog.
+--
+CREATE TABLE dml_in_udf_driver (id int) DISTRIBUTED BY (id);
+INSERT INTO dml_in_udf_driver VALUES (1);
+CREATE TABLE dml_in_udf_victim (a int) DISTRIBUTED BY (a);
+CREATE TABLE dml_in_udf_rep (a int) DISTRIBUTED REPLICATED;
+CREATE FUNCTION dml_in_udf_add_col() RETURNS int AS $$
+BEGIN
+  ALTER TABLE dml_in_udf_victim ADD COLUMN b int;
+  RETURN 1;
+END
+$$ LANGUAGE plpgsql VOLATILE;
+CREATE FUNCTION dml_in_udf_ctas() RETURNS int AS $$
+BEGIN
+  EXECUTE 'CREATE TABLE dml_in_udf_ctas_t AS SELECT 1 AS a';
+  RETURN 1;
+END
+$$ LANGUAGE plpgsql VOLATILE;
+CREATE FUNCTION dml_in_udf_ins_rep() RETURNS int AS $$
+BEGIN
+  INSERT INTO dml_in_udf_rep VALUES (1);
+  RETURN 1;
+END
+$$ LANGUAGE plpgsql VOLATILE;
+CREATE FUNCTION dml_in_udf_cur_rep() RETURNS int AS $$
+DECLARE
+  r record;
+  n int := 0;
+BEGIN
+  FOR r IN WITH x AS (INSERT INTO dml_in_udf_rep VALUES (2) RETURNING a)
+           SELECT a FROM x LOOP
+    n := n + 1;
+  END LOOP;
+  RETURN n;
+END
+$$ LANGUAGE plpgsql VOLATILE;
+CREATE FUNCTION dml_in_udf_do() RETURNS int AS $$
+  DO $d$ BEGIN ALTER TABLE dml_in_udf_victim ADD COLUMN c int; END $d$;
+  SELECT 1;
+$$ LANGUAGE sql VOLATILE;
+CREATE FUNCTION dml_in_udf_set() RETURNS text AS $$
+  SET LOCAL extra_float_digits = 2;
+  SHOW extra_float_digits;
+  SELECT current_setting('extra_float_digits');
+$$ LANGUAGE sql VOLATILE;
+
+CREATE ROLE regress_dml_in_udf_user;
+GRANT SELECT ON dml_in_udf_driver TO regress_dml_in_udf_user;
+GRANT SELECT, INSERT ON dml_in_udf_rep TO regress_dml_in_udf_user;
+SET SESSION AUTHORIZATION regress_dml_in_udf_user;
+SET allow_segment_DML = on;
+SELECT dml_in_udf_add_col() FROM dml_in_udf_driver;
+RESET SESSION AUTHORIZATION;
+
+SET allow_segment_DML = on;
+SELECT dml_in_udf_add_col() FROM dml_in_udf_driver;
+SELECT dml_in_udf_ctas() FROM dml_in_udf_driver;
+SELECT dml_in_udf_do() FROM dml_in_udf_driver;
+SELECT dml_in_udf_set() FROM dml_in_udf_driver;
+SELECT dml_in_udf_ins_rep() FROM dml_in_udf_driver;
+SELECT dml_in_udf_cur_rep() FROM dml_in_udf_driver;
+RESET allow_segment_DML;
+-- the QE keeps the plans of the last two calls, but they are checked again
+-- each time they run: they fail now, for an ordinary user too
+SELECT dml_in_udf_ins_rep() FROM dml_in_udf_driver;
+SELECT dml_in_udf_cur_rep() FROM dml_in_udf_driver;
+SET SESSION AUTHORIZATION regress_dml_in_udf_user;
+SELECT dml_in_udf_ins_rep() FROM dml_in_udf_driver;
+RESET SESSION AUTHORIZATION;
+-- the column was not added on any segment
+SELECT DISTINCT attname FROM gp_dist_random('pg_attribute')
+WHERE attrelid = 'dml_in_udf_victim'::regclass AND attnum > 0;
+
+-- a kept plan that reads a replicated table is checked again after the table
+-- is redistributed, rather than reading the slice of one segment
+CREATE TABLE dml_in_udf_rep2 (a int) DISTRIBUTED REPLICATED;
+INSERT INTO dml_in_udf_rep2 SELECT generate_series(1, 30);
+CREATE FUNCTION dml_in_udf_count_rep2() RETURNS bigint AS $$
+BEGIN
+  RETURN (SELECT count(*) FROM dml_in_udf_rep2);
+END
+$$ LANGUAGE plpgsql VOLATILE;
+SELECT dml_in_udf_count_rep2() FROM dml_in_udf_driver;
+ALTER TABLE dml_in_udf_rep2 SET DISTRIBUTED BY (a);
+SELECT dml_in_udf_count_rep2() FROM dml_in_udf_driver;
+
+DROP FUNCTION dml_in_udf_add_col();
+DROP FUNCTION dml_in_udf_count_rep2();
+DROP FUNCTION dml_in_udf_cur_rep();
+DROP FUNCTION dml_in_udf_ctas();
+DROP FUNCTION dml_in_udf_do();
+DROP FUNCTION dml_in_udf_ins_rep();
+DROP FUNCTION dml_in_udf_set();
+DROP TABLE dml_in_udf_driver, dml_in_udf_victim, dml_in_udf_rep, dml_in_udf_rep2;
+DROP ROLE regress_dml_in_udf_user;

@@ -213,6 +213,28 @@ querytree_safe_for_qe_walker(Node *expr, void *context)
 							 errmsg("function cannot execute on a QE slice because it issues a non-SELECT statement")));
 				}
 				
+				/*
+				 * WHPG: allow_segment_DML lets DML through, never DDL.  A
+				 * utility statement run locally on a QE has not been through
+				 * the QD, so it misses the parse analysis and locking the QD
+				 * does for a dispatched statement (an ALTER TABLE gets no lock
+				 * at all), and it changes the catalog of this segment only.
+				 * SET, SHOW, DO and CALL are the exceptions: they leave the
+				 * catalog alone, and the statements nested in DO and CALL come
+				 * back through this check.
+				 */
+				if (q->commandType == CMD_UTILITY &&
+					!(IsA(q->utilityStmt, VariableSetStmt) ||
+					  IsA(q->utilityStmt, VariableShowStmt) ||
+					  IsA(q->utilityStmt, DoStmt) ||
+					  IsA(q->utilityStmt, CallStmt)))
+				{
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("function cannot execute on a QE slice because it issues a utility statement"),
+							 errdetail("allow_segment_DML permits only DML statements on a QE slice.")));
+				}
+
 				ListCell * f = NULL;
 				foreach(f,q->rtable)
 				{
