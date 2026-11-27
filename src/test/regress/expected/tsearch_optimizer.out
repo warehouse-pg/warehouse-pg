@@ -455,15 +455,17 @@ CREATE INDEX wowidx ON test_tsvector USING gin (a);
 SET enable_seqscan=OFF;
 -- GIN only supports bitmapscan, so no need to test plain indexscan
 explain (costs off) SELECT count(*) FROM test_tsvector WHERE a @@ 'wr|qh';
-                          QUERY PLAN                           
----------------------------------------------------------------
+                               QUERY PLAN                                
+-------------------------------------------------------------------------
  Finalize Aggregate
    ->  Gather Motion 3:1  (slice1; segments: 3)
          ->  Partial Aggregate
-               ->  Seq Scan on test_tsvector
-                     Filter: (a @@ '''wr'' | ''qh'''::tsquery)
+               ->  Bitmap Heap Scan on test_tsvector
+                     Recheck Cond: (a @@ '''wr'' | ''qh'''::tsquery)
+                     ->  Bitmap Index Scan on wowidx
+                           Index Cond: (a @@ '''wr'' | ''qh'''::tsquery)
  Optimizer: Pivotal Optimizer (GPORCA) version 3.9.0
-(6 rows)
+(8 rows)
 
 SELECT count(*) FROM test_tsvector WHERE a @@ 'wr|qh';
  count 
