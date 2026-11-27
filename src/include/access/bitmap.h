@@ -226,6 +226,26 @@ typedef struct BMBitmapOpaqueData
 typedef BMBitmapOpaqueData *BMBitmapOpaque;
 
 /*
+ * The page that follows a bitmap page in its bitmap, InvalidBlockNumber if
+ * it is the last one.
+ *
+ * Read bm_bitmap_next through this.  Block BM_METAPAGE is never a bitmap
+ * page, but the last page of a bitmap can name it as its next page: redo of
+ * XLOG_BITMAP_INSERT_WORDS stores the bm_next_blkno of the record, and
+ * releases that left it zero for the last page of an insert wrote such
+ * records.  A page replayed from one, after a crash or on a mirror, keeps
+ * the zero on disk until the page is written again, so it has to mean the
+ * end of the bitmap.
+ */
+static inline BlockNumber
+BMBitmapPageGetNext(BMBitmapOpaque opaque)
+{
+	if (opaque->bm_bitmap_next == BM_METAPAGE)
+		return InvalidBlockNumber;
+	return opaque->bm_bitmap_next;
+}
+
+/*
  * Approximately 4078 words per 8K page
  */
 #define BM_MAX_NUM_OF_HRL_WORDS_PER_PAGE \
