@@ -267,6 +267,32 @@ CREATE TABLE IF NOT EXISTS ctas_ex_hash AS EXECUTE ctas_ex_q(2) DISTRIBUTED RAND
 SELECT policytype, distkey FROM gp_distribution_policy WHERE localoid = 'ctas_ex_hash'::regclass;
 CREATE TABLE ctas_ex_bad AS EXECUTE ctas_ex_q(2) DISTRIBUTED BY (nosuch);
 
+-- The row count of a replicated target is the table's, not the sum over
+-- segments.
+DO $$
+DECLARE n bigint;
+BEGIN
+  EXECUTE 'CREATE TABLE ctas_ex_cnt AS EXECUTE ctas_ex_q(2) DISTRIBUTED REPLICATED';
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RAISE NOTICE 'rows: %', n;
+END $$;
+DROP TABLE ctas_ex_cnt;
+
+-- A plain EXECUTE after a CTAS EXECUTE of the same statement is unaffected by
+-- the CTAS.
+CREATE TABLE ctas_ex_dsrc(a int, b text) DISTRIBUTED BY (a);
+INSERT INTO ctas_ex_dsrc SELECT g, 'r' || g FROM generate_series(1, 6) g;
+PREPARE ctas_ex_dq(int) AS SELECT a, b FROM ctas_ex_dsrc WHERE a > $1;
+CREATE TABLE ctas_ex_dt AS EXECUTE ctas_ex_dq(2) DISTRIBUTED BY (b);
+EXECUTE ctas_ex_dq(2);
+DEALLOCATE ctas_ex_dq;
+DROP TABLE ctas_ex_dt, ctas_ex_dsrc;
+
+-- Only a SELECT can be the source of a CTAS EXECUTE.
+PREPARE ctas_ex_ins AS INSERT INTO ctas_ex_hash VALUES (100, 'x') RETURNING a, b;
+CREATE TABLE ctas_ex_bad AS EXECUTE ctas_ex_ins;
+DEALLOCATE ctas_ex_ins;
+
 DEALLOCATE ctas_ex_q;
 DROP TABLE ctas_ex_hash, ctas_ex_rand, ctas_ex_repl, ctas_ex_nodata, ctas_ex_cols,
   ctas_ex_hash_off, ctas_ex_rand_off, ctas_ex_repl_off;
