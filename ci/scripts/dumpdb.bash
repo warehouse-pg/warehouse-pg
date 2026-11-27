@@ -21,7 +21,7 @@ psql \
     echo "-----------------------------------------------------------------"
     echo "Drop objects not shipped to customers from DATABASE: ${database}."
     echo "-----------------------------------------------------------------"
-    psql "${database}" -f ./gpdb_src/concourse/scripts/drop_functions_with_dependencies_not_shipped_to_customers.sql
+    psql "${database}" -f ./gpdb_src/ci/scripts/drop_functions_with_dependencies_not_shipped_to_customers.sql
     echo ""
     echo ""
 done

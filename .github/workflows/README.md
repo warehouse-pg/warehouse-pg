@@ -123,7 +123,7 @@ The ORCA unit tests run twice with different build configurations:
 1. **RelWithDebInfo** - Release build with debug info (optimized, for performance validation)
 2. **Debug** - Debug build (unoptimized, for thorough assertion checking)
 
-This dual-build approach ensures the optimizer works correctly in both production-like and debug environments. The underlying script (`concourse/scripts/unit_tests_gporca.bash`) handles both builds automatically.
+This dual-build approach ensures the optimizer works correctly in both production-like and debug environments. The underlying script (`ci/scripts/unit_tests_gporca.bash`) handles both builds automatically.
 
 #### Configuration
 
@@ -151,7 +151,7 @@ Supporting scripts are located in `.github/scripts/`:
 | Script | Description |
 |--------|-------------|
 | `run-installcheck.bash` | Runs installcheck tests with proper environment setup |
-| `run-orca-tests.bash` | Runs ORCA unit tests using concourse scripts |
+| `run-orca-tests.bash` | Runs ORCA unit tests using ci/scripts |
 
 ### Environment Setup
 
@@ -194,7 +194,7 @@ Tests run in pre-built container images from `ghcr.io/warehouse-pg/`, selected p
 
 ### Xerces-c 3.1
 
-ORCA on WHPG 6 requires xerces-c **3.1**, but the distro ships 3.2. The `Install required packages` step removes the system `xerces-c` / `xerces-c-devel`, and the `Build Xerces with Python 2` step builds 3.1 from `src/backend/gporca/concourse/xerces-c` (a Python-2-only build script, which is why `python2-devel` is installed).
+ORCA on WHPG 6 requires xerces-c **3.1**, but the distro ships 3.2. The `Install required packages` step removes the system `xerces-c` / `xerces-c-devel`, and the `Build Xerces with Python 2` step builds 3.1 from `src/backend/gporca/ci/xerces-c` (a Python-2-only build script, which is why `python2-devel` is installed).
 
 ### Dual Python: Python 2 build + Python 3 PL/Python
 

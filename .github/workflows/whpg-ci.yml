@@ -168,12 +168,12 @@ jobs:
           ccache --zero-stats
 
       - name: Build Xerces with Python 2
-        # Build xerces-c 3.1 from the in-tree concourse helper (driven by a
-        # Python 2 script). This produces /usr/local/lib/libxerces-c-3.1.so,
+        # Build xerces-c 3.1 with the in-tree helper in src/backend/gporca/ci
+        # (a Python 2 script). This produces /usr/local/lib/libxerces-c-3.1.so,
         # which ORCA links against.
         run: |
             mkdir -p xerces_patch/concourse
-            cp -r ${WHPG_SRC}/src/backend/gporca/concourse/xerces-c xerces_patch/concourse
+            cp -r ${WHPG_SRC}/src/backend/gporca/ci/xerces-c xerces_patch/concourse
             /usr/bin/python2 xerces_patch/concourse/xerces-c/build_xerces.py --output_dir="/usr/local"
             rm -rf build xerces_patch
             ln -s /usr/local/lib/libxerces-c-3.1.so /usr/lib64/libxerces-c-3.1.so
@@ -233,14 +233,14 @@ jobs:
       - name: Setup gpadmin user
         run: |
           # Create symlinks for easier navigation
-          ln -s . gpdb_src                          # For concourse scripts compatibility
+          ln -s . gpdb_src                          # For ci/scripts compatibility
           ln -s "${WHPG_SRC}" /workspace            # Easy to remember path
           ln -s "${WHPG_SRC}" /home/gpadmin/gpdb_src  # Accessible from gpadmin home
           # Delete the gpadmin user since the setup script doesn't handle existing users.
           userdel gpadmin 2>/dev/null || true
 
           export TEST_OS=centos
-          ./concourse/scripts/setup_gpadmin_user.bash
+          ./ci/scripts/setup_gpadmin_user.bash
           chown -h gpadmin:gpadmin /workspace /home/gpadmin/gpdb_src
           chown -R gpadmin:gpadmin /usr/local/greenplum-db-devel
           chown -R gpadmin:gpadmin "${WHPG_SRC}"
@@ -252,7 +252,7 @@ jobs:
       - name: Create demo cluster
         id: cluster
         run: |
-          source concourse/scripts/common.bash
+          source ci/scripts/common.bash
           export WITH_MIRRORS=true
           make_cluster
 
