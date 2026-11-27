@@ -8,5 +8,8 @@ test: tcp_ic_teardown
 # test TCP proxy peer shutdown
 test: ic_proxy_peer_shutdown
 
+# test the validation of gp_interconnect_proxy_addresses (no restart, no mesh change)
+test: ic_proxy_mesh_guc
+
 # test ic-proxy listen failed
 test: ic_proxy_listen_failed

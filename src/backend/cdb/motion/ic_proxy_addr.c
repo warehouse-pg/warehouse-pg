@@ -282,7 +282,7 @@ ic_proxy_reload_addresses(uv_loop_t *loop)
 		int			dbid;
 		int			content;
 		int			port;
-		char		hostname[HOST_NAME_MAX];
+		char		hostname[HOST_NAME_MAX + 1];
 		struct addrinfo hints;
 
 		memset(&hints, 0, sizeof(hints));
@@ -298,8 +298,13 @@ ic_proxy_reload_addresses(uv_loop_t *loop)
 
 		/*
 		 * format: dbid:segid:hostname:port
+		 *
+		 * The hostname conversion is bounded to the local buffer; the GUC
+		 * check hook (check_gp_interconnect_proxy_addresses) rejects
+		 * hostnames that do not fit ICProxyAddr.hostname, so a value that
+		 * reached us here never needs the truncation.
 		 */
-		while (fscanf(f, "%d:%d:%[^:]:%d,",
+		while (fscanf(f, "%d:%d:%" CppAsString2(HOST_NAME_MAX) "[^:]:%d,",
 					  &dbid, &content, hostname, &port) == 4)
 		{
 			ICProxyAddr *addr = ic_proxy_new(ICProxyAddr);

@@ -318,6 +318,37 @@ def querySingleton(conn, sql):
     return row[0]
 
 
+def queryFileSetting(conn, name):
+    """
+    Return the value of the setting `name` as the configuration files hold
+    it, i.e. what the next reload applies, or None when the files do not set
+    it.  gpconfig edits the files without reloading them, so the running
+    value (SHOW) can be behind this one; a utility that rewrites a setting
+    has to start from this value or it drops what was written last.
+
+    Raises when the last occurrence in the files cannot be applied, with the
+    server's error text: editing on top of a broken value would only hide it.
+    Raises as well when that occurrence is in postgresql.auto.conf: a value
+    set with ALTER SYSTEM overrides postgresql.conf, the file gpconfig
+    writes, so an edit made on top of it would be reported as done and never
+    take effect.
+    """
+    with conn.cursor() as cursor:
+        cursor.execute("SELECT setting, error, sourcefile FROM pg_file_settings "
+                       "WHERE name = %s ORDER BY seqno DESC LIMIT 1", (name,))
+        row = cursor.fetchone()
+    if row is None:
+        return None
+    setting, error, sourcefile = row
+    if error is not None:
+        raise Exception("%s is set in the configuration files but cannot be applied: %s"
+                        % (name, error))
+    if sourcefile and sourcefile.endswith('/postgresql.auto.conf'):
+        raise Exception("%s is set with ALTER SYSTEM (postgresql.auto.conf), which overrides "
+                        "the value gpconfig writes; run \"ALTER SYSTEM RESET %s\", set the value "
+                        "with gpconfig and reload the configuration" % (name, name))
+    return setting
+
 def executeUpdateOrInsert(conn, sql, expectedRowUpdatesOrInserts):
     cursor=conn.cursor()
     cursor.execute(sql)
