@@ -3368,6 +3368,18 @@ appendonly_insert(AppendOnlyInsertDesc aoInsertDesc,
 		Assert(!AppendOnlyStorageWrite_IsBufferAllocated(&aoInsertDesc->storageWrite));
 
 		/*
+		 * WHPG: cancelLastBuffer() turned off the firstRowNum of the
+		 * varblock set up for this row, so set it again for the large content
+		 * header, like datumstreamwrite_lob() does for AOCS.  Without it a
+		 * reader numbers the large row by counting the rows before it, which
+		 * is wrong when the row numbers skipped ahead, as they do when the row
+		 * starts an INSERT into a segment file that already has rows.
+		 */
+		Assert(aoInsertDesc->blockFirstRowNum == aoInsertDesc->lastSequence + 1);
+		AppendOnlyStorageWrite_SetFirstRowNum(&aoInsertDesc->storageWrite,
+											  aoInsertDesc->blockFirstRowNum);
+
+		/*
 		 * Write large content.
 		 */
 		AppendOnlyStorageWrite_Content(
@@ -3379,7 +3391,17 @@ appendonly_insert(AppendOnlyInsertDesc aoInsertDesc,
 		Assert(aoInsertDesc->nonCompressedData == NULL);
 		Assert(!AppendOnlyStorageWrite_IsBufferAllocated(&aoInsertDesc->storageWrite));
 
-		setupNextWriteBlock(aoInsertDesc);
+		/*
+		 * WHPG: Give the large row a block directory entry of its own, like
+		 * datumstreamwrite_lob() does for AOCS, or an index fetch of this
+		 * row cannot find it.
+		 */
+		AppendOnlyBlockDirectory_InsertEntry(
+			&aoInsertDesc->blockDirectory,
+			0,
+			aoInsertDesc->blockFirstRowNum,
+			AppendOnlyStorageWrite_LogicalBlockStartOffset(&aoInsertDesc->storageWrite),
+			1);
 	}
 
 	aoInsertDesc->insertCount++;
@@ -3388,6 +3410,14 @@ appendonly_insert(AppendOnlyInsertDesc aoInsertDesc,
 		(aoInsertDesc->numSequences)--;
 
 	Assert(aoInsertDesc->numSequences >= 0);
+
+	/*
+	 * WHPG: The varblock for the rows after a large one takes its firstRowNum
+	 * from lastSequence + 1, so set it up only after lastSequence counts the
+	 * large row.  Otherwise its first row gets the large row's number.
+	 */
+	if (isLargeContent)
+		setupNextWriteBlock(aoInsertDesc);
 
 	AOTupleIdInit(aoTupleId, aoInsertDesc->cur_segno, aoInsertDesc->lastSequence);
 
