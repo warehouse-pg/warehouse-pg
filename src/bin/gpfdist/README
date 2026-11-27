@@ -1,6 +1,6 @@
 Docs
 --------
-See gpdb-doc/dita/utility_guide/admin_utilities/gpfdist.xml
+See the gpfdist reference in the warehouse-pg/whpg-docs repository.
 
 Compiling
 -------------
