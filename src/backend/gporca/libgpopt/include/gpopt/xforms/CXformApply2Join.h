@@ -264,7 +264,7 @@ public:
 	CXformApply2Join(const CXformApply2Join &) = delete;
 
 	// ctor for deep pattern
-	explicit CXformApply2Join<TApply, TJoin>(CMemoryPool *mp, BOOL)
+	explicit CXformApply2Join(CMemoryPool *mp, BOOL)
 		:  // pattern
 		  CXformExploration(GPOS_NEW(mp) CExpression(
 			  mp, GPOS_NEW(mp) TApply(mp),
@@ -279,7 +279,7 @@ public:
 	}
 
 	// ctor for shallow pattern
-	explicit CXformApply2Join<TApply, TJoin>(CMemoryPool *mp)
+	explicit CXformApply2Join(CMemoryPool *mp)
 		:  // pattern
 		  CXformExploration(GPOS_NEW(mp) CExpression(
 			  mp, GPOS_NEW(mp) TApply(mp),
@@ -294,14 +294,13 @@ public:
 	}
 
 	// ctor for passed pattern
-	CXformApply2Join<TApply, TJoin>(CMemoryPool *,	// mp
-									CExpression *pexprPattern)
+	CXformApply2Join(CMemoryPool * /* mp */, CExpression *pexprPattern)
 		: CXformExploration(pexprPattern)
 	{
 	}
 
 	// dtor
-	~CXformApply2Join<TApply, TJoin>() override = default;
+	~CXformApply2Join() override = default;
 
 	// is transformation an Apply decorrelation (Apply To Join) xform?
 	BOOL

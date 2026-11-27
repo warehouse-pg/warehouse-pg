@@ -136,12 +136,11 @@ private:
 	}
 
 public:
-	CDynamicPtrArray<T, CleanupFn>(const CDynamicPtrArray<T, CleanupFn> &) =
-		delete;
+	CDynamicPtrArray(const CDynamicPtrArray &) = delete;
 
 	// ctor
-	explicit CDynamicPtrArray<T, CleanupFn>(CMemoryPool *mp, ULONG min_size = 4,
-											ULONG expansion_factor = 10)
+	explicit CDynamicPtrArray(CMemoryPool *mp, ULONG min_size = 4,
+							  ULONG expansion_factor = 10)
 		: m_mp(mp),
 		  m_capacity(0),
 		  m_min_size(std::max((ULONG) 4, min_size)),
@@ -155,7 +154,7 @@ public:
 	}
 
 	// dtor
-	~CDynamicPtrArray<T, CleanupFn>() override
+	~CDynamicPtrArray() override
 	{
 		Clear();
 
@@ -181,7 +180,7 @@ public:
 		{
 			// resize at least by 4 elements or percentage as given by ulExp
 			ULONG new_size =
-				(ULONG)(m_capacity * (1 + (m_expansion_factor / 100.0)));
+				(ULONG) (m_capacity * (1 + (m_expansion_factor / 100.0)));
 			ULONG min_expand_size = m_capacity + 4;
 
 			Resize(std::max(std::max(min_expand_size, new_size), m_min_size));

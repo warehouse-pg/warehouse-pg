@@ -254,15 +254,10 @@ private:
 	}
 
 public:
-	CStateMachine<TEnumState, tenumstateSentinel, TEnumEvent,
-				  tenumeventSentinel>(
-		const CStateMachine<TEnumState, tenumstateSentinel, TEnumEvent,
-							tenumeventSentinel> &) = delete;
+	CStateMachine(const CStateMachine &) = delete;
 
 	// ctor
-	CStateMachine<TEnumState, tenumstateSentinel, TEnumEvent,
-				  tenumeventSentinel>()
-		: m_tenumstate(TesInitial())
+	CStateMachine() : m_tenumstate(TesInitial())
 	{
 		GPOS_ASSERT(0 < tenumstateSentinel && 0 < tenumeventSentinel &&
 					(ULONG) tenumeventSentinel + 1 >=
@@ -363,7 +358,7 @@ public:
 	TEnumState
 	TesFinal() const
 	{
-		return (TEnumState)(tenumstateSentinel - 1);
+		return (TEnumState) (tenumstateSentinel - 1);
 	}
 
 	// reset state
