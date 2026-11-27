@@ -812,6 +812,13 @@ ExecSquelchNode(PlanState *node)
 			break;
 		case T_CustomScanState:
 			ExecShutdownCustomScan((CustomScanState*) node);
+			/*
+			 * Its child plans may have motions, which the provider can't be
+			 * expected to squelch: squelching isn't part of the CustomScan
+			 * API.
+			 */
+			foreach(lc, ((CustomScanState *) node)->custom_ps)
+				ExecSquelchNode((PlanState *) lfirst(lc));
 			break;
 		case T_DynamicForeignScanState:
 			/* TODO: Add logic to shutdown the dynamic foreign scan for cases of parallel

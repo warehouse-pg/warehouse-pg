@@ -25,6 +25,8 @@ extern "C" {
 #include "catalog/pg_statistic_ext.h"
 #include "catalog/pg_type.h"
 #include "cdb/cdbhash.h"
+#include "nodes/plannodes.h"
+#include "optimizer/orca.h"
 #include "partitioning/partdesc.h"
 #include "utils/array.h"
 #include "utils/datum.h"
@@ -533,7 +535,12 @@ CTranslatorRelcacheToDXL::RetrieveRel(CMemoryPool *mp, CMDAccessor *md_accessor,
 
 	CheckUnsupportedRelation(rel.get());
 
-	if (!GpPolicyIsEntry(rel->rd_cdbpolicy) &&
+	// a table an extension reads itself, in random slices
+	// (orca_relation_hook): its own policy doesn't matter
+	int ext_relation = gpdb::ExtensionRelation(oid);
+	BOOL extension_rel = ORCA_RELATION_RANDOM == ext_relation;
+
+	if (!extension_rel && !GpPolicyIsEntry(rel->rd_cdbpolicy) &&
 		gpdb::GetGPSegmentCount() != rel->rd_cdbpolicy->numsegments)
 	{
 		// GPORCA does not support partially distributed tables yet
@@ -589,6 +596,10 @@ CTranslatorRelcacheToDXL::RetrieveRel(CMemoryPool *mp, CMDAccessor *md_accessor,
 		ForeignTable *ft = GetForeignTable(rel->rd_id);
 		dist = GetDistributionFromForeignRelExecLocation(ft);
 	}
+	else if (extension_rel)
+	{
+		dist = IMDRelation::EreldistrRandom;
+	}
 	else
 	{
 		dist = GetRelDistribution(gp_policy);
@@ -604,8 +615,11 @@ CTranslatorRelcacheToDXL::RetrieveRel(CMemoryPool *mp, CMDAccessor *md_accessor,
 
 	convert_hash_to_random = gpdb::IsChildPartDistributionMismatched(rel.get());
 
-	// collect relation indexes
-	md_index_info_array = RetrieveRelIndexInfo(mp, rel.get());
+	// collect relation indexes: none of a table an extension reads itself,
+	// whose only scans are its regions' table scans
+	md_index_info_array = extension_rel
+							  ? GPOS_NEW(mp) CMDIndexInfoArray(mp)
+							  : RetrieveRelIndexInfo(mp, rel.get());
 
 	// An append-optimized relation's indexes find rows through its block
 	// directory, which looks empty to a snapshot older than the directory.
@@ -640,6 +654,14 @@ CTranslatorRelcacheToDXL::RetrieveRel(CMemoryPool *mp, CMDAccessor *md_accessor,
 				GPOS_RAISE(gpdxl::ExmaMD, gpdxl::ExmiMDObjUnsupported,
 						   GPOS_WSZ_LIT("Multi-level partitioned tables"));
 			}
+			// A dynamic scan reads the partitions as its root is read: by
+			// the executor, or by an extension (orca_relation_hook)
+			if (gpdb::ExtensionRelation(part_oid) != ext_relation)
+			{
+				GPOS_RAISE(gpdxl::ExmaMD, gpdxl::ExmiMDObjUnsupported,
+						   GPOS_WSZ_LIT("Partition an extension reads "
+										"differently from its root"));
+			}
 			if (check_blkdir &&
 				!gpdb::IsAppendOnlyBlockDirectoryVisible(rel_part.get()))
 			{
@@ -649,8 +671,10 @@ CTranslatorRelcacheToDXL::RetrieveRel(CMemoryPool *mp, CMDAccessor *md_accessor,
 		}
 	}
 
-	// get key sets
-	BOOL should_add_default_keys = RelHasSystemColumns(rel->rd_rel->relkind);
+	// get key sets. A table an extension reads itself has no ctid or
+	// gp_segment_id to deduplicate its rows by.
+	BOOL should_add_default_keys =
+		!extension_rel && RelHasSystemColumns(rel->rd_rel->relkind);
 	keyset_array = RetrieveRelKeysets(mp, oid, should_add_default_keys,
 									  is_partitioned, attno_mapping, dist);
 
@@ -1856,7 +1880,13 @@ CTranslatorRelcacheToDXL::RetrieveRelStats(CMemoryPool *mp, IMDId *mdid)
 	// CMDName ctor created a copy of the string
 	GPOS_DELETE(relname_str);
 
-	num_rows = gpdb::CdbEstimatePartitionedNumTuples(rel.get());
+	// one call for an extension's table: its size can be costly to find
+	PageEstimate pages;
+	if (!gpdb::ExtensionRelationSize(rel.get(), &num_rows, &pages))
+	{
+		num_rows = gpdb::CdbEstimatePartitionedNumTuples(rel.get());
+		pages = gpdb::CdbEstimatePartitionedNumPages(rel.get());
+	}
 
 	m_rel_stats_mdid->AddRef();
 
@@ -1869,8 +1899,6 @@ CTranslatorRelcacheToDXL::RetrieveRelStats(CMemoryPool *mp, IMDId *mdid)
 	{
 		relation_empty = true;
 	}
-
-	PageEstimate pages = gpdb::CdbEstimatePartitionedNumPages(rel.get());
 
 	ULONG relpages = pages.totalpages;
 	ULONG relallvisible = pages.totalallvisiblepages;
@@ -2635,6 +2663,14 @@ CTranslatorRelcacheToDXL::RetrieveRelStorageType(Relation rel)
 			}
 			break;
 		default:
+			// a table an extension reads itself: only its scans matter to
+			// ORCA, which the extension executes
+			if (ORCA_RELATION_RANDOM ==
+				gpdb::ExtensionRelation(RelationGetRelid(rel)))
+			{
+				rel_storage_type = IMDRelation::ErelstorageHeap;
+				break;
+			}
 			GPOS_RAISE(gpdxl::ExmaMD, gpdxl::ExmiMDObjUnsupported,
 					   GPOS_WSZ_LIT("Unsupported table AM"));
 	}
