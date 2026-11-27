@@ -25,8 +25,14 @@ step "begin1" { BEGIN; }
 step "update1" { UPDATE epq_rj_lock SET n = n + 1 WHERE id = 1; }
 step "commit1" { COMMIT; }
 
+# The test is about the rechecks that come with the Postgres planner's row
+# locks: GPORCA plans the SELECT ... FOR UPDATE below without a LockRows node.
 session "s2"
-setup { SET default_transaction_isolation = 'read committed'; }
+setup
+{
+  SET default_transaction_isolation = 'read committed';
+  SET optimizer = off;
+}
 step "read2"
 {
   SELECT l.id, l.n
