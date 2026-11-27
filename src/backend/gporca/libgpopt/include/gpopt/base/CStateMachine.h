@@ -257,8 +257,7 @@ public:
 	CStateMachine(const CStateMachine &) = delete;
 
 	// ctor
-	CStateMachine()
-		: m_tenumstate(TesInitial())
+	CStateMachine() : m_tenumstate(TesInitial())
 	{
 		GPOS_ASSERT(0 < tenumstateSentinel && 0 < tenumeventSentinel &&
 					(ULONG) tenumeventSentinel + 1 >=
@@ -359,7 +358,7 @@ public:
 	TEnumState
 	TesFinal() const
 	{
-		return (TEnumState)(tenumstateSentinel - 1);
+		return (TEnumState) (tenumstateSentinel - 1);
 	}
 
 	// reset state

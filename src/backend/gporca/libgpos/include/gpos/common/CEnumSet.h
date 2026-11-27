@@ -33,13 +33,11 @@ public:
 	CEnumSet(const CEnumSet &) = delete;
 
 	// ctor
-	explicit CEnumSet(CMemoryPool *mp)
-		: CBitSet(mp, sentinel_index)
+	explicit CEnumSet(CMemoryPool *mp) : CBitSet(mp, sentinel_index)
 	{
 	}
 
-	explicit CEnumSet(
-		CMemoryPool *mp, const CEnumSet &enum_set)
+	explicit CEnumSet(CMemoryPool *mp, const CEnumSet &enum_set)
 		: CBitSet(mp, enum_set)
 	{
 	}

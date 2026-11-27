@@ -62,8 +62,7 @@ public:
 	CHashMapIter(const CHashMapIter &) = delete;
 
 	// ctor
-	CHashMapIter(TMap *ptm)
-		: m_map(ptm), m_chain_idx(0), m_key_idx(0)
+	CHashMapIter(TMap *ptm) : m_map(ptm), m_chain_idx(0), m_key_idx(0)
 	{
 		GPOS_ASSERT(nullptr != ptm);
 	}

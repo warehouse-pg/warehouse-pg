@@ -38,8 +38,7 @@ public:
 	CHashSetIter(const CHashSetIter &) = delete;
 
 	// ctor
-	CHashSetIter(TSet *set)
-		: m_set(set), m_chain_idx(0), m_elem_idx(0)
+	CHashSetIter(TSet *set) : m_set(set), m_chain_idx(0), m_elem_idx(0)
 	{
 		GPOS_ASSERT(nullptr != set);
 	}

@@ -33,8 +33,7 @@ public:
 	CEnumSetIter(const CEnumSetIter &) = delete;
 
 	// ctor
-	explicit CEnumSetIter(
-		const CEnumSet<T, sentinel_index> &enum_set)
+	explicit CEnumSetIter(const CEnumSet<T, sentinel_index> &enum_set)
 		: CBitSetIter(enum_set)
 	{
 	}
