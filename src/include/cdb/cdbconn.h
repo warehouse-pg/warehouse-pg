@@ -76,6 +76,25 @@ void
 cdbconn_doConnectComplete(SegmentDatabaseDescriptor *segdbDesc);
 
 /*
+ * The libpq TLS options of an internal connection to another node, see
+ * cdbconn_add_internal_tls_options().
+ */
+#define CDBCONN_INTERNAL_TLS_MAX_OPTIONS 5
+
+typedef struct CdbConnInternalTlsPaths
+{
+	char		cert[MAXPGPATH];
+	char		key[MAXPGPATH];
+	char		rootcert[MAXPGPATH];
+} CdbConnInternalTlsPaths;
+
+extern int	cdbconn_add_internal_tls_options(const char **keywords,
+											 const char **values,
+											 int nkeywords,
+											 bool to_coordinator,
+											 CdbConnInternalTlsPaths *paths);
+
+/*
  * Read result from connection and discard it.
  *
  * Retry at most N times.

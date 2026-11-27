@@ -24,6 +24,7 @@
 #include "libpq-fe.h"
 #include "libpq-int.h"
 #include "access/xact.h"
+#include "cdb/cdbconn.h"
 #include "cdb/cdbfts.h"
 #include "cdb/cdbvars.h"
 #include "postmaster/fts.h"
@@ -147,7 +148,6 @@ allDone(fts_context *context)
 static bool
 ftsConnectStart(fts_segment_info *ftsInfo)
 {
-	char conninfo[1024];
 	char *hostip;
 
 	/*
@@ -164,10 +164,34 @@ ftsConnectStart(fts_segment_info *ftsInfo)
 				SEGMENT_IS_ACTIVE_PRIMARY(ftsInfo->primary_cdbinfo));
 
 	hostip = ftsInfo->primary_cdbinfo->config->hostip;
-	snprintf(conninfo, 1024, "host=%s port=%d gpconntype=%s",
-			 hostip ? hostip : "", ftsInfo->primary_cdbinfo->config->port,
-			 GPCONN_TYPE_FTS);
-	ftsInfo->conn = PQconnectStart(conninfo);
+
+	{
+		const char *keywords[4 + CDBCONN_INTERNAL_TLS_MAX_OPTIONS];
+		const char *values[4 + CDBCONN_INTERNAL_TLS_MAX_OPTIONS];
+		char		portstr[16];
+		CdbConnInternalTlsPaths tlspaths;
+		int			n = 0;
+
+		/*
+		 * Keywords and values rather than a conninfo string, so that the
+		 * certificate paths that gp_internal_tls may add need no quoting.
+		 */
+		keywords[n] = "host";
+		values[n] = hostip ? hostip : "";
+		n++;
+		snprintf(portstr, sizeof(portstr), "%d", ftsInfo->primary_cdbinfo->config->port);
+		keywords[n] = "port";
+		values[n] = portstr;
+		n++;
+		keywords[n] = GPCONN_TYPE;
+		values[n] = GPCONN_TYPE_FTS;
+		n++;
+		n = cdbconn_add_internal_tls_options(keywords, values, n, false, &tlspaths);
+		keywords[n] = NULL;
+		values[n] = NULL;
+
+		ftsInfo->conn = PQconnectStartParams(keywords, values, false);
+	}
 
 	if (ftsInfo->conn == NULL)
 	{

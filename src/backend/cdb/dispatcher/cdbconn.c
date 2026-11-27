@@ -120,6 +120,119 @@ cdbconn_termSegmentDescriptor(SegmentDatabaseDescriptor *segdbDesc)
 }								/* cdbconn_termSegmentDescriptor */
 
 /*
+ * Resolve an SSL credential file path the way the libpq client expects it.
+ *
+ * A relative path in a server file GUC is relative to the data directory, but
+ * libpq takes a relative sslcert, sslkey or sslrootcert as relative to
+ * ~/.postgresql.  Returns the path made absolute, or NULL if it is not set.
+ */
+static const char *
+cdbconn_resolve_ssl_path(const char *path, char *buf)
+{
+	if (path == NULL || path[0] == '\0')
+		return NULL;
+
+	if (is_absolute_path(path))
+		return path;
+
+	snprintf(buf, MAXPGPATH, "%s/%s", DataDir, path);
+	return buf;
+}
+
+/*
+ * Append the libpq TLS options of an internal connection to another node, as
+ * gp_internal_tls asks for.  Dispatch, the FTS probe and gp_inject_fault all
+ * connect with these.  At most CDBCONN_INTERNAL_TLS_MAX_OPTIONS options are
+ * added; returns the new number of keywords.  "paths" holds the values and
+ * must live until the connection is started.
+ *
+ * disable: nothing is added, so that libpq's defaults apply as they always
+ * did.  The default sslmode is "prefer", so a cluster whose segments run with
+ * ssl = on keeps using TLS for these connections.
+ *
+ * verify-ca: the node presents its cluster certificate (there is no fallback
+ * to the ssl_* files, the postmaster does not start without the
+ * gp_internal_tls_* ones) and verifies the server certificate of the peer
+ * against the cluster CA.  It is verify-ca and not verify-full because the
+ * nodes dial each other by address; a certificate of the cluster's private CA
+ * shows that the peer is a member of the cluster.
+ *
+ * to_coordinator: the peer is the coordinator or its standby, whose server
+ * certificate belongs to the external trust domain and need not chain to the
+ * cluster CA, so it is not verified (sslmode=require).  The client certificate
+ * is presented all the same and is what the peer authenticates.  Over a
+ * Unix-domain socket, the usual way to the entry DB, libpq does not negotiate
+ * SSL whatever sslmode says.
+ *
+ * Nothing is taken from ~/.postgresql of the user the server runs as, it has
+ * nothing to do with the cluster.  libpq looks there for root.crt and root.crl
+ * when sslrootcert and sslcrl are not set: with a root.crt it verifies the
+ * server certificate even with sslmode=require, and with a root.crl it wants a
+ * CRL for every CA of the chain.  So where no file of the cluster applies, the
+ * option is set to a file that cannot exist.
+ */
+#define CDBCONN_NO_FILE "/dev/null/none"
+
+int
+cdbconn_add_internal_tls_options(const char **keywords, const char **values,
+								 int nkeywords, bool to_coordinator,
+								 CdbConnInternalTlsPaths *paths)
+{
+	const char *certfile;
+	const char *keyfile;
+	const char *rootcertfile;
+	const char *sslmode;
+
+	if (gp_internal_tls == GP_INTERNAL_TLS_DISABLE)
+		return nkeywords;
+
+	certfile = cdbconn_resolve_ssl_path(gp_internal_tls_cert_file, paths->cert);
+	keyfile = cdbconn_resolve_ssl_path(gp_internal_tls_key_file, paths->key);
+	rootcertfile = to_coordinator ? CDBCONN_NO_FILE :
+		cdbconn_resolve_ssl_path(gp_internal_tls_ca_file, paths->rootcert);
+	sslmode = to_coordinator ? "require" : "verify-ca";
+
+	keywords[nkeywords] = "sslmode";
+	values[nkeywords] = sslmode;
+	nkeywords++;
+
+	if (certfile)
+	{
+		keywords[nkeywords] = "sslcert";
+		values[nkeywords] = certfile;
+		nkeywords++;
+	}
+	if (keyfile)
+	{
+		keywords[nkeywords] = "sslkey";
+		values[nkeywords] = keyfile;
+		nkeywords++;
+	}
+	if (rootcertfile)
+	{
+		keywords[nkeywords] = "sslrootcert";
+		values[nkeywords] = rootcertfile;
+		nkeywords++;
+	}
+	keywords[nkeywords] = "sslcrl";
+	values[nkeywords] = CDBCONN_NO_FILE;
+	nkeywords++;
+
+	/*
+	 * For diagnosing a rejected connection: which certificate and CA this
+	 * node is about to use.  The accepting node logs the certificate it
+	 * rejected.
+	 */
+	ereport(DEBUG2,
+			(errmsg_internal("internal connection TLS: sslmode=%s sslcert=%s sslrootcert=%s",
+							 sslmode,
+							 certfile ? certfile : "(none)",
+							 rootcertfile ? rootcertfile : "(none)")));
+
+	return nkeywords;
+}
+
+/*
  * Establish socket connection via libpq.
  * Caller should call PQconnectPoll to finish it up.
  */
@@ -129,7 +242,7 @@ cdbconn_doConnectStart(SegmentDatabaseDescriptor *segdbDesc,
 					   const char *options,
 					   const char *diff_options)
 {
-#define MAX_KEYWORDS 15
+#define MAX_KEYWORDS 20
 #define MAX_INT_STRING_LEN 20
 	CdbComponentDatabaseInfo *cdbinfo = segdbDesc->segment_database_info;
 	const char *keywords[MAX_KEYWORDS];
@@ -138,6 +251,7 @@ cdbconn_doConnectStart(SegmentDatabaseDescriptor *segdbDesc,
 	char		keepalivesIdleStr[MAX_INT_STRING_LEN];
 	char		keepalivesCountStr[MAX_INT_STRING_LEN];
 	char		keepalivesIntervalStr[MAX_INT_STRING_LEN];
+	CdbConnInternalTlsPaths tlspaths;
 	int			nkeywords = 0;
 
 	keywords[nkeywords] = "gpqeid";
@@ -275,6 +389,12 @@ cdbconn_doConnectStart(SegmentDatabaseDescriptor *segdbDesc,
 		values[nkeywords] = keepalivesCountStr;
 		nkeywords++;
 	}
+
+	/* TLS, as gp_internal_tls asks for. */
+	nkeywords = cdbconn_add_internal_tls_options(keywords, values, nkeywords,
+												 segdbDesc->segindex == COORDINATOR_CONTENT_ID,
+												 &tlspaths);
+
 	keywords[nkeywords] = NULL;
 	values[nkeywords] = NULL;
 

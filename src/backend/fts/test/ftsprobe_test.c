@@ -197,6 +197,37 @@ PrimaryOrMirrorWillBeUpdated(int count)
 }
 
 /*
+ * The values ftsConnectStart() hands to libpq: host, port and connection type
+ * of the primary, and nothing else under gp_internal_tls = disable.
+ */
+static int
+check_fts_conn_values(const LargestIntegralType value,
+					  const LargestIntegralType check_value_data)
+{
+	const char *const *values = (const char *const *) value;
+	fts_segment_info *ftsInfo = (fts_segment_info *) check_value_data;
+	char		portstr[16];
+
+	snprintf(portstr, sizeof(portstr), "%d",
+			 ftsInfo->primary_cdbinfo->config->port);
+
+	return strcmp(values[0], ftsInfo->primary_cdbinfo->config->hostip) == 0 &&
+		strcmp(values[1], portstr) == 0 &&
+		strcmp(values[2], GPCONN_TYPE_FTS) == 0 &&
+		values[3] == NULL;
+}
+
+/* Expect ftsConnectStart() to start a connection to the primary of ftsInfo. */
+static void
+expect_ftsConnectStart(fts_segment_info *ftsInfo, PGconn *conn)
+{
+	expect_any(PQconnectStartParams, keywords);
+	expect_check(PQconnectStartParams, values, check_fts_conn_values, ftsInfo);
+	expect_value(PQconnectStartParams, expand_dbname, false);
+	will_return(PQconnectStartParams, conn);
+}
+
+/*
  * One primary segment, connection starts successfully from initial state.
  */
 static void
@@ -206,7 +237,6 @@ test_ftsConnect_FTS_PROBE_SEGMENT(void **state)
 		1, true, GP_SEGMENT_CONFIGURATION_MODE_INSYNC);
 	fts_context context;
 	FtsWalRepInitProbeContext(cdbs, &context);
-	char primary_conninfo[1024];
 	fts_segment_info *ftsInfo = &context.perSegInfos[0];
 
 	ftsInfo->conn = NULL;
@@ -215,11 +245,7 @@ test_ftsConnect_FTS_PROBE_SEGMENT(void **state)
 	PGconn *pgconn = palloc(sizeof(PGconn));
 	pgconn->status = CONNECTION_STARTED;
 	pgconn->sock = 11;
-	snprintf(primary_conninfo, 1024, "host=%s port=%d gpconntype=%s",
-			 ftsInfo->primary_cdbinfo->config->hostip, ftsInfo->primary_cdbinfo->config->port,
-			 GPCONN_TYPE_FTS);
-	expect_string(PQconnectStart, conninfo, primary_conninfo);
-	will_return(PQconnectStart, pgconn);
+	expect_ftsConnectStart(ftsInfo, pgconn);
 	ftsConnect(&context);
 
 	assert_true(ftsInfo->state == FTS_PROBE_SEGMENT);
@@ -256,15 +282,9 @@ test_ftsConnect_one_failure_one_success(void **state)
 	fts_segment_info *failure_resp = &context.perSegInfos[1];
 	pfree(failure_resp->conn);
 	failure_resp->conn = NULL;
-	char primary_conninfo_failure[1024];
-	snprintf(primary_conninfo_failure, 1024, "host=%s port=%d gpconntype=%s",
-			 failure_resp->primary_cdbinfo->config->hostip,
-			 failure_resp->primary_cdbinfo->config->port,
-			 GPCONN_TYPE_FTS);
-	expect_string(PQconnectStart, conninfo, primary_conninfo_failure);
 	PGconn *failure_pgconn = palloc(sizeof(PGconn));
 	failure_pgconn->status = CONNECTION_BAD;
-	will_return(PQconnectStart, failure_pgconn);
+	expect_ftsConnectStart(failure_resp, failure_pgconn);
 
 	expect_value(PQerrorMessage, conn, failure_pgconn);
 	will_return(PQerrorMessage, "");
@@ -294,17 +314,12 @@ test_ftsConnect_ftsPoll(void **state)
 	context.perSegInfos[0].state = FTS_PROBE_SEGMENT;
 
 	InitPollFds(1);
-	char primary_conninfo[1024];
 	fts_segment_info *ftsInfo = &context.perSegInfos[0];
 
 	PGconn *pgconn = palloc(sizeof(PGconn));
 	pgconn->status = CONNECTION_STARTED;
 	pgconn->sock = 11;
-	snprintf(primary_conninfo, 1024, "host=%s port=%d gpconntype=%s",
-			 ftsInfo->primary_cdbinfo->config->hostip, ftsInfo->primary_cdbinfo->config->port,
-			 GPCONN_TYPE_FTS);
-	expect_string(PQconnectStart, conninfo, primary_conninfo);
-	will_return(PQconnectStart, pgconn);
+	expect_ftsConnectStart(ftsInfo, pgconn);
 
 	ftsConnect(&context);
 
