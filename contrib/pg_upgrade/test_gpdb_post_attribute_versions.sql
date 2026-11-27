@@ -1,7 +1,8 @@
 -- Composite values stored before the upgrade, read on the upgraded cluster.
 -- See test_gpdb_pre_attribute_versions.sql for the objects.  Run by
 -- test_gpdb.sh when the segments have been upgraded too; its output is
--- compared with test_gpdb_post_attribute_versions.out.
+-- compared with test_gpdb_post_attribute_versions.out.  The checks that
+-- need no segments are in test_gpdb_post_attribute_versions_master.sql.
 \set VERBOSITY terse
 SET search_path = upgrade_attver, public;
 
@@ -17,13 +18,8 @@ SELECT r FROM rowdrop_tbl;
 SELECT c FROM rowdropt_tbl;
 -- datum with dropped zero-version column
 SELECT r FROM rowunvdrop_tbl;
--- attribute options of zero-version column preserved
-SELECT attoptions FROM pg_attribute
-WHERE attrelid = 'rowunvdrop_src'::regclass AND attname = 'c';
 -- view-rowtype datum
 SELECT r FROM rowview_tbl;
--- self-referencing view usable
-SELECT a FROM rowselfv;
 -- datums of a partitioned table's and of a leaf's row type
 SELECT r, leaf FROM rowpart_tbl;
 -- the same versions on every node
@@ -55,7 +51,14 @@ CLOSE whole;
 
 -- unversioned prefix readable after pg_upgrade
 SELECT c FROM rowold_tbl WHERE key = 'before-alter';
--- unversioned datum containing versioned attribute rejected
+-- unversioned datum containing versioned attribute rejected.  The row is
+-- stored here, not before the upgrade: nothing can read it, so it would make
+-- the dumps of the cluster fail.  As in the script that stores the other
+-- rows, the check is switched off while the value travels to the segment.
+SET composite_type_mismatch = disabled;
+INSERT INTO rowold_tbl
+  VALUES ('after-alter', make_tuple_unversioned(ROW(3,4,5)::rowold_comp));
+RESET composite_type_mismatch;
 SELECT c FROM rowold_tbl WHERE key = 'after-alter';
 
 BEGIN;

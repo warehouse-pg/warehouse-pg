@@ -125,7 +125,3 @@ RESET composite_type_mismatch;
 SELECT clear_attribute_versions('rowold_comp'::regclass);
 SELECT count(clear_attribute_versions('rowold_comp'::regclass)) > 0 FROM gp_dist_random('gp_id');
 ALTER TYPE rowold_comp ADD ATTRIBUTE c int;
-SET composite_type_mismatch = disabled;
-INSERT INTO rowold_tbl
-  VALUES ('after-alter', make_tuple_unversioned(ROW(3,4,5)::rowold_comp));
-RESET composite_type_mismatch;

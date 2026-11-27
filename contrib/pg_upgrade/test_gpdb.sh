@@ -287,19 +287,23 @@ check_attribute_version_dumps()
 # has to be running; $1 is the PGOPTIONS to connect with.
 collect_attribute_versions()
 {
-	PGOPTIONS="$1" ${NEW_BINDIR}/psql -X -At -f test_gpdb_attribute_versions.sql regression > "$temp_root/attver2.txt"
+	PGOPTIONS="$1" ${NEW_BINDIR}/psql -X -At -f test_gpdb_attribute_versions.sql regression > "$temp_root/attver2.out"
 
 	# Versions assigned after the upgrade have to exceed all restored ones.
-	PGOPTIONS="$1" ${NEW_BINDIR}/psql -X -At regression > "$temp_root/attver_precede.txt" <<-EOF
+	PGOPTIONS="$1" ${NEW_BINDIR}/psql -X -At regression > "$temp_root/attver_precede.out" <<-EOF
 		SELECT max(substr(o, length('pg_attver=') + 1)::numeric) <
 		       pg_current_xlog_insert_location() - '0/0'::pg_lsn
 		FROM pg_attribute a, unnest(a.attoptions) o
 		WHERE a.attrelid >= 16384 AND o LIKE 'pg_attver=%';
 	EOF
 
+	# The scripts are read from stdin: with -f, psql prefixes every message
+	# with the script's name and the line number.
+	PGOPTIONS="$1" ${NEW_BINDIR}/psql -X -a regression < test_gpdb_post_attribute_versions_master.sql > "$temp_root/attver_post_master.out" 2>&1
+
 	# Reading the stored values needs the segments.
 	if (( ! $smoketest )); then
-		${NEW_BINDIR}/psql -X -a -f test_gpdb_post_attribute_versions.sql regression > "$temp_root/attver_post.out" 2>&1
+		${NEW_BINDIR}/psql -X -a regression < test_gpdb_post_attribute_versions.sql > "$temp_root/attver_post.out" 2>&1
 	fi
 }
 
@@ -307,14 +311,19 @@ collect_attribute_versions()
 # the upgrade and with the expected output.
 check_attribute_versions()
 {
-	if ! diff "$temp_root/attver1.txt" "$temp_root/attver2.txt" > "$temp_root/attver.diffs"; then
+	if ! diff "$temp_root/attver1.out" "$temp_root/attver2.out" > "$temp_root/attver.diffs"; then
 		head -50 "$temp_root/attver.diffs"
 		echo "Error: attribute versions before and after the upgrade differ"
 		exit 1
 	fi
 
-	if [ "$(cat "$temp_root/attver_precede.txt")" != "t" ]; then
+	if [ "$(cat "$temp_root/attver_precede.out")" != "t" ]; then
 		echo "Error: restored attribute versions do not precede new versions"
+		exit 1
+	fi
+
+	if ! diff -u test_gpdb_post_attribute_versions_master.out "$temp_root/attver_post_master.out"; then
+		echo "Error: unexpected state of the attribute version test objects after the upgrade"
 		exit 1
 	fi
 
@@ -325,7 +334,7 @@ check_attribute_versions()
 		fi
 	fi
 
-	echo "Attribute versions preserved: $(wc -l < "$temp_root/attver2.txt") attributes"
+	echo "Attribute versions preserved: $(wc -l < "$temp_root/attver2.out") attributes"
 }
 
 # Diffs the dump1.sql and dump2.sql files in the $temp_root, and exits
@@ -349,7 +358,10 @@ diff_and_exit() {
 	${NEW_BINDIR}/gpstart -a ${args}
 
 	echo -n 'Dumping database schema after upgrade... '
-	PGOPTIONS="${pgopts}" ${NEW_BINDIR}/pg_dumpall ${DUMP_OPTS} -f "$temp_root/dump2.sql"
+	if ! PGOPTIONS="${pgopts}" ${NEW_BINDIR}/pg_dumpall ${DUMP_OPTS} -f "$temp_root/dump2.sql"; then
+		echo "ERROR: pg_dumpall failed after the upgrade"
+		exit 1
+	fi
 	echo done
 
 	if (( $attribute_versions )) ; then
@@ -494,7 +506,7 @@ main() {
 				exit 1
 			fi
 			check_attribute_version_dumps
-			${OLD_BINDIR}/psql -X -At -f test_gpdb_attribute_versions.sql regression > "$temp_root/attver1.txt"
+			${OLD_BINDIR}/psql -X -At -f test_gpdb_attribute_versions.sql regression > "$temp_root/attver1.out"
 		else
 			echo "Skipping the attribute version checks: the regression database of the old cluster lacks the helper functions"
 		fi
@@ -514,7 +526,10 @@ main() {
 	# yes, use pg_dumpall from NEW_BINDIR
 	if (( !$perf_test )) ; then
 		echo -n 'Dumping database schema before upgrade... '
-		${NEW_BINDIR}/pg_dumpall ${DUMP_OPTS} -f "$temp_root/dump1.sql"
+		if ! ${NEW_BINDIR}/pg_dumpall ${DUMP_OPTS} -f "$temp_root/dump1.sql"; then
+			echo "ERROR: pg_dumpall failed before the upgrade"
+			exit 1
+		fi
 		echo done
 	fi
 	
