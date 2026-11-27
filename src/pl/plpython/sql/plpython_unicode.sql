@@ -9,9 +9,12 @@
 
 SET client_encoding TO UTF8;
 
+-- WHPG: unicode_trigger below rewrites testvalue, which would be the
+-- default distribution key; WHPG refuses a BEFORE ROW trigger that changes a
+-- hash-distribution key, so distribute randomly to keep the trigger test.
 CREATE TABLE unicode_test (
 	testvalue  text NOT NULL
-);
+) DISTRIBUTED RANDOMLY;
 
 CREATE FUNCTION unicode_return() RETURNS text AS E'
 return u"\\xA0"

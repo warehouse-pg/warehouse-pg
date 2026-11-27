@@ -519,6 +519,15 @@ typedef struct ResultRelInfo
 
 	/* For use by copy.c when performing multi-inserts */
 	struct CopyMultiInsertBuffer *ri_CopyMultiInsertBuffer;
+
+	/*
+	 * GPDB: hash of this relation's distribution policy, used by
+	 * ExecDistKeyMisplaced() to verify that a BEFORE ROW trigger did not
+	 * move the row to another segment.  Built lazily on the first row that
+	 * needs it and reused for every later row; NULL until then, and left
+	 * NULL for a relation that never needs the check.
+	 */
+	struct CdbHash *ri_distKeyHash;
 } ResultRelInfo;
 
 /* ----------------
@@ -1303,6 +1312,14 @@ typedef struct ModifyTableState
 
 	/* Per plan map for tuple conversion from child to root */
 	TupleConversionMap **mt_per_subplan_tupconv_maps;
+
+	/*
+	 * GPDB: true while a cross-partition UPDATE re-inserts a row whose source
+	 * partition has a BEFORE ROW UPDATE trigger.  Tells ExecInsert to verify,
+	 * once the row is routed, that the trigger did not move it to another
+	 * segment.
+	 */
+	bool		mt_cpCheckDistKey;
 } ModifyTableState;
 
 /* ----------------

@@ -114,6 +114,12 @@ m/FATAL:  terminating connection due to administrator command/
 m/\s+\(entry db(.*)+\spid=\d+\)/
 s/\s+\(entry db(.*)+\spid=\d+\)//
 
+# The misplaced-row DETAIL names the segment the row hashes to and the one
+# storing it.  Which pair is reported depends on which QE's error reaches the
+# QD first, so normalise both ids.
+m/distribution key hashes to segment \d+, but the row is being stored on segment \d+/
+s/distribution key hashes to segment \d+, but the row is being stored on segment \d+/distribution key hashes to segment N, but the row is being stored on segment N/
+
 # Mask out some numbers (parts of partition names) that vary from run to run.
 m/overlaps existing partition "r\d+"/
 s/overlaps existing partition "r\d+"/partition "r##########"/
