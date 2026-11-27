@@ -227,7 +227,19 @@ COptTasks::Execute(void *(*func)(void *), void *func_arg)
 {
 	Assert(func);
 
-	CHAR *err_buf = (CHAR *) palloc(GPOPT_ERROR_BUFFER_SIZE);
+	/*
+	 * The buffer that gpos_exec() uses as the task's log stream. It is
+	 * allocated in the transaction's context rather than the current one:
+	 * planning can run while a statement executes (the body of a SQL
+	 * function that is not inlined, planned at its first call), and an
+	 * allocation in the current context would then be charged to that
+	 * statement's executor memory. It is freed below on return and
+	 * on a GPOS exception; an error that leaves by longjmp instead (a cancel
+	 * processed while the task's log is written out, for one) releases it
+	 * with the memory of the transaction or subtransaction it aborts.
+	 */
+	CHAR *err_buf = (CHAR *) MemoryContextAlloc(CurTransactionContext,
+												GPOPT_ERROR_BUFFER_SIZE);
 	err_buf[0] = '\0';
 
 	// initialize DXL support

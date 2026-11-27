@@ -17,6 +17,11 @@ select gp_inject_fault('opt_relcache_translator_catalog_access', 'reset', 1);
 select gp_inject_fault('opt_relcache_translator_catalog_access', 'interrupt', 1);
 select count(*) from foo;
 
+-- WHPG: an interrupted optimization releases its log buffer (10 MB) instead
+-- of leaving it in the session's optimizer memory context (counted rather
+-- than compared, so that a build without GPORCA gives the same answer)
+select count(*) as held from pg_backend_memory_contexts where name = 'GPORCA Top-level Memory Context' and total_bytes >= 1024 * 1024;
+
 -- Ensure that ORCA is not called on any process other than the coordinator QD
 CREATE FUNCTION func1_nosql_vol(x int) RETURNS int AS $$
 BEGIN
