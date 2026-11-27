@@ -253,9 +253,19 @@ CLogicalDynamicGetBase::ConstructRootColMappingPerPart(
 		GPOS_ASSERT(nullptr != partrel);
 
 		ColRefToUlongMap *mapping = GPOS_NEW(mp) ColRefToUlongMap(mp);
-		// The root mapping cannot contain dropped columns, but may be
-		// in a different order than the child cols.Iterate through each of the child
-		// cols, and retrieve the corresponding index in the parent table
+		// Map each root column to the position of the same-named column
+		// among the child's non-dropped columns, in the child's attribute
+		// order. That position is the colid the child's partition-constraint
+		// DXL uses for the column (CTranslatorRelcacheToDXL::
+		// RetrievePartConstraintForRel numbers the constraint's columns as a
+		// running index over the child's non-dropped columns), and it is what
+		// CExpressionPreprocessor::PcnstrFromChildPartition needs to rewrite
+		// the child's constraint onto the root's colrefs. A child may order or
+		// drop columns differently from the root, so the match is by name and
+		// the value is the child's position, never the root's: recording the
+		// root position would apply a column-reordered child's constraint to
+		// the wrong root columns and prune that child wrongly.
+		ULONG child_idx = 0;
 		for (ULONG j = 0; j < partrel->ColumnCount(); ++j)
 		{
 			const IMDColumn *coldesc = partrel->GetMdCol(j);
@@ -270,7 +280,8 @@ CLogicalDynamicGetBase::ConstructRootColMappingPerPart(
 			if (nullptr != root_idx)
 			{
 				mapping->Insert((*root_cols)[*root_idx],
-								GPOS_NEW(mp) ULONG(*root_idx));
+								GPOS_NEW(mp) ULONG(child_idx));
+				++child_idx;
 			}
 			else
 			{
