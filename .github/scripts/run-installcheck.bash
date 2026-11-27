@@ -73,6 +73,63 @@ function look4diffs() {
     ls -la "${RESULTS_DIR}/"
 }
 
+# The "extras" target: the small suites that neither installcheck-good nor
+# installcheck-world reaches, one after the other on the same cluster.  A
+# failing suite does not stop the ones after it; the target fails at the end
+# if any of them failed.
+#
+#   ic-proxy     isolation2_ic_proxy_schedule, needs the proxy mesh that
+#                make_cluster set up (see the workflow)
+#   ic-tcp       isolation2_ic_tcp_schedule
+#   icudp        src/test/regress installcheck-icudp
+#   gpmgmt-unit  gpMgmt/bin make check
+#   pitr         src/test/gpdb_pitr
+function run_extras() {
+    local failed=""
+
+    function run_suite() {
+        local name="$1"
+        shift
+        echo "========================================================================"
+        echo "extras: ${name}: $*"
+        echo "========================================================================"
+        if ( cd "${WHPG_SRC}" && "$@" ); then
+            echo "extras: ${name} passed"
+        else
+            echo "extras: ${name} FAILED"
+            failed="${failed} ${name}"
+        fi
+        # the next suite needs a cluster that is up
+        psql -d postgres -Atc "select 1" >/dev/null 2>&1 || gpstart -a || true
+    }
+
+    function gpmgmt_unit() {
+        local rc=0
+        make -C gpMgmt/bin check || rc=$?
+        cat gpMgmt/gpMgmt_testunit_results.log || true
+        [ ${rc} -eq 0 ] || return ${rc}
+        ! grep -E '^(FAILED|ERROR)' gpMgmt/gpMgmt_testunit_results.log
+    }
+
+    # pitr first: it wants the timelines of a fresh cluster.  It ends on a
+    # restored copy of the cluster, its cleanup brings the demo cluster back.
+    run_suite pitr make -C src/test/gpdb_pitr installcheck
+    ( cd "${WHPG_SRC}/src/test/gpdb_pitr" && ./test_gpdb_pitr_cleanup.sh ) || true
+    run_suite ic-proxy make -s ${MAKE_FLAGS} -C src/test/isolation2 installcheck-ic-proxy \
+        PGOPTIONS="${PGOPTIONS} -c gp_interconnect_type=proxy"
+    run_suite ic-tcp make -s ${MAKE_FLAGS} -C src/test/isolation2 installcheck-ic-tcp \
+        PGOPTIONS="${PGOPTIONS} -c gp_interconnect_type=tcp"
+    run_suite icudp make -s ${MAKE_FLAGS} -C src/test/regress installcheck-icudp \
+        PGOPTIONS="${PGOPTIONS}"
+    run_suite gpmgmt-unit gpmgmt_unit
+
+    if [ -n "${failed}" ]; then
+        echo "extras: FAILED suites:${failed}"
+        return 1
+    fi
+    echo "extras: all suites passed"
+}
+
 function run_installcheck() {
     local test_target="${TEST_TARGET}"
 
@@ -101,7 +158,9 @@ function run_installcheck() {
     fi
 
     # Run tests based on version
-    if [[ "${WHPG_MAJORVERSION}" == 6* ]]; then
+    if [[ "${test_target}" == "extras" ]]; then
+        run_extras
+    elif [[ "${WHPG_MAJORVERSION}" == 6* ]]; then
         # WHPG 6: Test PL/Python3 first
         make installcheck -C "${WHPG_SRC}/src/pl/plpython" python_majorversion=3
 
