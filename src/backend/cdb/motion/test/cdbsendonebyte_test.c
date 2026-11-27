@@ -102,6 +102,13 @@ test_run_self_pipe(void **state)
 {
 	uint16 listenerPort;
 	int txFamily;
+
+	/*
+	 * With the default gp_interconnect_address_type, unicast, the socket is
+	 * bound to the address of this segment, which a backend takes from its
+	 * connection.
+	 */
+	interconnect_address = "127.0.0.1";
 	setupUDPListeningSocket(&UDP_listenerFd, &listenerPort, &txFamily);
 
 	/*
