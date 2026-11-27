@@ -255,6 +255,7 @@ static void plperl_event_trigger_handler(plperl_proc_desc *prodesc, PG_FUNCTION_
 
 static void free_plperl_function(plperl_proc_desc *prodesc);
 static void check_spi_usage_allowed(void);
+static bool plperl_in_spi_proc(void);
 
 static plperl_proc_desc *compile_plperl_function(Oid fn_oid,
 						bool is_trigger,
@@ -1597,15 +1598,8 @@ plperl_sv_to_literal(SV *sv, char *fqtypename)
 
 	check_spi_usage_allowed();
 
-	/*
-	 * Unlike the SPI wrappers below, this can be called when we are not
-	 * inside a SPI procedure: for instance from a tied variable that is
-	 * fetched while the function result is converted, after SPI_finish().
-	 * SPI_restore_connection() must not be used then, so note which state
-	 * we are in.
-	 */
-	in_spi_proc = SPI_push_conditional();
-	SPI_pop_conditional(in_spi_proc);
+	/* see plperl_in_spi_proc() */
+	in_spi_proc = plperl_in_spi_proc();
 
 	BeginInternalSubTransaction(NULL);
 	/* Want to run inside function's memory context */
@@ -3320,6 +3314,29 @@ check_spi_usage_allowed(void)
 	}
 }
 
+/*
+ * Report whether we are inside a SPI procedure, that is between
+ * SPI_connect() and SPI_finish() and not inside a SPI call.
+ *
+ * The SPI functions below are normally called from the body of a PL/Perl
+ * function, where that is true.  But Perl code can also run after the
+ * handler has called SPI_finish(), for instance the FETCH method of a tied
+ * variable that is read while the function result is converted.  SPI itself
+ * copes with that (the call fails with SPI_ERROR_UNCONNECTED), but
+ * SPI_restore_connection() must not be used then: there may be no
+ * connection to restore, or only that of an outer procedure whose state
+ * we would corrupt.
+ */
+static bool
+plperl_in_spi_proc(void)
+{
+	bool		pushed = SPI_push_conditional();
+
+	SPI_pop_conditional(pushed);
+	return pushed;
+}
+
+
 
 HV *
 plperl_spi_exec(char *query, int limit)
@@ -3333,6 +3350,7 @@ plperl_spi_exec(char *query, int limit)
 	 */
 	MemoryContext oldcontext = CurrentMemoryContext;
 	ResourceOwner oldowner = CurrentResourceOwner;
+	bool		in_spi_proc = plperl_in_spi_proc();
 
 	check_spi_usage_allowed();
 
@@ -3360,7 +3378,8 @@ plperl_spi_exec(char *query, int limit)
 		 * AtEOSubXact_SPI() should not have popped any SPI context, but just
 		 * in case it did, make sure we remain connected.
 		 */
-		SPI_restore_connection();
+		if (in_spi_proc)
+			SPI_restore_connection();
 	}
 	PG_PERL_CATCH();
 	{
@@ -3381,7 +3400,8 @@ plperl_spi_exec(char *query, int limit)
 		 * have left us in a disconnected state.  We need this hack to return
 		 * to connected state.
 		 */
-		SPI_restore_connection();
+		if (in_spi_proc)
+			SPI_restore_connection();
 
 		/* Punt the error to Perl */
 		croak_cstr(edata->message);
@@ -3595,6 +3615,7 @@ plperl_spi_query(char *query)
 	 */
 	MemoryContext oldcontext = CurrentMemoryContext;
 	ResourceOwner oldowner = CurrentResourceOwner;
+	bool		in_spi_proc = plperl_in_spi_proc();
 
 	check_spi_usage_allowed();
 
@@ -3632,7 +3653,8 @@ plperl_spi_query(char *query)
 		 * AtEOSubXact_SPI() should not have popped any SPI context, but just
 		 * in case it did, make sure we remain connected.
 		 */
-		SPI_restore_connection();
+		if (in_spi_proc)
+			SPI_restore_connection();
 	}
 	PG_PERL_CATCH();
 	{
@@ -3653,7 +3675,8 @@ plperl_spi_query(char *query)
 		 * have left us in a disconnected state.  We need this hack to return
 		 * to connected state.
 		 */
-		SPI_restore_connection();
+		if (in_spi_proc)
+			SPI_restore_connection();
 
 		/* Punt the error to Perl */
 		croak_cstr(edata->message);
@@ -3679,6 +3702,7 @@ plperl_spi_fetchrow(char *cursor)
 	 */
 	MemoryContext oldcontext = CurrentMemoryContext;
 	ResourceOwner oldowner = CurrentResourceOwner;
+	bool		in_spi_proc = plperl_in_spi_proc();
 
 	check_spi_usage_allowed();
 
@@ -3719,7 +3743,8 @@ plperl_spi_fetchrow(char *cursor)
 		 * AtEOSubXact_SPI() should not have popped any SPI context, but just
 		 * in case it did, make sure we remain connected.
 		 */
-		SPI_restore_connection();
+		if (in_spi_proc)
+			SPI_restore_connection();
 	}
 	PG_PERL_CATCH();
 	{
@@ -3740,7 +3765,8 @@ plperl_spi_fetchrow(char *cursor)
 		 * have left us in a disconnected state.  We need this hack to return
 		 * to connected state.
 		 */
-		SPI_restore_connection();
+		if (in_spi_proc)
+			SPI_restore_connection();
 
 		/* Punt the error to Perl */
 		croak_cstr(edata->message);
@@ -3776,6 +3802,7 @@ plperl_spi_prepare(char *query, int argc, SV **argv)
 	plperl_query_entry *volatile hash_entry = NULL;
 	MemoryContext oldcontext = CurrentMemoryContext;
 	ResourceOwner oldowner = CurrentResourceOwner;
+	bool		in_spi_proc = plperl_in_spi_proc();
 	MemoryContext work_cxt;
 	bool		found;
 	int			i;
@@ -3885,7 +3912,8 @@ plperl_spi_prepare(char *query, int argc, SV **argv)
 		 * AtEOSubXact_SPI() should not have popped any SPI context, but just
 		 * in case it did, make sure we remain connected.
 		 */
-		SPI_restore_connection();
+		if (in_spi_proc)
+			SPI_restore_connection();
 	}
 	PG_PERL_CATCH();
 	{
@@ -3916,7 +3944,8 @@ plperl_spi_prepare(char *query, int argc, SV **argv)
 		 * have left us in a disconnected state.  We need this hack to return
 		 * to connected state.
 		 */
-		SPI_restore_connection();
+		if (in_spi_proc)
+			SPI_restore_connection();
 
 		/* Punt the error to Perl */
 		croak_cstr(edata->message);
@@ -3952,6 +3981,7 @@ plperl_spi_exec_prepared(char *query, HV *attr, int argc, SV **argv)
 	 */
 	MemoryContext oldcontext = CurrentMemoryContext;
 	ResourceOwner oldowner = CurrentResourceOwner;
+	bool		in_spi_proc = plperl_in_spi_proc();
 
 	check_spi_usage_allowed();
 
@@ -4049,7 +4079,8 @@ plperl_spi_exec_prepared(char *query, HV *attr, int argc, SV **argv)
 		 * AtEOSubXact_SPI() should not have popped any SPI context, but just
 		 * in case it did, make sure we remain connected.
 		 */
-		SPI_restore_connection();
+		if (in_spi_proc)
+			SPI_restore_connection();
 	}
 	PG_PERL_CATCH();
 	{
@@ -4077,7 +4108,8 @@ plperl_spi_exec_prepared(char *query, HV *attr, int argc, SV **argv)
 		 * have left us in a disconnected state.  We need this hack to return
 		 * to connected state.
 		 */
-		SPI_restore_connection();
+		if (in_spi_proc)
+			SPI_restore_connection();
 
 		/* Punt the error to Perl */
 		croak_cstr(edata->message);
@@ -4108,6 +4140,7 @@ plperl_spi_query_prepared(char *query, int argc, SV **argv)
 	 */
 	MemoryContext oldcontext = CurrentMemoryContext;
 	ResourceOwner oldowner = CurrentResourceOwner;
+	bool		in_spi_proc = plperl_in_spi_proc();
 
 	check_spi_usage_allowed();
 
@@ -4193,7 +4226,8 @@ plperl_spi_query_prepared(char *query, int argc, SV **argv)
 		 * AtEOSubXact_SPI() should not have popped any SPI context, but just
 		 * in case it did, make sure we remain connected.
 		 */
-		SPI_restore_connection();
+		if (in_spi_proc)
+			SPI_restore_connection();
 	}
 	PG_PERL_CATCH();
 	{
@@ -4221,7 +4255,8 @@ plperl_spi_query_prepared(char *query, int argc, SV **argv)
 		 * have left us in a disconnected state.  We need this hack to return
 		 * to connected state.
 		 */
-		SPI_restore_connection();
+		if (in_spi_proc)
+			SPI_restore_connection();
 
 		/* Punt the error to Perl */
 		croak_cstr(edata->message);
