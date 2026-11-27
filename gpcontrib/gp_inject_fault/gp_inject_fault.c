@@ -8,6 +8,7 @@
 #include "cdb/cdbvars.h"
 #include "libpq/ifaddr.h"
 #include "libpq-fe.h"
+#include "cdb/cdbconn.h"
 #include "postmaster/fts.h"
 #include "utils/builtins.h"
 #include "utils/faultinjector.h"
@@ -46,7 +47,7 @@ _PG_init(void)
 }
 
 static void
-getHostnameAndPort(int dbid, char **hostname, int *port)
+getHostnameAndPort(int dbid, char **hostname, int *port, int *content)
 {
 	HeapTuple	tuple;
 	Relation    configrel;
@@ -76,6 +77,11 @@ getHostnameAndPort(int dbid, char **hostname, int *port)
 							RelationGetDescr(configrel), &isNull);
 		Assert(!isNull);
 		*port = DatumGetInt32(attr);
+
+		attr = heap_getattr(tuple, Anum_gp_segment_configuration_content,
+							RelationGetDescr(configrel), &isNull);
+		Assert(!isNull);
+		*content = DatumGetInt16(attr);
 	}
 	else
 		elog(ERROR, "dbid %d not found", dbid);
@@ -104,6 +110,7 @@ gp_inject_fault(PG_FUNCTION_ARGS)
 	int		gpSessionid = PG_GETARG_INT32(9);
 	char	*hostname;
 	int		port;
+	int		content;
 	char	*response;
 
 	/* Fast path if injecting fault in our postmaster. */
@@ -119,15 +126,38 @@ gp_inject_fault(PG_FUNCTION_ARGS)
 	}
 	else
 	{
-		char conninfo[1024];
 		char msg[1024];
 		PGconn *conn;
 		PGresult *res;
+		const char *keywords[4 + CDBCONN_INTERNAL_TLS_MAX_OPTIONS];
+		const char *values[4 + CDBCONN_INTERNAL_TLS_MAX_OPTIONS];
+		char		portstr[16];
+		CdbConnInternalTlsPaths tlspaths;
+		int			n = 0;
 
-		getHostnameAndPort(dbid, &hostname, &port);
-		snprintf(conninfo, 1024, "host=%s port=%d %s=%s",
-				 hostname, port, GPCONN_TYPE, GPCONN_TYPE_FAULT);
-		conn = PQconnectdb(conninfo);
+		getHostnameAndPort(dbid, &hostname, &port, &content);
+
+		/*
+		 * Keywords and values rather than a conninfo string, so that the
+		 * certificate paths that gp_internal_tls may add need no quoting.
+		 */
+		keywords[n] = "host";
+		values[n] = hostname;
+		n++;
+		snprintf(portstr, sizeof(portstr), "%d", port);
+		keywords[n] = "port";
+		values[n] = portstr;
+		n++;
+		keywords[n] = GPCONN_TYPE;
+		values[n] = GPCONN_TYPE_FAULT;
+		n++;
+		n = cdbconn_add_internal_tls_options(keywords, values, n,
+											 content == COORDINATOR_CONTENT_ID,
+											 &tlspaths);
+		keywords[n] = NULL;
+		values[n] = NULL;
+
+		conn = PQconnectdbParams(keywords, values, false);
 		if (PQstatus(conn) != CONNECTION_OK)
 			elog(ERROR, "connection to dbid %d %s:%d failed", dbid, hostname, port);
 

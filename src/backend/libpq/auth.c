@@ -540,6 +540,59 @@ retrieve_conn_authentication(Port *port)
 static int
 internal_client_authentication(Port *port)
 {
+	/*
+	 * A connection over a Unix-domain socket comes from this host.  libpq does
+	 * not negotiate SSL on one, so there is no certificate to verify, and it is
+	 * trusted in every mode, on every node; the coordinator's connection to its
+	 * own entry DB normally comes this way.  gp_internal_tls protects against a
+	 * peer on the network that sets the protocol bit.  Against the local users
+	 * of a host the protection is the access to the socket file, see
+	 * unix_socket_permissions and unix_socket_group.
+	 */
+#ifdef HAVE_UNIX_SOCKETS
+	if (port->raddr.addr.ss_family == AF_UNIX)
+	{
+		FakeClientAuthentication(port);
+		return true;
+	}
+#endif
+
+	/*
+	 * With gp_internal_tls = verify-ca the client certificate is the
+	 * authentication and the protocol bit only tells the connection type.  The
+	 * certificate is mandatory, also for a peer on the same host: the
+	 * coordinator's connection to its own entry DB presents one when PGHOST or
+	 * PGHOSTADDR sends it over TCP (see cdbconn_add_internal_tls_options()).
+	 *
+	 * The handshake verified the certificate against the verify store of the
+	 * SSL context, which also holds the external ssl_ca_file when that is set,
+	 * so it is verified against the cluster CA alone here: a certificate issued
+	 * by the external CA is no cluster credential.
+	 */
+	if (gp_internal_tls == GP_INTERNAL_TLS_VERIFY_CA)
+	{
+#ifdef USE_SSL
+		if (port->ssl_in_use && be_tls_verify_peer_against_internal_ca(port))
+		{
+			ereport(DEBUG1,
+					(errmsg("authenticated internal connection via client certificate \"%s\"",
+							port->peer_cn ? port->peer_cn : "")));
+			FakeClientAuthentication(port);
+			return true;
+		}
+#endif
+
+		ereport(FATAL,
+				(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
+				 errmsg("internal connection rejected: a verified client certificate is required"),
+				 errdetail("gp_internal_tls is set to \"verify-ca\"; connections between the nodes of the cluster must authenticate with mutual TLS against the internal cluster CA (gp_internal_tls_ca_file).")));
+		return false;			/* not reached */
+	}
+
+	/*
+	 * Legacy trust (gp_internal_tls = disable): the connection is trusted based
+	 * on its origin.
+	 */
 	if (IS_QUERY_DISPATCHER())
 	{
 		/*
@@ -655,6 +708,14 @@ ClientAuthentication(Port *port)
 
 		/* Else, try the normal authentication */
 	}
+
+#ifdef USE_SSL
+	/*
+	 * This is not an internal connection, so the cluster CA must not vouch for
+	 * its client certificate.
+	 */
+	be_tls_restrict_peer_to_external_ca(port);
+#endif
 
 	/*
 	 * Get the authentication method to use for this frontend/database

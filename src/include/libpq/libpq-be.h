@@ -277,6 +277,17 @@ extern void be_tls_get_peer_issuer_name(Port *port, char *ptr, size_t len);
 extern void be_tls_get_peer_serial(Port *port, char *ptr, size_t len);
 
 /*
+ * GPDB: with gp_internal_tls = verify-ca the handshake verifies a peer
+ * certificate against the cluster CA (gp_internal_tls_ca_file) and the external
+ * ssl_ca_file together.  These keep the two trust domains apart afterwards.
+ * The first returns true only if the peer certificate of an internal connection
+ * chains to the cluster CA.  The second, for every other connection, drops a
+ * peer certificate that does not chain to ssl_ca_file.
+ */
+extern bool be_tls_verify_peer_against_internal_ca(Port *port);
+extern void be_tls_restrict_peer_to_external_ca(Port *port);
+
+/*
  * Get the server certificate hash for SCRAM channel binding type
  * tls-server-end-point.
  *

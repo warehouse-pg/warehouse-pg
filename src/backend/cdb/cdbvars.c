@@ -214,6 +214,16 @@ int			interconnect_setup_timeout = 7200;
 int			Gp_interconnect_type = INTERCONNECT_TYPE_UDPIFC;
 int 		Gp_interconnect_address_type = INTERCONNECT_ADDRESS_TYPE_UNICAST;
 
+/*
+ * TLS policy for the internal libpq connections between the nodes, and the
+ * cluster certificate, key and CA of this node.  See GpVars_InternalTls in
+ * cdbvars.h.
+ */
+int			gp_internal_tls = GP_INTERNAL_TLS_DISABLE;
+char	   *gp_internal_tls_cert_file = "";
+char	   *gp_internal_tls_key_file = "";
+char	   *gp_internal_tls_ca_file = "";
+
 bool		gp_interconnect_aggressive_retry = true;	/* fast-track app-level
 														 * retry */
 

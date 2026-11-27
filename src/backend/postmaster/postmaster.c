@@ -1202,6 +1202,38 @@ PostmasterMain(int argc, char *argv[])
 	LocalProcessControlFile(false);
 
 	/*
+	 * gp_internal_tls = verify-ca needs SSL, and the cluster certificate, key
+	 * and CA of this node; there is no fallback to the ssl_* files, so that a
+	 * coordinator cannot dial the segments with its external certificate.
+	 * Without them every connection between the nodes would be rejected at
+	 * authentication, so refuse to start.  This comes before the SSL library is
+	 * initialized, which loads the files and checks that the certificates
+	 * chain to the cluster CA (see be_tls_init()).  ssl_ca_file is not needed.
+	 */
+	if (gp_internal_tls == GP_INTERNAL_TLS_VERIFY_CA)
+	{
+#ifdef USE_SSL
+		if (!EnableSSL)
+			ereport(FATAL,
+					(errcode(ERRCODE_CONFIG_FILE_ERROR),
+					 errmsg("gp_internal_tls is set to \"verify-ca\" but \"ssl\" is off"),
+					 errhint("Enable SSL (ssl=on) with a certificate and key on every node.")));
+
+		if (gp_internal_tls_cert_file == NULL || gp_internal_tls_cert_file[0] == '\0' ||
+			gp_internal_tls_key_file == NULL || gp_internal_tls_key_file[0] == '\0' ||
+			gp_internal_tls_ca_file == NULL || gp_internal_tls_ca_file[0] == '\0')
+			ereport(FATAL,
+					(errcode(ERRCODE_CONFIG_FILE_ERROR),
+					 errmsg("gp_internal_tls is set to \"verify-ca\" but the internal TLS certificate GUCs are not all set"),
+					 errhint("Set gp_internal_tls_cert_file, gp_internal_tls_key_file and gp_internal_tls_ca_file to this node's cluster (internal) certificate, key and CA.")));
+#else
+		ereport(FATAL,
+				(errcode(ERRCODE_CONFIG_FILE_ERROR),
+				 errmsg("gp_internal_tls is set to \"verify-ca\" but this build has no SSL support")));
+#endif
+	}
+
+	/*
 	 * Initialize SSL library, if specified.
 	 */
 #ifdef USE_SSL
