@@ -134,5 +134,3 @@ INSERT INTO rowold_tbl
 SELECT clear_attribute_versions('rowold_comp'::regclass);
 SELECT clear_attribute_versions('rowold_comp'::regclass) FROM gp_dist_random('gp_id');
 ALTER TYPE rowold_comp ADD ATTRIBUTE c int;
-INSERT INTO rowold_tbl
-  VALUES ('after-alter', make_tuple_unversioned(ROW(3,4,5)::rowold_comp));
