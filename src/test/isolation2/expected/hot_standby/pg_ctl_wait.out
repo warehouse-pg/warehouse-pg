@@ -1,0 +1,64 @@
+-- "pg_ctl -w start" of a hot standby coordinator must notice that the
+-- standby has started when read-only connections open only after its
+-- walreceiver has started streaming.
+--
+-- The standby opens for read-only connections once it has a complete list
+-- of the transactions that were running on the primary.  The list it finds
+-- in the checkpoint it restarts from is incomplete if a transaction had
+-- more subtransactions than a running-xacts record can list (64).  The
+-- standby then has to wait for a later running-xacts record, which it gets
+-- from the primary right after its walreceiver has connected.
+
+-- a transaction with 70 subtransactions stays open across a checkpoint
+1: begin;
+BEGIN
+1: do $$ begin for i in 1..70 loop begin execute format('create table pg_ctl_wait_%s(a int)', i); exception when others then raise; end; end loop; end $$;
+DO
+2: checkpoint;
+CHECKPOINT
+
+-- the standby replays that checkpoint and makes it its restart point
+!\retcode sport=$(psql -X -d postgres -Atc "select port from gp_segment_configuration where content = -1 and role = 'm'"); lsn=$(psql -X -d postgres -Atc "select pg_current_wal_lsn()"); for i in $(seq 1 600); do [ "$(PGOPTIONS='-c gp_role=utility' psql -X -p "$sport" -d postgres -Atc "select pg_last_wal_replay_lsn() >= '$lsn'::pg_lsn")" = t ] && ok=1 && break; sleep 0.1; done; [ -n "$ok" ] && PGOPTIONS='-c gp_role=utility' psql -X -p "$sport" -d postgres -Atc "checkpoint";
+-- start_ignore
+CHECKPOINT
+
+-- end_ignore
+(exited with code 0)
+
+1: rollback;
+ROLLBACK
+
+-- stop the standby; a running-xacts record written while it is down is the
+-- first thing it receives when it comes back
+!\retcode pg_ctl stop -D "$COORDINATOR_DATA_DIRECTORY/../../standby" -m fast -w -t 120 > /dev/null;
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+2: checkpoint;
+CHECKPOINT
+
+-- pg_ctl returns as soon as the standby is up, not after its timeout
+!\retcode pg_ctl start -D "$COORDINATOR_DATA_DIRECTORY/../../standby" -w -t 60 -l "$COORDINATOR_DATA_DIRECTORY/../../standby/log/startup.log" -o " -c gp_role=dispatch " > /dev/null;
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+
+-- the standby accepts queries and streams from the primary
+!\retcode sport=$(psql -X -d postgres -Atc "select port from gp_segment_configuration where content = -1 and role = 'm'"); for i in $(seq 1 600); do [ "$(psql -X -p "$sport" -d postgres -Atc 'select 1' 2> /dev/null)" = 1 ] && [ "$(psql -X -d postgres -Atc 'select state from pg_stat_replication')" = streaming ] && exit 0; sleep 0.1; done; exit 1;
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+2: select state from pg_stat_replication;
+ state     
+-----------
+ streaming 
+(1 row)
+-1S: select pg_is_in_recovery();
+ pg_is_in_recovery 
+-------------------
+ t                 
+(1 row)
+-1Sq: ... <quitting>

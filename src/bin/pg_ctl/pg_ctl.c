@@ -739,7 +739,16 @@ wait_for_postmaster_start(pgpid_t pm_pid, bool do_checkpoint)
 				}
 				else /* I'm one of coordinator, standby-coor, primary, mirror */
 				{
+					/*
+					 * A mirror or standby coordinator is started once its
+					 * walreceiver streams, or once it reports "ready": on a
+					 * hot standby the postmaster reports "ready" when
+					 * read-only connections open, and that status then
+					 * stands whether or not the walreceiver is streaming.
+					 */
 					if (strcmp(pmstatus, pmReadyStatuses[pmStartMode]) == 0 ||
+						((pmStartMode == IS_MIRROR || pmStartMode == IS_STANDBY_COORDINATOR) &&
+						 strcmp(pmstatus, PM_STATUS_READY) == 0) ||
 						(gp_mirror_fast_wait && pmStartMode == IS_MIRROR && strcmp(pmstatus, PM_STATUS_STANDBY) == 0))
 					{
 						/* postmaster is done starting up */
