@@ -1801,6 +1801,12 @@ AutoVacWorkerMain(int argc, char *argv[])
 		recentMulti = ReadNextMultiXactId();
 
 		do_autovacuum();
+
+#ifdef FAULT_INJECTOR
+		FaultInjector_InjectFaultIfSet(
+			"auto_vac_worker_after_do_autovacuum", DDLNotSpecified,
+			dbname, "");
+#endif
 	}
 
 	/*
