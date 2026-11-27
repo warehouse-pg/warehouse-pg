@@ -1,0 +1,68 @@
+-- This file contains test cases from gp_hyperloglog.
+
+-- 1. Test estimating the cardinality of an given stream.
+SELECT gp_hyperloglog_get_estimate(gp_hyperloglog_accum(i))
+  FROM generate_series(1, 10000)i;
+
+-- 2. Test convert a base64 string to hloglog counter.
+-- a) Test convert a valid (compressed) hloglog counter, as printed for
+-- gp_hyperloglog_accum(i) over generate_series(1, 100).
+SELECT gp_hyperloglog_get_estimate('8gYCAP////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAB0wBAAAB6AA8BZAYPIA0PAf8PAf8PAQIB2w8gDQ8BCAMPIA0PARQCDyANDwE17w/nKA8Beh8tVQ8BGAQPIA0PAfgfu3/3DwEWGOMFxAUPLggPAf8PAQRPjwX/T6ZZD2s0bwQ0DwHGH89ZDwEPH6pFD+N6/w8BGm+5/w8BVS8wEn8rfC/iYR8BM1+bdPcfzEYvJGYPeGUHD/FnDwH/DwEuT1Ap/z/TdA8BQV9kYQYBz80TD6EWP6ZhHzwf/4/7yDogL1RqDwERD5+NDwEWD8e1DwH/3w8BUm/Pxw8BPT9kfx+5iAcPIA0PAf//KWIvaDQvrn8PAR0PwFKvJ0MfeZsPrZv/DwFqz58BHzxHH5XID9rIDwH/DwH/DwGJ/69JOn9UQw8B/x9zS89YiH+SDQ8BGW2Kfw/0lA8BPH+OJx8t4g8BJ4/0/w8BHQT/DyANDwFDH7X/DwG2L04dLwgeLzj/DwHM/x/vgw+Vgw8BcW9JII/o1t+08T81/w8Bpf8/s38vWUIvrWAPcgUCFw+OOw/bYFwGv28mAC9Tfw8B/w8Bty/+Bz8XEgN/yAD/P05pDwGxHz4UH2R2r98gDwH/DwEHYwMfH+ocLxh2DwFVQnx/K1sAAAAA');
+
+-- b) A counter printed by gp_hyperloglog_out() must read back.
+SELECT gp_hyperloglog_get_estimate(gp_hyperloglog_accum(i)::text::gp_hyperloglog_estimator)
+  FROM generate_series(1, 100)i;
+
+-- c) Test convert an invalid hloglog counter.
+SELECT gp_hyperloglog_get_estimate('blah');
+
+-- d) gp_hyperloglog_in() must reject input that is not valid base64, or that
+-- decodes to fewer bytes than the counter header. A too-short value used to
+-- be accepted and its missing header fields read from adjacent memory.
+SELECT gp_hyperloglog_in(numerictypmodout(1::int4)::cstring);
+SELECT gp_hyperloglog_get_estimate('');
+
+-- e) gp_hyperloglog_in() must also reject a well-formed-looking counter whose
+-- fixed header is out of range. The estimate path trusts b/binbits/format and
+-- walks POW2(b) one-byte registers out of ->data (indexing alpham[]/threshold[]
+-- with b), none of it bounds checked, so an out-of-range b -- or an in-range b
+-- over a header-only payload -- used to drive an out-of-bounds read: adjacent
+-- heap for a modest b, a coordinator crash once POW2(b) ran off the allocation.
+-- Each value below is a valid-base64, version 2, format 0, 72-byte (header-only)
+-- counter. b = 25 (above MAX_INDEX_BITS):
+SELECT gp_hyperloglog_get_estimate('GQYCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+-- b = 18 (in range) but no register payload past the header:
+SELECT gp_hyperloglog_get_estimate('EgYCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+-- binbits = 99 (above MAX_BINBITS):
+SELECT gp_hyperloglog_get_estimate('BWMCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+-- format = 42 (unknown):
+SELECT gp_hyperloglog_get_estimate('BQYCKgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+
+-- f) A compressed counter (b < 0) carries a pglz header whose own length and
+-- uncompressed size pglz_decompress() trusts; the decompressed registers go to
+-- a buffer sized for POW2(|b|) bytes. A header that does not fit the payload,
+-- or claims a different uncompressed size, used to over-read the input and
+-- overrun that buffer, crashing the coordinator. A counter compressed in a
+-- pglz format without that header (as later major versions write it), whose
+-- first data bytes are misread as the header:
+SELECT gp_hyperloglog_get_estimate('8gYCAP////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAegAPAWQGDyANDwH/DwH/DwECAdsPIA0PAQgDDyANDwEUAg8gDQ8BNe8P5ygPAXofLVUPARgEDyANDwH4H7t/9w8BFhjjBcQFDy4IDwH/DwEET48F/0+mWQ9rNG8ENA8Bxh/PWQ8BDx+qRQ/jev8PARpvuf8PAVUvMBJ/K3wv4mEfATNfm3T3H8xGLyRmD3hlBw/xZw8B/w8BLk9QKf8/03QPAUFfZGEGAc/NEw+hFj+mYR88H/+P+8g6IC9Uag8BEQ+fjQ8BFg/HtQ8B/98PAVJvz8cPAT0/ZH8fuYgHDyANDwH//yliL2g0L65/DwEdD8BSrydDH3mbD62b/w8Bas+fAR88Rx+VyA/ayA8B/w8B/w8Bif+vSTp/VEMPAf8fc0vPWIh/kg0PARltin8P9JQPATx/jicfLeIPASeP9P8PAR0E/w8gDQ8BQx+1/w8Bti9OHS8IHi84/w8BzP8f74MPlYMPAXFvSSCP6NbftPE/Nf8PAaX/P7N/L1lCL61gD3IFAhcPjjsP22BcBr9vJgAvU38PAf8PAbcv/gc/FxIDf8gA/z9OaQ8BsR8+FB9kdq/fIA8B/w8BB2MDHx/qHC8Ydg8BVUJ8fytbAAAAAA==');
+-- The valid counter of 2a) with only its uncompressed size changed to 65536,
+-- larger than the buffer for its 16384 registers:
+SELECT gp_hyperloglog_get_estimate('8gYCAP////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAB0wAAAQB6AA8BZAYPIA0PAf8PAf8PAQIB2w8gDQ8BCAMPIA0PARQCDyANDwE17w/nKA8Beh8tVQ8BGAQPIA0PAfgfu3/3DwEWGOMFxAUPLggPAf8PAQRPjwX/T6ZZD2s0bwQ0DwHGH89ZDwEPH6pFD+N6/w8BGm+5/w8BVS8wEn8rfC/iYR8BM1+bdPcfzEYvJGYPeGUHD/FnDwH/DwEuT1Ap/z/TdA8BQV9kYQYBz80TD6EWP6ZhHzwf/4/7yDogL1RqDwERD5+NDwEWD8e1DwH/3w8BUm/Pxw8BPT9kfx+5iAcPIA0PAf//KWIvaDQvrn8PAR0PwFKvJ0MfeZsPrZv/DwFqz58BHzxHH5XID9rIDwH/DwH/DwGJ/69JOn9UQw8B/x9zS89YiH+SDQ8BGW2Kfw/0lA8BPH+OJx8t4g8BJ4/0/w8BHQT/DyANDwFDH7X/DwG2L04dLwgeLzj/DwHM/x/vgw+Vgw8BcW9JII/o1t+08T81/w8Bpf8/s38vWUIvrWAPcgUCFw+OOw/bYFwGv28mAC9Tfw8B/w8Bty/+Bz8XEgN/yAD/P05pDwGxHz4UH2R2r98gDwH/DwEHYwMfH+ocLxh2DwFVQnx/K1sAAAAA');
+-- The valid counter of 2a) with only its format changed to UNPACKED, and to
+-- UNPACKED_UNPACKED. A compressed counter is always PACKED; with an unpacked
+-- format it was not decompressed, and the estimate indexed alpham[] with the
+-- negative b (an arbitrary estimate, or a crash):
+SELECT gp_hyperloglog_get_estimate('8gYCAv////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAB0wBAAAB6AA8BZAYPIA0PAf8PAf8PAQIB2w8gDQ8BCAMPIA0PARQCDyANDwE17w/nKA8Beh8tVQ8BGAQPIA0PAfgfu3/3DwEWGOMFxAUPLggPAf8PAQRPjwX/T6ZZD2s0bwQ0DwHGH89ZDwEPH6pFD+N6/w8BGm+5/w8BVS8wEn8rfC/iYR8BM1+bdPcfzEYvJGYPeGUHD/FnDwH/DwEuT1Ap/z/TdA8BQV9kYQYBz80TD6EWP6ZhHzwf/4/7yDogL1RqDwERD5+NDwEWD8e1DwH/3w8BUm/Pxw8BPT9kfx+5iAcPIA0PAf//KWIvaDQvrn8PAR0PwFKvJ0MfeZsPrZv/DwFqz58BHzxHH5XID9rIDwH/DwH/DwGJ/69JOn9UQw8B/x9zS89YiH+SDQ8BGW2Kfw/0lA8BPH+OJx8t4g8BJ4/0/w8BHQT/DyANDwFDH7X/DwG2L04dLwgeLzj/DwHM/x/vgw+Vgw8BcW9JII/o1t+08T81/w8Bpf8/s38vWUIvrWAPcgUCFw+OOw/bYFwGv28mAC9Tfw8B/w8Bty/+Bz8XEgN/yAD/P05pDwGxHz4UH2R2r98gDwH/DwEHYwMfH+ocLxh2DwFVQnx/K1sAAAAA');
+SELECT gp_hyperloglog_get_estimate('8gYCA/////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAB0wBAAAB6AA8BZAYPIA0PAf8PAf8PAQIB2w8gDQ8BCAMPIA0PARQCDyANDwE17w/nKA8Beh8tVQ8BGAQPIA0PAfgfu3/3DwEWGOMFxAUPLggPAf8PAQRPjwX/T6ZZD2s0bwQ0DwHGH89ZDwEPH6pFD+N6/w8BGm+5/w8BVS8wEn8rfC/iYR8BM1+bdPcfzEYvJGYPeGUHD/FnDwH/DwEuT1Ap/z/TdA8BQV9kYQYBz80TD6EWP6ZhHzwf/4/7yDogL1RqDwERD5+NDwEWD8e1DwH/3w8BUm/Pxw8BPT9kfx+5iAcPIA0PAf//KWIvaDQvrn8PAR0PwFKvJ0MfeZsPrZv/DwFqz58BHzxHH5XID9rIDwH/DwH/DwGJ/69JOn9UQw8B/x9zS89YiH+SDQ8BGW2Kfw/0lA8BPH+OJx8t4g8BJ4/0/w8BHQT/DyANDwFDH7X/DwG2L04dLwgeLzj/DwHM/x/vgw+Vgw8BcW9JII/o1t+08T81/w8Bpf8/s38vWUIvrWAPcgUCFw+OOw/bYFwGv28mAC9Tfw8B/w8Bty/+Bz8XEgN/yAD/P05pDwGxHz4UH2R2r98gDwH/DwEHYwMfH+ocLxh2DwFVQnx/K1sAAAAA');
+
+-- g) The compressed registers themselves must not reach outside the
+-- decompression buffer. This counter has a well-formed pglz header and
+-- decompresses to exactly 16384 bytes, but its first back-reference points
+-- 4095 bytes before the start of the output, so the registers used to be
+-- copied from adjacent heap (an arbitrary estimate, or a crash).
+-- start_matchsubs
+-- m/\(pg_lzcompress\.c:\d+\)/
+-- s/\(pg_lzcompress\.c:\d+\)/(pg_lzcompress.c:XXX)/
+-- end_matchsubs
+SELECT gp_hyperloglog_get_estimate('8gYCAP////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAxgBAAAD/////DwH/DwH/DwH/DwH/DwH/DwH/DwH//w8B/w8B/w8B/w8B/w8B/w8B/w8B/w8B//8PAf8PAf8PAf8PAf8PAf8PAf8PAf8PAf//DwH/DwH/DwH/DwH/DwH/DwH/DwH/DwH//w8B/w8B/w8B/w8B/w8B/w8B/w8B/w8B//8PAf8PAf8PAf8PAf8PAf8PAf8PAf8PAf//DwH/DwH/DwH/DwH/DwH/DwH/DwH/DwH/Hw8B/w8B/w8B/w8B/wEB');

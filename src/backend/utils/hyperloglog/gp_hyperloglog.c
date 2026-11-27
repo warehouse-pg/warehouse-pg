@@ -1236,6 +1236,141 @@ gp_hyperloglog_in(PG_FUNCTION_ARGS)
 	if (res > resultlen)
 		elog(FATAL, "overflow - decode estimate too small");
 
+	/*
+	 * The decoded bytes are handed back as-is and later cast to
+	 * GpHLLCounter, whose header fields are read at fixed offsets.
+	 * gp_hll_b64_decode() already raises an ERROR on invalid base64, but
+	 * valid base64 that decodes to fewer bytes than the fixed GpHLLData
+	 * header would be accepted and its missing fields read from whatever
+	 * memory follows.  Reject it.  The bytea's own length word doubles as
+	 * GpHLLData.vl_len_, so only the fields after it have to come from the
+	 * decoded bytes.
+	 *
+	 * Deliberately NOT checking ->version here: pg_check_hll_version()'s
+	 * message ("use upgrade function to upgrade the counter") says a value
+	 * with an old, unrecognized version is a legitimate value with its own
+	 * upgrade path, not malformed input.
+	 */
+	if (VARHDRSZ + res < (int) offsetof(GpHLLData, data))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+				 errmsg("invalid input syntax for type %s", "gp_hyperloglog_estimator"),
+				 errdetail("Decoded length %d is shorter than the gp_hyperloglog_estimator header (%d bytes).",
+						   res, (int) (offsetof(GpHLLData, data) - VARHDRSZ))));
+
+	/*
+	 * Past the varlena header the decoded bytes are a GpHLLData whose fixed
+	 * header is trusted wholesale by the read path: gp_hyperloglog_get_estimate()
+	 * -> gp_hll_unpack()/gp_hll_estimate_dense() walk POW2(b) one-byte registers
+	 * out of ->data and index alpham[]/threshold[] with b, none of it bounds
+	 * checked.  gp_hyperloglog_in() is the only chokepoint before that code (the
+	 * out function never reads these fields), so the header has to be validated
+	 * here.  An out-of-range b alone turns the estimate into a multi-megabyte
+	 * over-read that SIGSEGVs the coordinator; an in-range b over a truncated
+	 * payload reads adjacent heap.  Reject both.
+	 *
+	 * b is int8_t: a negative value marks an lz-compressed counter whose real
+	 * index-bit count is its magnitude, so test |b|, computed in int to avoid
+	 * overflow on INT8_MIN.
+	 */
+	{
+		GpHLLCounter hll = (GpHLLCounter) result;
+		int			nbits = hll->b < 0 ? -(int) hll->b : hll->b;
+
+		if (nbits < MIN_INDEX_BITS || nbits > MAX_INDEX_BITS)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+					 errmsg("invalid input syntax for type %s", "gp_hyperloglog_estimator"),
+					 errdetail("Number of index bits %d is outside the valid range %d..%d.",
+							   nbits, MIN_INDEX_BITS, MAX_INDEX_BITS)));
+
+		if (hll->binbits < MIN_BINBITS || hll->binbits > MAX_BINBITS)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+					 errmsg("invalid input syntax for type %s", "gp_hyperloglog_estimator"),
+					 errdetail("Number of bin bits %u is outside the valid range %d..%d.",
+							   hll->binbits, MIN_BINBITS, MAX_BINBITS)));
+
+		if (hll->format > UNPACKED_UNPACKED)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+					 errmsg("invalid input syntax for type %s", "gp_hyperloglog_estimator"),
+					 errdetail("Counter format %u is not recognized.", hll->format)));
+
+		/*
+		 * For an uncompressed counter (b > 0) the estimate walks all POW2(b)
+		 * registers, so the decoded payload must actually hold them: POW2(b)
+		 * bytes when unpacked, ceil(POW2(b) * binbits / 8) when bit-packed
+		 * (plus one byte, as the register-extract macro reads one byte past the
+		 * last register).  A compressed counter (b < 0) stores fewer,
+		 * lz-compressed bytes and is checked separately below.
+		 */
+		if (hll->b > 0)
+		{
+			long		m = POW2(hll->b);
+			long		needbytes;
+
+			if (hll->format == UNPACKED || hll->format == UNPACKED_UNPACKED)
+				needbytes = m;
+			else
+				needbytes = (m * hll->binbits + 7) / 8 + 1;
+
+			if (VARHDRSZ + res < (long) offsetof(GpHLLData, data) + needbytes)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+						 errmsg("invalid input syntax for type %s", "gp_hyperloglog_estimator"),
+						 errdetail("Decoded length %d is too short for a %ld-register counter.",
+								   res, m)));
+		}
+
+		/*
+		 * For a compressed counter (b < 0) gp_hll_decompress_dense*() hand
+		 * ->data to pglz_decompress(), which takes both the compressed
+		 * length (the PGLZ_Header's own varlena size) and the output length
+		 * (PGLZ_Header.rawsize) from the payload itself, and writes up to
+		 * rawsize bytes into a buffer sized for POW2(|b|) registers.  A larger
+		 * rawsize overruns that buffer, and a compressed length past the
+		 * decoded bytes over-reads the input.  gp_hll_compress_dense*() always
+		 * compress exactly POW2(|b|) bytes, so require that rawsize, and a
+		 * compressed length that fits in the decoded payload.
+		 *
+		 * They also only ever leave format PACKED on a compressed counter.
+		 * Require that too: gp_hll_unpack() returns an UNPACKED or
+		 * UNPACKED_UNPACKED counter as is, without decompressing it, and the
+		 * estimate then computes POW2(b) and indexes alpham[] with the
+		 * negative b.
+		 */
+		else if (hll->b < 0)
+		{
+			long		m = POW2(nbits);
+			long		payload = VARHDRSZ + res - (long) offsetof(GpHLLData, data);
+			PGLZ_Header *lz = (PGLZ_Header *) hll->data;
+
+			if (hll->format != PACKED)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+						 errmsg("invalid input syntax for type %s", "gp_hyperloglog_estimator"),
+						 errdetail("Compressed counter has format %u, expected %d.",
+								   hll->format, PACKED)));
+
+			if (payload < (long) sizeof(PGLZ_Header) ||
+				VARSIZE(lz) < sizeof(PGLZ_Header) ||
+				VARSIZE(lz) > payload)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+						 errmsg("invalid input syntax for type %s", "gp_hyperloglog_estimator"),
+						 errdetail("Compressed data does not fit in decoded length %d.",
+								   res)));
+
+			if (PGLZ_RAW_SIZE(lz) != m)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+						 errmsg("invalid input syntax for type %s", "gp_hyperloglog_estimator"),
+						 errdetail("Compressed data claims %d uncompressed bytes, expected %ld.",
+								   PGLZ_RAW_SIZE(lz), m)));
+		}
+	}
+
 	SET_VARSIZE(result, VARHDRSZ + res);
 
 	PG_RETURN_BYTEA_P(result);
