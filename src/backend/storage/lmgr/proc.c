@@ -46,6 +46,7 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/autovacuum.h"
+#include "postmaster/bgworker.h"
 #include "replication/slot.h"
 #include "replication/syncrep.h"
 #include "replication/walsender.h"
@@ -344,9 +345,12 @@ InitProcess(void)
 	/*
 	 * WAL sender, etc are marked as GP_ROLE_UTILITY to prevent unwanted
 	 * GP_ROLE_DISPATCH MyProc settings such as mppSessionId being valid and
-	 * mppIsWriter set to true.
+	 * mppIsWriter set to true.  So is a background worker registered with
+	 * BGWORKER_WHPG_UTILITY_MODE: it works on this node alone and must not
+	 * become a session of its own.
 	 */
-	if (am_walsender || am_ftshandler || am_faulthandler)
+	if (am_walsender || am_ftshandler || am_faulthandler ||
+		AmUtilityModeBackgroundWorker())
 		Gp_role = GP_ROLE_UTILITY;
 
 	/*

@@ -1202,9 +1202,13 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	/*
 	 * Reject non-utility connections if the PostMaster was started in the
 	 * utility mode.  A parallel worker is not a connection: it inherits the
-	 * role of a leader that was already admitted.
+	 * role of a leader that was already admitted.  Neither is a background
+	 * process that runs in utility mode by design, which has no startup
+	 * packet to ask for it: an autovacuum worker, or a worker registered with
+	 * BGWORKER_WHPG_UTILITY_MODE.
 	 */
 	if (IsUnderPostmaster && !IsAutoVacuumWorkerProcess() &&
+		!AmUtilityModeBackgroundWorker() &&
 		!InitializingParallelWorker && Gp_role == GP_ROLE_UTILITY)
 		should_reject_connection = true;
 
