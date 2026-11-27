@@ -1,0 +1,442 @@
+-- TLS on the ic-proxy peer connections: the data plane, the teardown paths,
+-- mutual verification, the reload of the certificates and the handling of
+-- unusable settings.
+--
+-- The schedule assumes gp_interconnect_type=proxy with a configured mesh.
+-- TLS is switched on for the duration of this test and switched off again
+-- at the end, so the cluster is left the way the schedule expects it.
+-- Every restart kills the open sessions, hence the numbered sessions that
+-- quit before each restart.
+--
+-- What the proxies do is observed from the outside wherever that is
+-- possible: "openssl s_client" talks to the coordinator's proxy port and
+-- its exit status says whether the proxy negotiated what it should and
+-- refused what it should, and the pid of a proxy process says whether it
+-- was restarted.  Only what must not happen is looked up in the log: a
+-- teardown or a refused stranger must not make the proxies report trouble
+-- on their healthy connections.  Only the log lines of this run count,
+-- those after the marker line the test writes to the coordinator's log
+-- first; logtime is only compared with logtime, never with a clock, since
+-- the log's timestamps carry a time zone abbreviation that may not read
+-- back as the zone it was written in (CST of Asia/Shanghai reads back as
+-- US Central).
+--
+-- The certificates are made by the openssl command in /tmp/ic_proxy_tls_gen
+-- and what the proxies need of them is copied to /tmp/ic_proxy_tls_test on
+-- every host: a CA, one certificate of that CA for all the proxies (the
+-- verification does not bind a certificate to a host), and a self-signed
+-- "rogue" certificate that the CA did not issue.
+
+1: CREATE TABLE ic_proxy_tls_t AS SELECT i FROM generate_series(1, 10000) i DISTRIBUTED BY (i);
+SELECT 10000
+1: DO $$ BEGIN RAISE LOG 'ic_proxy_tls: test start'; END $$;
+DO
+1q: ... <quitting>
+
+!\retcode (rm -rf /tmp/ic_proxy_tls_gen && mkdir /tmp/ic_proxy_tls_gen && cd /tmp/ic_proxy_tls_gen && openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.crt -subj "/CN=ic-proxy-test-ca" -days 2 && openssl req -newkey rsa:2048 -nodes -keyout peer.key -out peer.csr -subj "/CN=ic-proxy-test-peer" && openssl x509 -req -in peer.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out peer.crt -days 2 && openssl req -x509 -newkey rsa:2048 -nodes -keyout rogue.key -out rogue.crt -subj "/CN=ic-proxy-test-rogue" -days 2 && chmod 600 *.key) >/dev/null 2>&1;
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode for h in $(psql postgres -Atc "select distinct hostname from gp_segment_configuration"); do ssh -n $h "rm -rf /tmp/ic_proxy_tls_test && mkdir /tmp/ic_proxy_tls_test" && scp -pq /tmp/ic_proxy_tls_gen/ca.crt /tmp/ic_proxy_tls_gen/peer.crt /tmp/ic_proxy_tls_gen/peer.key $h:/tmp/ic_proxy_tls_test/ || exit 1; done;
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+
+--
+-- Encryption without certificates: every proxy uses an ephemeral one.
+--
+
+-- Switch TLS on (PGC_POSTMASTER: needs a restart).
+-- start_ignore
+!\retcode gpconfig -c gp_interconnect_proxy_tls_enable -v on;
+-- start_ignore
+20261123:12:13:43:3002033 gpconfig:minion:adam-[INFO]:-completed successfully with parameters '-c gp_interconnect_proxy_tls_enable -v on'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -ari;
+-- start_ignore
+20261123:12:13:43:3002080 gpstop:minion:adam-[INFO]:-Starting gpstop with args: -ari
+20261123:12:13:43:3002080 gpstop:minion:adam-[INFO]:-Gathering information and validating the environment...
+20261123:12:13:43:3002080 gpstop:minion:adam-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20261123:12:13:43:3002080 gpstop:minion:adam-[INFO]:-Obtaining Segment details from coordinator...
+20261123:12:13:43:3002080 gpstop:minion:adam-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.6.1-WHPG+dev.39.gd612b95ef3c build dev'
+20261123:12:13:43:3002080 gpstop:minion:adam-[INFO]:-Commencing Coordinator instance shutdown with mode='immediate'
+20261123:12:13:43:3002080 gpstop:minion:adam-[INFO]:-Coordinator segment instance directory=/home/adam/warehouse-pg/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
+20261123:12:13:44:3002080 gpstop:minion:adam-[INFO]:-Attempting forceful termination of any leftover coordinator process
+20261123:12:13:44:3002080 gpstop:minion:adam-[INFO]:-Terminating processes for segment /home/adam/warehouse-pg/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
+20261123:12:13:44:3002080 gpstop:minion:adam-[INFO]:-Stopping coordinator standby host minion mode=immediate
+20261123:12:13:44:3002080 gpstop:minion:adam-[INFO]:-Successfully shutdown standby process on minion
+20261123:12:13:44:3002080 gpstop:minion:adam-[INFO]:-Targeting dbid [2, 5, 3, 6, 4, 7] for shutdown
+20261123:12:13:44:3002080 gpstop:minion:adam-[INFO]:-Commencing parallel primary segment instance shutdown, please wait...
+20261123:12:13:44:3002080 gpstop:minion:adam-[INFO]:-0.00% of jobs completed
+20261123:12:13:46:3002080 gpstop:minion:adam-[INFO]:-100.00% of jobs completed
+20261123:12:13:46:3002080 gpstop:minion:adam-[INFO]:-Commencing parallel mirror segment instance shutdown, please wait...
+20261123:12:13:46:3002080 gpstop:minion:adam-[INFO]:-0.00% of jobs completed
+20261123:12:13:48:3002080 gpstop:minion:adam-[INFO]:-100.00% of jobs completed
+20261123:12:13:48:3002080 gpstop:minion:adam-[INFO]:-----------------------------------------------------
+20261123:12:13:48:3002080 gpstop:minion:adam-[INFO]:-   Segments stopped successfully      = 6
+20261123:12:13:48:3002080 gpstop:minion:adam-[INFO]:-   Segments with errors during stop   = 0
+20261123:12:13:48:3002080 gpstop:minion:adam-[INFO]:-----------------------------------------------------
+20261123:12:13:48:3002080 gpstop:minion:adam-[INFO]:-Successfully shutdown 6 of 6 segment instances 
+20261123:12:13:48:3002080 gpstop:minion:adam-[INFO]:-Database successfully shutdown with no errors reported
+20261123:12:13:48:3002080 gpstop:minion:adam-[INFO]:-Restarting System...
+
+-- end_ignore
+(exited with code 0)
+-- end_ignore
+
+-- Motion through the TLS mesh.
+2: SELECT count(*) FROM ic_proxy_tls_t a JOIN ic_proxy_tls_t b ON a.i = b.i + 1;
+ count 
+-------
+ 9999  
+(1 row)
+
+-- The proxy port speaks TLS 1.3 with the pinned cipher suite and our ALPN.
+!\retcode openssl s_client -connect $(psql postgres -Atc "show gp_interconnect_proxy_addresses" | cut -d, -f1 | cut -d: -f3,4) -tls1_3 -alpn ic-proxy/1 </dev/null 2>&1 | grep -q "Cipher is TLS_AES_256_GCM_SHA384";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+
+-- Peer teardown under TLS: kill one segment's proxy.  The postmaster
+-- restarts it, the other proxies drop the peer, and the next query goes
+-- through again.
+!\retcode pkill -f "postgres: *$(psql postgres -Atc "select port from gp_segment_configuration where content=1 and role='p'"), ic proxy process";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode sleep 3;
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+2: SELECT count(*) FROM ic_proxy_tls_t a JOIN ic_proxy_tls_t b ON a.i = b.i + 1;
+ count 
+-------
+ 9999  
+(1 row)
+
+-- The killed proxy's connections ended with a bare TCP close; the remote
+-- proxies must read that as EOF, not as a TLS failure.  Nothing so far
+-- gave the proxies a reason for a WARNING.
+2: SELECT count(*) AS tls_warnings FROM gp_toolkit.gp_log_system WHERE logtime > (SELECT max(logtime) FROM gp_toolkit.__gp_log_coordinator_ext WHERE logmessage = 'ic_proxy_tls: test start') AND logseverity = 'WARNING' AND logmessage LIKE 'ic-proxy TLS:%';
+ tls_warnings 
+--------------
+ 0            
+(1 row)
+
+-- A TLS client that is not an ic-proxy peer is turned away.  One that
+-- offers no ALPN at all completes the handshake on its side, so its
+-- rejection only shows in the proxy's log; one that offers another
+-- protocol gets an alert.
+!\retcode openssl s_client -connect $(psql postgres -Atc "show gp_interconnect_proxy_addresses" | cut -d, -f1 | cut -d: -f3,4) -tls1_3 </dev/null >/dev/null 2>&1 || true;
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode sleep 1;
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+2: SELECT count(*) AS no_alpn_refused FROM gp_toolkit.__gp_log_coordinator_ext WHERE logtime > (SELECT max(logtime) FROM gp_toolkit.__gp_log_coordinator_ext WHERE logmessage = 'ic_proxy_tls: test start') AND logseverity = 'WARNING' AND logmessage LIKE 'ic-proxy TLS:%the remote did not negotiate ALPN%';
+ no_alpn_refused 
+-----------------
+ 1               
+(1 row)
+!\retcode openssl s_client -connect $(psql postgres -Atc "show gp_interconnect_proxy_addresses" | cut -d, -f1 | cut -d: -f3,4) -tls1_3 -alpn h2 </dev/null 2>&1 | grep -q "SSL alert number 120";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+
+--
+-- Mutual verification.  The certificate, key and CA settings are read on
+-- reload, no restart.
+--
+
+-- start_ignore
+!\retcode gpconfig -c gp_interconnect_proxy_tls_cert_file -v /tmp/ic_proxy_tls_test/peer.crt;
+-- start_ignore
+20261123:12:13:54:3002954 gpconfig:minion:adam-[INFO]:-completed successfully with parameters '-c gp_interconnect_proxy_tls_cert_file -v /tmp/ic_proxy_tls_test/peer.crt'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpconfig -c gp_interconnect_proxy_tls_key_file -v /tmp/ic_proxy_tls_test/peer.key;
+-- start_ignore
+20261123:12:13:54:3003001 gpconfig:minion:adam-[INFO]:-completed successfully with parameters '-c gp_interconnect_proxy_tls_key_file -v /tmp/ic_proxy_tls_test/peer.key'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpconfig -c gp_interconnect_proxy_tls_ca_file -v /tmp/ic_proxy_tls_test/ca.crt;
+-- start_ignore
+20261123:12:13:54:3003048 gpconfig:minion:adam-[INFO]:-completed successfully with parameters '-c gp_interconnect_proxy_tls_ca_file -v /tmp/ic_proxy_tls_test/ca.crt'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -u;
+-- start_ignore
+20261123:12:13:54:3003095 gpstop:minion:adam-[INFO]:-Starting gpstop with args: -u
+20261123:12:13:54:3003095 gpstop:minion:adam-[INFO]:-Gathering information and validating the environment...
+20261123:12:13:54:3003095 gpstop:minion:adam-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20261123:12:13:54:3003095 gpstop:minion:adam-[INFO]:-Obtaining Segment details from coordinator...
+20261123:12:13:54:3003095 gpstop:minion:adam-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.6.1-WHPG+dev.39.gd612b95ef3c build dev'
+20261123:12:13:54:3003095 gpstop:minion:adam-[INFO]:-Signalling all postmaster processes to reload
+
+-- end_ignore
+(exited with code 0)
+-- end_ignore
+!\retcode sleep 2;
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+
+-- The proxy now presents the certificate of the CA, and wants one too.
+!\retcode openssl s_client -connect $(psql postgres -Atc "show gp_interconnect_proxy_addresses" | cut -d, -f1 | cut -d: -f3,4) -tls1_3 -alpn ic-proxy/1 -CAfile /tmp/ic_proxy_tls_gen/ca.crt </dev/null 2>&1 | grep -q "Verify return code: 0 (ok)";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+
+-- A client with a certificate of the CA is let in: no alert for it (grep
+-- finds nothing and exits with 1).
+!\retcode (sleep 1) | openssl s_client -connect $(psql postgres -Atc "show gp_interconnect_proxy_addresses" | cut -d, -f1 | cut -d: -f3,4) -tls1_3 -alpn ic-proxy/1 -cert /tmp/ic_proxy_tls_gen/peer.crt -key /tmp/ic_proxy_tls_gen/peer.key 2>&1 | grep -q "alert";
+-- start_ignore
+
+-- end_ignore
+(exited with code 1)
+
+-- One with a certificate the CA did not issue is refused, and so is one
+-- without a certificate.
+!\retcode (sleep 1) | openssl s_client -connect $(psql postgres -Atc "show gp_interconnect_proxy_addresses" | cut -d, -f1 | cut -d: -f3,4) -tls1_3 -alpn ic-proxy/1 -cert /tmp/ic_proxy_tls_gen/rogue.crt -key /tmp/ic_proxy_tls_gen/rogue.key 2>&1 | grep -q "alert unknown ca";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode (sleep 1) | openssl s_client -connect $(psql postgres -Atc "show gp_interconnect_proxy_addresses" | cut -d, -f1 | cut -d: -f3,4) -tls1_3 -alpn ic-proxy/1 2>&1 | grep -q "alert certificate required";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+
+-- The connections made before the reload are not touched by it.  Make a
+-- proxy connect again, so that real peers verify each other, and send
+-- data both through those new connections and through the old ones.
+!\retcode pkill -f "postgres: *$(psql postgres -Atc "select port from gp_segment_configuration where content=1 and role='p'"), ic proxy process";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode sleep 3;
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+2: SELECT count(*) FROM ic_proxy_tls_t a JOIN ic_proxy_tls_t b ON a.i = b.i + 1;
+ count 
+-------
+ 9999  
+(1 row)
+
+-- The refused strangers are reported, but they must not have disturbed
+-- the healthy connections: no read or write failure on any of them.
+2: SELECT count(*) AS broken_connections FROM gp_toolkit.gp_log_system WHERE logtime > (SELECT max(logtime) FROM gp_toolkit.__gp_log_coordinator_ext WHERE logmessage = 'ic_proxy_tls: test start') AND (logmessage LIKE 'ic-proxy TLS:%SSL_read failed%' OR logmessage LIKE 'ic-proxy TLS:%SSL_write failed%');
+ broken_connections 
+--------------------
+ 0                  
+(1 row)
+
+--
+-- Settings that cannot be used.
+--
+
+-- On reload they are reported and the proxies keep what they have: the
+-- same processes go on serving.
+-- start_ignore
+!\retcode gpconfig -c gp_interconnect_proxy_tls_cert_file -v /nonexistent/peer.crt;
+-- start_ignore
+20261123:12:14:03:3003172 gpconfig:minion:adam-[INFO]:-completed successfully with parameters '-c gp_interconnect_proxy_tls_cert_file -v /nonexistent/peer.crt'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -u;
+-- start_ignore
+20261123:12:14:03:3003219 gpstop:minion:adam-[INFO]:-Starting gpstop with args: -u
+20261123:12:14:03:3003219 gpstop:minion:adam-[INFO]:-Gathering information and validating the environment...
+20261123:12:14:03:3003219 gpstop:minion:adam-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20261123:12:14:03:3003219 gpstop:minion:adam-[INFO]:-Obtaining Segment details from coordinator...
+20261123:12:14:03:3003219 gpstop:minion:adam-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.6.1-WHPG+dev.39.gd612b95ef3c build dev'
+20261123:12:14:03:3003219 gpstop:minion:adam-[INFO]:-Signalling all postmaster processes to reload
+
+-- end_ignore
+(exited with code 0)
+-- end_ignore
+!\retcode sleep 2;
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+2: SELECT count(*) FROM ic_proxy_tls_t a JOIN ic_proxy_tls_t b ON a.i = b.i + 1;
+ count 
+-------
+ 9999  
+(1 row)
+2q: ... <quitting>
+
+-- At startup there is nothing to keep.  The proxy does not serve, and a
+-- proxy-mode query fails at interconnect setup instead of hanging.
+-- start_ignore
+!\retcode gpstop -ari;
+-- start_ignore
+20261123:12:14:05:3003240 gpstop:minion:adam-[INFO]:-Starting gpstop with args: -ari
+20261123:12:14:05:3003240 gpstop:minion:adam-[INFO]:-Gathering information and validating the environment...
+20261123:12:14:05:3003240 gpstop:minion:adam-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20261123:12:14:05:3003240 gpstop:minion:adam-[INFO]:-Obtaining Segment details from coordinator...
+20261123:12:14:05:3003240 gpstop:minion:adam-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.6.1-WHPG+dev.39.gd612b95ef3c build dev'
+20261123:12:14:05:3003240 gpstop:minion:adam-[INFO]:-Commencing Coordinator instance shutdown with mode='immediate'
+20261123:12:14:05:3003240 gpstop:minion:adam-[INFO]:-Coordinator segment instance directory=/home/adam/warehouse-pg/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
+20261123:12:14:05:3003240 gpstop:minion:adam-[INFO]:-Attempting forceful termination of any leftover coordinator process
+20261123:12:14:05:3003240 gpstop:minion:adam-[INFO]:-Terminating processes for segment /home/adam/warehouse-pg/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
+20261123:12:14:05:3003240 gpstop:minion:adam-[INFO]:-Stopping coordinator standby host minion mode=immediate
+20261123:12:14:05:3003240 gpstop:minion:adam-[INFO]:-Successfully shutdown standby process on minion
+20261123:12:14:05:3003240 gpstop:minion:adam-[INFO]:-Targeting dbid [2, 5, 3, 6, 4, 7] for shutdown
+20261123:12:14:05:3003240 gpstop:minion:adam-[INFO]:-Commencing parallel primary segment instance shutdown, please wait...
+20261123:12:14:05:3003240 gpstop:minion:adam-[INFO]:-0.00% of jobs completed
+20261123:12:14:08:3003240 gpstop:minion:adam-[INFO]:-100.00% of jobs completed
+20261123:12:14:08:3003240 gpstop:minion:adam-[INFO]:-Commencing parallel mirror segment instance shutdown, please wait...
+20261123:12:14:08:3003240 gpstop:minion:adam-[INFO]:-0.00% of jobs completed
+20261123:12:14:10:3003240 gpstop:minion:adam-[INFO]:-100.00% of jobs completed
+20261123:12:14:10:3003240 gpstop:minion:adam-[INFO]:-----------------------------------------------------
+20261123:12:14:10:3003240 gpstop:minion:adam-[INFO]:-   Segments stopped successfully      = 6
+20261123:12:14:10:3003240 gpstop:minion:adam-[INFO]:-   Segments with errors during stop   = 0
+20261123:12:14:10:3003240 gpstop:minion:adam-[INFO]:-----------------------------------------------------
+20261123:12:14:10:3003240 gpstop:minion:adam-[INFO]:-Successfully shutdown 6 of 6 segment instances 
+20261123:12:14:10:3003240 gpstop:minion:adam-[INFO]:-Database successfully shutdown with no errors reported
+20261123:12:14:10:3003240 gpstop:minion:adam-[INFO]:-Restarting System...
+
+-- end_ignore
+(exited with code 0)
+-- end_ignore
+3: SELECT count(*) FROM ic_proxy_tls_t a JOIN ic_proxy_tls_t b ON a.i = b.i + 1;
+ERROR:  Failed to setup ic_proxy interconnect
+DETAIL:  The ic_proxy process is not serving because the gp_interconnect_proxy_tls_* settings are invalid.
+HINT:  Fix the settings, then reload the configuration (gpstop -u); see the server log for the ERROR reported by the ic_proxy process.
+
+-- The proxy process waits for better settings, it is not restarted in a
+-- loop: the same pid two seconds later.
+!\retcode a=$(pgrep -f "postgres: *$(psql postgres -Atc "select port from gp_segment_configuration where content=-1 and role='p'"), ic proxy process"); sleep 2; b=$(pgrep -f "postgres: *$(psql postgres -Atc "select port from gp_segment_configuration where content=-1 and role='p'"), ic proxy process"); test -n "$a" -a "$a" = "$b";
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+
+-- A reload with good settings is enough to make it serve.
+-- start_ignore
+!\retcode gpconfig -c gp_interconnect_proxy_tls_cert_file -v /tmp/ic_proxy_tls_test/peer.crt;
+-- start_ignore
+20261123:12:14:13:3004055 gpconfig:minion:adam-[INFO]:-completed successfully with parameters '-c gp_interconnect_proxy_tls_cert_file -v /tmp/ic_proxy_tls_test/peer.crt'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -u;
+-- start_ignore
+20261123:12:14:13:3004102 gpstop:minion:adam-[INFO]:-Starting gpstop with args: -u
+20261123:12:14:13:3004102 gpstop:minion:adam-[INFO]:-Gathering information and validating the environment...
+20261123:12:14:13:3004102 gpstop:minion:adam-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20261123:12:14:13:3004102 gpstop:minion:adam-[INFO]:-Obtaining Segment details from coordinator...
+20261123:12:14:13:3004102 gpstop:minion:adam-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.6.1-WHPG+dev.39.gd612b95ef3c build dev'
+20261123:12:14:13:3004102 gpstop:minion:adam-[INFO]:-Signalling all postmaster processes to reload
+
+-- end_ignore
+(exited with code 0)
+-- end_ignore
+!\retcode sleep 3;
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+3: SELECT count(*) FROM ic_proxy_tls_t a JOIN ic_proxy_tls_t b ON a.i = b.i + 1;
+ count 
+-------
+ 9999  
+(1 row)
+3q: ... <quitting>
+
+-- Back to plain TCP peers.
+-- start_ignore
+!\retcode gpconfig -r gp_interconnect_proxy_tls_cert_file;
+-- start_ignore
+20261123:12:14:16:3004142 gpconfig:minion:adam-[INFO]:-completed successfully with parameters '-r gp_interconnect_proxy_tls_cert_file'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpconfig -r gp_interconnect_proxy_tls_key_file;
+-- start_ignore
+20261123:12:14:16:3004189 gpconfig:minion:adam-[INFO]:-completed successfully with parameters '-r gp_interconnect_proxy_tls_key_file'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpconfig -r gp_interconnect_proxy_tls_ca_file;
+-- start_ignore
+20261123:12:14:16:3004236 gpconfig:minion:adam-[INFO]:-completed successfully with parameters '-r gp_interconnect_proxy_tls_ca_file'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpconfig -c gp_interconnect_proxy_tls_enable -v off;
+-- start_ignore
+20261123:12:14:16:3004283 gpconfig:minion:adam-[INFO]:-completed successfully with parameters '-c gp_interconnect_proxy_tls_enable -v off'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -ari;
+-- start_ignore
+20261123:12:14:16:3004330 gpstop:minion:adam-[INFO]:-Starting gpstop with args: -ari
+20261123:12:14:16:3004330 gpstop:minion:adam-[INFO]:-Gathering information and validating the environment...
+20261123:12:14:16:3004330 gpstop:minion:adam-[INFO]:-Obtaining Greenplum Coordinator catalog information
+20261123:12:14:16:3004330 gpstop:minion:adam-[INFO]:-Obtaining Segment details from coordinator...
+20261123:12:14:16:3004330 gpstop:minion:adam-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 7.6.1-WHPG+dev.39.gd612b95ef3c build dev'
+20261123:12:14:16:3004330 gpstop:minion:adam-[INFO]:-Commencing Coordinator instance shutdown with mode='immediate'
+20261123:12:14:16:3004330 gpstop:minion:adam-[INFO]:-Coordinator segment instance directory=/home/adam/warehouse-pg/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
+20261123:12:14:16:3004330 gpstop:minion:adam-[INFO]:-Attempting forceful termination of any leftover coordinator process
+20261123:12:14:16:3004330 gpstop:minion:adam-[INFO]:-Terminating processes for segment /home/adam/warehouse-pg/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
+20261123:12:14:16:3004330 gpstop:minion:adam-[INFO]:-Stopping coordinator standby host minion mode=immediate
+20261123:12:14:17:3004330 gpstop:minion:adam-[INFO]:-Successfully shutdown standby process on minion
+20261123:12:14:17:3004330 gpstop:minion:adam-[INFO]:-Targeting dbid [2, 5, 3, 6, 4, 7] for shutdown
+20261123:12:14:17:3004330 gpstop:minion:adam-[INFO]:-Commencing parallel primary segment instance shutdown, please wait...
+20261123:12:14:17:3004330 gpstop:minion:adam-[INFO]:-0.00% of jobs completed
+20261123:12:14:19:3004330 gpstop:minion:adam-[INFO]:-100.00% of jobs completed
+20261123:12:14:19:3004330 gpstop:minion:adam-[INFO]:-Commencing parallel mirror segment instance shutdown, please wait...
+20261123:12:14:19:3004330 gpstop:minion:adam-[INFO]:-0.00% of jobs completed
+20261123:12:14:21:3004330 gpstop:minion:adam-[INFO]:-100.00% of jobs completed
+20261123:12:14:21:3004330 gpstop:minion:adam-[INFO]:-----------------------------------------------------
+20261123:12:14:21:3004330 gpstop:minion:adam-[INFO]:-   Segments stopped successfully      = 6
+20261123:12:14:21:3004330 gpstop:minion:adam-[INFO]:-   Segments with errors during stop   = 0
+20261123:12:14:21:3004330 gpstop:minion:adam-[INFO]:-----------------------------------------------------
+20261123:12:14:21:3004330 gpstop:minion:adam-[INFO]:-Successfully shutdown 6 of 6 segment instances 
+20261123:12:14:21:3004330 gpstop:minion:adam-[INFO]:-Database successfully shutdown with no errors reported
+20261123:12:14:21:3004330 gpstop:minion:adam-[INFO]:-Restarting System...
+
+-- end_ignore
+(exited with code 0)
+-- end_ignore
+4: SELECT count(*) FROM ic_proxy_tls_t a JOIN ic_proxy_tls_t b ON a.i = b.i + 1;
+ count 
+-------
+ 9999  
+(1 row)
+
+4: DROP TABLE ic_proxy_tls_t;
+DROP TABLE
+4q: ... <quitting>
+
+!\retcode for h in $(psql postgres -Atc "select distinct hostname from gp_segment_configuration"); do ssh -n $h "rm -rf /tmp/ic_proxy_tls_test" || exit 1; done; rm -rf /tmp/ic_proxy_tls_gen;
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)

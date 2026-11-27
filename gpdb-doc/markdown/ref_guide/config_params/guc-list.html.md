@@ -1240,6 +1240,44 @@ For an example of setting `gp_interconnect_proxy_addresses`, see [Configuring Pr
 |-----------|-------|-------------------|
 |string \(maximum length - 16384 bytes\)| |local, system, reload|
 
+## <a id="gp_interconnect_proxy_tls_ca_file"></a>gp\_interconnect\_proxy\_tls\_ca\_file 
+
+The path of a PEM file with the CA certificates that the interconnect proxies use to verify each other when [gp\_interconnect\_proxy\_tls\_enable](#gp_interconnect_proxy_tls_enable) is `on`. When it is set, both ends of every proxy connection require a certificate issued by one of these CAs \(mutual TLS\). Any certificate issued by the CA is accepted for any peer; the certificate is not matched against the host name, and no revocation list is consulted. This parameter requires [gp\_interconnect\_proxy\_tls\_cert\_file](#gp_interconnect_proxy_tls_cert_file) and [gp\_interconnect\_proxy\_tls\_key\_file](#gp_interconnect_proxy_tls_key_file). The default value is an empty string \(""\): the proxies do not verify each other.
+
+The file is read when the interconnect proxy starts and again when the configuration is reloaded with `gpstop -u`. New proxy connections use the reloaded CA, established connections are not affected.
+
+|Value Range|Default|Set Classifications|
+|-----------|-------|-------------------|
+|string| |local, system, reload, superuser|
+
+## <a id="gp_interconnect_proxy_tls_cert_file"></a>gp\_interconnect\_proxy\_tls\_cert\_file 
+
+The path of a PEM file with the certificate that an interconnect proxy presents to the other proxies when [gp\_interconnect\_proxy\_tls\_enable](#gp_interconnect_proxy_tls_enable) is `on`. The file can contain the intermediate CA certificates after the proxy's own certificate. This parameter must be set together with [gp\_interconnect\_proxy\_tls\_key\_file](#gp_interconnect_proxy_tls_key_file). The default value is an empty string \(""\): every proxy generates a self-signed certificate when it starts, which encrypts the traffic but does not authenticate the proxies.
+
+The file is read when the interconnect proxy starts and again when the configuration is reloaded with `gpstop -u`, also when the parameter still names the same file. To renew a certificate, replace the certificate and key files and reload the configuration. New proxy connections use the reloaded certificate, established connections are not affected.
+
+|Value Range|Default|Set Classifications|
+|-----------|-------|-------------------|
+|string| |local, system, reload, superuser|
+
+## <a id="gp_interconnect_proxy_tls_enable"></a>gp\_interconnect\_proxy\_tls\_enable 
+
+Encrypts the connections between the interconnect proxies with TLS 1.3. The parameter takes effect when the server configuration parameter [gp\_interconnect\_type](#gp_interconnect_type) is set to `proxy`. The traffic between a query process and the proxy of its own instance stays on a local socket and is not encrypted.
+
+Set the parameter to the same value on the coordinator, the standby coordinator, and all segment instances, and restart the system: a proxy with TLS enabled and a proxy without it cannot connect to each other. If the certificate, key, and CA parameters cannot be used when an instance starts, for example a certificate file without a key file or a file that does not exist, the proxy of the instance does not serve, and queries that use the proxy interconnect fail with an error that points to the server log. Correct the parameters and reload the configuration with `gpstop -u`. If they cannot be used when the configuration is reloaded, the proxy logs the error and keeps using the previous certificate, key, and CA.
+
+|Value Range|Default|Set Classifications|
+|-----------|-------|-------------------|
+|Boolean|off|local, system, restart|
+
+## <a id="gp_interconnect_proxy_tls_key_file"></a>gp\_interconnect\_proxy\_tls\_key\_file 
+
+The path of a PEM file with the private key for the certificate in [gp\_interconnect\_proxy\_tls\_cert\_file](#gp_interconnect_proxy_tls_cert_file). The two parameters must be set together. The file must not be accessible by the group or by others \(mode `0600`\) and must not be protected by a passphrase. The default value is an empty string \(""\). The file is read when the interconnect proxy starts and again when the configuration is reloaded with `gpstop -u`.
+
+|Value Range|Default|Set Classifications|
+|-----------|-------|-------------------|
+|string| |local, system, reload, superuser|
+
 ## <a id="gp_interconnect_queue_depth"></a>gp\_interconnect\_queue\_depth 
 
 Sets the amount of data per-peer to be queued by the Greenplum Database interconnect on receivers \(when data is received but no space is available to receive it the data will be dropped, and the transmitter will need to resend it\) for the default UDPIFC interconnect. Increasing the depth from its default value will cause the system to use more memory, but may increase performance. It is reasonable to set this value between 1 and 10. Queries with data skew potentially perform better with an increased queue depth. Increasing this may radically increase the amount of memory used by the system.

@@ -14,15 +14,21 @@
 
 #include "postgres.h"
 
+#include "libpq/pqsignal.h"
+#include "miscadmin.h"
+#include "pgstat.h"
 #include "postmaster/bgworker.h"
 #include "storage/ipc.h"
+#include "storage/latch.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "storage/shmem.h"
 
 #include "ic_proxy_server.h"
+#include "cdb/ic_proxy_bgworker.h"
 #include "ic_proxy_addr.h"
 #include "ic_proxy_pkt_cache.h"
+#include "ic_proxy_tls.h"
 
 #include <uv.h>
 
@@ -202,7 +208,7 @@ ic_proxy_server_peer_listener_init(uv_loop_t *loop)
 	{
 		elog(WARNING, "ic-proxy: tcp: failed to bind: %s",
 					 uv_strerror(ret));
-		pg_atomic_exchange_u32(ic_proxy_peer_listener_failed, 1);
+		pg_atomic_exchange_u32(ic_proxy_peer_listener_failed, IC_PROXY_FAILURE_LISTEN);
 		return;
 	}
 
@@ -212,7 +218,7 @@ ic_proxy_server_peer_listener_init(uv_loop_t *loop)
 	{
 		elog(WARNING, "ic-proxy: tcp: failed to listen: %s",
 					 uv_strerror(ret));
-		pg_atomic_exchange_u32(ic_proxy_peer_listener_failed, 1);
+		pg_atomic_exchange_u32(ic_proxy_peer_listener_failed, IC_PROXY_FAILURE_LISTEN);
 		return;
 	}
 
@@ -220,7 +226,7 @@ ic_proxy_server_peer_listener_init(uv_loop_t *loop)
 	elogif(gp_log_interconnect >= GPVARS_VERBOSITY_VERBOSE, LOG,
 		   "ic-proxy: tcp: listening on socket %d", fd);
 
-	pg_atomic_exchange_u32(ic_proxy_peer_listener_failed, 0);
+	pg_atomic_exchange_u32(ic_proxy_peer_listener_failed, IC_PROXY_FAILURE_NONE);
 	ic_proxy_peer_listening = true;
 }
 
@@ -498,6 +504,9 @@ ic_proxy_server_on_signal(uv_signal_t *handle, int signum)
 	{
 		ProcessConfigFile(PGC_SIGHUP);
 
+		/* the certificate, key and CA may have been replaced */
+		ic_proxy_tls_reload();
+
 		ic_proxy_reload_addresses(handle->loop);
 		ic_proxy_server_drop_legacy_peers(handle->loop);
 
@@ -530,6 +539,70 @@ ic_proxy_server_on_read_postmaster_pipe(uv_stream_t *stream, ssize_t nread, cons
 		elog(FATAL, "ic-proxy: unexpected data in postmaster death monitoring pipe with length: %ld", nread);
 }
 
+static volatile sig_atomic_t ic_proxy_server_park_got_sigterm = false;
+static volatile sig_atomic_t ic_proxy_server_park_got_sighup = false;
+
+static void
+ic_proxy_server_park_on_signal(SIGNAL_ARGS)
+{
+	int			save_errno = errno;
+
+	if (postgres_signal_arg == SIGHUP)
+		ic_proxy_server_park_got_sighup = true;
+	else
+		ic_proxy_server_park_got_sigterm = true;
+	SetLatch(MyLatch);
+
+	errno = save_errno;
+}
+
+/*
+ * Do nothing until the configuration is reloaded or the postmaster shuts
+ * down: where a proxy that cannot serve with the current settings waits
+ * for someone to fix them.  Returns true for a reload, with the new
+ * configuration read, false when it is time to exit.
+ *
+ * Exiting is not an option.  With a non-zero code the postmaster relaunches
+ * the worker at once, in a loop.  With code 0 it forgets the worker, also
+ * when it reinitializes after a backend crash; that reinitialization
+ * clears ic_proxy_peer_listener_failed, and with nobody left to set it
+ * again the backends would be back to retrying the proxy socket until the
+ * setup timeout.  A parked worker is relaunched after the crash, fails the
+ * same way and reports it again.
+ */
+static bool
+ic_proxy_server_park(void)
+{
+	bool		reload;
+
+	pqsignal(SIGTERM, ic_proxy_server_park_on_signal);
+	pqsignal(SIGHUP, ic_proxy_server_park_on_signal);
+	BackgroundWorkerUnblockSignals();
+
+	while (!ic_proxy_server_park_got_sigterm &&
+		   !ic_proxy_server_park_got_sighup)
+	{
+		WaitLatch(MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH, -1L,
+				  PG_WAIT_EXTENSION);
+		ResetLatch(MyLatch);
+	}
+
+	/*
+	 * Back to how a background worker starts, signals blocked: when the
+	 * server starts up after this, a signal must not be consumed by our
+	 * handler in the window before libuv installs its own.
+	 */
+	PG_SETMASK(&BlockSig);
+
+	reload = !ic_proxy_server_park_got_sigterm;
+	ic_proxy_server_park_got_sighup = false;
+
+	if (reload)
+		ProcessConfigFile(PGC_SIGHUP);
+
+	return reload;
+}
+
 /*
  * The main loop of the ic-proxy.
  */
@@ -537,10 +610,74 @@ int
 ic_proxy_server_main(void)
 {
 	char		path[MAXPGPATH];
+	MemoryContext oldcontext = CurrentMemoryContext;
+	volatile bool tls_config_invalid = false;
 	elogif(gp_log_interconnect >= GPVARS_VERBOSITY_TERSE,
 		   LOG, "ic-proxy: server setting up");
 
-	pg_atomic_exchange_u32(ic_proxy_peer_listener_failed, 0);
+	pg_atomic_exchange_u32(ic_proxy_peer_listener_failed, IC_PROXY_FAILURE_NONE);
+
+	/*
+	 * Initialize TLS state for peer connections. Runs before anything
+	 * else so a misconfigured cert / key fails the bgworker startup rather
+	 * than the first peer handshake. No-op when
+	 * gp_interconnect_proxy_tls_enable is off.
+	 *
+	 * Letting the ERROR of a bad setting escape would exit with code 1
+	 * and the postmaster would relaunch us immediately (bgw_restart_time
+	 * is 0), turning a typo into a tight restart loop in the log.  Park
+	 * the process instead, see ic_proxy_server_park: the ERROR plus the
+	 * LOG line below tell the operator what to fix, and the shared flag
+	 * makes proxy-mode queries on this segment fail at interconnect setup
+	 * with the same explanation, instead of retrying the proxy socket
+	 * until gp_interconnect_setup_timeout.  The certificate, key and CA
+	 * settings can be changed with a reload, so that is what ends the
+	 * wait: try again with the new values, and start serving if they are
+	 * good.
+	 */
+	for (;;)
+	{
+		tls_config_invalid = false;
+
+		PG_TRY();
+		{
+			ic_proxy_tls_init();
+		}
+		PG_CATCH();
+		{
+			/*
+			 * The ERROR left us in ErrorContext, which FlushErrorState
+			 * resets; nothing that outlives this block may be allocated
+			 * there.
+			 */
+			MemoryContextSwitchTo(oldcontext);
+			EmitErrorReport();
+			FlushErrorState();
+			tls_config_invalid = true;
+		}
+		PG_END_TRY();
+
+		if (!tls_config_invalid)
+			break;
+
+		ic_proxy_tls_uninit();
+		pg_atomic_exchange_u32(ic_proxy_peer_listener_failed,
+							   IC_PROXY_FAILURE_TLS_CONFIG);
+
+		elog(LOG,
+			 "ic-proxy: TLS configuration is invalid, the ic-proxy process "
+			 "stays idle; fix the gp_interconnect_proxy_tls_* settings and "
+			 "reload the configuration (gpstop -u)");
+
+		if (!ic_proxy_server_park())
+			return 0;
+
+		elog(LOG,
+			 "ic-proxy: configuration reloaded, checking the TLS settings again");
+	}
+
+	pg_atomic_exchange_u32(ic_proxy_peer_listener_failed, IC_PROXY_FAILURE_NONE);
+
 	ic_proxy_pkt_cache_init(IC_PROXY_MAX_PKT_SIZE);
 
 	uv_loop_init(&ic_proxy_server_loop);
@@ -605,6 +742,7 @@ ic_proxy_server_main(void)
 #endif
 
 	ic_proxy_pkt_cache_uninit();
+	ic_proxy_tls_uninit();
 
 	elogif(gp_log_interconnect >= GPVARS_VERBOSITY_TERSE, LOG,
 		   "ic-proxy: server closed with code %d",

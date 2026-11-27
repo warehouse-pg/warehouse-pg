@@ -229,6 +229,17 @@ ic_proxy_client_table_shutdown_by_dbid(uint16 dbid)
 }
 
 /*
+ * The pipe handle of a replaced placeholder is closed, free the placeholder.
+ */
+static void
+ic_proxy_client_on_placeholder_close(uv_handle_t *handle)
+{
+	ICProxyClient *placeholder = CONTAINER_OF((void *) handle, ICProxyClient, pipe);
+
+	ic_proxy_free(placeholder);
+}
+
+/*
  * Register a client with its key.
  *
  * - if there was a placeholder, replace it;
@@ -321,9 +332,14 @@ ic_proxy_client_register(ICProxyClient *client)
 			/*
 			 * need to free the placeholder, but no need to unregister it as we
 			 * replaced it already.  The placeholder has nothing more than
-			 * itself, so free it directly.
+			 * itself and its pipe handle, which was never opened but is
+			 * known to the loop since uv_pipe_init(): it must be closed
+			 * before the memory can go, or the loop's handle queue keeps
+			 * pointing into it.
 			 */
-			ic_proxy_free(placeholder);
+			ic_proxy_client_clear_name(placeholder);
+			uv_close((uv_handle_t *) &placeholder->pipe,
+					 ic_proxy_client_on_placeholder_close);
 			elogif(gp_log_interconnect >= GPVARS_VERBOSITY_DEBUG, DEBUG5,
 				   "ic-proxy: %s: freed my placeholder",
 						 ic_proxy_client_get_name(client));
