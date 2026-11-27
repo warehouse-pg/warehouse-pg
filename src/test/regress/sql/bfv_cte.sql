@@ -516,3 +516,45 @@ EXPLAIN SELECT * FROM v_test;
 DROP VIEW IF EXISTS v_test;
 DROP TABLE IF EXISTS t1 CASCADE;
 DROP TABLE IF EXISTS t2 CASCADE;
+
+--
+-- WHPG: a CTE over a function with several result columns, which
+-- outputs a column that comes after the one it filters on. The Function Scan
+-- has to list the columns in the order of the function's result row, whatever
+-- the order in which the query uses them. The functions are not volatile, so
+-- that the CTE can be inlined.
+--
+CREATE FUNCTION bfv_cte_pairs(OUT k text, OUT v text) RETURNS SETOF record AS
+$$
+BEGIN
+	RETURN QUERY SELECT 'k' || i, 'v' || i FROM generate_series(1, 3) i;
+END
+$$ LANGUAGE plpgsql STABLE;
+
+-- same type for both columns
+WITH c AS (SELECT v FROM bfv_cte_pairs() WHERE k = 'k2') SELECT v FROM c;
+WITH c AS (SELECT v FROM bfv_cte_pairs() WHERE k = 'v2') SELECT v FROM c;
+EXPLAIN (VERBOSE, COSTS OFF)
+WITH c AS (SELECT v FROM bfv_cte_pairs() WHERE k = 'k2') SELECT v FROM c;
+-- the CTE used twice: it is not inlined then, a path on which the columns
+-- were in the right order all along; kept so that it stays that way
+WITH c AS (SELECT v FROM bfv_cte_pairs() WHERE k <> 'k2')
+SELECT c1.v, c2.v FROM c c1 JOIN c c2 ON c1.v < c2.v;
+-- different types: word is text, catcode is "char"
+WITH c AS (SELECT catcode FROM pg_get_keywords() WHERE word = 'all')
+SELECT catcode FROM c;
+
+-- three columns of different types, the filter column between the two that
+-- are output
+CREATE FUNCTION bfv_cte_triples(OUT a int, OUT b text, OUT c date) RETURNS SETOF record AS
+$$
+BEGIN
+	RETURN QUERY SELECT i, 'b' || i, date '2026-01-01' + i FROM generate_series(1, 3) i;
+END
+$$ LANGUAGE plpgsql STABLE;
+
+WITH x AS (SELECT a, c FROM bfv_cte_triples() WHERE b = 'b2') SELECT a, c FROM x;
+WITH x AS (SELECT c, a FROM bfv_cte_triples() WHERE b = 'b2') SELECT c, a FROM x;
+
+DROP FUNCTION bfv_cte_pairs();
+DROP FUNCTION bfv_cte_triples();

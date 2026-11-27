@@ -2693,7 +2693,11 @@ CTranslatorExprToDXL::PdxlnTVF(CExpression *pexprTVF,
 	CDXLNode *pdxlnTVF = GPOS_NEW(m_mp) CDXLNode(m_mp, dxl_op);
 	pdxlnTVF->SetProperties(dxl_properties);
 
-	CDXLNode *pdxlnPrL = PdxlnProjList(pcrsOutput, nullptr /*colref_array*/);
+	// The project list has to follow the function's result columns: the
+	// plan reads the n-th entry from the n-th attribute of the result row.
+	// Column ids are not in that order when the columns were remapped,
+	// e.g. in the copy of a CTE producer.
+	CDXLNode *pdxlnPrL = PdxlnProjList(pcrsOutput, popTVF->PdrgpcrOutput());
 	pdxlnTVF->AddChild(pdxlnPrL);  // project list
 
 	TranslateScalarChildren(pexprTVF, pdxlnTVF);
