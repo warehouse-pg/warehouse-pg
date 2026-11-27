@@ -448,8 +448,10 @@ checkDispatchResult(CdbDispatcherState *ds, int timeout_sec)
 	int			i;
 	int			timeout = 0;
 	bool		sentSignal = false;
+	bool		signalDue = false;
 	uint8 ftsVersion = 0;
 	struct timeval start_ts, now;
+	struct timeval signal_ts = {0, 0};
 	int64		diff_us;
 
 	CdbDispatchCmdAsync *pParms = (CdbDispatchCmdAsync *) ds->dispatchParams;
@@ -494,6 +496,39 @@ checkDispatchResult(CdbDispatcherState *ds, int timeout_sec)
 		 */
 		if ((CancelRequested() || meleeResults->errcode) && meleeResults->cancelOnError)
 			pParms->waitMode = DISPATCH_WAIT_CANCEL;
+
+		/*
+		 * Deliver the cancel (or finish) request once it has been due for
+		 * DISPATCH_WAIT_CANCEL_TIMEOUT_MSEC, whatever the wait below returns.
+		 * The poll-timeout branch sends it too, but only when a wait times
+		 * out, and that may never happen: a connection that is finished but
+		 * still readable -- a QE that exited after we were done with it and
+		 * left a notice and EOF unread -- or QEs that keep sending notices
+		 * make WaitEventSetWait() return at once on every iteration, and the
+		 * surviving QEs would never be told to stop.
+		 *
+		 * The delay is the one the timeout branch has always given: most
+		 * statements end with all QEs finishing by themselves within it, and
+		 * a request costs a connection and a backend on every segment.
+		 */
+		if (pParms->waitMode != DISPATCH_WAIT_NONE &&
+			pParms->waitMode != DISPATCH_WAIT_ACK_ROOT &&
+			!sentSignal && timeout_sec != 0)
+		{
+			gettimeofday(&now, NULL);
+			if (!signalDue)
+			{
+				signalDue = true;
+				signal_ts = now;
+			}
+			else if ((now.tv_sec - signal_ts.tv_sec) * 1000000L +
+					 ((int) now.tv_usec - (int) signal_ts.tv_usec) >=
+					 DISPATCH_WAIT_CANCEL_TIMEOUT_MSEC * 1000L)
+			{
+				signalQEs(pParms);
+				sentSignal = true;
+			}
+		}
 
 		/*
 		 * Which QEs are still running and could send results to us?
@@ -574,17 +609,23 @@ checkDispatchResult(CdbDispatcherState *ds, int timeout_sec)
 					dispatchResult->stillRunning = true;
 				}
 #endif
+				/* done with this QE: take its socket out of the wait set */
+				if (!dispatchResult->stillRunning && i >= 0 && added[i])
+					RemoveWaitEvent(DispWaitSet, added[i] - 1);
 				continue;
 			}
 
-			/* add segment sock to the waitset */
+			/*
+			 * Add the segment socket to the wait set, remembering its position
+			 * (plus one, so that zero still means "not added") so that it can
+			 * be removed again once the QE is finished.
+			 */
 			if (!added[i])
 			{
 				int 	sock = PQsocket(conn);
 				long 	ev_userdata = i; /* the index "i" as the event's userdata */
 				Assert(sock >= 0);
-				AddWaitEventToSet(DispWaitSet, WL_SOCKET_READABLE, sock, NULL, (void *)ev_userdata);
-				added[i] = 1;
+				added[i] = AddWaitEventToSet(DispWaitSet, WL_SOCKET_READABLE, sock, NULL, (void *)ev_userdata) + 1;
 			}
 			nfds++;
 		}
@@ -842,10 +883,19 @@ handlePollSuccess(CdbDispatchCmdAsync *pParms,
 		SegmentDatabaseDescriptor *segdbDesc = dispatchResult->segdbDesc;
 
 		/*
-		 * Skip if already finished or didn't dispatch.
+		 * Already finished with this QE, yet its socket became readable: the
+		 * backend went away after we were done with it (a segment reset kills
+		 * every backend of the session) and left a notice and EOF that nobody
+		 * will read.  Left in the set, such a socket stays readable forever
+		 * and starves the poll-timeout branch of checkDispatchResult().  Drop
+		 * it.  Normally the socket is removed when the QE finishes, below, so
+		 * this is a safety net.
 		 */
 		if (!dispatchResult->stillRunning)
+		{
+			RemoveWaitEvent(DispWaitSet, revents[i].pos);
 			continue;
+		}
 
 		if (pParms->waitMode == DISPATCH_WAIT_ACK_ROOT &&
 				 dispatchResult->receivedAckMsg)
@@ -878,6 +928,7 @@ handlePollSuccess(CdbDispatchCmdAsync *pParms,
 		if (finished)
 		{
 			dispatchResult->stillRunning = false;
+			RemoveWaitEvent(DispWaitSet, revents[i].pos);
 
 			ELOG_DISPATCHER_DEBUG("processResults says we are finished with %ld of %d (%s)",
 								  pos + 1, pParms->dispatchCount, segdbDesc->whoami);
