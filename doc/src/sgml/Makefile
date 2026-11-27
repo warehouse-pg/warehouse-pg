@@ -26,8 +26,8 @@ top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
 
 
-# Don't build the upstream HTML docs or man pages in Greenplum. The Greenplum
-# docs live in the gpdb-doc directory.
+# Don't build the upstream HTML docs or man pages. The WHPG docs are
+# maintained in the warehouse-pg/whpg-docs repository.
 #all: html man
 all:
 
