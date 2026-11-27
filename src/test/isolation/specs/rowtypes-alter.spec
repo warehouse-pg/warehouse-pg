@@ -108,9 +108,11 @@ setup
     SET max_parallel_workers = 1;
     SET parallel_leader_participation = off;
 }
+# Not VERBOSE: that would also list every planner setting changed from its
+# default, including the ones the test run is started with.
 step s3_explain
 {
-    EXPLAIN (COSTS OFF, VERBOSE) SELECT rta_wait_read(r)
+    EXPLAIN (COSTS OFF) SELECT rta_wait_read(r)
     FROM (SELECT ROW(id, b)::rta_type AS r FROM rta_ptab WHERE id = 1 OFFSET 0) s;
 }
 step s3_leader

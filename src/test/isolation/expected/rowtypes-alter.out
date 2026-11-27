@@ -124,19 +124,16 @@ ERROR:  row type of datum tuple was altered after the datum's creation
 
 starting permutation: s3_explain s2_lock s3_leader s2_alter_type s2_unlock
 step s3_explain: 
-    EXPLAIN (COSTS OFF, VERBOSE) SELECT rta_wait_read(r)
+    EXPLAIN (COSTS OFF) SELECT rta_wait_read(r)
     FROM (SELECT ROW(id, b)::rta_type AS r FROM rta_ptab WHERE id = 1 OFFSET 0) s;
 
-QUERY PLAN                                                                                        
---------------------------------------------------------------------------------------------------
-Subquery Scan on s                                                                                
-  Output: rta_wait_read(s.r)                                                                      
-  ->  Seq Scan on public.rta_ptab                                                                 
-        Output: ROW(rta_ptab.id, rta_ptab.b)::rta_type                                            
-        Filter: (rta_ptab.id = 1)                                                                 
-Optimizer: Postgres-based planner                                                                 
-Settings: min_parallel_table_scan_size = '0', parallel_setup_cost = '0', parallel_tuple_cost = '0'
-(7 rows)
+QUERY PLAN                       
+---------------------------------
+Subquery Scan on s               
+  ->  Seq Scan on rta_ptab       
+        Filter: (id = 1)         
+Optimizer: Postgres-based planner
+(4 rows)
 
 step s2_lock: SELECT pg_advisory_lock(1);
 pg_advisory_lock
