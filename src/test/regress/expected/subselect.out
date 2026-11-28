@@ -1281,6 +1281,7 @@ select * from int4_tbl where
                ->  Hash Join
                      Output: int4_tbl.f1, (RowIdExpr)
                      Hash Cond: (b.ten = CASE WHEN ((hashed SubPlan 1)) THEN int4_tbl.f1 ELSE NULL::integer END)
+                     Runtime Filter: declined: too few probe rows
                      ->  Seq Scan on public.tenk1 b
                            Output: b.unique1, b.unique2, b.two, b.four, b.ten, b.twenty, b.hundred, b.thousand, b.twothousand, b.fivethous, b.tenthous, b.odd, b.even, b.stringu1, b.stringu2, b.string4
                      ->  Hash
@@ -1318,6 +1319,7 @@ select * from int4_tbl o where (f1, f1) in
    ->  Hash Semi Join
          Output: o.f1
          Hash Cond: (o.f1 = "ANY_subquery".f1)
+         Runtime Filter: declined: too few probe rows
          ->  Seq Scan on public.int4_tbl o
                Output: o.f1
          ->  Hash
@@ -1762,6 +1764,7 @@ select * from x, x x2 where x.n = x2.n;
    ->  Hash Join
          Output: share0_ref2.f1, share0_ref2.n, share0_ref1.f1, share0_ref1.n
          Hash Cond: (share0_ref2.n = share0_ref1.n)
+         Runtime Filter: declined: the probe rows come from another slice
          ->  Redistribute Motion 3:3  (slice2; segments: 3)
                Output: share0_ref2.f1, share0_ref2.n
                Hash Key: share0_ref2.n
@@ -1790,6 +1793,7 @@ select * from x, x x2 where x.n = x2.n;
    ->  Hash Join
          Output: subselect_tbl.f1, ('regression'::name), subselect_tbl_1.f1, ('regression'::name)
          Hash Cond: (('regression'::name) = ('regression'::name))
+         Runtime Filter: declined: the probe rows come from another slice
          ->  Redistribute Motion 3:3  (slice2; segments: 3)
                Output: subselect_tbl.f1, ('regression'::name)
                Hash Key: ('regression'::name)
@@ -2096,8 +2100,8 @@ where
     where
       tl2.b = tl1.c
   );
-                                            QUERY PLAN                                             
----------------------------------------------------------------------------------------------------
+                                                     QUERY PLAN                                                     
+--------------------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    Output: tl1.a, tl1.b, tl1.c, tl1.d
    ->  Hash Join
@@ -2106,6 +2110,7 @@ where
          Hash Cond: ((tl1.c = tl2.b) AND (tl1.b = (max(tl2.a))))
          ->  Seq Scan on public.tl1
                Output: tl1.a, tl1.b, tl1.c, tl1.d
+               Runtime Filter: tl1.c
          ->  Hash
                Output: tl2.b, (max(tl2.a))
                ->  Broadcast Motion 3:3  (slice2; segments: 3)
@@ -2125,6 +2130,7 @@ where
                                              ->  Hash Join
                                                    Output: tl2.b, tl2.a
                                                    Hash Cond: (tl4.d = tl2.d)
+                                                   Runtime Filter: declined: the probe rows come from another slice
                                                    ->  Broadcast Motion 3:3  (slice4; segments: 3)
                                                          Output: tl4.d
                                                          ->  Seq Scan on public.tl4

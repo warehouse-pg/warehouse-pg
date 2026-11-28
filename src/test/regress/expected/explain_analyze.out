@@ -34,6 +34,8 @@ EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, SUMMARY OFF) SELECT t1.a FROM empty_tab
    ->  Hash Join (actual rows=0 loops=1)
          Hash Cond: (t1.a = t2.a)
          ->  Seq Scan on empty_table t1 (actual rows=0 loops=1)
+               Runtime Filter: a
+               Rows Removed by Runtime Filter: 0
          ->  Hash (never executed)
                ->  Seq Scan on empty_table t2 (never executed)
  Optimizer: Postgres query optimizer

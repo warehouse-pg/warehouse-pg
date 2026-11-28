@@ -1707,6 +1707,9 @@ _outNode(StringInfo str, void *obj)
 			case T_DMLActionExpr:
 				_outDMLActionExpr(str, obj);
 				break;
+			case T_RuntimeFilterExpr:
+				_outRuntimeFilterExpr(str, obj);
+				break;
 
 			case T_CreateTrigStmt:
 				_outCreateTrigStmt(str, obj);

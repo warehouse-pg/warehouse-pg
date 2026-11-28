@@ -2651,6 +2651,7 @@ select * from foo left outer join baz on (select bar.i from bar where bar.i = fo
    ->  Hash Right Join
          Output: foo.i, foo.j, baz.i, baz.j
          Hash Cond: (baz.j = (((SubPlan 1)) + 1))
+         Runtime Filter: declined: the probe rows come from another slice
          ->  Redistribute Motion 3:3  (slice2; segments: 3)
                Output: baz.i, baz.j
                Hash Key: baz.j
@@ -2716,6 +2717,7 @@ select * from foo where
                ->  Hash Join
                      Output: foo.i, foo.j, (RowIdExpr)
                      Hash Cond: (b.i = CASE WHEN ((hashed SubPlan 1)) THEN foo.i ELSE NULL::integer END)
+                     Runtime Filter: declined: too few probe rows
                      ->  Seq Scan on subselect_gp.baz b
                            Output: b.i, b.j
                      ->  Hash
@@ -3056,8 +3058,8 @@ explain (verbose, costs off) select * from (
 ) run_dt,
 extra_flow_dist1
 where dt < '2010-01-01'::date;
-                                                     QUERY PLAN                                                     
---------------------------------------------------------------------------------------------------------------------
+                                                         QUERY PLAN                                                         
+----------------------------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    Output: ((SubPlan 1)), extra_flow_dist1.a, extra_flow_dist1.b
    ->  Nested Loop
@@ -3139,8 +3141,8 @@ insert into issue_12656 values (1, 10001), (1, 10002);
 -- case 1, check basic DISTINCT ON
 explain (costs off, verbose)
 select * from issue_12656 where (i, j) in (select distinct on (i) i, j from issue_12656);
-                                          QUERY PLAN                                          
-----------------------------------------------------------------------------------------------
+                                                         QUERY PLAN                                                         
+----------------------------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    Output: issue_12656.i, issue_12656.j
    ->  Hash Join
@@ -3149,6 +3151,7 @@ select * from issue_12656 where (i, j) in (select distinct on (i) i, j from issu
          Hash Cond: ((issue_12656.i = issue_12656_1.i) AND (issue_12656.j = issue_12656_1.j))
          ->  Seq Scan on subselect_gp.issue_12656
                Output: issue_12656.i, issue_12656.j
+               Runtime Filter: issue_12656.i
          ->  Hash
                Output: issue_12656_1.i, issue_12656_1.j
                ->  Unique
@@ -3172,8 +3175,8 @@ select * from issue_12656 where (i, j) in (select distinct on (i) i, j from issu
 -- case 2, check DISTINCT ON and ORDER BY
 explain (costs off, verbose)
 select * from issue_12656 where (i, j) in (select distinct on (i) i, j from issue_12656 order by i, j asc);
-                                          QUERY PLAN                                          
-----------------------------------------------------------------------------------------------
+                                                         QUERY PLAN                                                         
+----------------------------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    Output: issue_12656.i, issue_12656.j
    ->  Hash Join
@@ -3182,6 +3185,7 @@ select * from issue_12656 where (i, j) in (select distinct on (i) i, j from issu
          Hash Cond: ((issue_12656.i = issue_12656_1.i) AND (issue_12656.j = issue_12656_1.j))
          ->  Seq Scan on subselect_gp.issue_12656
                Output: issue_12656.i, issue_12656.j
+               Runtime Filter: issue_12656.i
          ->  Hash
                Output: issue_12656_1.i, issue_12656_1.j
                ->  Unique
@@ -3204,8 +3208,8 @@ select * from issue_12656 where (i, j) in (select distinct on (i) i, j from issu
 
 explain (costs off, verbose)
 select * from issue_12656 where (i, j) in (select distinct on (i) i, j from issue_12656 order by i, j desc);
-                                               QUERY PLAN                                                
----------------------------------------------------------------------------------------------------------
+                                                         QUERY PLAN                                                         
+----------------------------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    Output: issue_12656.i, issue_12656.j
    ->  Hash Join
@@ -3214,6 +3218,7 @@ select * from issue_12656 where (i, j) in (select distinct on (i) i, j from issu
          Hash Cond: ((issue_12656.i = issue_12656_1.i) AND (issue_12656.j = issue_12656_1.j))
          ->  Seq Scan on subselect_gp.issue_12656
                Output: issue_12656.i, issue_12656.j
+               Runtime Filter: issue_12656.i
          ->  Hash
                Output: issue_12656_1.i, issue_12656_1.j
                ->  Unique
@@ -3355,8 +3360,8 @@ with cte(table_oid, size) as
 select pc.relname, ts.size
 from pg_class pc, cte ts
 where pc.oid = ts.table_oid;
-                                                                                                  QUERY PLAN                                                                                                   
----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+                                                                                                            QUERY PLAN                                                                                                            
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    Output: pc.relname, (sum((pg_relation_size((pg_class.oid)::regclass, 'main'::text))))
    ->  Nested Loop
@@ -3397,8 +3402,8 @@ with cte(table_oid, size) as
 select pc.relname, ts.size
 from pg_class pc, cte ts
 where pc.oid = ts.table_oid;
-                                                                                                                   QUERY PLAN                                                                                                                    
--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+                                                                                                                             QUERY PLAN                                                                                                                             
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    Output: pc.relname, (sum((pg_relation_size((pg_class.oid)::regclass, 'main'::text))))
    ->  Nested Loop
@@ -3438,6 +3443,7 @@ explain select t.* from sublink_outer_table t join (select y ,10*avg(x) s from s
          Hash Cond: (t.b = sublink_inner_table.y)
          Join Filter: ((t.a)::numeric > (('10'::numeric * avg(sublink_inner_table.x))))
          ->  Seq Scan on sublink_outer_table t  (cost=0.00..321.00 rows=28700 width=8)
+               Runtime Filter: b
          ->  Hash  (cost=431.83..431.83 rows=333 width=40)
                ->  HashAggregate  (cost=423.50..428.50 rows=333 width=40)
                      Group Key: sublink_inner_table.y
@@ -3453,12 +3459,13 @@ explain select * from sublink_outer_table T where a > (select 10*avg(x) from sub
          Hash Cond: (t.b = r.y)
          Join Filter: ((t.a)::numeric > (('10'::numeric * avg(r.x))))
          ->  Seq Scan on sublink_outer_table t  (cost=0.00..321.00 rows=28700 width=8)
+               Runtime Filter: b
          ->  Hash  (cost=431.83..431.83 rows=333 width=40)
                ->  HashAggregate  (cost=423.50..428.50 rows=333 width=40)
                      Group Key: r.y
                      ->  Seq Scan on sublink_inner_table r  (cost=0.00..293.67 rows=25967 width=12)
  Optimizer: Postgres-based planner
-(10 rows)
+(11 rows)
 
 set enable_hashagg to off;
 explain select t.* from sublink_outer_table t join (select y ,10*avg(x) s from sublink_inner_table group by y) RR on RR.y = t.b and t.a > rr.s;
@@ -3469,6 +3476,7 @@ explain select t.* from sublink_outer_table t join (select y ,10*avg(x) s from s
          Hash Cond: (t.b = sublink_inner_table.y)
          Join Filter: ((t.a)::numeric > (('10'::numeric * avg(sublink_inner_table.x))))
          ->  Seq Scan on sublink_outer_table t  (cost=0.00..321.00 rows=28700 width=8)
+               Runtime Filter: b
          ->  Hash  (cost=2400.67..2400.67 rows=333 width=40)
                ->  GroupAggregate  (cost=2197.59..2397.34 rows=333 width=40)
                      Group Key: sublink_inner_table.y
@@ -3486,6 +3494,7 @@ explain select * from sublink_outer_table T where a > (select 10*avg(x) from sub
          Hash Cond: (t.b = r.y)
          Join Filter: ((t.a)::numeric > (('10'::numeric * avg(r.x))))
          ->  Seq Scan on sublink_outer_table t  (cost=0.00..321.00 rows=28700 width=8)
+               Runtime Filter: b
          ->  Hash  (cost=2400.67..2400.67 rows=333 width=40)
                ->  GroupAggregate  (cost=2197.59..2397.34 rows=333 width=40)
                      Group Key: r.y
@@ -3493,7 +3502,7 @@ explain select * from sublink_outer_table T where a > (select 10*avg(x) from sub
                            Sort Key: r.y
                            ->  Seq Scan on sublink_inner_table r  (cost=0.00..293.67 rows=25967 width=12)
  Optimizer: Postgres-based planner
-(12 rows)
+(13 rows)
 
 drop table sublink_outer_table;
 drop table sublink_inner_table;
@@ -3511,12 +3520,13 @@ explain (costs off) select * from r where b in (select b from s where c=10 order
    ->  Hash Semi Join
          Hash Cond: (r.b = s.b)
          ->  Seq Scan on r
+               Runtime Filter: b
          ->  Hash
                ->  Broadcast Motion 3:3  (slice2; segments: 3)
                      ->  Seq Scan on s
                            Filter: (c = 10)
  Optimizer: Postgres query optimizer
-(9 rows)
+(10 rows)
 
 select * from r where b in (select b from s where c=10 order by r.c);
  a | b | c 
@@ -3553,12 +3563,13 @@ explain (costs off) select * from r where b in (select b from s where c=10 order
    ->  Hash Semi Join
          Hash Cond: (r.b = s.b)
          ->  Seq Scan on r
+               Runtime Filter: b
          ->  Hash
                ->  Broadcast Motion 3:3  (slice2; segments: 3)
                      ->  Seq Scan on s
                            Filter: (c = 10)
  Optimizer: Postgres query optimizer
-(9 rows)
+(10 rows)
 
 select * from r where b in (select b from s where c=10 order by r.c, b);
  a | b | c 
@@ -3597,12 +3608,13 @@ explain (costs off) select * from r where b in (select b from s where c=10 order
    ->  Hash Semi Join
          Hash Cond: (r.b = s.b)
          ->  Seq Scan on r
+               Runtime Filter: b
          ->  Hash
                ->  Broadcast Motion 3:3  (slice2; segments: 3)
                      ->  Seq Scan on s
                            Filter: (c = 10)
  Optimizer: Postgres query optimizer
-(9 rows)
+(10 rows)
 
 select * from r where b in (select b from s where c=10 order by c);
  a | b | c 
@@ -3617,6 +3629,7 @@ explain (costs off) select * from r where b in (select b from s where c=10 order
    ->  Hash Semi Join
          Hash Cond: (r.b = "ANY_subquery".b)
          ->  Seq Scan on r
+               Runtime Filter: b
          ->  Hash
                ->  Broadcast Motion 1:3  (slice2; segments: 1)
                      ->  Subquery Scan on "ANY_subquery"
@@ -3626,7 +3639,7 @@ explain (costs off) select * from r where b in (select b from s where c=10 order
                                              ->  Seq Scan on s
                                                    Filter: (c = 10)
  Optimizer: Postgres query optimizer
-(13 rows)
+(14 rows)
 
 select * from r where b in (select b from s where c=10 order by c limit 2);
  a | b | c 
@@ -4381,13 +4394,14 @@ select count(*) from foo where a > (select max(x)  from bar where foo.a = bar.x)
                Hash Cond: (foo.a = bar.x)
                Join Filter: (foo.a > (max(bar.x)))
                ->  Seq Scan on foo
+                     Runtime Filter: a
                ->  Hash
                      ->  HashAggregate
                            Group Key: bar.x
                            Filter: (bar.x > max(bar.x))
                            ->  Seq Scan on bar
  Optimizer: Postgres-based planner
-(12 rows)
+(13 rows)
 
 select count(*) from foo where a > (select max(x)  from bar where foo.a = bar.x);
  count 
@@ -4405,13 +4419,14 @@ select count(*) from foo where a > (select max(x + 3) / 2  from bar where foo.a 
                Hash Cond: (foo.a = bar.x)
                Join Filter: (foo.a > ((max((bar.x + 3)) / 2)))
                ->  Seq Scan on foo
+                     Runtime Filter: a
                ->  Hash
                      ->  HashAggregate
                            Group Key: bar.x
                            Filter: (bar.x > (max((bar.x + 3)) / 2))
                            ->  Seq Scan on bar
  Optimizer: Postgres-based planner
-(12 rows)
+(13 rows)
 
 select count(*) from foo where a > (select max(x + 3) / 2  from bar where foo.a = bar.x);
  count 
@@ -4456,6 +4471,7 @@ select count(*) from foo where a + 5 > (select percentile_cont(0.5) within group
                Hash Cond: (foo.a = bar.x)
                Join Filter: (((foo.a + 5))::double precision > (percentile_cont('0.5'::double precision) WITHIN GROUP (ORDER BY ((bar.x)::double precision))))
                ->  Seq Scan on foo
+                     Runtime Filter: a
                ->  Hash
                      ->  GroupAggregate
                            Group Key: bar.x
@@ -4463,7 +4479,7 @@ select count(*) from foo where a + 5 > (select percentile_cont(0.5) within group
                                  Sort Key: bar.x
                                  ->  Seq Scan on bar
  Optimizer: Postgres-based planner
-(13 rows)
+(14 rows)
 
 select count(*) from foo where a + 5 > (select percentile_cont(0.5) within group(order by x) from bar where foo.a = bar.x);
  count 
@@ -4506,12 +4522,13 @@ select count(*) from foo where a::text = (select string_agg(x::text, ',') from b
          ->  Hash Join
                Hash Cond: ((foo.a = bar.x) AND ((foo.a)::text = (string_agg((bar.x)::text, ','::text))))
                ->  Seq Scan on foo
+                     Runtime Filter: a
                ->  Hash
                      ->  HashAggregate
                            Group Key: bar.x
                            ->  Seq Scan on bar
  Optimizer: Postgres-based planner
-(10 rows)
+(11 rows)
 
 select count(*) from foo where a::text = (select string_agg(x::text, ',') from bar where foo.a = bar.x);
  count 

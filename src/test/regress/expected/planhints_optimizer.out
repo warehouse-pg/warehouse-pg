@@ -28,8 +28,8 @@ ANALYZE my_table;
 ANALYZE your_table;
 ANALYZE our_table;
 EXPLAIN (costs off) SELECT t1.a, t2.a, t3.a FROM my_table AS t1 JOIN your_table AS t2 ON t1.a=t2.a JOIN our_table AS t3 ON t3.a=t2.a WHERE t1.a<42;
-                                QUERY PLAN                                
---------------------------------------------------------------------------
+                                 QUERY PLAN                                  
+-----------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Join
          Hash Cond: (t2.a = t3.a)
@@ -78,7 +78,7 @@ ScanHint: t2[indexes: types:SeqScan]
 ScanHint: t3[indexes: types:SeqScan]
 not used hint:
 ]",
-                              QUERY PLAN
+                              QUERY PLAN                              
 ----------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Join
@@ -87,6 +87,8 @@ not used hint:
                Hash Cond: (t1.a = t3.a)
                ->  Seq Scan on my_table t1
                      Filter: (a < 42)
+                     Runtime Filter: a
+                     Runtime Filter: a
                ->  Hash
                      ->  Dynamic Seq Scan on our_table t3
                            Number of partitions to scan: 4 (out of 4)
@@ -95,7 +97,7 @@ not used hint:
                ->  Seq Scan on your_table t2
                      Filter: (a < 42)
  Optimizer: GPORCA
-(15 rows)
+(17 rows)
 
 -- NB: IndexScan on AO table is supported only for planner.
 /*+
@@ -1284,7 +1286,7 @@ used hint:
 ScanHint: t1[indexes: types:NoSeqScan,NoIndexScan,NoIndexOnlyScan]
 not used hint:
 ]",
-                    QUERY PLAN
+                    QUERY PLAN                    
 --------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Bitmap Heap Scan on my_table t1
@@ -1320,7 +1322,7 @@ used hint:
 ScanHint: t2[indexes: types:NoSeqScan,NoIndexScan,NoIndexOnlyScan]
 not used hint:
 ]",
-                     QUERY PLAN
+                     QUERY PLAN                     
 ----------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Bitmap Heap Scan on your_table t2
@@ -1356,7 +1358,7 @@ used hint:
 ScanHint: t3[indexes: types:NoSeqScan,NoIndexScan,NoIndexOnlyScan]
 not used hint:
 ]",
-                        QUERY PLAN
+                        QUERY PLAN                         
 -----------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Dynamic Bitmap Heap Scan on our_table t3
@@ -1394,7 +1396,7 @@ ScanHint: t2[indexes: types:SeqScan]
 ScanHint: t3[indexes: types:SeqScan]
 not used hint:
 ]",
-                              QUERY PLAN
+                              QUERY PLAN                              
 ----------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Join
@@ -1403,6 +1405,8 @@ not used hint:
                Hash Cond: (t1.a = t3.a)
                ->  Seq Scan on my_table t1
                      Filter: (a < 42)
+                     Runtime Filter: a
+                     Runtime Filter: a
                ->  Hash
                      ->  Dynamic Seq Scan on our_table t3
                            Number of partitions to scan: 4 (out of 4)
@@ -1411,7 +1415,7 @@ not used hint:
                ->  Seq Scan on your_table t2
                      Filter: (a < 42)
  Optimizer: GPORCA
-(15 rows)
+(17 rows)
 
 -- NB: IndexScan on AO table is supported only for planner.
 --     scan (e.g. t2)
@@ -1578,7 +1582,7 @@ ScanHint: t2[indexes:your_bitmap_index types:BitmapScan]
 ScanHint: t3[indexes:our_bitmap_index types:BitmapScan]
 not used hint:
 ]",
-                              QUERY PLAN
+                              QUERY PLAN                               
 -----------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Join
@@ -1622,7 +1626,7 @@ ScanHint: t2[indexes: types:BitmapScan]
 ScanHint: t3[indexes: types:BitmapScan]
 not used hint:
 ]",
-                              QUERY PLAN
+                              QUERY PLAN                               
 -----------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Join
@@ -1679,7 +1683,7 @@ ScanHint: t2[indexes: types:SeqScan]
 ScanHint: t3[indexes: types:SeqScan]
 not used hint:
 ]",
-                              QUERY PLAN
+                              QUERY PLAN                              
 ----------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Join
@@ -1688,6 +1692,8 @@ not used hint:
                Hash Cond: (t1.a = t3.a)
                ->  Seq Scan on my_table t1
                      Filter: (a < 42)
+                     Runtime Filter: a
+                     Runtime Filter: a
                ->  Hash
                      ->  Dynamic Seq Scan on our_table t3
                            Number of partitions to scan: 4 (out of 4)
@@ -1696,7 +1702,7 @@ not used hint:
                ->  Seq Scan on your_table t2
                      Filter: (a < 42)
  Optimizer: GPORCA
-(15 rows)
+(17 rows)
 
 -- NB: IndexScan on AO table is supported only for planner.
 --     scan (e.g. t2)
@@ -2105,7 +2111,7 @@ BitmapScanRegexp(t1 '*awesome*')
 not used hint:
 duplication hint:
 error hint:
-                QUERY PLAN
+                QUERY PLAN                
 ------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Seq Scan on my_table t1
@@ -2134,7 +2140,7 @@ LOG:  2024-05-09 18:32:01:159796 CDT,THD000,TRACE,"PlanHint: [
 used hint:
 not used hint:
 ]",
-                       QUERY PLAN
+                       QUERY PLAN                       
 --------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Index Scan using my_awesome_index on my_table t1
@@ -2159,7 +2165,7 @@ used hint:
 ScanHint: t1[indexes: types:SeqScan,NoIndexScan]
 not used hint:
 ]",
-                QUERY PLAN
+                QUERY PLAN                
 ------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Seq Scan on my_table t1
@@ -2183,7 +2189,7 @@ used hint:
 ScanHint: t1[indexes: types:SeqScan,NoIndexScan]
 not used hint:
 ]",
-                QUERY PLAN
+                QUERY PLAN                
 ------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Seq Scan on my_table t1
@@ -2206,17 +2212,18 @@ ScanHint: t1[indexes: types:SeqScan]
 ScanHint: t2[indexes: types:SeqScan]
 not used hint:
 ]",
-                 QUERY PLAN
+                 QUERY PLAN                  
 ---------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Semi Join
          Hash Cond: (t1.a = t2.a)
          ->  Seq Scan on my_table t1
                Filter: (NOT (a IS NULL))
+               Runtime Filter: a
          ->  Hash
                ->  Seq Scan on your_table t2
  Optimizer: GPORCA
-(8 rows)
+(9 rows)
 
 /*+
     SeqScan(t2) SeqScan(t1)

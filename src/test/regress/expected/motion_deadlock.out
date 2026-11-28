@@ -49,6 +49,7 @@ where x.b = y.b;
                Output: PARTIAL count(1)
                ->  Hash Join
                      Hash Cond: (x.b = y.b)
+                     Runtime Filter: declined: the probe rows come from another slice
                      ->  Redistribute Motion 3:3  (slice2; segments: 3)
                            Output: x.b
                            Hash Key: x.b
@@ -210,6 +211,7 @@ from
                ->  Hash Join
                      Hash Cond: (x.b = y.a)
                      Join Filter: ((x.b + y.a) > (SubPlan 1))
+                     Runtime Filter: declined: the probe rows come from another slice
                      ->  Redistribute Motion 3:3  (slice2; segments: 3)
                            Output: x.b, x.a
                            Hash Key: x.b
@@ -381,6 +383,7 @@ where
                Output: PARTIAL count(1)
                ->  Hash Left Join
                      Hash Cond: (x.b = y.a)
+                     Runtime Filter: declined: the join keeps unmatched probe rows
                      Filter: ((x.a IS NULL) OR (SubPlan 1))
                      ->  Redistribute Motion 3:3  (slice3; segments: 3)
                            Output: x.b, x.a
@@ -563,6 +566,7 @@ from t_motion_deadlock_1 x join t_motion_deadlock_2 y on x.b = y.a;
    ->  Hash Join
          Output: (SubPlan 1)
          Hash Cond: (x.b = y.a)
+         Runtime Filter: declined: the probe rows come from another slice
          ->  Redistribute Motion 3:3  (slice3; segments: 3)
                Output: x.a, x.b
                Hash Key: x.b
@@ -752,6 +756,7 @@ explain (costs off, verbose) update mv_15719 set a = 6;
                      Hash Cond: (t1_15719.a = t2_15719.a)
                      ->  Seq Scan on public.t1_15719
                            Output: t1_15719.ctid, t1_15719.gp_segment_id, t1_15719.a
+                           Runtime Filter: t1_15719.a
                      ->  Hash
                            Output: t2_15719.ctid, t2_15719.a
                            ->  HashAggregate

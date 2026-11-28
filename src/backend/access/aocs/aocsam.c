@@ -48,6 +48,7 @@
 #include "storage/smgr.h"
 #include "utils/builtins.h"
 #include "cdb/cdbaocsam_stagedscan.h"
+#include "utils/runtimefilter.h"
 #include "utils/datumstream.h"
 #include "utils/faultinjector.h"
 #include "utils/guc.h"
@@ -870,6 +871,7 @@ aocs_endscan(AOCSScanDesc scan)
 		FreeExprContext(scan->stagedFallbackEcontext, true);
 		scan->stagedFallbackEcontext = NULL;
 		scan->stagedFallbackQual = NULL;
+		scan->stagedFallbackProbes = NIL;
 	}
 
 	if (scan->columnScanInfo.ds)
@@ -2087,8 +2089,18 @@ stagedscan_fallback_getnext(AOCSScanDesc scan, ScanDirection direction,
 		MemoryContext oldctx = MemoryContextSwitchTo(scan->columnScanInfo.scanCtx);
 
 		scan->stagedFallbackEcontext = CreateStandaloneExprContext();
-		/* parent is NULL: the plan's qual has no subplans or params here */
+		/*
+		 * WHPG: the only Param a staged qual reads is a runtime filter's
+		 * (runtimefilter.c); the scan node handed its values over.
+		 */
+		if (scan->stagedParamExecVals == NULL &&
+			stagedscan_contains_param((Node *) scan->stagedQual))
+			elog(ERROR, "staged scan qual reads a parameter but the scan has no parameter values");
+		scan->stagedFallbackEcontext->ecxt_param_exec_vals = scan->stagedParamExecVals;
+		/* parent is NULL: the plan's qual has no subplans; its Params are the above */
 		scan->stagedFallbackQual = ExecInitQual(scan->stagedQual, NULL);
+		scan->stagedFallbackProbes =
+			runtimefilter_qual_probes(scan->stagedFallbackQual);
 		MemoryContextSwitchTo(oldctx);
 	}
 	econtext = scan->stagedFallbackEcontext;
@@ -2186,11 +2198,21 @@ aocs_stagedscan_getnext_guts(AOCSScanDesc scan, ScanDirection direction,
 	if (scan->stagedScan == NULL)
 	{
 		MemoryContext oldctx = MemoryContextSwitchTo(scan->columnScanInfo.scanCtx);
+		ExprContext *econtext = CreateStandaloneExprContext();
+
+		/*
+		 * WHPG: the only Param a staged qual reads is a runtime filter's
+		 * (runtimefilter.c); the scan node handed its values over.
+		 */
+		if (scan->stagedParamExecVals == NULL &&
+			stagedscan_contains_param((Node *) scan->stagedQual))
+			elog(ERROR, "staged scan qual reads a parameter but the scan has no parameter values");
+		econtext->ecxt_param_exec_vals = scan->stagedParamExecVals;
 
 		scan->stagedScan = stagedscan_begin(scan, scan->stagedFilterAttnos,
 											scan->stagedPhaseAWidth,
 											scan->stagedQual,
-											CreateStandaloneExprContext(),
+											econtext,
 											scan->columnScanInfo.scanCtx);
 		MemoryContextSwitchTo(oldctx);
 	}

@@ -335,10 +335,11 @@ explain (costs off)
                ->  Hash Join
                      Hash Cond: (r.id = s.id)
                      ->  Seq Scan on simple r
+                           Runtime Filter: id
                      ->  Hash
                            ->  Seq Scan on bigger_than_it_looks s
  Optimizer: Postgres query optimizer
-(9 rows)
+(10 rows)
 
 select count(*) FROM simple r JOIN bigger_than_it_looks s USING (id);
  count 
@@ -373,10 +374,11 @@ explain (costs off)
                ->  Hash Join
                      Hash Cond: (r.id = s.id)
                      ->  Seq Scan on simple r
+                           Runtime Filter: id
                      ->  Hash
                            ->  Seq Scan on bigger_than_it_looks s
  Optimizer: Postgres query optimizer
-(9 rows)
+(10 rows)
 
 select count(*) from simple r join bigger_than_it_looks s using (id);
  count 
@@ -411,10 +413,11 @@ explain (costs off)
                ->  Hash Join
                      Hash Cond: (r.id = s.id)
                      ->  Seq Scan on simple r
+                           Runtime Filter: id
                      ->  Hash
                            ->  Seq Scan on bigger_than_it_looks s
  Optimizer: Postgres query optimizer
-(9 rows)
+(10 rows)
 
 select count(*) from simple r join bigger_than_it_looks s using (id);
  count 
@@ -453,10 +456,11 @@ explain (costs off)
                ->  Hash Join
                      Hash Cond: (r.id = s.id)
                      ->  Seq Scan on simple r
+                           Runtime Filter: id
                      ->  Hash
                            ->  Seq Scan on extremely_skewed s
  Optimizer: Postgres query optimizer
-(9 rows)
+(10 rows)
 
 select count(*) from simple r join extremely_skewed s using (id);
  count 
@@ -490,10 +494,11 @@ explain (costs off)
                ->  Hash Join
                      Hash Cond: (r.id = s.id)
                      ->  Seq Scan on simple r
+                           Runtime Filter: id
                      ->  Hash
                            ->  Seq Scan on extremely_skewed s
  Optimizer: Postgres query optimizer
-(9 rows)
+(10 rows)
 
 select count(*) from simple r join extremely_skewed s using (id);
  count 
@@ -527,10 +532,11 @@ explain (costs off)
                ->  Hash Join
                      Hash Cond: (r.id = s.id)
                      ->  Seq Scan on simple r
+                           Runtime Filter: id
                      ->  Hash
                            ->  Seq Scan on extremely_skewed s
  Optimizer: Postgres query optimizer
-(9 rows)
+(10 rows)
 
 select count(*) from simple r join extremely_skewed s using (id);
  count 
@@ -966,10 +972,11 @@ explain (costs off) select * from join_hash_t_small, join_hash_t_big where a = b
    ->  Hash Join
          Hash Cond: (join_hash_t_big.b = join_hash_t_small.a)
          ->  Seq Scan on join_hash_t_big
+               Runtime Filter: b
          ->  Hash
                ->  Seq Scan on join_hash_t_small
  Optimizer: Postgres query optimizer
-(7 rows)
+(8 rows)
 
 rollback to settings;
 rollback;
@@ -1015,6 +1022,7 @@ WHERE
          Output: hjtest_1.a, hjtest_2.a, (hjtest_1.tableoid)::regclass, (hjtest_2.tableoid)::regclass
          Hash Cond: ((hjtest_1.id = (SubPlan 1)) AND ((SubPlan 2) = (SubPlan 3)))
          Join Filter: (hjtest_1.a <> hjtest_2.b)
+         Runtime Filter: declined: the probe rows come from another slice
          ->  Redistribute Motion 3:3  (slice2; segments: 3)
                Output: hjtest_1.a, hjtest_1.tableoid, hjtest_1.id, hjtest_1.b
                Hash Key: hjtest_1.id, (SubPlan 2)
@@ -1079,6 +1087,7 @@ WHERE
          Output: hjtest_1.a, hjtest_2.a, (hjtest_1.tableoid)::regclass, (hjtest_2.tableoid)::regclass
          Hash Cond: (((SubPlan 1) = hjtest_1.id) AND ((SubPlan 3) = (SubPlan 2)))
          Join Filter: (hjtest_1.a <> hjtest_2.b)
+         Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
          ->  Redistribute Motion 3:3  (slice2; segments: 3)
                Output: hjtest_2.a, hjtest_2.tableoid, hjtest_2.id, hjtest_2.c, hjtest_2.b
                Hash Key: (SubPlan 1), (SubPlan 3)

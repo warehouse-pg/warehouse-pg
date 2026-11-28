@@ -3105,6 +3105,18 @@ _equalRowIdExpr(const RowIdExpr *a, const RowIdExpr *b)
 }
 
 static bool
+_equalRuntimeFilterExpr(const RuntimeFilterExpr *a, const RuntimeFilterExpr *b)
+{
+	COMPARE_SCALAR_FIELD(paramid);
+	COMPARE_NODE_FIELD(key);
+	COMPARE_SCALAR_FIELD(hashop);
+	COMPARE_SCALAR_FIELD(collation);
+	COMPARE_SCALAR_FIELD(selectivity);
+
+	return true;
+}
+
+static bool
 _equalXmlSerialize(const XmlSerialize *a, const XmlSerialize *b)
 {
 	COMPARE_SCALAR_FIELD(xmloption);
@@ -4057,6 +4069,9 @@ equal(const void *a, const void *b)
 			break;
 		case T_RowIdExpr:
 			retval = _equalRowIdExpr(a, b);
+			break;
+		case T_RuntimeFilterExpr:
+			retval = _equalRuntimeFilterExpr(a, b);
 			break;
 		case T_TriggerTransition:
 			retval = _equalTriggerTransition(a, b);

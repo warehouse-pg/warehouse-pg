@@ -68,6 +68,7 @@ typedef struct CdbExplain_StatInst
 	double		stagedBlocksDecompressed;	/* Staged Scan: Phase B blocks decompressed */
 	double		stagedBlocksSkipped;	/* Staged Scan: Phase B blocks skipped */
 	double		stagedBlocksSeeked;	/* Staged Scan: Phase B block-directory seeks */
+	double		rfRowsRemoved;	/* runtime filters: rows the scan's removed */
 
 	BufferUsage bufusage;	/* buffer usage by plan node */
 	TuplesortInstrumentation sortstats; /* Sort stats, if this is a Sort node */
@@ -143,6 +144,7 @@ typedef struct CdbExplain_NodeSummary
 	CdbExplain_Agg stagedBlocksDecompressed;
 	CdbExplain_Agg stagedBlocksSkipped;
 	CdbExplain_Agg stagedBlocksSeeked;
+	CdbExplain_Agg rfRowsRemoved;
 
 	/* Summary of buffer usage over node's workers */
 	CdbExplain_Agg shared_blks_hit;
@@ -890,6 +892,7 @@ cdbexplain_collectStatsFromNode(PlanState *planstate, CdbExplain_SendStatCtx *ct
 	si->stagedBlocksDecompressed = instr->stagedBlocksDecompressed;
 	si->stagedBlocksSkipped = instr->stagedBlocksSkipped;
 	si->stagedBlocksSeeked = instr->stagedBlocksSeeked;
+	si->rfRowsRemoved = instr->rfRowsRemoved;
 
 	si->bufusage = instr->bufusage;
 
@@ -1044,6 +1047,7 @@ cdbexplain_depositStatsToNode(PlanState *planstate, CdbExplain_RecvStatCtx *ctx)
 	CdbExplain_DepStatAcc stagedBlocksDecompressed;
 	CdbExplain_DepStatAcc stagedBlocksSkipped;
 	CdbExplain_DepStatAcc stagedBlocksSeeked;
+	CdbExplain_DepStatAcc rfRowsRemoved;
 
 	/* Buffer usage counters */
 	CdbExplain_DepStatAcc shared_blks_hit;
@@ -1090,6 +1094,7 @@ cdbexplain_depositStatsToNode(PlanState *planstate, CdbExplain_RecvStatCtx *ctx)
 	cdbexplain_depStatAcc_init0(&stagedBlocksDecompressed);
 	cdbexplain_depStatAcc_init0(&stagedBlocksSkipped);
 	cdbexplain_depStatAcc_init0(&stagedBlocksSeeked);
+	cdbexplain_depStatAcc_init0(&rfRowsRemoved);
 	cdbexplain_depStatAcc_init0(&shared_blks_hit);
 	cdbexplain_depStatAcc_init0(&shared_blks_read);
 	cdbexplain_depStatAcc_init0(&shared_blks_written);
@@ -1147,6 +1152,8 @@ cdbexplain_depositStatsToNode(PlanState *planstate, CdbExplain_RecvStatCtx *ctx)
 		cdbexplain_depStatAcc_upd(&stagedBlocksDecompressed, rsi->stagedBlocksDecompressed, rsh, rsi, nsi);
 		cdbexplain_depStatAcc_upd(&stagedBlocksSkipped, rsi->stagedBlocksSkipped, rsh, rsi, nsi);
 		cdbexplain_depStatAcc_upd(&stagedBlocksSeeked, rsi->stagedBlocksSeeked, rsh, rsi, nsi);
+		cdbexplain_depStatAcc_upd(&rfRowsRemoved, rsi->rfRowsRemoved,
+								  rsh, rsi, nsi);
 		cdbexplain_depStatAcc_upd(&shared_blks_hit, rsi->bufusage.shared_blks_hit, rsh, rsi, nsi);
 		cdbexplain_depStatAcc_upd(&shared_blks_read, rsi->bufusage.shared_blks_read, rsh, rsi, nsi);
 		cdbexplain_depStatAcc_upd(&shared_blks_written, rsi->bufusage.shared_blks_written, rsh, rsi, nsi);
@@ -1178,6 +1185,7 @@ cdbexplain_depositStatsToNode(PlanState *planstate, CdbExplain_RecvStatCtx *ctx)
 	ns->stagedBlocksDecompressed = stagedBlocksDecompressed.agg;
 	ns->stagedBlocksSkipped = stagedBlocksSkipped.agg;
 	ns->stagedBlocksSeeked = stagedBlocksSeeked.agg;
+	ns->rfRowsRemoved = rfRowsRemoved.agg;
 
 	/* Roll up summary over all nodes of slice into RecvStatCtx. */
 	ctx->workmemused_max = Max(ctx->workmemused_max, workmemused.agg.vmax);
@@ -1197,6 +1205,7 @@ cdbexplain_depositStatsToNode(PlanState *planstate, CdbExplain_RecvStatCtx *ctx)
 	instr->stagedBlocksDecompressed = ns->stagedBlocksDecompressed.vsum;
 	instr->stagedBlocksSkipped = ns->stagedBlocksSkipped.vsum;
 	instr->stagedBlocksSeeked = ns->stagedBlocksSeeked.vsum;
+	instr->rfRowsRemoved = ns->rfRowsRemoved.vsum;
 
 	/*
 	 * Put winner's stats into QD PlanState's Instrument node.

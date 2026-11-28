@@ -210,6 +210,7 @@ EXPLAIN (COSTS OFF) DELETE FROM keo5 WHERE x IN (SELECT x FROM keo5 WHERE EXISTS
    ->  Hash Semi Join
          Hash Cond: (keo5.x = keo5_2.x)
          ->  Seq Scan on keo5
+               Runtime Filter: x
          ->  Hash
                ->  Nested Loop Semi Join
                      Join Filter: true

@@ -186,10 +186,11 @@ WHERE mpp22263.unique1 = v.i and mpp22263.stringu1 = v.j;
    ->  Hash Join  (cost=0.06..278.70 rows=5 width=280)
          Hash Cond: ((mpp22263.unique1 = "*VALUES*".column1) AND ((mpp22263.stringu1)::text = "*VALUES*".column2))
          ->  Seq Scan on mpp22263  (cost=0.00..219.00 rows=3967 width=244)
+               Runtime Filter: unique1
          ->  Hash  (cost=0.03..0.03 rows=1 width=36)
                ->  Values Scan on "*VALUES*"  (cost=0.00..0.03 rows=1 width=36)
  Optimizer status: Postgres query optimizer
-(7 rows)
+(8 rows)
 
 -- atmsort.pm masks out differences in the Filter line, so just memorizing
 -- the output of the above EXPLAIN isn't enough to catch a faulty Filter line.
@@ -200,9 +201,10 @@ select * from mpp22263, (values(147, 'RFAAAA'), (931, 'VJAAAA')) as v (i, j)
 WHERE mpp22263.unique1 = v.i and mpp22263.stringu1 = v.j;
   $$) as et
 WHERE et like '%Filter: %';
- et 
-----
-(0 rows)
+                  et                   
+---------------------------------------
+               Runtime Filter: unique1
+(1 row)
 
 --
 -- Join condition in explain plan should represent constants with proper

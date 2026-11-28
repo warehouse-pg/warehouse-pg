@@ -889,6 +889,7 @@ explain (costs off) select t1.gp_segment_id, t2.gp_segment_id, * from t_test_dd_
    ->  Hash Join
          Hash Cond: (t2.id = t1.gp_segment_id)
          ->  Seq Scan on t_test_dd_via_segid t2
+               Runtime Filter: id
          ->  Hash
                ->  Redistribute Motion 3:3  (slice2; segments: 3)
                      Hash Key: t1.gp_segment_id

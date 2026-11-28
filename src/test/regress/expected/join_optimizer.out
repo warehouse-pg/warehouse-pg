@@ -4021,6 +4021,7 @@ using (join_key);
    ->  Hash Left Join
          Output: "Values".column1, i1.f1, (666)
          Hash Cond: ("Values".column1 = i1.f1)
+         Runtime Filter: declined: the join keeps unmatched probe rows
          ->  Result
                Output: "Values".column1
                ->  Values Scan on "Values"
@@ -4030,6 +4031,7 @@ using (join_key);
                ->  Hash Right Join
                      Output: i1.f1, (666)
                      Hash Cond: (i2.unique2 = i1.f1)
+                     Runtime Filter: declined: the probe rows come from another slice
                      ->  Redistribute Motion 3:3  (slice2; segments: 3)
                            Output: i2.unique2
                            Hash Key: i2.unique2
@@ -4081,19 +4083,23 @@ select t1.* from
    ->  Hash Left Join
          Output: t1.f1
          Hash Cond: (i8.q2 = (i4.f1)::bigint)
+         Runtime Filter: declined: the join keeps unmatched probe rows
          ->  Redistribute Motion 1:3  (slice2)
                Output: t1.f1, i8.q2
                ->  Hash Right Join
                      Output: t1.f1, i8.q2
                      Hash Cond: (('***'::text) = t1.f1)
+                     Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
                      ->  Hash Right Join
                            Output: ('***'::text), i8.q2
                            Hash Cond: (((NULL::integer))::bigint = i8b1.q2)
+                           Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
                            ->  Gather Motion 3:1  (slice3; segments: 3)
                                  Output: i8.q2, (NULL::integer)
                                  ->  Hash Left Join
                                        Output: i8.q2, (NULL::integer)
                                        Hash Cond: (i8.q1 = i8b2.q1)
+                                       Runtime Filter: declined: the join keeps unmatched probe rows
                                        ->  Seq Scan on public.int8_tbl i8
                                              Output: i8.q1, i8.q2
                                        ->  Hash
@@ -4157,19 +4163,23 @@ select t1.* from
    ->  Hash Left Join
          Output: t1.f1
          Hash Cond: (i8.q2 = (i4.f1)::bigint)
+         Runtime Filter: declined: the join keeps unmatched probe rows
          ->  Redistribute Motion 1:3  (slice2)
                Output: t1.f1, i8.q2
                ->  Hash Right Join
                      Output: t1.f1, i8.q2
                      Hash Cond: (('***'::text) = t1.f1)
+                     Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
                      ->  Hash Right Join
                            Output: ('***'::text), i8.q2
                            Hash Cond: (((NULL::integer))::bigint = i8b1.q2)
+                           Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
                            ->  Gather Motion 3:1  (slice3; segments: 3)
                                  Output: i8.q2, (NULL::integer)
                                  ->  Hash Left Join
                                        Output: i8.q2, (NULL::integer)
                                        Hash Cond: (i8.q1 = i8b2.q1)
+                                       Runtime Filter: declined: the join keeps unmatched probe rows
                                        ->  Seq Scan on public.int8_tbl i8
                                              Output: i8.q1, i8.q2
                                        ->  Hash
@@ -4240,19 +4250,23 @@ select t1.* from
    ->  Hash Left Join
          Output: t1.f1
          Hash Cond: (i8.q2 = (i4.f1)::bigint)
+         Runtime Filter: declined: the join keeps unmatched probe rows
          ->  Redistribute Motion 1:3  (slice2)
                Output: t1.f1, i8.q2
                ->  Hash Right Join
                      Output: t1.f1, i8.q2
                      Hash Cond: (('***'::text) = t1.f1)
+                     Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
                      ->  Hash Right Join
                            Output: ('***'::text), i8.q2
                            Hash Cond: (((NULL::integer))::bigint = i8b1.q2)
+                           Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
                            ->  Gather Motion 3:1  (slice3; segments: 3)
                                  Output: i8.q2, (NULL::integer)
                                  ->  Hash Left Join
                                        Output: i8.q2, (NULL::integer)
                                        Hash Cond: (i8.q1 = i8b2.q1)
+                                       Runtime Filter: declined: the join keeps unmatched probe rows
                                        ->  Seq Scan on public.int8_tbl i8
                                              Output: i8.q1, i8.q2
                                        ->  Hash
@@ -4260,6 +4274,7 @@ select t1.* from
                                              ->  Hash Join
                                                    Output: NULL::integer, i8b2.q1
                                                    Hash Cond: (i8b2.q1 = (i4b2.f1)::bigint)
+                                                   Runtime Filter: declined: too few probe rows
                                                    ->  Seq Scan on public.int8_tbl i8b2
                                                          Output: i8b2.q1
                                                    ->  Hash
@@ -4324,6 +4339,7 @@ select * from
    ->  Hash Left Join
          Output: t1.f1, i8.q1, i8.q2, t2.f1, i4.f1
          Hash Cond: (i8.q1 = (i4.f1)::bigint)
+         Runtime Filter: declined: the join keeps unmatched probe rows
          ->  Nested Loop Left Join
                Output: t2.f1, t1.f1, i8.q1, i8.q2
                Join Filter: true
@@ -4511,6 +4527,7 @@ where tt1.f1 = ss1.c0;
          ->  Hash Left Join
                Output: tt1.f1, tt4.f1
                Hash Cond: (tt3.f1 = tt4.f1)
+               Runtime Filter: declined: the join keeps unmatched probe rows
                ->  Nested Loop Left Join
                      Output: tt1.f1, tt3.f1
                      ->  Nested Loop
@@ -4599,6 +4616,7 @@ where ss1.c2 = 0;
                            ->  Hash Join
                                  Output: i41.f1, i42.f1
                                  Hash Cond: (i41.f1 = i42.f1)
+                                 Runtime Filter: declined: too few probe rows
                                  ->  Seq Scan on public.int4_tbl i41
                                        Output: i41.f1
                                  ->  Hash
@@ -4730,6 +4748,7 @@ explain (verbose, costs off)
          ->  Hash Left Join
                Output: a.q2, b.q1
                Hash Cond: (a.q2 = COALESCE(b.q1, '1'::bigint))
+               Runtime Filter: declined: the join keeps unmatched probe rows
                ->  Redistribute Motion 3:3  (slice2; segments: 3)
                      Output: a.q2
                      Hash Key: a.q2
@@ -5129,6 +5148,7 @@ where q2 = 456;
    ->  Hash Right Join
          Output: i8.q1, i8.q2, ((i4.f1 + 1)), t.unique2
          Hash Cond: (t.unique2 = ((i4.f1 + 1)))
+         Runtime Filter: declined: the probe rows come from another slice
          ->  Redistribute Motion 3:3  (slice2; segments: 3)
                Output: t.unique2
                Hash Key: t.unique2
@@ -5824,6 +5844,7 @@ select * from int4_tbl i left join
    ->  Hash Left Join
          Output: i.f1, j.f1
          Hash Cond: (i.f1 = j.f1)
+         Runtime Filter: declined: the join keeps unmatched probe rows
          ->  Seq Scan on public.int4_tbl i
                Output: i.f1
          ->  Hash
@@ -5890,6 +5911,7 @@ select * from int4_tbl a,
          ->  Hash Right Join
                Output: b.f1, c.q1, c.q2
                Hash Cond: (c.q1 = b.f1)
+               Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
                ->  Result
                      Output: c.q1, c.q2
                      Filter: (a.f1 = c.q2)
@@ -5982,6 +6004,7 @@ select * from
          ->  Hash Right Join
                Output: c.q1, c.q2, a.q1, a.q2, b.q1, d.q1, (COALESCE(b.q2, '42'::bigint)), (COALESCE((COALESCE(b.q2, '42'::bigint)), d.q2))
                Hash Cond: (d.q1 = c.q2)
+               Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
                ->  Nested Loop
                      Output: a.q1, a.q2, b.q1, d.q1, (COALESCE(b.q2, '42'::bigint)), (COALESCE((COALESCE(b.q2, '42'::bigint)), d.q2))
                      ->  Broadcast Motion 3:3  (slice2; segments: 3)
@@ -5989,6 +6012,7 @@ select * from
                            ->  Hash Left Join
                                  Output: a.q1, a.q2, b.q1, (COALESCE(b.q2, '42'::bigint))
                                  Hash Cond: (a.q2 = b.q1)
+                                 Runtime Filter: declined: the join keeps unmatched probe rows
                                  ->  Redistribute Motion 3:3  (slice3; segments: 3)
                                        Output: a.q1, a.q2
                                        Hash Key: a.q2
@@ -6042,6 +6066,7 @@ select c.*,a.*,ss1.q1,ss2.q1,ss3.* from
                ->  Hash Right Join
                      Output: c.q1, c.q2, a.q1, a.q2, b.q1, d.q1, (COALESCE((COALESCE(b.q2, (b2.f1)::bigint)), d.q2))
                      Hash Cond: (d.q1 = c.q2)
+                     Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
                      ->  Nested Loop
                            Output: a.q1, a.q2, b.q1, d.q1, (COALESCE((COALESCE(b.q2, (b2.f1)::bigint)), d.q2))
                            ->  Broadcast Motion 3:3  (slice3; segments: 3)
@@ -6049,6 +6074,7 @@ select c.*,a.*,ss1.q1,ss2.q1,ss3.* from
                                  ->  Hash Right Join
                                        Output: a.q1, a.q2, b.q1, (COALESCE(b.q2, (b2.f1)::bigint))
                                        Hash Cond: (b.q1 = a.q2)
+                                       Runtime Filter: declined: too few probe rows
                                        ->  Nested Loop
                                              Output: b.q1, COALESCE(b.q2, (b2.f1)::bigint)
                                              Join Filter: (b.q1 < b2.f1)
@@ -6091,6 +6117,7 @@ select * from
  Hash Left Join
    Output: (1), (2), (3)
    Hash Cond: (((1) = (3)) AND ((2) = (3)))
+   Runtime Filter: declined: the join keeps unmatched probe rows
    ->  Nested Loop
          Output: (1), (2)
          ->  Result
@@ -6428,6 +6455,7 @@ select * from j1 inner join j2 on j1.id = j2.id;
    ->  Hash Join
          Output: j1.id, j2.id
          Hash Cond: (j1.id = j2.id)
+         Runtime Filter: declined: too few probe rows
          ->  Seq Scan on public.j1
                Output: j1.id
          ->  Hash
@@ -6467,6 +6495,7 @@ select * from j1 inner join j3 on j1.id = j3.id;
    ->  Hash Join
          Output: j1.id, j3.id
          Hash Cond: (j3.id = j1.id)
+         Runtime Filter: declined: too few probe rows
          ->  Seq Scan on public.j3
                Output: j3.id
          ->  Hash
@@ -6486,6 +6515,7 @@ select * from j1 left join j2 on j1.id = j2.id;
    ->  Hash Left Join
          Output: j1.id, j2.id
          Hash Cond: (j1.id = j2.id)
+         Runtime Filter: declined: the join keeps unmatched probe rows
          ->  Seq Scan on public.j1
                Output: j1.id
          ->  Hash
@@ -6505,6 +6535,7 @@ select * from j1 right join j2 on j1.id = j2.id;
    ->  Hash Left Join
          Output: j1.id, j2.id
          Hash Cond: (j2.id = j1.id)
+         Runtime Filter: declined: the join keeps unmatched probe rows
          ->  Seq Scan on public.j2
                Output: j2.id
          ->  Hash
@@ -6524,6 +6555,7 @@ select * from j1 full join j2 on j1.id = j2.id;
    ->  Hash Full Join
          Output: j1.id, j2.id
          Hash Cond: (j1.id = j2.id)
+         Runtime Filter: declined: the join keeps unmatched probe rows
          ->  Seq Scan on public.j1
                Output: j1.id
          ->  Hash
@@ -6562,6 +6594,7 @@ select * from j1 natural join j2;
    ->  Hash Join
          Output: j1.id
          Hash Cond: (j1.id = j2.id)
+         Runtime Filter: declined: too few probe rows
          ->  Seq Scan on public.j1
                Output: j1.id
          ->  Hash
@@ -6731,6 +6764,7 @@ left join j2 on j1.id1 = j2.id1 where j1.id2 = 1;
  Hash Left Join
    Output: j1.id1, j1.id2, j2.id1, j2.id2
    Hash Cond: (j1.id1 = j2.id1)
+   Runtime Filter: declined: the join keeps unmatched probe rows
    ->  Gather Motion 3:1  (slice1; segments: 3)
          Output: j1.id1, j1.id2
          ->  Index Scan using j1_pkey on public.j1
@@ -6810,6 +6844,7 @@ where exists (select 1 from tenk1 t3
    ->  Hash Semi Join
          Output: t1.unique1, t2.hundred
          Hash Cond: ((t1.unique1 = t3.thousand) AND (t2.hundred = t3.tenthous))
+         Runtime Filter: declined: the probe rows come from another slice
          ->  Nested Loop
                Output: t1.unique1, t2.hundred
                Join Filter: true
@@ -6850,6 +6885,7 @@ where exists (select 1 from j3
    ->  Hash Semi Join
          Output: t1.unique1, t2.hundred
          Hash Cond: ((t1.unique1 = j3.unique1) AND (t2.hundred = j3.tenthous))
+         Runtime Filter: declined: the probe rows come from another slice
          ->  Nested Loop
                Output: t1.unique1, t2.hundred
                Join Filter: true

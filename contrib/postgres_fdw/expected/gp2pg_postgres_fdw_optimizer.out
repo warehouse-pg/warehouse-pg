@@ -599,6 +599,7 @@ EXPLAIN (VERBOSE, COSTS OFF)
                ->  Hash Left Join
                      Output: t1."C 1"
                      Hash Cond: (t1."C 1" = c1)
+                     Runtime Filter: declined: the join keeps unmatched probe rows
                      ->  Seq Scan on "S 1"."T 1" t1
                            Output: t1."C 1"
                      ->  Hash
@@ -609,6 +610,7 @@ EXPLAIN (VERBOSE, COSTS OFF)
                                  ->  Hash Join
                                        Output: c1
                                        Hash Cond: (c1 = c1)
+                                       Runtime Filter: declined: the probe rows come from another slice
                                        ->  Redistribute Motion 1:3  (slice3)
                                              Output: c1
                                              ->  Foreign Scan on public.ft1 t2
@@ -658,6 +660,7 @@ EXPLAIN (VERBOSE, COSTS OFF)
                ->  Hash Left Join
                      Output: t1."C 1", c1, c1
                      Hash Cond: (t1."C 1" = c1)
+                     Runtime Filter: declined: the join keeps unmatched probe rows
                      ->  Seq Scan on "S 1"."T 1" t1
                            Output: t1."C 1"
                      ->  Hash
@@ -720,6 +723,7 @@ EXPLAIN (VERBOSE, COSTS OFF)
                ->  Hash Full Join
                      Output: t1."C 1", c1, c1
                      Hash Cond: (c1 = t1."C 1")
+                     Runtime Filter: declined: the join keeps unmatched probe rows
                      ->  Merge Full Join
                            Output: c1, c1
                            Merge Cond: (c1 = c1)
@@ -887,6 +891,7 @@ EXPLAIN (VERBOSE, COSTS OFF)
  Hash Join
    Output: a."C 1", a.c2, a.c3, a.c4, a.c5, a.c6, a.c7, a.c8, c1, c2, c3, c4, c5, c6, c7, c8
    Hash Cond: (c1 = a.c2)
+   Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
    ->  Foreign Scan on public.ft2 b
          Output: c1, c2, c3, c4, c5, c6, c7, c8
          Remote SQL: SELECT "C 1", c2, c3, c4, c5, c6, c7, c8 FROM "S 1"."T 1"
@@ -915,6 +920,7 @@ EXPLAIN (VERBOSE, COSTS OFF)
  Hash Join
    Output: a.c1, a.c2, a.c3, a.c4, a.c5, a.c6, a.c7, a.c8, b.c1, b.c2, b.c3, b.c4, b.c5, b.c6, b.c7, b.c8
    Hash Cond: ((a.c1 = b.c1) AND (upper((a.c7)::text) = (b.c7)::text))
+   Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
    ->  Foreign Scan on public.ft2 a
          Output: a.c1, a.c2, a.c3, a.c4, a.c5, a.c6, a.c7, a.c8
          Filter: ((a.c2 = 6) AND (a.c8 = 'foo'::user_enum))
@@ -1307,6 +1313,7 @@ SELECT t1.c1, t2.c1 FROM ft1 t1 JOIN ft2 t2 ON (t1.c1 = t2.c1) ORDER BY t1.c3, t
                ->  Hash Join
                      Output: t1.c1, t2.c1, t1.c3
                      Hash Cond: (t1.c1 = t2.c1)
+                     Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
                      ->  Foreign Scan on public.ft1 t1
                            Output: t1.c1, t1.c3
                            Remote SQL: SELECT "C 1", c3 FROM "S 1"."T 1"
@@ -1348,6 +1355,7 @@ SELECT t1.c1, t2.c2, t3.c3 FROM ft1 t1 JOIN ft2 t2 ON (t1.c1 = t2.c1) JOIN ft4 t
                ->  Hash Join
                      Output: t1.c1, t2.c2, t3.c3, t1.c3
                      Hash Cond: (t3.c1 = t1.c1)
+                     Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
                      ->  Foreign Scan on public.ft4 t3
                            Output: t3.c1, t3.c3
                            Remote SQL: SELECT c1, c3 FROM "S 1"."T 3"
@@ -1356,6 +1364,7 @@ SELECT t1.c1, t2.c2, t3.c3 FROM ft1 t1 JOIN ft2 t2 ON (t1.c1 = t2.c1) JOIN ft4 t
                            ->  Hash Join
                                  Output: t1.c1, t1.c3, t2.c2
                                  Hash Cond: (t1.c1 = t2.c1)
+                                 Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
                                  ->  Foreign Scan on public.ft1 t1
                                        Output: t1.c1, t1.c3
                                        Remote SQL: SELECT "C 1", c3 FROM "S 1"."T 1"
@@ -1395,6 +1404,7 @@ SELECT t1.c1, t2.c1 FROM ft4 t1 LEFT JOIN ft5 t2 ON (t1.c1 = t2.c1) ORDER BY t1.
          ->  Hash Left Join
                Output: t1.c1, t2.c1
                Hash Cond: (t1.c1 = t2.c1)
+               Runtime Filter: declined: the join keeps unmatched probe rows
                ->  Foreign Scan on public.ft4 t1
                      Output: t1.c1
                      Remote SQL: SELECT c1 FROM "S 1"."T 3"
@@ -1431,6 +1441,7 @@ SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 LEFT JOIN ft2 t2 ON (t1.c1 = t2.c1) LEFT 
    ->  Hash Right Join
          Output: t1.c1, t2.c2, t3.c3
          Hash Cond: (t3.c1 = t2.c1)
+         Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
          ->  Foreign Scan on public.ft4 t3
                Output: t3.c1, t3.c3
                Remote SQL: SELECT c1, c3 FROM "S 1"."T 3"
@@ -1439,6 +1450,7 @@ SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 LEFT JOIN ft2 t2 ON (t1.c1 = t2.c1) LEFT 
                ->  Hash Left Join
                      Output: t1.c1, t2.c1, t2.c2
                      Hash Cond: (t1.c1 = t2.c1)
+                     Runtime Filter: declined: the join keeps unmatched probe rows
                      ->  Foreign Scan on public.ft2 t1
                            Output: t1.c1
                            Remote SQL: SELECT "C 1" FROM "S 1"."T 1"
@@ -1475,6 +1487,7 @@ SELECT t1.c1, t1.c2, t2.c1, t2.c2 FROM ft4 t1 LEFT JOIN (SELECT * FROM ft5 WHERE
  Hash Left Join
    Output: t1.c1, t1.c2, ft5.c1, ft5.c2
    Hash Cond: (t1.c1 = ft5.c1)
+   Runtime Filter: declined: the join keeps unmatched probe rows
    ->  Foreign Scan on public.ft4 t1
          Output: t1.c1, t1.c2
          Remote SQL: SELECT c1, c2 FROM "S 1"."T 3" WHERE ((c1 < 10))
@@ -1508,6 +1521,7 @@ SELECT t1.c1, t1.c2, t2.c1, t2.c2 FROM ft4 t1 LEFT JOIN (SELECT * FROM ft5 WHERE
    ->  Hash Left Join
          Output: t1.c1, t1.c2, ft5.c1, ft5.c2
          Hash Cond: (t1.c1 = ft5.c1)
+         Runtime Filter: declined: the join keeps unmatched probe rows
          ->  Foreign Scan on public.ft4 t1
                Output: t1.c1, t1.c2
                Remote SQL: SELECT c1, c2 FROM "S 1"."T 3" WHERE ((c1 < 10))
@@ -1542,6 +1556,7 @@ SELECT t1.c1, t2.c1 FROM ft5 t1 RIGHT JOIN ft4 t2 ON (t1.c1 = t2.c1) ORDER BY t2
          ->  Hash Left Join
                Output: t1.c1, t2.c1
                Hash Cond: (t2.c1 = t1.c1)
+               Runtime Filter: declined: the join keeps unmatched probe rows
                ->  Foreign Scan on public.ft4 t2
                      Output: t2.c1
                      Remote SQL: SELECT c1 FROM "S 1"."T 3"
@@ -1578,6 +1593,7 @@ SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 RIGHT JOIN ft2 t2 ON (t1.c1 = t2.c1) RIGH
    ->  Hash Left Join
          Output: t1.c1, t2.c2, t3.c3
          Hash Cond: (t3.c1 = t2.c1)
+         Runtime Filter: declined: the join keeps unmatched probe rows
          ->  Foreign Scan on public.ft4 t3
                Output: t3.c1, t3.c3
                Remote SQL: SELECT c1, c3 FROM "S 1"."T 3"
@@ -1586,6 +1602,7 @@ SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 RIGHT JOIN ft2 t2 ON (t1.c1 = t2.c1) RIGH
                ->  Hash Left Join
                      Output: t2.c1, t2.c2, t1.c1
                      Hash Cond: (t2.c1 = t1.c1)
+                     Runtime Filter: declined: the join keeps unmatched probe rows
                      ->  Foreign Scan on public.ft2 t2
                            Output: t2.c1, t2.c2
                            Remote SQL: SELECT "C 1", c2 FROM "S 1"."T 1"
@@ -1625,6 +1642,7 @@ SELECT t1.c1, t2.c1 FROM ft4 t1 FULL JOIN ft5 t2 ON (t1.c1 = t2.c1) ORDER BY t1.
          ->  Hash Full Join
                Output: t1.c1, t2.c1
                Hash Cond: (t1.c1 = t2.c1)
+               Runtime Filter: declined: the join keeps unmatched probe rows
                ->  Foreign Scan on public.ft4 t1
                      Output: t1.c1
                      Remote SQL: SELECT c1 FROM "S 1"."T 3"
@@ -1663,6 +1681,7 @@ SELECT t1.c1, t2.c1 FROM (SELECT c1 FROM ft4 WHERE c1 between 50 and 60) t1 FULL
    ->  Hash Full Join
          Output: ft4.c1, ft5.c1
          Hash Cond: (ft4.c1 = ft5.c1)
+         Runtime Filter: declined: the join keeps unmatched probe rows
          ->  Foreign Scan on public.ft4
                Output: ft4.c1
                Remote SQL: SELECT c1 FROM "S 1"."T 3" WHERE (((c1 >= 50) AND (c1 <= 60)))
@@ -1729,9 +1748,11 @@ SELECT t1.c1, ss.a, ss.b FROM (SELECT c1 FROM ft4 WHERE c1 between 50 and 60) t1
    ->  Hash Full Join
          Output: ft4.c1, t2.c1, t3.c1
          Hash Cond: (t2.c1 = ft4.c1)
+         Runtime Filter: declined: the join keeps unmatched probe rows
          ->  Hash Left Join
                Output: t2.c1, t3.c1
                Hash Cond: (t2.c1 = t3.c1)
+               Runtime Filter: declined: the join keeps unmatched probe rows
                ->  Foreign Scan on public.ft4 t2
                      Output: t2.c1
                      Remote SQL: SELECT c1 FROM "S 1"."T 3" WHERE (((c1 >= 50) AND (c1 <= 60)))
@@ -1770,12 +1791,14 @@ SELECT t1.c1, ss.a, ss.b FROM (SELECT c1 FROM ft4 WHERE c1 between 50 and 60) t1
    ->  Hash Full Join
          Output: ft4_1.c1, ft4.c1, ft5.c1
          Hash Cond: (ft4.c1 = ft4_1.c1)
+         Runtime Filter: declined: the join keeps unmatched probe rows
          ->  Result
                Output: ft4.c1, ft5.c1
                Filter: ((ft4.c1 IS NULL) OR (NOT (ft4.c1 IS NULL)))
                ->  Hash Full Join
                      Output: ft4.c1, ft5.c1
                      Hash Cond: (ft4.c1 = ft5.c1)
+                     Runtime Filter: declined: the join keeps unmatched probe rows
                      ->  Foreign Scan on public.ft4
                            Output: ft4.c1
                            Remote SQL: SELECT c1 FROM "S 1"."T 3" WHERE (((c1 >= 50) AND (c1 <= 60)))
@@ -1879,6 +1902,7 @@ SELECT t1.c1, t2.c1, t3.c1 FROM ft4 t1 INNER JOIN ft5 t2 ON (t1.c1 = t2.c1 + 1 a
          ->  Hash Full Join
                Output: t1.c1, t2.c1, t3.c1
                Hash Cond: (t3.c1 = t2.c1)
+               Runtime Filter: declined: the join keeps unmatched probe rows
                ->  Foreign Scan on public.ft4 t3
                      Output: t3.c1
                      Remote SQL: SELECT c1 FROM "S 1"."T 3"
@@ -1887,6 +1911,7 @@ SELECT t1.c1, t2.c1, t3.c1 FROM ft4 t1 INNER JOIN ft5 t2 ON (t1.c1 = t2.c1 + 1 a
                      ->  Hash Join
                            Output: t1.c1, t2.c1
                            Hash Cond: ((t2.c1 + 1) = t1.c1)
+                           Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
                            ->  Foreign Scan on public.ft5 t2
                                  Output: t2.c1
                                  Remote SQL: SELECT c1 FROM "S 1"."T 4"
@@ -1923,6 +1948,7 @@ SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 FULL JOIN ft2 t2 ON (t1.c1 = t2.c1) FULL 
    ->  Hash Full Join
          Output: t1.c1, t2.c2, t3.c3
          Hash Cond: (t3.c1 = t2.c1)
+         Runtime Filter: declined: the join keeps unmatched probe rows
          ->  Foreign Scan on public.ft4 t3
                Output: t3.c1, t3.c3
                Remote SQL: SELECT c1, c3 FROM "S 1"."T 3"
@@ -1931,6 +1957,7 @@ SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 FULL JOIN ft2 t2 ON (t1.c1 = t2.c1) FULL 
                ->  Hash Full Join
                      Output: t1.c1, t2.c1, t2.c2
                      Hash Cond: (t2.c1 = t1.c1)
+                     Runtime Filter: declined: the join keeps unmatched probe rows
                      ->  Foreign Scan on public.ft2 t2
                            Output: t2.c1, t2.c2
                            Remote SQL: SELECT "C 1", c2 FROM "S 1"."T 1"
@@ -1967,6 +1994,7 @@ SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 FULL JOIN ft2 t2 ON (t1.c1 = t2.c1) RIGHT
    ->  Hash Left Join
          Output: t1.c1, t2.c2, t3.c3
          Hash Cond: (t3.c1 = t2.c1)
+         Runtime Filter: declined: the join keeps unmatched probe rows
          ->  Foreign Scan on public.ft4 t3
                Output: t3.c1, t3.c3
                Remote SQL: SELECT c1, c3 FROM "S 1"."T 3"
@@ -1975,6 +2003,7 @@ SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 FULL JOIN ft2 t2 ON (t1.c1 = t2.c1) RIGHT
                ->  Hash Full Join
                      Output: t1.c1, t2.c1, t2.c2
                      Hash Cond: (t2.c1 = t1.c1)
+                     Runtime Filter: declined: the join keeps unmatched probe rows
                      ->  Foreign Scan on public.ft2 t2
                            Output: t2.c1, t2.c2
                            Remote SQL: SELECT "C 1", c2 FROM "S 1"."T 1"
@@ -2011,6 +2040,7 @@ SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 RIGHT JOIN ft2 t2 ON (t1.c1 = t2.c1) FULL
    ->  Hash Full Join
          Output: t1.c1, t2.c2, t3.c3
          Hash Cond: (t3.c1 = t2.c1)
+         Runtime Filter: declined: the join keeps unmatched probe rows
          ->  Foreign Scan on public.ft4 t3
                Output: t3.c1, t3.c3
                Remote SQL: SELECT c1, c3 FROM "S 1"."T 3"
@@ -2019,6 +2049,7 @@ SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 RIGHT JOIN ft2 t2 ON (t1.c1 = t2.c1) FULL
                ->  Hash Left Join
                      Output: t2.c1, t2.c2, t1.c1
                      Hash Cond: (t2.c1 = t1.c1)
+                     Runtime Filter: declined: the join keeps unmatched probe rows
                      ->  Foreign Scan on public.ft2 t2
                            Output: t2.c1, t2.c2
                            Remote SQL: SELECT "C 1", c2 FROM "S 1"."T 1"
@@ -2055,6 +2086,7 @@ SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 FULL JOIN ft2 t2 ON (t1.c1 = t2.c1) LEFT 
    ->  Hash Right Join
          Output: t1.c1, t2.c2, t3.c3
          Hash Cond: (t3.c1 = t2.c1)
+         Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
          ->  Foreign Scan on public.ft4 t3
                Output: t3.c1, t3.c3
                Remote SQL: SELECT c1, c3 FROM "S 1"."T 3"
@@ -2063,6 +2095,7 @@ SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 FULL JOIN ft2 t2 ON (t1.c1 = t2.c1) LEFT 
                ->  Hash Full Join
                      Output: t1.c1, t2.c1, t2.c2
                      Hash Cond: (t2.c1 = t1.c1)
+                     Runtime Filter: declined: the join keeps unmatched probe rows
                      ->  Foreign Scan on public.ft2 t2
                            Output: t2.c1, t2.c2
                            Remote SQL: SELECT "C 1", c2 FROM "S 1"."T 1"
@@ -2099,6 +2132,7 @@ SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 LEFT JOIN ft2 t2 ON (t1.c1 = t2.c1) FULL 
    ->  Hash Full Join
          Output: t1.c1, t2.c2, t3.c3
          Hash Cond: (t3.c1 = t2.c1)
+         Runtime Filter: declined: the join keeps unmatched probe rows
          ->  Foreign Scan on public.ft4 t3
                Output: t3.c1, t3.c3
                Remote SQL: SELECT c1, c3 FROM "S 1"."T 3"
@@ -2107,6 +2141,7 @@ SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 LEFT JOIN ft2 t2 ON (t1.c1 = t2.c1) FULL 
                ->  Hash Left Join
                      Output: t1.c1, t2.c1, t2.c2
                      Hash Cond: (t1.c1 = t2.c1)
+                     Runtime Filter: declined: the join keeps unmatched probe rows
                      ->  Foreign Scan on public.ft2 t1
                            Output: t1.c1
                            Remote SQL: SELECT "C 1" FROM "S 1"."T 1"
@@ -2143,9 +2178,11 @@ SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 RIGHT JOIN ft2 t2 ON (t1.c1 = t2.c1) LEFT
    ->  Hash Left Join
          Output: t1.c1, t2.c2, t3.c3
          Hash Cond: (t2.c1 = t1.c1)
+         Runtime Filter: declined: the join keeps unmatched probe rows
          ->  Hash Right Join
                Output: t2.c1, t2.c2, t3.c3
                Hash Cond: (t3.c1 = t2.c1)
+               Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
                ->  Foreign Scan on public.ft4 t3
                      Output: t3.c1, t3.c3
                      Remote SQL: SELECT c1, c3 FROM "S 1"."T 3"
@@ -2187,6 +2224,7 @@ SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 LEFT JOIN ft2 t2 ON (t1.c1 = t2.c1) RIGHT
    ->  Hash Left Join
          Output: t1.c1, t2.c2, t3.c3
          Hash Cond: (t3.c1 = t2.c1)
+         Runtime Filter: declined: the join keeps unmatched probe rows
          ->  Foreign Scan on public.ft4 t3
                Output: t3.c1, t3.c3
                Remote SQL: SELECT c1, c3 FROM "S 1"."T 3"
@@ -2195,6 +2233,7 @@ SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 LEFT JOIN ft2 t2 ON (t1.c1 = t2.c1) RIGHT
                ->  Hash Left Join
                      Output: t1.c1, t2.c1, t2.c2
                      Hash Cond: (t1.c1 = t2.c1)
+                     Runtime Filter: declined: the join keeps unmatched probe rows
                      ->  Foreign Scan on public.ft2 t1
                            Output: t1.c1
                            Remote SQL: SELECT "C 1" FROM "S 1"."T 1"
@@ -2237,6 +2276,7 @@ SELECT t1.c1, t2.c1 FROM ft4 t1 FULL JOIN ft5 t2 ON (t1.c1 = t2.c1) WHERE (t1.c1
                ->  Hash Full Join
                      Output: t1.c1, t2.c1
                      Hash Cond: (t1.c1 = t2.c1)
+                     Runtime Filter: declined: the join keeps unmatched probe rows
                      ->  Foreign Scan on public.ft4 t1
                            Output: t1.c1
                            Remote SQL: SELECT c1 FROM "S 1"."T 3"
@@ -2276,6 +2316,7 @@ SELECT t1.c1, t2.c2, t1.c3 FROM ft1 t1 FULL JOIN ft2 t2 ON (t1.c1 = t2.c1) WHERE
          ->  Hash Full Join
                Output: t1.c1, t1.c3, t2.c2
                Hash Cond: (t1.c1 = t2.c1)
+               Runtime Filter: declined: the join keeps unmatched probe rows
                ->  Foreign Scan on public.ft1 t1
                      Output: t1.c1, t1.c3
                      Remote SQL: SELECT "C 1", c3 FROM "S 1"."T 1"
@@ -2301,6 +2342,7 @@ SELECT t1.c1, t2.c2, t1.c3 FROM ft1 t1 FULL JOIN ft2 t2 ON (t1.c1 = t2.c1) WHERE
          ->  Hash Full Join
                Output: t1.c1, t1.c3, t2.c2
                Hash Cond: (t1.c1 = t2.c1)
+               Runtime Filter: declined: the join keeps unmatched probe rows
                ->  Foreign Scan on public.ft1 t1
                      Output: t1.c1, t1.c3
                      Remote SQL: SELECT "C 1", c3 FROM "S 1"."T 1"
@@ -2454,6 +2496,7 @@ WITH t (c1_1, c1_3, c2_1) AS MATERIALIZED (SELECT t1.c1, t1.c3, t2.c1 FROM ft1 t
                      ->  Hash Join
                            Output: t1.c1, t2.c1, t1.c3
                            Hash Cond: (t1.c1 = t2.c1)
+                           Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
                            ->  Foreign Scan on public.ft1 t1
                                  Output: t1.c1, t1.c3
                                  Remote SQL: SELECT "C 1", c3 FROM "S 1"."T 1"
@@ -2509,6 +2552,7 @@ SELECT t1.c1 FROM ft1 t1 WHERE EXISTS (SELECT 1 FROM ft2 t2 WHERE t1.c1 = t2.c1)
          ->  Hash Semi Join
                Output: t1.c1
                Hash Cond: (t1.c1 = t2.c1)
+               Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
                ->  Foreign Scan on public.ft1 t1
                      Output: t1.c1
                      Remote SQL: SELECT "C 1" FROM "S 1"."T 1"
@@ -2549,6 +2593,7 @@ SELECT t1.c1 FROM ft1 t1 WHERE NOT EXISTS (SELECT 1 FROM ft2 t2 WHERE t1.c1 = t2
          ->  Hash Anti Join
                Output: t1.c1
                Hash Cond: (t1.c1 = t2.c2)
+               Runtime Filter: declined: the join keeps unmatched probe rows
                ->  Foreign Scan on public.ft1 t1
                      Output: t1.c1
                      Remote SQL: SELECT "C 1" FROM "S 1"."T 1"
@@ -2629,6 +2674,7 @@ SELECT t1.c1, t2.c1 FROM ft5 t1 JOIN ft6 t2 ON (t1.c1 = t2.c1) ORDER BY t1.c1, t
          ->  Hash Join
                Output: t1.c1, t2.c1
                Hash Cond: (t1.c1 = t2.c1)
+               Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
                ->  Foreign Scan on public.ft5 t1
                      Output: t1.c1
                      Remote SQL: SELECT c1 FROM "S 1"."T 4"
@@ -2660,6 +2706,7 @@ SELECT t1.c1, t2.c1 FROM ft1 t1 LEFT JOIN ft2 t2 ON (t1.c8 = t2.c8) ORDER BY t1.
          ->  Hash Left Join
                Output: t1.c1, t2.c1
                Hash Cond: ((t1.c8)::anyenum = (t2.c8)::anyenum)
+               Runtime Filter: declined: the join keeps unmatched probe rows
                ->  Foreign Scan on public.ft1 t1
                      Output: t1.c1, t1.c8
                      Remote SQL: SELECT "C 1", c8 FROM "S 1"."T 1"
@@ -2702,6 +2749,7 @@ SELECT t1.c1, t2.c1 FROM ft1 t1 LEFT JOIN ft2 t2 ON (t1.c1 = t2.c1) WHERE t1.c8 
                ->  Hash Left Join
                      Output: t1.c1, t2.c1, t1.c3
                      Hash Cond: (t1.c1 = t2.c1)
+                     Runtime Filter: declined: the join keeps unmatched probe rows
                      ->  Foreign Scan on public.ft1 t1
                            Output: t1.c1, t1.c3
                            Filter: (t1.c8 = 'foo'::user_enum)
@@ -2748,6 +2796,7 @@ SELECT t1.c1, t2.c1 FROM ft1 t1 JOIN ft2 t2 ON (t1.c1 = t2.c1) WHERE t1.c8 = t2.
                ->  Hash Join
                      Output: t1.c1, t2.c1, t1.c3
                      Hash Cond: ((t1.c1 = t2.c1) AND ((t1.c8)::anyenum = (t2.c8)::anyenum))
+                     Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
                      ->  Foreign Scan on public.ft1 t1
                            Output: t1.c1, t1.c3, t1.c8
                            Remote SQL: SELECT "C 1", c3, c8 FROM "S 1"."T 1"
@@ -2795,6 +2844,7 @@ SELECT t1c1, avg(t1c1 + t2c1) FROM (SELECT t1.c1, t2.c1 FROM ft1 t1 JOIN ft2 t2 
                            ->  Hash Join
                                  Output: t1.c1, t2.c1
                                  Hash Cond: (t1.c1 = t2.c1)
+                                 Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
                                  ->  Foreign Scan on public.ft1 t1
                                        Output: t1.c1
                                        Remote SQL: SELECT "C 1" FROM "S 1"."T 1"
@@ -2806,6 +2856,7 @@ SELECT t1c1, avg(t1c1 + t2c1) FROM (SELECT t1.c1, t2.c1 FROM ft1 t1 JOIN ft2 t2 
                            ->  Hash Join
                                  Output: t1_1.c1, t2_1.c1
                                  Hash Cond: (t1_1.c1 = t2_1.c1)
+                                 Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
                                  ->  Foreign Scan on public.ft1 t1_1
                                        Output: t1_1.c1
                                        Remote SQL: SELECT "C 1" FROM "S 1"."T 1"
@@ -2890,6 +2941,7 @@ SELECT q.a, ft2.c1 FROM (SELECT 13 FROM ft1 WHERE c1 = 13) q(a) RIGHT JOIN ft2 O
  Hash Left Join
    Output: (13), ft2.c1
    Hash Cond: (ft2.c1 = (13))
+   Runtime Filter: declined: the join keeps unmatched probe rows
    ->  Foreign Scan on public.ft2
          Output: ft2.c1
          Remote SQL: SELECT "C 1" FROM "S 1"."T 1" WHERE ((("C 1" >= 10) AND ("C 1" <= 15)))
@@ -2923,6 +2975,7 @@ SELECT ft4.c1, q.* FROM ft4 LEFT JOIN (SELECT 13, ft1.c1, ft2.c1 FROM ft1 RIGHT 
  Hash Left Join
    Output: ft4.c1, (13), ft1.c1, ft2.c1
    Hash Cond: (ft4.c1 = ft1.c1)
+   Runtime Filter: declined: the join keeps unmatched probe rows
    ->  Foreign Scan on public.ft4
          Output: ft4.c1
          Remote SQL: SELECT c1 FROM "S 1"."T 3" WHERE (((c1 >= 10) AND (c1 <= 15)))
@@ -2931,6 +2984,7 @@ SELECT ft4.c1, q.* FROM ft4 LEFT JOIN (SELECT 13, ft1.c1, ft2.c1 FROM ft1 RIGHT 
          ->  Hash Join
                Output: 13, ft2.c1, ft1.c1
                Hash Cond: (ft2.c1 = ft1.c1)
+               Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
                ->  Foreign Scan on public.ft2
                      Output: ft2.c1
                      Remote SQL: SELECT "C 1" FROM "S 1"."T 1" WHERE (("C 1" = 12))
@@ -3099,6 +3153,7 @@ SELECT t1.c1, t2.c2 FROM v4 t1 LEFT JOIN v5 t2 ON (t1.c1 = t2.c1) ORDER BY t1.c1
                ->  Hash Left Join
                      Output: ft4.c1, ft5.c2, ft5.c1
                      Hash Cond: (ft4.c1 = ft5.c1)
+                     Runtime Filter: declined: the join keeps unmatched probe rows
                      ->  Foreign Scan on public.ft4
                            Output: ft4.c1
                            Remote SQL: SELECT c1 FROM "S 1"."T 3"
@@ -3140,6 +3195,7 @@ SELECT t1.c1, t2.c2 FROM v4 t1 LEFT JOIN v5 t2 ON (t1.c1 = t2.c1) ORDER BY t1.c1
                ->  Hash Left Join
                      Output: ft4.c1, ft5.c2, ft5.c1
                      Hash Cond: (ft4.c1 = ft5.c1)
+                     Runtime Filter: declined: the join keeps unmatched probe rows
                      ->  Foreign Scan on public.ft4
                            Output: ft4.c1
                            Remote SQL: SELECT c1 FROM "S 1"."T 3"
@@ -3180,6 +3236,7 @@ SELECT t1.c1, t2.c2 FROM v4 t1 LEFT JOIN ft5 t2 ON (t1.c1 = t2.c1) ORDER BY t1.c
                ->  Hash Left Join
                      Output: ft4.c1, t2.c2, t2.c1
                      Hash Cond: (ft4.c1 = t2.c1)
+                     Runtime Filter: declined: the join keeps unmatched probe rows
                      ->  Foreign Scan on public.ft4
                            Output: ft4.c1
                            Remote SQL: SELECT c1 FROM "S 1"."T 3"
@@ -3221,6 +3278,7 @@ SELECT t1.c1, t2.c2 FROM v4 t1 LEFT JOIN ft5 t2 ON (t1.c1 = t2.c1) ORDER BY t1.c
                ->  Hash Left Join
                      Output: ft4.c1, t2.c2, t2.c1
                      Hash Cond: (ft4.c1 = t2.c1)
+                     Runtime Filter: declined: the join keeps unmatched probe rows
                      ->  Foreign Scan on public.ft4
                            Output: ft4.c1
                            Remote SQL: SELECT c1 FROM "S 1"."T 3"
@@ -3332,6 +3390,7 @@ select count(*), sum(t1.c1), avg(t2.c1) from ft1 t1 inner join ft1 t2 on (t1.c2 
    ->  Hash Join
          Output: t1.c1, t2.c1
          Hash Cond: (t1.c2 = t2.c2)
+         Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
          ->  Foreign Scan on public.ft1 t1
                Output: t1.c1, t1.c2
                Remote SQL: SELECT "C 1", c2 FROM "S 1"."T 1" WHERE ((c2 = 6))
@@ -3360,6 +3419,7 @@ select sum(t1.c1), count(t2.c1) from ft1 t1 inner join ft2 t2 on (t1.c1 = t2.c1)
          Output: t1.c1, t2.c1
          Hash Cond: (t1.c1 = t2.c1)
          Join Filter: (((((t1.c1 * t2.c1) / (t1.c1 * t2.c1)))::double precision * random()) <= '1'::double precision)
+         Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
          ->  Foreign Scan on public.ft1 t1
                Output: t1.c1
                Remote SQL: SELECT "C 1" FROM "S 1"."T 1"
@@ -3732,6 +3792,7 @@ select array_agg(distinct (t1.c1)%5) from ft4 t1 full join ft5 t2 on (t1.c1 = t2
                            ->  Hash Full Join
                                  Output: t1.c1, t2.c1
                                  Hash Cond: (t1.c1 = t2.c1)
+                                 Runtime Filter: declined: the join keeps unmatched probe rows
                                  ->  Foreign Scan on public.ft4 t1
                                        Output: t1.c1
                                        Remote SQL: SELECT c1 FROM "S 1"."T 3"
@@ -3772,6 +3833,7 @@ select array_agg(distinct (t1.c1)%5 order by (t1.c1)%5) from ft4 t1 full join ft
                            ->  Hash Full Join
                                  Output: t1.c1, t2.c1
                                  Hash Cond: (t1.c1 = t2.c1)
+                                 Runtime Filter: declined: the join keeps unmatched probe rows
                                  ->  Foreign Scan on public.ft4 t1
                                        Output: t1.c1
                                        Remote SQL: SELECT c1 FROM "S 1"."T 3"
@@ -3811,6 +3873,7 @@ select array_agg(distinct (t1.c1)%5 order by (t1.c1)%5 desc nulls last) from ft4
                            ->  Hash Full Join
                                  Output: t1.c1, t2.c1
                                  Hash Cond: (t1.c1 = t2.c1)
+                                 Runtime Filter: declined: the join keeps unmatched probe rows
                                  ->  Foreign Scan on public.ft4 t1
                                        Output: t1.c1
                                        Remote SQL: SELECT c1 FROM "S 1"."T 3"
@@ -4278,6 +4341,7 @@ select count(t1.c3) from ft2 t1 left join ft2 t2 on (t1.c1 = random() * t2.c2);
    ->  Hash Left Join
          Output: t1.c3
          Hash Cond: ((t1.c1)::double precision = (random() * (t2.c2)::double precision))
+         Runtime Filter: declined: the join keeps unmatched probe rows
          ->  Foreign Scan on public.ft2 t1
                Output: t1.c1, t1.c3
                Remote SQL: SELECT "C 1", c3 FROM "S 1"."T 1"
@@ -4303,6 +4367,7 @@ select count(*), x.b from ft1, (select c2 a, sum(c1) b from ft1 group by c2) x w
          ->  Hash Join
                Output: (sum(ft1_1.c1))
                Hash Cond: (ft1.c2 = ft1_1.c2)
+               Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
                ->  Foreign Scan on public.ft1
                      Output: ft1.c2
                      Remote SQL: SELECT c2 FROM "S 1"."T 1"
@@ -4349,6 +4414,7 @@ select avg(t1.c1), sum(t2.c1) from ft4 t1 full join ft5 t2 on (t1.c1 = t2.c1) gr
                ->  Hash Full Join
                      Output: t1.c1, t2.c1
                      Hash Cond: (t1.c1 = t2.c1)
+                     Runtime Filter: declined: the join keeps unmatched probe rows
                      ->  Foreign Scan on public.ft4 t1
                            Output: t1.c1
                            Remote SQL: SELECT c1 FROM "S 1"."T 3"
@@ -4379,6 +4445,7 @@ select count(*), sum(t1.c1), avg(t2.c1) from (select c1 from ft4 where c1 betwee
    ->  Hash Full Join
          Output: ft4.c1, ft5.c1
          Hash Cond: (ft4.c1 = ft5.c1)
+         Runtime Filter: declined: the join keeps unmatched probe rows
          ->  Foreign Scan on public.ft4
                Output: ft4.c1
                Remote SQL: SELECT c1 FROM "S 1"."T 3" WHERE (((c1 >= 50) AND (c1 <= 60)))
@@ -4544,6 +4611,7 @@ select sum(q.a), count(q.b) from ft4 left join (select 13, avg(ft1.c1), sum(ft2.
                      ->  Hash Left Join
                            Output: ft1.c1
                            Hash Cond: (ft2.c1 = ft1.c1)
+                           Runtime Filter: declined: the join keeps unmatched probe rows
                            ->  Foreign Scan on public.ft2
                                  Output: ft2.c1
                                  Remote SQL: SELECT "C 1" FROM "S 1"."T 1"
@@ -4892,6 +4960,7 @@ EXPLAIN (VERBOSE, COSTS OFF) EXECUTE st2(10, 20);
    ->  Hash Semi Join
          Output: t1.c1, t1.c2, t1.c3, t1.c4, t1.c5, t1.c6, t1.c7, t1.c8
          Hash Cond: (t1.c3 = t2.c3)
+         Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
          ->  Foreign Scan on public.ft1 t1
                Output: t1.c1, t1.c2, t1.c3, t1.c4, t1.c5, t1.c6, t1.c7, t1.c8
                Remote SQL: SELECT "C 1", c2, c3, c4, c5, c6, c7, c8 FROM "S 1"."T 1" WHERE (("C 1" < 20))
@@ -4927,6 +4996,7 @@ EXPLAIN (VERBOSE, COSTS OFF) EXECUTE st3(10, 20);
    ->  Hash Semi Join
          Output: t1.c1, t1.c2, t1.c3, t1.c4, t1.c5, t1.c6, t1.c7, t1.c8
          Hash Cond: (t1.c3 = t2.c3)
+         Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
          ->  Foreign Scan on public.ft1 t1
                Output: t1.c1, t1.c2, t1.c3, t1.c4, t1.c5, t1.c6, t1.c7, t1.c8
                Remote SQL: SELECT "C 1", c2, c3, c4, c5, c6, c7, c8 FROM "S 1"."T 1" WHERE (("C 1" < 20))
@@ -5437,6 +5507,7 @@ DETAIL:  Falling back to Postgres-based planner because GPORCA does not support 
          ->  Seq Scan on public.loct3 l
                Output: l.f1, l.f2, l.f3
                Filter: (l.f1 = 'foo'::text)
+               Runtime Filter: l.f3
          ->  Hash
                Output: f.f1, f.f2, f.f3
                ->  Redistribute Motion 1:3  (slice2)
@@ -5511,6 +5582,7 @@ DETAIL:  Falling back to Postgres-based planner because GPORCA does not support 
          ->  Seq Scan on public.loct3 l
                Output: l.f1, l.f2, l.f3
                Filter: (l.f1 = 'foo'::text)
+               Runtime Filter: l.f3
          ->  Hash
                Output: f.f1, f.f2, f.f3
                ->  Redistribute Motion 1:3  (slice2)
@@ -6917,6 +6989,7 @@ DETAIL:  Falling back to Postgres-based planner because GPORCA does not support 
    ->  Hash Join
          Output: ft2.c1, ft2.c2, NULL::integer, 'baz'::text, ft2.c4, ft2.c5, ft2.c6, ft2.c7, ft2.c8, ft2.ctid, ft4.*, ft5.*, ft4.c1, ft4.c2, ft4.c3, ft5.c1, ft5.c2, ft5.c3
          Hash Cond: (ft4.c1 = ft5.c1)
+         Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
          ->  Foreign Scan
                Output: ft2.c1, ft2.c2, ft2.c4, ft2.c5, ft2.c6, ft2.c7, ft2.c8, ft2.ctid, ft4.*, ft4.c1, ft4.c2, ft4.c3
                Filter: (ft2.c2 === ft4.c1)
@@ -6971,6 +7044,7 @@ DETAIL:  Falling back to Postgres-based planner because GPORCA does not support 
                ->  Hash Join
                      Output: ft2.ctid, ft4.*, ft4.c1
                      Hash Cond: (ft2.c2 = ft4.c1)
+                     Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
                      ->  Foreign Scan on public.ft2
                            Output: ft2.ctid, ft2.c2
                            Remote SQL: SELECT c2, ctid FROM "S 1"."T 1" WHERE (("C 1" > 2000)) FOR UPDATE
@@ -8964,6 +9038,7 @@ DETAIL:  Falling back to Postgres-based planner because GPORCA does not support 
    Output: bar.f1, bar.f2, bar.ctid, foo.ctid, bar.*, bar.tableoid, foo.*, foo.tableoid
    Inner Unique: true
    Hash Cond: (bar.f1 = foo.f1)
+   Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
    ->  Append
          ->  Gather Motion 3:1  (slice1; segments: 3)
                Output: bar.f1, bar.f2, bar.ctid, bar.*, bar.tableoid
@@ -9010,6 +9085,7 @@ DETAIL:  Falling back to Postgres-based planner because GPORCA does not support 
    Output: bar.f1, bar.f2, bar.ctid, foo.ctid, bar.*, bar.tableoid, foo.*, foo.tableoid
    Inner Unique: true
    Hash Cond: (bar.f1 = foo.f1)
+   Runtime Filter: declined: the probe side is not a scan in this slice, or the key is not a column of it
    ->  Append
          ->  Gather Motion 3:1  (slice1; segments: 3)
                Output: bar.f1, bar.f2, bar.ctid, bar.*, bar.tableoid
@@ -10787,6 +10863,7 @@ SELECT t1.a,t2.b,t2.c FROM fprt1 t1 LEFT JOIN (SELECT * FROM fprt2 WHERE a < 10)
          ->  Hash Left Join
                Output: t1.a, fprt2.b, fprt2.c
                Hash Cond: ((t1.a = fprt2.b) AND (t1.b = fprt2.a))
+               Runtime Filter: declined: the join keeps unmatched probe rows
                ->  Redistribute Motion 1:3  (slice2)
                      Output: t1.a, t1.b
                      Hash Key: t1.a, t1.b

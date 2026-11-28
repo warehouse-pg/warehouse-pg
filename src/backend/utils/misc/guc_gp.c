@@ -55,6 +55,7 @@
 #include "utils/resscheduler.h"
 #include "utils/resgroup.h"
 #include "utils/resource_manager.h"
+#include "utils/runtimefilter.h"
 #include "utils/varlena.h"
 #include "utils/vmem_tracker.h"
 #include "optimizer/optimizer.h"
@@ -705,6 +706,30 @@ struct config_bool ConfigureNamesBool_gp[] =
 		},
 		&whpg_enable_staged_scan,
 		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"whpg_enable_runtime_filter", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Enables runtime filters: a hash join hands its probe scan a filter over the join keys."),
+			gettext_noop("Applies when the probe side's scan runs in the same slice as the join; "
+						 "the scan drops rows that cannot have a match before assembling them."),
+			GUC_NOT_IN_SAMPLE | GUC_EXPLAIN
+		},
+		&whpg_enable_runtime_filter,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"whpg_runtime_filter_force", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Plans a runtime filter for every hash join whose shape allows one."),
+			gettext_noop("For tests and diagnosis: the planner's estimates of the probe's size and of "
+						 "the rows expected to match are not consulted. The size limit still holds, "
+						 "and the rows that arrive size the filter, decide whether it is published "
+						 "and rest it while it proves useless."),
+			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE | GUC_EXPLAIN
+		},
+		&whpg_runtime_filter_force,
+		false,
 		NULL, NULL, NULL
 	},
 	{
@@ -4077,6 +4102,19 @@ struct config_int ConfigureNamesInt_gp[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		{"whpg_runtime_filter_max_size", PGC_USERSET, QUERY_TUNING_OTHER,
+			gettext_noop("Maximum size of one runtime filter."),
+			gettext_noop("A hash join whose inner side would need a larger filter to stay "
+						 "useful gets none; a filter that turns out too dense is dropped. "
+						 "The filter is memory of its own, up to this much per filtered join "
+						 "and segment process on top of the join's share of statement_mem."),
+			GUC_UNIT_KB | GUC_NOT_IN_SAMPLE | GUC_EXPLAIN
+		},
+		&whpg_runtime_filter_max_size,
+		4096, 64, 65536,
+		NULL, NULL, NULL
+	},
 	{
 		{"gp_blockdirectory_entry_min_range", PGC_USERSET, GP_ARRAY_TUNING,
 			gettext_noop("Minimal range in bytes one block directory entry covers."),

@@ -3067,6 +3067,7 @@ select sum(Distinct sub.c), count(a), sum(d)
                                  ->  Hash Left Join
                                        Output: dqa_f3.a, dqa_f3.b, dqa_f3.d, (COALESCE(dqa_f2.y, 5))
                                        Hash Cond: (dqa_f3.e = dqa_f2.x)
+                                       Runtime Filter: declined: the join keeps unmatched probe rows
                                        ->  Redistribute Motion 3:3  (slice4; segments: 3)
                                              Output: dqa_f3.a, dqa_f3.b, dqa_f3.d, dqa_f3.e
                                              Hash Key: dqa_f3.e
@@ -3270,6 +3271,7 @@ explain (verbose on, costs off) select count(distinct a), count(distinct b) from
          ->  Hash Join
                Output: (count(DISTINCT share0_ref3.a)), (count(DISTINCT share0_ref2.b))
                Hash Cond: (NOT (share0_ref3.c IS DISTINCT FROM share0_ref2.c))
+               Runtime Filter: declined: NULL keys match (IS NOT DISTINCT FROM)
                ->  GroupAggregate
                      Output: count(DISTINCT share0_ref3.a), share0_ref3.c
                      Group Key: share0_ref3.c

@@ -1881,12 +1881,13 @@ explain (verbose on, costs off) select ex2.b/2, sum(ex1.a) from ex1, (select a, 
                            Hash Cond: (ex2.a = ex1.a)
                            ->  Seq Scan on bfv_aggregate.ex2
                                  Output: COALESCE(ex2.b, 1), ex2.a
+                                 Runtime Filter: ex2.a
                            ->  Hash
                                  Output: ex1.a
                                  ->  Seq Scan on bfv_aggregate.ex1
                                        Output: ex1.a
  Optimizer: GPORCA
-(21 rows)
+(22 rows)
 
 select ex2.b/2, sum(ex1.a) from ex1, (select a, coalesce(b, 1) b from ex2) ex2 where ex1.a = ex2.a group by ex2.b/2;
  ?column? | sum 
@@ -1983,14 +1984,15 @@ explain select a, sum(mc) from (select a, b, max(c) mc from t1_replicated group 
 (9 rows)
 
 explain SELECT t1.a, sum(c) from t1_replicated as t1 join t2_replicated as t2 on t1.a = t2.a group by t1.a;
-                                      QUERY PLAN                                       
----------------------------------------------------------------------------------------
+                                        QUERY PLAN                                        
+------------------------------------------------------------------------------------------
  Gather Motion 1:1  (slice1; segments: 1)  (cost=0.00..862.00 rows=1 width=12)
    ->  HashAggregate  (cost=0.00..862.00 rows=3 width=12)
          Group Key: t1.a
          ->  Hash Join  (cost=0.00..862.00 rows=3 width=12)
                Hash Cond: (t1.a = t2.a)
                ->  Seq Scan on t1_replicated t1  (cost=0.00..431.00 rows=3 width=12)
+                     Runtime Filter: a
                ->  Hash  (cost=431.00..431.00 rows=3 width=4)
                      ->  Seq Scan on t2_replicated t2  (cost=0.00..431.00 rows=3 width=4)
  Optimizer: Pivotal Optimizer (GPORCA)

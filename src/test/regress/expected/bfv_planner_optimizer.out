@@ -404,8 +404,8 @@ explain (costs off)
 select * from
 (select a from generate_series(1, 10)a) x, t_hashdist
 where x.a > random();
-                                       QUERY PLAN                                       
-----------------------------------------------------------------------------------------
+                                          QUERY PLAN                                          
+----------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Nested Loop
          Join Filter: true
@@ -459,6 +459,7 @@ explain (costs off) select * from t_hashdist where a in (select random()::int fr
    ->  Hash Semi Join
          Hash Cond: (t_hashdist.a = (int4(random())))
          ->  Seq Scan on t_hashdist
+               Runtime Filter: a
          ->  Hash
                ->  Redistribute Motion 1:3  (slice2)
                      Hash Key: (int4(random()))

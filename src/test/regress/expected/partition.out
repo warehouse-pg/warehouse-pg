@@ -7028,6 +7028,7 @@ UPDATE rank6 SET year = 2006 FROM w WHERE rank6.id = w.id;
    ->  Hash Join
          Hash Cond: (rank6_1_prt_1.id = w.id)
          ->  Seq Scan on rank6_1_prt_1
+               Runtime Filter: id
          ->  Hash
                ->  Subquery Scan on w
                      ->  Seq Scan on o
@@ -7037,6 +7038,7 @@ UPDATE rank6 SET year = 2006 FROM w WHERE rank6.id = w.id;
                ->  Hash Join
                      Hash Cond: (rank6_1_prt_2.id = w_1.id)
                      ->  Seq Scan on rank6_1_prt_2
+                           Runtime Filter: id
                      ->  Hash
                            ->  Broadcast Motion 3:3  (slice2; segments: 3)
                                  ->  Subquery Scan on w_1

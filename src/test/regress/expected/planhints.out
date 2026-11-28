@@ -2571,7 +2571,7 @@ BitmapScanRegexp(t1 '*awesome*')
 not used hint:
 duplication hint:
 error hint:
-                QUERY PLAN
+                QUERY PLAN                
 ------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Seq Scan on my_table t1
@@ -2602,7 +2602,7 @@ not used hint:
 duplication hint:
 error hint:
 SeqScan()
-                QUERY PLAN
+                QUERY PLAN                
 ------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Seq Scan on my_table t1
@@ -2629,7 +2629,7 @@ not used hint:
 duplication hint:
 SeqScan(t1)
 error hint:
-                QUERY PLAN
+                QUERY PLAN                
 ------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Seq Scan on my_table t1
@@ -2655,7 +2655,7 @@ not used hint:
 duplication hint:
 NoIndexScan(t1)
 error hint:
-                QUERY PLAN
+                QUERY PLAN                
 ------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Seq Scan on my_table t1
@@ -2679,16 +2679,17 @@ SeqScan(t2)
 not used hint:
 duplication hint:
 error hint:
-                 QUERY PLAN
+                 QUERY PLAN                  
 ---------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Semi Join
          Hash Cond: (t1.a = t2.a)
          ->  Seq Scan on my_table t1
+               Runtime Filter: a
          ->  Hash
                ->  Seq Scan on your_table t2
  Optimizer: Postgres-based planner
-(7 rows)
+(8 rows)
 
 /*+
     SeqScan(t2) SeqScan(t1)

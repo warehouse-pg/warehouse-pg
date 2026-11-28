@@ -1205,6 +1205,35 @@ typedef struct HashJoin
 	 * perform lookups in the hashtable over the inner plan.
 	 */
 	List	   *hashkeys;
+
+	/*
+	 * WHPG: exec Params this join sets to a runtime filter over its hash
+	 * keys once the hash table is built, for the probe side's scan to read
+	 * (planrtfilter.c, runtimefilter.c). An integer list; NIL for none.
+	 */
+	List	   *rf_paramids;
+
+	/*
+	 * WHPG: why no runtime filter was planned for this join, an RfDecline
+	 * (runtimefilter.h); 0 when one was, or the join was never looked at.
+	 * Shown by EXPLAIN (VERBOSE).
+	 */
+	int			rf_decline;
+
+	/*
+	 * WHPG: which of the hash keys (a position in hashclauses) the filter is
+	 * over -- a join on several keys gets a filter over one of them
+	 * (planrtfilter.c), built from that key's own hash value (nodeHash.c).
+	 */
+	int			rf_keyidx;
+
+	/*
+	 * WHPG: the probe rows the pass judged the join by, a segment's share
+	 * (rf_plan_rows() in planrtfilter.c: GPORCA's estimate for a slice run on
+	 * one segment is divided back by the segment count); 0 when the pass did
+	 * not get that far. For EXPLAIN.
+	 */
+	double		rf_probe_rows;
 } HashJoin;
 
 #define SHARE_ID_NOT_SHARED (-1)

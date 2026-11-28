@@ -211,6 +211,7 @@ EXPLAIN (COSTS OFF) DELETE FROM keo5 WHERE x IN (SELECT x FROM keo5 WHERE EXISTS
          ->  Hash Join
                Hash Cond: (keo5.x = keo5_1.x)
                ->  Seq Scan on keo5
+                     Runtime Filter: x
                ->  Hash
                      ->  HashAggregate
                            Group Key: keo5_1.x
